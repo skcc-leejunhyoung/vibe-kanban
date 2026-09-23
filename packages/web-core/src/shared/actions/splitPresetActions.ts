@@ -1,9 +1,15 @@
-import { LayoutIcon, XIcon, ColumnsIcon } from '@phosphor-icons/react';
+import {
+  ArrowCounterClockwiseIcon,
+  ColumnsIcon,
+  LayoutIcon,
+  XIcon,
+} from '@phosphor-icons/react';
 import { WORKSPACE_PANE_COUNTS } from '@/shared/stores/useWorkspacePanesStore';
 import {
   closeActivePane,
   focusPaneAt,
   openNewPane,
+  reopenClosedPane,
 } from '@/shared/lib/openInSplitPane';
 import {
   ActionTargetType,
@@ -31,6 +37,24 @@ export const splitPresetActions: GlobalActionDefinition[] = [
     icon: XIcon,
     requiresTarget: ActionTargetType.NONE,
     execute: (ctx) => closeActivePane(ctx.appNavigation),
+  },
+  {
+    id: 'reopenClosedPane',
+    label: 'Reopen closed pane',
+    keywords: [
+      'pane',
+      'split',
+      'reopen',
+      'restore',
+      'closed',
+      '분할',
+      '닫은 패널',
+      '복원',
+      'cmd shift t',
+    ],
+    icon: ArrowCounterClockwiseIcon,
+    requiresTarget: ActionTargetType.NONE,
+    execute: (ctx) => reopenClosedPane(ctx.appNavigation),
   },
   ...WORKSPACE_PANE_COUNTS.map(
     (count): GlobalActionDefinition => ({

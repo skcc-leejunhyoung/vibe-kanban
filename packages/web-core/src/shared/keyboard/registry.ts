@@ -553,6 +553,7 @@ export const NEXT_SPLIT_PANE_BINDING_ID = 'next-split-pane';
 export const PREVIOUS_SPLIT_PANE_BINDING_ID = 'previous-split-pane';
 export const NEW_PANE_BINDING_ID = 'new-pane';
 export const CLOSE_PANE_BINDING_ID = 'close-pane';
+export const REOPEN_CLOSED_PANE_BINDING_ID = 'reopen-closed-pane';
 export const SPLIT_PRESET_BINDING_IDS = {
   1: 'split-preset-1',
   2: 'split-preset-2',
@@ -618,6 +619,12 @@ export const modifierBindings: ModifierBinding[] = [
     id: CLOSE_PANE_BINDING_ID,
     keys: 'mod+w',
     actionId: 'closePane',
+    group: 'Modifiers',
+  },
+  {
+    id: REOPEN_CLOSED_PANE_BINDING_ID,
+    keys: 'mod+shift+t',
+    actionId: 'reopenClosedPane',
     group: 'Modifiers',
   },
   // VS Code-style: number shortcuts focus the pane at that position and never

@@ -316,6 +316,7 @@
       "previousSplitPane": "Enfocar el panel dividido anterior",
       "newPane": "Nuevo panel",
       "closePane": "Cerrar panel",
+      "reopenClosedPane": "Reabrir el panel cerrado",
       "focusPane1": "Enfocar panel 1",
       "focusPane2": "Enfocar panel 2",
       "focusPane3": "Enfocar panel 3",

@@ -6,6 +6,7 @@ import {
   NEW_PANE_BINDING_ID,
   NEXT_SPLIT_PANE_BINDING_ID,
   PREVIOUS_SPLIT_PANE_BINDING_ID,
+  REOPEN_CLOSED_PANE_BINDING_ID,
   SPLIT_PRESET_BINDING_IDS,
   resolveModifier,
 } from '@/shared/keyboard/registry';
@@ -14,6 +15,7 @@ import {
   closeActivePane,
   focusPaneAt,
   openNewPane,
+  reopenClosedPane,
 } from '@/shared/lib/openInSplitPane';
 import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 
@@ -30,8 +32,9 @@ function hotkeyOptions(keys: string) {
 /**
  * Global split-pane shortcuts, VS Code style: mod+alt+shift+N focuses the
  * pane at that position (never creates one), mod+t opens a new pane next to
- * the active one, mod+w closes the focused pane, and ctrl+tab / ctrl+shift+tab
- * cycle pane focus. Mounted once per document.
+ * the active one, mod+w closes the focused pane, mod+shift+t reopens the last
+ * closed pane, and ctrl+tab / ctrl+shift+tab cycle pane focus. Mounted once per
+ * document.
  */
 export function useWorkspacePaneShortcuts() {
   const appNavigation = useAppNavigation();
@@ -119,6 +122,17 @@ export function useWorkspacePaneShortcuts() {
     },
     hotkeyOptions(closePaneKeys),
     [closePaneKeys, appNavigation]
+  );
+
+  const reopenKeys = resolveModifier(REOPEN_CLOSED_PANE_BINDING_ID, overrides);
+  useHotkeys(
+    reopenKeys || 'unidentified',
+    (event) => {
+      event.preventDefault();
+      reopenClosedPane(appNavigation);
+    },
+    hotkeyOptions(reopenKeys),
+    [reopenKeys, appNavigation]
   );
 
   const nextKeys = resolveModifier(NEXT_SPLIT_PANE_BINDING_ID, overrides);

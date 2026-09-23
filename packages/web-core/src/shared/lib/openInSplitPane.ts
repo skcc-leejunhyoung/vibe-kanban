@@ -40,6 +40,12 @@ export function openNewPane(appNavigation: AppNavigation): void {
   ensurePaneGridVisible(appNavigation);
 }
 
+/** Reopen the most recently closed pane where it was, on a visible grid. */
+export function reopenClosedPane(appNavigation: AppNavigation): void {
+  if (!useWorkspacePanesStore.getState().reopenClosedPane()) return;
+  ensurePaneGridVisible(appNavigation);
+}
+
 /**
  * Give a destination a pane of its own: focus the pane already showing it,
  * else fill an empty pane, else append one, else take over the pane after the

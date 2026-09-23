@@ -316,6 +316,7 @@
       "previousSplitPane": "Activer le panneau divisé précédent",
       "newPane": "Nouveau panneau",
       "closePane": "Fermer le panneau",
+      "reopenClosedPane": "Rouvrir le panneau fermé",
       "focusPane1": "Focus panneau 1",
       "focusPane2": "Focus panneau 2",
       "focusPane3": "Focus panneau 3",

@@ -19,6 +19,7 @@ import {
   PREVIOUS_SPLIT_PANE_BINDING_ID,
   NEW_PANE_BINDING_ID,
   CLOSE_PANE_BINDING_ID,
+  REOPEN_CLOSED_PANE_BINDING_ID,
   SPLIT_PRESET_BINDING_IDS,
   Scope,
 } from '@/shared/keyboard/registry';
@@ -119,6 +120,14 @@ function useShortcutGroups(): ShortcutGroup[] {
           keys: chips(resolveModifier(CLOSE_PANE_BINDING_ID, overrides)),
           description: t('shortcuts.actions.closePane', {
             defaultValue: 'Close pane',
+          }),
+        },
+        {
+          keys: chips(
+            resolveModifier(REOPEN_CLOSED_PANE_BINDING_ID, overrides)
+          ),
+          description: t('shortcuts.actions.reopenClosedPane', {
+            defaultValue: 'Reopen closed pane',
           }),
         },
         ...WORKSPACE_PANE_COUNTS.slice(0, maxSplitPanes).map((preset) => ({

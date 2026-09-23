@@ -316,6 +316,7 @@
       "previousSplitPane": "前の分割パネルにフォーカス",
       "newPane": "新しいペイン",
       "closePane": "ペインを閉じる",
+      "reopenClosedPane": "閉じたペインを再び開く",
       "focusPane1": "ペイン1にフォーカス",
       "focusPane2": "ペイン2にフォーカス",
       "focusPane3": "ペイン3にフォーカス",

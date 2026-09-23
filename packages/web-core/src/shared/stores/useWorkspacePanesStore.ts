@@ -158,6 +158,14 @@ export interface WorkspacePane {
   destination: WorkspacePaneDestination | null;
 }
 
+/** A closed pane's content and former position, for "reopen closed pane". */
+export interface ClosedPane {
+  destination: WorkspacePaneDestination;
+  index: number;
+}
+
+const MAX_CLOSED_PANES = 10;
+
 interface WorkspacePanesState {
   activeUserId: string | null;
   /** Cap on total visible panes. */
@@ -178,6 +186,8 @@ interface WorkspacePanesState {
    * active pane when this changes. Pointer activation must not move focus.
    */
   focusSerial: number;
+  /** Recently closed panes, newest last. Session-only, never persisted. */
+  closedPanes: ClosedPane[];
   syncUser: (userId: string | null) => void;
   setMaxPanes: (maxPanes: number) => void;
   /** Make sure at least one pane exists (boot). */
@@ -203,6 +213,8 @@ interface WorkspacePanesState {
   clearPaneDestination: (paneId: string) => void;
   /** Close a pane; the last pane is cleared instead of removed. */
   closePane: (paneId: string) => void;
+  /** Reopen the most recently closed pane; false when there is none. */
+  reopenClosedPane: () => boolean;
   /** Move a pane before or after another pane. */
   movePane: (paneId: string, targetPaneId: string, after: boolean) => void;
   setActivePane: (paneId: string) => void;
@@ -312,7 +324,7 @@ interface PersistedPaneV1 {
 
 export const useWorkspacePanesStore = create<WorkspacePanesState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       activeUserId: null,
       maxPanes: DEFAULT_MAX_WORKSPACE_PANES,
       nextPaneId: 1,
@@ -322,12 +334,14 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
       layout: {},
       resizedPaneId: null,
       focusSerial: 0,
+      closedPanes: [],
       syncUser: (userId) =>
         set((state) => {
           if (state.activeUserId === userId) return state;
           return {
             activeUserId: userId,
             panes: [],
+            closedPanes: [],
             activePaneId: null,
             layout: {},
             resizedPaneId: null,
@@ -514,17 +528,27 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
         })),
       closePane: (paneId) =>
         set((state) => {
+          const closedIndex = state.panes.findIndex(
+            (pane) => pane.id === paneId
+          );
+          const closed = state.panes[closedIndex];
+          if (!closed) return state;
+          // Empty panes are not worth reopening.
+          const closedPanes = closed.destination
+            ? [
+                ...state.closedPanes,
+                { destination: closed.destination, index: closedIndex },
+              ].slice(-MAX_CLOSED_PANES)
+            : state.closedPanes;
           if (state.panes.length <= 1) {
             // Never drop the last pane — clear it back to the picker.
             return {
+              closedPanes,
               panes: state.panes.map((pane) =>
                 pane.id === paneId ? { ...pane, destination: null } : pane
               ),
             };
           }
-          const closedIndex = state.panes.findIndex(
-            (pane) => pane.id === paneId
-          );
           const panes = state.panes.filter((pane) => pane.id !== paneId);
           const resizedPaneId =
             state.resizedPaneId === paneId ? null : state.resizedPaneId;
@@ -532,6 +556,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
           const fallbackActive =
             panes[Math.max(closedIndex - 1, 0)]?.id ?? panes[0].id;
           return {
+            closedPanes,
             panes,
             layout,
             resizedPaneId,
@@ -541,6 +566,40 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
                 : state.activePaneId,
           };
         }),
+      reopenClosedPane: () => {
+        const state = get();
+        const closed = state.closedPanes[state.closedPanes.length - 1];
+        if (!closed) return false;
+        set({ closedPanes: state.closedPanes.slice(0, -1) });
+        const key = paneDestinationKey(closed.destination);
+        const insertable =
+          state.panes.length < state.maxPanes &&
+          state.panes.every(
+            (pane) =>
+              pane.destination !== null &&
+              paneDestinationKey(pane.destination) !== key
+          );
+        if (!insertable) {
+          // Already on screen, an empty pane is waiting, or the grid is full:
+          // the regular open path (focus → fill → replace) covers all three.
+          state.openPaneForDestination(closed.destination);
+          return true;
+        }
+        const id = `pane-${state.nextPaneId}`;
+        const panes = [...state.panes];
+        panes.splice(Math.min(closed.index, panes.length), 0, {
+          id,
+          destination: closed.destination,
+        });
+        set({
+          panes,
+          nextPaneId: state.nextPaneId + 1,
+          activePaneId: id,
+          layout: layoutForPanes(panes, state.layout, state.resizedPaneId),
+          focusSerial: state.focusSerial + 1,
+        });
+        return true;
+      },
       movePane: (paneId, targetPaneId, after) =>
         set((state) => {
           const from = state.panes.findIndex((pane) => pane.id === paneId);

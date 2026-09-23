@@ -46,6 +46,7 @@ function reset() {
     resizedPaneId: null,
     focusSerial: 0,
     paneOrderVersions: {},
+    closedPanes: [],
   });
 }
 
@@ -336,6 +337,81 @@ describe('closePane', () => {
     expect(store.getState().layout['pane-2']).toBeCloseTo(50);
     expect(store.getState().layout['pane-3']).toBeCloseTo(50);
     expect(store.getState().resizedPaneId).toBeNull();
+  });
+});
+
+describe('reopenClosedPane', () => {
+  beforeEach(() => {
+    store.getState().ensurePane();
+  });
+
+  it('is a no-op without a closed pane', () => {
+    expect(store.getState().reopenClosedPane()).toBe(false);
+  });
+
+  it('puts the pane back at its old position and focuses it', () => {
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().openPaneForDestination(ws('ws-b'));
+    store.getState().openPaneForDestination(ws('ws-c'));
+    store.getState().closePane('pane-2');
+
+    expect(store.getState().reopenClosedPane()).toBe(true);
+
+    const state = store.getState();
+    expect(state.panes.map((pane) => pane.destination)).toEqual([
+      ws('ws-a'),
+      ws('ws-b'),
+      ws('ws-c'),
+    ]);
+    expect(state.activePaneId).toBe(state.panes[1].id);
+    expect(state.layout[state.panes[1].id]).toBeCloseTo(100 / 3);
+    expect(state.closedPanes).toEqual([]);
+  });
+
+  it('refills the cleared last pane instead of adding a second one', () => {
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().closePane('pane-1');
+
+    store.getState().reopenClosedPane();
+
+    expect(store.getState().panes).toEqual([
+      { id: 'pane-1', destination: ws('ws-a') },
+    ]);
+  });
+
+  it('focuses the pane already showing the destination instead of duplicating', () => {
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().openPaneForDestination(ws('ws-b'));
+    store.getState().closePane('pane-1');
+    store.getState().openPaneForDestination(ws('ws-a'));
+
+    store.getState().reopenClosedPane();
+
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      ws('ws-b'),
+      ws('ws-a'),
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-3');
+  });
+
+  it('reopens newest first and skips closed empty panes', () => {
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().openPaneForDestination(ws('ws-b'));
+    store.getState().appendPane();
+    store.getState().closePane('pane-3');
+    store.getState().closePane('pane-1');
+    store.getState().closePane('pane-2');
+
+    store.getState().reopenClosedPane();
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      ws('ws-b'),
+    ]);
+    store.getState().reopenClosedPane();
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      ws('ws-a'),
+      ws('ws-b'),
+    ]);
+    expect(store.getState().reopenClosedPane()).toBe(false);
   });
 });
 

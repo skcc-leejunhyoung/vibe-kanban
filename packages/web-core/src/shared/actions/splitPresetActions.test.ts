@@ -5,7 +5,8 @@ describe('splitPresetActions', () => {
   it('exposes new/close pane plus focus actions with searchable keywords', () => {
     expect(splitPresetActions[0]).toMatchObject({ id: 'newPane' });
     expect(splitPresetActions[1]).toMatchObject({ id: 'closePane' });
-    const focusActions = splitPresetActions.slice(2);
+    expect(splitPresetActions[2]).toMatchObject({ id: 'reopenClosedPane' });
+    const focusActions = splitPresetActions.slice(3);
     expect(focusActions).toHaveLength(9);
     expect(focusActions[0]).toMatchObject({
       id: 'focusPane1',

@@ -316,6 +316,7 @@
       "previousSplitPane": "聚焦上一个分屏面板",
       "newPane": "新建窗格",
       "closePane": "关闭窗格",
+      "reopenClosedPane": "重新打开已关闭的窗格",
       "focusPane1": "聚焦窗格 1",
       "focusPane2": "聚焦窗格 2",
       "focusPane3": "聚焦窗格 3",

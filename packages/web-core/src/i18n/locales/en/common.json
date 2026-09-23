@@ -346,6 +346,7 @@
       "previousSplitPane": "Focus previous split pane",
       "newPane": "New pane",
       "closePane": "Close pane",
+      "reopenClosedPane": "Reopen closed pane",
       "focusPane1": "Focus pane 1",
       "focusPane2": "Focus pane 2",
       "focusPane3": "Focus pane 3",
