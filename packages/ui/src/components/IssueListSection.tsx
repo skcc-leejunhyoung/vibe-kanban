@@ -112,43 +112,47 @@ export function IssueListSection({
   className,
 }: IssueListSectionProps) {
   return (
-    <div className={cn('flex flex-col', className)}>
-      {/* Section Header */}
-      <button
-        type="button"
-        ref={(node) => onHeaderRef?.(status.id, node)}
-        onClick={onToggleExpanded}
-        className={cn(
-          'flex items-center justify-between',
-          'h-8 px-double py-base',
-          'bg-panel border-y border-border',
-          'cursor-pointer transition-colors outline-none',
-          'hover:bg-secondary',
-          isFocused && KEYBOARD_CURSOR_RING
-        )}
-      >
-        <div className="flex items-center gap-base">
-          <CaretDownIcon
+    // The whole section (header included) is the drop target so a collapsed
+    // group still accepts drops on its header; they land at the top.
+    <Droppable droppableId={status.id}>
+      {(provided) => (
+        <div
+          ref={provided.innerRef}
+          {...provided.droppableProps}
+          className={cn('flex flex-col', className)}
+        >
+          {/* Section Header */}
+          <button
+            type="button"
+            ref={(node) => onHeaderRef?.(status.id, node)}
+            onClick={onToggleExpanded}
             className={cn(
-              'size-icon-xs text-low transition-transform',
-              !isExpanded && '-rotate-90'
+              'flex items-center justify-between',
+              'h-8 px-double py-base',
+              'bg-panel border-y border-border',
+              'cursor-pointer transition-colors outline-none',
+              'hover:bg-secondary',
+              isFocused && KEYBOARD_CURSOR_RING
             )}
-            weight="bold"
-          />
-          <StatusDot color={status.color} />
-          <span className="text-base font-medium text-high">{status.name}</span>
-        </div>
-        <KanbanBadge name={String(issueIds.length)} />
-      </button>
-
-      {/* Section Content - Droppable area */}
-      <Droppable droppableId={status.id}>
-        {(provided) => (
-          <div
-            ref={provided.innerRef}
-            {...provided.droppableProps}
-            className={cn('flex flex-col', isExpanded && 'min-h-8')}
           >
+            <div className="flex items-center gap-base">
+              <CaretDownIcon
+                className={cn(
+                  'size-icon-xs text-low transition-transform',
+                  !isExpanded && '-rotate-90'
+                )}
+                weight="bold"
+              />
+              <StatusDot color={status.color} />
+              <span className="text-base font-medium text-high">
+                {status.name}
+              </span>
+            </div>
+            <KanbanBadge name={String(issueIds.length)} />
+          </button>
+
+          {/* Section Content */}
+          <div className={cn('flex flex-col', isExpanded && 'min-h-8')}>
             {isExpanded &&
               issueIds.map((issueId, index) => {
                 const issue = issueMap[issueId];
@@ -191,9 +195,9 @@ export function IssueListSection({
               />
             )}
           </div>
-        )}
-      </Droppable>
-    </div>
+        </div>
+      )}
+    </Droppable>
   );
 }
 
