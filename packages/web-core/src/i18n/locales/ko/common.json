@@ -461,6 +461,8 @@
       "filter": "기본 필터",
       "priorityFilter": "기본 우선순위 필터",
       "milestoneFilter": "기본 마일스톤 필터",
+      "tagFilter": "기본 태그 필터",
+      "tagFilterHint": "이 뷰에서 만든 이슈에는 이 태그가 자동으로 붙습니다.",
       "showSubIssues": "하위 이슈 표시",
       "showWorkspaces": "워크스페이스 표시",
       "hideBlocked": "차단된 이슈 숨기기",

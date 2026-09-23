@@ -656,6 +656,38 @@ function ViewEditorPanel({
                 ))}
               </select>
             </label>
+            {tags.length > 0 && (
+              <label className="flex flex-col gap-half text-xs text-low">
+                {t('kanban.viewsEditor.tagFilter', 'Default tag filter')}
+                <select
+                  multiple
+                  value={view.filters.tagIds}
+                  onChange={(event) =>
+                    onChange({
+                      filters: {
+                        ...view.filters,
+                        tagIds: Array.from(
+                          event.currentTarget.selectedOptions
+                        ).map((option) => option.value),
+                      },
+                    })
+                  }
+                  className="min-h-20 rounded-sm border border-border bg-panel px-base py-half text-sm text-normal"
+                >
+                  {tags.map((tag) => (
+                    <option key={tag.id} value={tag.id}>
+                      {tag.name}
+                    </option>
+                  ))}
+                </select>
+                <span>
+                  {t(
+                    'kanban.viewsEditor.tagFilterHint',
+                    'Issues created in this view get these tags automatically.'
+                  )}
+                </span>
+              </label>
+            )}
             <ToggleRow
               label={t('kanban.overdueFilterLabel', 'Overdue')}
               checked={view.filters.overdue ?? false}

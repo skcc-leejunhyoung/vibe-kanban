@@ -475,6 +475,8 @@
       "filter": "Default filter",
       "priorityFilter": "Default priority filter",
       "milestoneFilter": "Default milestone filter",
+      "tagFilter": "Default tag filter",
+      "tagFilterHint": "Issues created in this view get these tags automatically.",
       "showSubIssues": "Show sub-issues",
       "showWorkspaces": "Show workspaces",
       "hideBlocked": "Hide blocked issues",

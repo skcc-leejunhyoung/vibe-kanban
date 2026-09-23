@@ -20,3 +20,21 @@ describe('kanban issue composer workspace host', () => {
     ).toBeNull();
   });
 });
+
+describe('kanban issue composer create options', () => {
+  beforeEach(() => {
+    useKanbanIssueComposerStore.setState({ byKey: {} });
+  });
+
+  it('seeds draft tags from the create options and restores them on reset', () => {
+    const store = useKanbanIssueComposerStore.getState();
+    store.openComposer('host-1:project-1', { tagIds: ['tag-a'] });
+    store.patchComposer('host-1:project-1', { tagIds: [] });
+    store.resetComposer('host-1:project-1');
+
+    expect(
+      useKanbanIssueComposerStore.getState().byKey['host-1:project-1']?.draft
+        .tagIds
+    ).toEqual(['tag-a']);
+  });
+});

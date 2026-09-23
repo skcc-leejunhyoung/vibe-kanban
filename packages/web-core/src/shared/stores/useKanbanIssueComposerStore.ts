@@ -6,6 +6,7 @@ export interface ProjectIssueCreateOptions {
   statusId?: string;
   priority?: IssuePriority;
   assigneeIds?: string[];
+  tagIds?: string[];
   parentIssueId?: string;
 }
 
@@ -80,7 +81,7 @@ function toInitialComposerDraft(
     priority: options?.priority,
     assigneeIds: options?.assigneeIds,
     parentIssueId: options?.parentIssueId,
-    tagIds: [],
+    tagIds: options?.tagIds ?? [],
     createDraftWorkspace: false,
   });
 }

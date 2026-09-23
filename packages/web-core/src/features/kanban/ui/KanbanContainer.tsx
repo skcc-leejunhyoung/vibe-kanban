@@ -603,9 +603,13 @@ export function KanbanContainer() {
     return [...assigneeIds];
   }, [kanbanFilters.assigneeIds, userId]);
 
+  // Tags mirror the active tag filter the same way, so a view whose default
+  // filter (project settings) selects tags labels every issue created in it.
+  const createTagIds = kanbanFilters.tagIds;
+
   // Inline "+ Add item" (list view): create an issue at the bottom of the group
-  // with an empty body. Assignees mirror the active filter so the new issue
-  // stays visible in filtered views (matching the create-composer behavior).
+  // with an empty body. Assignees and tags mirror the active filter so the new
+  // issue stays visible in filtered views (matching the create-composer behavior).
   const handleInlineAddIssue = useCallback(
     (statusId: string, title: string) => {
       const statusIssues = issues.filter((i) => i.status_id === statusId);
@@ -627,7 +631,7 @@ export function KanbanContainer() {
         parent_issue_sort_order: null,
         extension_metadata: {},
       });
-      if (createAssigneeIds.length > 0) {
+      if (createAssigneeIds.length > 0 || createTagIds.length > 0) {
         persisted
           .then((syncedIssue) => {
             createAssigneeIds.forEach((assigneeUserId) =>
@@ -636,13 +640,24 @@ export function KanbanContainer() {
                 user_id: assigneeUserId,
               })
             );
+            createTagIds.forEach((tagId) =>
+              insertIssueTag({ issue_id: syncedIssue.id, tag_id: tagId })
+            );
           })
           .catch((err) =>
-            console.error('Failed to assign inline-created issue:', err)
+            console.error('Failed to label inline-created issue:', err)
           );
       }
     },
-    [issues, insertIssue, insertIssueAssignee, projectId, createAssigneeIds]
+    [
+      issues,
+      insertIssue,
+      insertIssueAssignee,
+      insertIssueTag,
+      projectId,
+      createAssigneeIds,
+      createTagIds,
+    ]
   );
 
   const [isFiltersDialogOpen, setIsFiltersDialogOpen] = useState(false);
@@ -1624,10 +1639,11 @@ export function KanbanContainer() {
         ...(createAssigneeIds.length > 0
           ? { assigneeIds: createAssigneeIds }
           : {}),
+        ...(createTagIds.length > 0 ? { tagIds: createTagIds } : {}),
       };
       startCreate(createPayload);
     },
-    [createAssigneeIds, defaultCreateStatusId, startCreate]
+    [createAssigneeIds, createTagIds, defaultCreateStatusId, startCreate]
   );
 
   // Inline editing callbacks for kanban cards

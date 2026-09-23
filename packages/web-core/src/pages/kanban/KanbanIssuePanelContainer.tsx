@@ -174,6 +174,7 @@ export function KanbanIssuePanelContainer({
   const kanbanCreateDefaultPriority = createComposerInitial?.priority ?? null;
   const kanbanCreateDefaultAssigneeIds =
     createComposerInitial?.assigneeIds ?? null;
+  const kanbanCreateDefaultTagIds = createComposerInitial?.tagIds ?? null;
   const kanbanCreateDefaultParentIssueId =
     createComposerInitial?.parentIssueId ?? null;
   const createDraftWorkspaceByDefault = useUiPreferencesStore(
@@ -403,7 +404,7 @@ export function KanbanIssuePanelContainer({
       statusId: defaultStatusId,
       priority: kanbanCreateDefaultPriority ?? null,
       assigneeIds: [...(kanbanCreateDefaultAssigneeIds ?? [])],
-      tagIds: [],
+      tagIds: [...(kanbanCreateDefaultTagIds ?? [])],
       createDraftWorkspace: createDraftWorkspaceByDefault,
       workspaceHostId: defaultWorkspaceHostId,
     }),
@@ -411,6 +412,7 @@ export function KanbanIssuePanelContainer({
       defaultStatusId,
       kanbanCreateDefaultPriority,
       kanbanCreateDefaultAssigneeIds,
+      kanbanCreateDefaultTagIds,
       createDraftWorkspaceByDefault,
       defaultWorkspaceHostId,
     ]
