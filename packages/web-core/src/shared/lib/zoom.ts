@@ -46,7 +46,14 @@ function loadFontSize(): number {
 function loadTextScale(): number {
   try {
     const scale = Number(localStorage.getItem(TEXT_SCALE_STORAGE_KEY));
-    if (Number.isFinite(scale) && scale > 0) return scale;
+    // Only scales the steppers can produce: a hand-edited 50 would otherwise
+    // render every text, the settings dialog included, at 50x.
+    if (
+      scale >= textScaleFor(MIN_TEXT_PERCENT, MAX_FONT_SIZE) &&
+      scale <= textScaleFor(MAX_TEXT_PERCENT, MIN_FONT_SIZE)
+    ) {
+      return scale;
+    }
   } catch {
     // localStorage may be unavailable
   }

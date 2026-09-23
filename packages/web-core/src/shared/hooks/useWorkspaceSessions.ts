@@ -23,6 +23,10 @@ export function workspaceSessionsQuery(
   return {
     queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
     queryFn: () => sessionsApi.getByWorkspace(workspaceId!, hostId),
+    // The server creates sessions too (the automated workflow's review) and
+    // nothing invalidates this list when it does, so every mount refetches;
+    // the cached list still renders meanwhile.
+    staleTime: 0,
   };
 }
 

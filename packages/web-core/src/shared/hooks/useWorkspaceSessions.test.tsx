@@ -15,8 +15,7 @@ vi.mock('@/shared/providers/HostIdProvider', () => ({
   useHostId: () => null,
 }));
 vi.mock('@/shared/lib/api', () => ({
-  // Never resolves: the tests drive the cache directly and keep queries pending.
-  sessionsApi: { getByWorkspace: vi.fn(() => new Promise(() => {})) },
+  sessionsApi: { getByWorkspace: vi.fn() },
 }));
 
 function sessionList(ids: string[]): Session[] {
@@ -63,6 +62,14 @@ beforeEach(() => {
     sessionList(['b-latest'])
   );
   useWorkspaceSessionSelectionStore.setState({ selections: {} });
+  // The list refetches on every mount; the tests drive the cache directly, so
+  // a fetch just echoes it back unless a case queues a server answer.
+  vi.mocked(sessionsApi.getByWorkspace).mockImplementation(
+    async (workspaceId) =>
+      queryClient.getQueryData<Session[]>(
+        workspaceSessionKeys.byWorkspace(workspaceId, null)
+      ) ?? []
+  );
 });
 
 afterEach(async () => {
@@ -186,6 +193,10 @@ describe('useWorkspaceSessions', () => {
     queryClient.removeQueries({
       queryKey: workspaceSessionKeys.byWorkspace('ws-a', null),
     });
+    // The first fetch is still in flight when the user picks.
+    vi.mocked(sessionsApi.getByWorkspace).mockImplementationOnce(
+      () => new Promise(() => {})
+    );
     const probe = renderPaneAndDocument();
     await probe.focusDocumentOn('ws-a');
 
@@ -261,6 +272,23 @@ describe('useWorkspaceSessions', () => {
 
     // e.g. the automated workflow spawned a review session server-side.
     await createSessionWhileClosed(['a-review', 'a-latest', 'a-older']);
+
+    await probe.focusDocumentOn('ws-a');
+    await settle();
+
+    expect(probe.pane.selectedSessionId).toBe('a-review');
+  });
+
+  it('picks up a server-created session on reopen without an invalidation', async () => {
+    const probe = renderPaneAndDocument();
+    await probe.focusDocumentOn('ws-a');
+    await probe.close();
+
+    // The automated workflow creates the review server-side: no frontend flow
+    // runs, so nothing marks the cached list invalid — the next fetch just has it.
+    vi.mocked(sessionsApi.getByWorkspace).mockImplementationOnce(async () =>
+      sessionList(['a-review', 'a-latest', 'a-older'])
+    );
 
     await probe.focusDocumentOn('ws-a');
     await settle();

@@ -134,4 +134,14 @@ describe('text and UI size', () => {
     expect(zoom.getTextPercent()).toBe(zoom.MIN_TEXT_PERCENT);
     expect(zoom.getZoomPercent()).toBe(125);
   });
+
+  it('ignores a stored scale the steppers could never produce', async () => {
+    // The reachable range is 0.25 (50% text at 32px) to 4 (200% at 8px).
+    expect((await loadZoom(undefined, '4')).zoom.getTextScale()).toBe(4);
+    expect((await loadZoom(undefined, '0.25')).zoom.getTextScale()).toBe(0.25);
+    for (const garbage of ['50', '0.1', '-2', 'abc']) {
+      const { zoom } = await loadZoom(undefined, garbage);
+      expect(zoom.getTextScale()).toBe(1);
+    }
+  });
 });

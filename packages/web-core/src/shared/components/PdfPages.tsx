@@ -60,6 +60,9 @@ export function PdfPages({ blob, title }: { blob: Blob; title: string }) {
     const run = async () => {
       const { pdfjs, BinaryDataFactory } = await loadPdfjs();
       const bytes = new Uint8Array(await blob.arrayBuffer());
+      // Closed while the chunk or bytes were loading: starting the task now
+      // would spawn a worker nothing tears down if the document then fails.
+      if (cancelled) return;
       loading = pdfjs.getDocument({ data: bytes, BinaryDataFactory });
       document_ = await loading.promise;
       if (cancelled) {
