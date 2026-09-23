@@ -183,7 +183,8 @@ export function inlinePreviewKind(
     /^image\/(png|jpeg|gif|webp|bmp|x-icon|vnd.microsoft.icon|tiff)$/.test(mime)
   )
     return 'image';
-  if (mime.startsWith('video/')) return 'video';
+  // Not `video/*`: mime_guess labels TypeScript `.ts`/`.mts` as MPEG-TS video.
+  if (/^video\/(mp4|webm|quicktime)$/.test(mime)) return 'video';
   if (mime === 'text/html' || mime === 'image/svg+xml') return 'frame';
   if (mime === 'text/vnd.mermaid') return 'mermaid';
   if (mime === 'application/pdf') return 'pdf';

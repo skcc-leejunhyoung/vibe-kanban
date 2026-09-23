@@ -165,18 +165,19 @@ function useArtifactContent(
           warnings: bundle.warnings,
         };
       }
-      const blob = await fetchBytes(
-        artifact.content_hash ?? undefined,
-        artifact.mime
-      );
       const textual =
         artifact.mime.startsWith('text/') ||
         artifact.mime === 'image/svg+xml' ||
         /\.(json|[cm]?js|[jt]sx?|vue|svelte|rs|py|sh|toml|ya?ml|xml)$/i.test(
           artifact.name
         );
-      if (textual && blob.size > 2 * 1024 * 1024)
+      // Reject before fetching: snapshots now reach 90 MiB.
+      if (textual && artifact.size_bytes > 2 * 1024 * 1024)
         throw new Error(t('artifacts.largeSource'));
+      const blob = await fetchBytes(
+        artifact.content_hash ?? undefined,
+        artifact.mime
+      );
       const text = textual ? await blob.text() : '';
       if (
         mode === 'preview' &&

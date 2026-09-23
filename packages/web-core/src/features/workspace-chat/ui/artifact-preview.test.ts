@@ -80,6 +80,9 @@ describe('inline previews', () => {
     expect(inlinePreviewKind({ ...base, mime: 'image/png' })).toBe('image');
     expect(inlinePreviewKind({ ...base, mime: 'image/gif' })).toBe('image');
     expect(inlinePreviewKind({ ...base, mime: 'video/mp4' })).toBe('video');
+    expect(
+      inlinePreviewKind({ ...base, mime: 'video/vnd.dlna.mpeg-tts' })
+    ).toBeNull();
     expect(inlinePreviewKind({ ...base, mime: 'text/vnd.mermaid' })).toBe(
       'mermaid'
     );
