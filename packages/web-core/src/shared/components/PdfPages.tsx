@@ -12,21 +12,24 @@ const MAX_PIXEL_RATIO = 2;
 // Pages within this much of the viewport hold a canvas; the rest release it.
 const PRELOAD_MARGIN = '200% 0px';
 
-let library: Promise<typeof import('pdfjs-dist')> | undefined;
-
 // Loaded on demand so browsers with a working embedded viewer never pay for it.
 // The legacy bundle is mandatory, not a fallback: the default build calls
 // `Promise.withResolvers` and `Map.prototype.getOrInsertComputed`, and no
 // shipping browser has the latter.
+const load = async () => {
+  const [pdfjs, worker, { BundledBinaryData }] = await Promise.all([
+    import('pdfjs-dist/legacy/build/pdf.min.mjs'),
+    import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'),
+    import('@/shared/lib/pdf-cmaps'),
+  ]);
+  pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
+  return { pdfjs, BinaryDataFactory: BundledBinaryData };
+};
+
+let library: ReturnType<typeof load> | undefined;
+
 function loadPdfjs() {
-  library ??= (async () => {
-    const [pdfjs, worker] = await Promise.all([
-      import('pdfjs-dist/legacy/build/pdf.min.mjs'),
-      import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'),
-    ]);
-    pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
-    return pdfjs;
-  })().catch((error) => {
+  library ??= load().catch((error) => {
     // A transient failure must not poison every later open.
     library = undefined;
     throw error;
@@ -55,9 +58,9 @@ export function PdfPages({ blob, title }: { blob: Blob; title: string }) {
     const tasks = new Map<Element, RenderTask>();
 
     const run = async () => {
-      const pdfjs = await loadPdfjs();
+      const { pdfjs, BinaryDataFactory } = await loadPdfjs();
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      loading = pdfjs.getDocument({ data: bytes });
+      loading = pdfjs.getDocument({ data: bytes, BinaryDataFactory });
       document_ = await loading.promise;
       if (cancelled) {
         // Closing during the load leaves cleanup nothing to tear down, because
