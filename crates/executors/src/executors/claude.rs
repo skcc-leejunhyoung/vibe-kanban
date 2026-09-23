@@ -859,9 +859,11 @@ impl StandardCodingAgentExecutor for ClaudeCode {
     }
 }
 
-/// Session-wide rules ride on the system prompt, rebuilt from flags on every
-/// `--resume`. A profile's own flag is extended rather than duplicated because a
-/// second occurrence replaces the first.
+/// Session-wide rules ride on the system prompt. Claude snapshots it into the
+/// session on the first spawn and `--resume` ignores the flag (CLI 2.1.280), so
+/// sessions started without it see the rules only in their earlier prompts. A
+/// profile's own flag is extended rather than duplicated because a second
+/// occurrence replaces the first.
 fn append_system_prompt(args: &mut Vec<String>, env: &ExecutionEnv) {
     const FLAG: &str = "--append-system-prompt";
     if env.system_instructions.is_none() {
