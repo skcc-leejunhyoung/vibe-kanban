@@ -464,6 +464,8 @@
     "subIssuesFilterLabel": "Sub-issues",
     "workspacesFilterLabel": "Workspaces",
     "selectAssignees": "Select assignees...",
+    "addTags": "新增標籤...",
+    "removeTags": "移除標籤...",
     "relationships": "Relationships",
     "noRelationships": "No relationships",
     "openProjectsGuide": "Projects guide",

@@ -53,6 +53,7 @@ import {
   ArrowsLeftRightIcon,
   ArrowFatLineUpIcon,
   UsersIcon,
+  TagIcon,
   TreeStructureIcon,
   LinkIcon,
   LinkBreakIcon,
@@ -3364,6 +3365,38 @@ export const Actions = {
       await ctx.openAssigneeSelection('', [], true);
     },
   } satisfies GlobalActionDefinition,
+
+  AddIssueTags: {
+    id: 'add-issue-tags',
+    label: 'Add Tags',
+    icon: TagIcon,
+    keywords: ['tag', 'tags', 'label', 'add'],
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) =>
+      ctx.layoutMode === 'kanban' && ctx.hasSelectedKanbanIssue,
+    execute: async (_ctx, projectId, issueIds) => {
+      const { TagSelectionDialog } = await import(
+        '@/shared/dialogs/kanban/TagSelectionDialog'
+      );
+      await TagSelectionDialog.show({ projectId, issueIds, mode: 'add' });
+    },
+  } satisfies IssueActionDefinition,
+
+  RemoveIssueTags: {
+    id: 'remove-issue-tags',
+    label: 'Remove Tags',
+    icon: TagIcon,
+    keywords: ['tag', 'tags', 'label', 'remove', 'delete'],
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) =>
+      ctx.layoutMode === 'kanban' && ctx.hasSelectedKanbanIssue,
+    execute: async (_ctx, projectId, issueIds) => {
+      const { TagSelectionDialog } = await import(
+        '@/shared/dialogs/kanban/TagSelectionDialog'
+      );
+      await TagSelectionDialog.show({ projectId, issueIds, mode: 'remove' });
+    },
+  } satisfies IssueActionDefinition,
 
   MakeSubIssueOf: {
     id: 'make-sub-issue-of',

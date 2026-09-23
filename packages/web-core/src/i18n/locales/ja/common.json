@@ -464,6 +464,8 @@
     "subIssuesFilterLabel": "Sub-issues",
     "workspacesFilterLabel": "Workspaces",
     "selectAssignees": "Select assignees...",
+    "addTags": "タグを追加...",
+    "removeTags": "タグを削除...",
     "relationships": "Relationships",
     "noRelationships": "No relationships",
     "openProjectsGuide": "Projects guide",

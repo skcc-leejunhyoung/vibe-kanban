@@ -576,6 +576,8 @@
     "subIssuesFilterLabel": "Sub-issues",
     "workspacesFilterLabel": "Workspaces",
     "selectAssignees": "Select assignees...",
+    "addTags": "태그 추가...",
+    "removeTags": "태그 삭제...",
     "relationships": "Relationships",
     "noRelationships": "No relationships",
     "openProjectsGuide": "Projects guide",
