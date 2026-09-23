@@ -128,8 +128,23 @@ export function ChatBoxBase({
         </div>
       )}
 
-      {/* Banner content (queued indicator, feedback mode, etc.) */}
-      {banner}
+      {/* Banner content (queued list, agent question, review comments). In a
+          height-capped box this is the part that gives way: it shrinks and
+          scrolls, so a long question or queue can't push the input and the
+          action buttons out of the box. The divider lives on the wrapper (each
+          banner's own bottom border is dropped on the last one) so it stays
+          put while the banners scroll; `empty:hidden` covers a banner that
+          renders nothing (e.g. an answered question awaiting the agent). */}
+      {banner && (
+        <div
+          className={cn(
+            'border-b empty:hidden [&>*:last-child]:border-b-0',
+            fillHeight && 'min-h-0 overflow-y-auto'
+          )}
+        >
+          {banner}
+        </div>
+      )}
 
       {/* Header - stats (left) and session controls (right), no divider */}
       {visualVariant === VisualVariant.NORMAL && (
@@ -141,33 +156,41 @@ export function ChatBoxBase({
         </div>
       )}
 
-      {/* Editor area */}
+      {/* Editor area. `flex-auto` (basis = content) makes it share a squeeze
+          with the banner in proportion to their sizes, and the floor keeps one
+          line of input visible however long the banner is. The floor is
+          exactly `pt-base` + one `text-base` line (1.5rem, scaled by the text
+          size preference like the font token), so a one-line box is never
+          taller than its content. The footer is deliberately NOT inside this
+          element: when it was, squeezing the editor area squeezed the action
+          buttons out of the box with it. */}
       <div
         className={cn(
-          'flex flex-col gap-base px-plusfifty py-base',
-          fillHeight && 'min-h-0 flex-1'
+          'flex flex-col px-plusfifty pt-base',
+          fillHeight &&
+            'min-h-[calc(0.5rem_+_1.5rem_*_var(--vk-text-scale,1))] flex-auto'
         )}
       >
         {editor}
+      </div>
 
-        {/* Footer - controls and action buttons share ONE wrapping flow, so a
-            control that wraps takes the action buttons with it onto the same
-            line instead of leaving a half-empty row. `ml-auto` is per-line in
-            flexbox, so the buttons stay right-aligned on whichever line they
-            land on. Nesting the controls in their own flex container would
-            reintroduce the split: the whole group would claim the first line
-            and push the buttons to a row of their own. */}
-        <div
-          className={cn(
-            'flex flex-wrap items-center gap-half',
-            fillHeight && 'shrink-0'
-          )}
-        >
-          {footerLeft}
-          {modelSelector}
-          <div className="ml-auto flex shrink-0 items-center gap-half">
-            {footerRight}
-          </div>
+      {/* Footer - controls and action buttons share ONE wrapping flow, so a
+          control that wraps takes the action buttons with it onto the same
+          line instead of leaving a half-empty row. `ml-auto` is per-line in
+          flexbox, so the buttons stay right-aligned on whichever line they
+          land on. Nesting the controls in their own flex container would
+          reintroduce the split: the whole group would claim the first line
+          and push the buttons to a row of their own. */}
+      <div
+        className={cn(
+          'flex flex-wrap items-center gap-half px-plusfifty py-base',
+          fillHeight && 'shrink-0'
+        )}
+      >
+        {footerLeft}
+        {modelSelector}
+        <div className="ml-auto flex shrink-0 items-center gap-half">
+          {footerRight}
         </div>
       </div>
     </div>
