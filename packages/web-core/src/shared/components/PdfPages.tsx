@@ -1,3 +1,4 @@
+/// <reference path="./pdfjs-legacy.d.ts" />
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type {
@@ -11,33 +12,17 @@ const MAX_PIXEL_RATIO = 2;
 // Pages within this much of the viewport hold a canvas; the rest release it.
 const PRELOAD_MARGIN = '200% 0px';
 
-type WithResolvers = { withResolvers?: unknown };
-
-// pdf.js calls Promise.withResolvers, which WebKit only shipped in 17.4 — and
-// WebKit is the engine this whole fallback exists for.
-function polyfillWithResolvers() {
-  const ctor = Promise as unknown as WithResolvers;
-  if (typeof ctor.withResolvers === 'function') return;
-  ctor.withResolvers = <T,>() => {
-    let resolve!: (value: T | PromiseLike<T>) => void;
-    let reject!: (reason?: unknown) => void;
-    const promise = new Promise<T>((settle, fail) => {
-      resolve = settle;
-      reject = fail;
-    });
-    return { promise, resolve, reject };
-  };
-}
-
 let library: Promise<typeof import('pdfjs-dist')> | undefined;
 
 // Loaded on demand so browsers with a working embedded viewer never pay for it.
+// The legacy bundle is mandatory, not a fallback: the default build calls
+// `Promise.withResolvers` and `Map.prototype.getOrInsertComputed`, and no
+// shipping browser has the latter.
 function loadPdfjs() {
   library ??= (async () => {
-    polyfillWithResolvers();
     const [pdfjs, worker] = await Promise.all([
-      import('pdfjs-dist'),
-      import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+      import('pdfjs-dist/legacy/build/pdf.min.mjs'),
+      import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'),
     ]);
     pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
     return pdfjs;
@@ -103,12 +88,15 @@ export function PdfPages({ blob, title }: { blob: Blob; title: string }) {
         if (cancelled || frame.firstElementChild) return;
         const unscaled = page.getViewport({ scale: 1 });
         const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
-        const width = (frame.clientWidth || unscaled.width) * ratio;
+        // Whole pixels, or the bitmap truncates the fractional right column.
+        const width = Math.round((frame.clientWidth || unscaled.width) * ratio);
         const viewport = page.getViewport({ scale: width / unscaled.width });
         const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        canvas.className = 'block h-full w-full';
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
+        // Height follows the bitmap's own ratio; a percentage height would lean
+        // on the frame's aspect-ratio box resolving, which WebKit does late.
+        canvas.className = 'block w-full';
         const context = canvas.getContext('2d');
         if (!context) return;
         frame.append(canvas);
@@ -143,6 +131,8 @@ export function PdfPages({ blob, title }: { blob: Blob; title: string }) {
         { root: host, rootMargin: PRELOAD_MARGIN }
       );
 
+      // ponytail: one getPage per page up front to size placeholders; swap to
+      // page one's ratio for all of them if a huge document ever drags.
       for (let number = 1; number <= document_.numPages; number += 1) {
         const page = await document_.getPage(number);
         if (cancelled) return;
