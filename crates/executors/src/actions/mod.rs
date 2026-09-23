@@ -144,7 +144,9 @@ fn append_artifact_instructions(prompt: &mut String) {
              (for example: ```mermaid vibe-artifact). \
              Vibe renders attached HTML directly in an interactive, sandboxed chat preview, \
              including its CSS and JavaScript. Attached PDF and Office documents (docx, xlsx, pptx) \
-             also render as inline previews. When asked to create or render HTML, SVG or Mermaid, \
+             also render as inline previews. The preview appears in place of the attachment line, \
+             so attach each deliverable in the message where you present it, as soon as it is complete. \
+             When asked to create or render HTML, SVG or Mermaid, \
              attach that deliverable as the primary result. Screenshots can help verify your work; \
              use them as the deliverable when the user requests an image. \
              Save the final HTML inside the workspace, or attach a complete inline HTML document. \

@@ -43,7 +43,11 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
 import { ArtifactCards, useExecutionArtifacts } from './ArtifactCards';
-import { subagentScope } from './artifact-preview';
+import {
+  findSegmentArtifact,
+  splitArtifactSegments,
+  subagentScope,
+} from './artifact-preview';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
@@ -447,6 +451,8 @@ function DisplayConversationEntry(props: Props) {
           content={entry.content}
           workspaceId={workspaceWithSession?.id}
           sessionId={sessionId}
+          executionProcessId={executionProcessId}
+          artifacts={props.artifactOverrides ?? EMPTY_ARTIFACTS}
         />
       );
 
@@ -995,32 +1001,78 @@ function BackgroundWaitingEntry({ tasks }: { tasks: string[] }) {
   );
 }
 
+const EMPTY_ARTIFACTS: ArtifactReference[] = [];
+
 /**
- * Assistant message entry with expandable content
+ * Artifacts whose attachment line or marked fence this message renders in
+ * place. Shared by the message body and the trailing list so nothing shows twice.
+ */
+function inlineArtifacts(content: string, artifacts: ArtifactReference[]) {
+  return splitArtifactSegments(content).map((segment) => ({
+    segment,
+    artifact: findSegmentArtifact(segment, artifacts),
+  }));
+}
+
+/**
+ * Assistant message entry. Attachment lines become their artifact preview at
+ * that point of the reply; unregistered lines stay ordinary markdown.
  */
 function AssistantMessageEntry({
   content,
   workspaceId,
   sessionId,
+  executionProcessId,
+  artifacts,
 }: {
   content: string;
   workspaceId: string | undefined;
   sessionId: string | undefined;
+  executionProcessId: string;
+  artifacts: ArtifactReference[];
 }) {
+  const parts = useMemo(() => {
+    const parts: (string | ArtifactReference)[] = [];
+    for (const { segment, artifact } of inlineArtifacts(content, artifacts)) {
+      if (artifact && workspaceId && sessionId) {
+        parts.push(artifact);
+        continue;
+      }
+      const text = segment.kind === 'markdown' ? segment.text : segment.raw;
+      const last = parts.at(-1);
+      if (typeof last === 'string')
+        parts[parts.length - 1] = `${last}\n${text}`;
+      else parts.push(text);
+    }
+    return parts;
+  }, [content, artifacts, workspaceId, sessionId]);
   return (
     <ChatAssistantMessage
       content={content}
       workspaceId={workspaceId}
-      renderMarkdown={({ content, workspaceId }) => (
-        <AppChatMarkdown
-          content={content}
-          workspaceId={workspaceId}
-          sessionId={sessionId}
-          className={undefined}
-          maxWidth={undefined}
-          renderMermaidArtifacts
-        />
-      )}
+      renderMarkdown={({ workspaceId }) =>
+        parts.map((part, index) =>
+          typeof part === 'string' ? (
+            <AppChatMarkdown
+              key={index}
+              content={part}
+              workspaceId={workspaceId}
+              sessionId={sessionId}
+              className={undefined}
+              maxWidth={undefined}
+              renderMermaidArtifacts
+            />
+          ) : (
+            <ArtifactCards
+              key={part.id}
+              artifacts={[part]}
+              processId={executionProcessId}
+              workspaceId={workspaceId!}
+              sessionId={sessionId!}
+            />
+          )
+        )
+      }
     />
   );
 }
@@ -1791,14 +1843,33 @@ const DisplayConversationEntrySpaced = (props: Props) => {
         : []
     )
   );
-  const matching =
+  const all =
+    props.artifactOverrides ?? artifacts.data?.artifacts ?? EMPTY_ARTIFACTS;
+  // The message body renders these at their attachment line already.
+  const entryContent =
+    props.entry?.entry_type.type === 'assistant_message'
+      ? props.entry.content
+      : undefined;
+  const consumed = useMemo(
+    () =>
+      new Set(
+        entryContent === undefined
+          ? []
+          : inlineArtifacts(entryContent, all).flatMap(({ artifact }) =>
+              artifact ? [artifact.id] : []
+            )
+      ),
+    [entryContent, all]
+  );
+  const matching = (
     props.artifactOverrides ??
     (artifacts.data?.artifacts ?? []).filter((artifact) =>
       artifact.source_scope
         ? scopes.has(artifact.source_scope)
         : artifact.source_entry !== null &&
           entryKeys.has(`${props.executionProcessId}:${artifact.source_entry}`)
-    );
+    )
+  ).filter((artifact) => !consumed.has(artifact.id));
 
   return (
     <div
@@ -1807,12 +1878,7 @@ const DisplayConversationEntrySpaced = (props: Props) => {
         isGreyed && 'opacity-50 pointer-events-none'
       )}
     >
-      <DisplayConversationEntry
-        {...props}
-        artifactOverrides={
-          props.artifactOverrides ?? artifacts.data?.artifacts ?? []
-        }
-      />
+      <DisplayConversationEntry {...props} artifactOverrides={all} />
       {sessionId && (
         <ArtifactCards
           artifacts={matching}

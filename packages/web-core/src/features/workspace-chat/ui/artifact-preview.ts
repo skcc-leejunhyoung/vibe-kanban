@@ -195,3 +195,189 @@ export function subagentScope(target: SubagentControlTarget) {
     ? `codex:${target.thread_id}`
     : `claude:${target.task_id}`;
 }
+
+export type ArtifactSegment =
+  | { kind: 'markdown'; text: string }
+  | { kind: 'file'; raw: string; path: string }
+  | { kind: 'url'; raw: string; url: string }
+  | { kind: 'inline'; raw: string; name: string };
+
+// Same standalone-line rule as executors::logs::artifacts::LINK.
+const ARTIFACT_LINK =
+  /^(?:[-+*] |[0-9]+[.)] )?!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))\s+"vibe-artifact"\s*\)$/;
+const FILE_LINE = /(?::[0-9]+){1,2}$/;
+
+function svgRoot(source: string) {
+  const trimmed = source.replace(/^﻿/, '').trimStart();
+  if (!trimmed.startsWith('<?xml')) return trimmed;
+  const end = trimmed.indexOf('?>');
+  return end === -1 ? trimmed : trimmed.slice(end + 2).trimStart();
+}
+
+// Mirrors the backend's inline candidate rules: only complete documents are
+// registered, so only those are rendered in place of their fence.
+function inlineExtension(language: string, source: string) {
+  const lower = source.toLowerCase();
+  switch (language) {
+    case 'mermaid':
+      return 'mmd';
+    case 'html':
+    case 'htm':
+      return (lower.startsWith('<!doctype html') ||
+        lower.startsWith('<html')) &&
+        lower.endsWith('</html>')
+        ? 'html'
+        : null;
+    case 'svg':
+    case 'xml': {
+      const root = svgRoot(lower);
+      return root.startsWith('<svg') &&
+        (lower.endsWith('</svg>') ||
+          (root.endsWith('/>') && !root.slice(0, -2).includes('>')))
+        ? 'svg'
+        : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Splits a message at the lines the backend registers as artifacts
+ * (executors::logs::artifacts::markdown_candidates) so previews can render in
+ * place. Mermaid fences stay markdown: the editor already renders them.
+ */
+export function splitArtifactSegments(content: string): ArtifactSegment[] {
+  const segments: ArtifactSegment[] = [];
+  let markdown: string[] = [];
+  const flush = () => {
+    // Blank runs around previews would only render empty editors.
+    if (markdown.join('\n').trim())
+      segments.push({ kind: 'markdown', text: markdown.join('\n') });
+    markdown = [];
+  };
+  let fence: {
+    marker: string;
+    count: number;
+    language: string;
+    lines: string[];
+  } | null = null;
+  let ordinal = 0;
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    // Markdown allows up to three leading spaces on fence delimiters.
+    const delimiter = line.startsWith('    ') ? line : line.replace(/^ +/, '');
+    if (fence) {
+      const { marker } = fence;
+      let run = 0;
+      while (delimiter[run] === marker) run++;
+      const closing =
+        run >= fence.count &&
+        delimiter.replace(new RegExp(`\\${marker}+$`), '').trim() === '';
+      if (!closing) {
+        fence.lines.push(line);
+        continue;
+      }
+      const source = fence.lines.slice(1).join('\n').trim();
+      const extension = source ? inlineExtension(fence.language, source) : null;
+      if (extension && extension !== 'mmd') {
+        flush();
+        segments.push({
+          kind: 'inline',
+          raw: [...fence.lines, line].join('\n'),
+          name: `block-${ordinal}.${extension}`,
+        });
+      } else markdown.push(...fence.lines, line);
+      ordinal += 1;
+      fence = null;
+      continue;
+    }
+    const marker = delimiter[0];
+    if (marker === '`' || marker === '~') {
+      let count = 0;
+      while (delimiter[count] === marker) count++;
+      if (count >= 3) {
+        const info = delimiter.slice(count).trim();
+        fence = {
+          marker,
+          count,
+          language: info.endsWith(' vibe-artifact')
+            ? info.slice(0, -' vibe-artifact'.length).toLowerCase()
+            : '',
+          lines: [line],
+        };
+        continue;
+      }
+    }
+    if (
+      line.trimStart().startsWith('>') ||
+      line.startsWith('    ') ||
+      line.startsWith('\t')
+    ) {
+      markdown.push(line);
+      continue;
+    }
+    const match = ARTIFACT_LINK.exec(line.trim());
+    const target = match?.[1] ?? match?.[2];
+    if (target && /^https?:\/\//.test(target)) {
+      flush();
+      segments.push({ kind: 'url', raw: line, url: target });
+      continue;
+    }
+    if (
+      target &&
+      !target.includes('://') &&
+      !target.startsWith('#') &&
+      !target.startsWith('data:')
+    ) {
+      const reference = target.split(/[#?]/)[0].replace(FILE_LINE, '');
+      let path: string | undefined;
+      try {
+        path = decodeURIComponent(reference);
+      } catch {
+        path = undefined;
+      }
+      if (path) {
+        flush();
+        segments.push({ kind: 'file', raw: line, path });
+        continue;
+      }
+    }
+    markdown.push(line);
+  }
+  if (fence) markdown.push(...fence.lines);
+  flush();
+  return segments;
+}
+
+/** The registered artifact a segment stands for, if the execution has one. */
+export function findSegmentArtifact(
+  segment: ArtifactSegment,
+  artifacts: ArtifactReference[]
+): ArtifactReference | undefined {
+  if (segment.kind === 'markdown') return undefined;
+  const path =
+    segment.kind === 'file' ? segment.path.replace(/^(\.\/)+/, '') : '';
+  const matches = (artifact: ArtifactReference) => {
+    switch (segment.kind) {
+      case 'url':
+        return artifact.url === segment.url;
+      case 'inline':
+        return artifact.path === null && artifact.name === segment.name;
+      default:
+        // Registered paths are workspace-relative; links are relative to the
+        // agent's working directory or absolute.
+        return (
+          !!artifact.path &&
+          (artifact.path === path ||
+            artifact.path.endsWith(`/${path}`) ||
+            path.endsWith(`/${artifact.path}`))
+        );
+    }
+  };
+  // A parent message owns the unscoped copy; child transcripts pass only theirs.
+  return (
+    artifacts.find((artifact) => !artifact.source_scope && matches(artifact)) ??
+    artifacts.find(matches)
+  );
+}

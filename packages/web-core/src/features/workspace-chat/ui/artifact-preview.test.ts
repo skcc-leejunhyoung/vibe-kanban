@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { ArtifactReference } from 'shared/types';
 import {
   deduplicateManagedImages,
+  findSegmentArtifact,
   inlinePreviewKind,
+  splitArtifactSegments,
   subagentScope,
 } from './artifact-preview';
 
@@ -99,5 +101,197 @@ describe('inline previews', () => {
         output_file: null,
       })
     ).toBe('claude:k1');
+  });
+});
+
+describe('artifact segments', () => {
+  it('splits only standalone attachment lines, like the backend', () => {
+    const text = [
+      'Intro [source](src/main.rs)',
+      '`[example](secret.txt "vibe-artifact")`',
+      '> [quote](secret.txt "vibe-artifact")',
+      '    [indented](secret.txt "vibe-artifact")',
+      '```markdown',
+      '[example](secret.txt "vibe-artifact")',
+      '```',
+      '[report](<reports/a b.html> "vibe-artifact")',
+      'Middle text',
+      '- [diagram](reports/diagram.mmd "vibe-artifact")',
+      '[site](https://example.com/report "vibe-artifact")',
+      '[lines](reports/a%20b.html:4:2 "vibe-artifact")',
+      'Outro',
+    ].join('\n');
+    expect(splitArtifactSegments(text)).toEqual([
+      {
+        kind: 'markdown',
+        text: [
+          'Intro [source](src/main.rs)',
+          '`[example](secret.txt "vibe-artifact")`',
+          '> [quote](secret.txt "vibe-artifact")',
+          '    [indented](secret.txt "vibe-artifact")',
+          '```markdown',
+          '[example](secret.txt "vibe-artifact")',
+          '```',
+        ].join('\n'),
+      },
+      {
+        kind: 'file',
+        raw: '[report](<reports/a b.html> "vibe-artifact")',
+        path: 'reports/a b.html',
+      },
+      { kind: 'markdown', text: 'Middle text' },
+      {
+        kind: 'file',
+        raw: '- [diagram](reports/diagram.mmd "vibe-artifact")',
+        path: 'reports/diagram.mmd',
+      },
+      {
+        kind: 'url',
+        raw: '[site](https://example.com/report "vibe-artifact")',
+        url: 'https://example.com/report',
+      },
+      {
+        kind: 'file',
+        raw: '[lines](reports/a%20b.html:4:2 "vibe-artifact")',
+        path: 'reports/a b.html',
+      },
+      { kind: 'markdown', text: 'Outro' },
+    ]);
+    expect(
+      splitArtifactSegments('[bad](file:///etc/passwd "vibe-artifact")')
+    ).toEqual([
+      { kind: 'markdown', text: '[bad](file:///etc/passwd "vibe-artifact")' },
+    ]);
+  });
+
+  it('lifts complete marked HTML and SVG fences by backend ordinal', () => {
+    const text = [
+      '```js',
+      'const ordinary = 1;',
+      '```',
+      '```mermaid vibe-artifact',
+      'graph TD',
+      'A-->B',
+      '```',
+      '```html vibe-artifact',
+      '<html><body>hi</body></html>',
+      '```',
+      '```html vibe-artifact',
+      '<div>fragment</div>',
+      '```',
+      '~~~svg vibe-artifact',
+      '<svg xmlns="http://www.w3.org/2000/svg"/>',
+      '~~~',
+      '```html vibe-artifact',
+      '<html>unfinished',
+    ].join('\n');
+    const segments = splitArtifactSegments(text);
+    expect(
+      segments.map((segment) =>
+        segment.kind === 'inline' ? segment.name : segment.kind
+      )
+    ).toEqual([
+      'markdown',
+      'block-2.html',
+      'markdown',
+      'block-4.svg',
+      'markdown',
+    ]);
+    expect(segments[0]).toEqual({
+      kind: 'markdown',
+      text: [
+        '```js',
+        'const ordinary = 1;',
+        '```',
+        '```mermaid vibe-artifact',
+        'graph TD',
+        'A-->B',
+        '```',
+      ].join('\n'),
+    });
+    expect(segments.at(-1)).toEqual({
+      kind: 'markdown',
+      text: '```html vibe-artifact\n<html>unfinished',
+    });
+    // A trailing space keeps the fence open, exactly like the backend.
+    expect(
+      splitArtifactSegments(
+        '```html vibe-artifact\n<html><body>x</body></html>\n``` '
+      )
+    ).toHaveLength(1);
+  });
+
+  it('matches segments to registered artifacts by workspace path', () => {
+    const base: ArtifactReference = {
+      id: 'base',
+      execution_id: 'execution',
+      name: 'x',
+      path: null,
+      mime: 'application/pdf',
+      content_hash: 'a'.repeat(64),
+      source_entry: 1,
+      source: 'assistant_attachment',
+      url: null,
+      size_bytes: 10,
+      status: 'ready',
+      error: null,
+    };
+    const file = {
+      ...base,
+      id: 'file',
+      name: 'app/out/report.pdf',
+      path: 'app/out/report.pdf',
+    };
+    const scoped = { ...file, id: 'child', source_scope: 'claude:t1' };
+    const inline = {
+      ...base,
+      id: 'inline',
+      name: 'block-2.html',
+      path: null,
+      mime: 'text/html',
+    };
+    const remote = {
+      ...base,
+      id: 'url',
+      path: null,
+      url: 'https://example.com/report',
+    };
+    const artifacts = [scoped, file, inline, remote];
+    const segment = (path: string) => ({
+      kind: 'file' as const,
+      raw: '',
+      path,
+    });
+    expect(findSegmentArtifact(segment('out/report.pdf'), artifacts)?.id).toBe(
+      'file'
+    );
+    expect(
+      findSegmentArtifact(segment('./out/report.pdf'), artifacts)?.id
+    ).toBe('file');
+    expect(
+      findSegmentArtifact(segment('/repo/app/out/report.pdf'), artifacts)?.id
+    ).toBe('file');
+    // A bare file name is relative to the agent's working directory.
+    expect(findSegmentArtifact(segment('report.pdf'), artifacts)?.id).toBe(
+      'file'
+    );
+    expect(
+      findSegmentArtifact(segment('other.pdf'), artifacts)
+    ).toBeUndefined();
+    expect(findSegmentArtifact(segment('out/report.pdf'), [scoped])?.id).toBe(
+      'child'
+    );
+    expect(
+      findSegmentArtifact(
+        { kind: 'inline', raw: '', name: 'block-2.html' },
+        artifacts
+      )?.id
+    ).toBe('inline');
+    expect(
+      findSegmentArtifact(
+        { kind: 'url', raw: '', url: 'https://example.com/report' },
+        artifacts
+      )?.id
+    ).toBe('url');
   });
 });
