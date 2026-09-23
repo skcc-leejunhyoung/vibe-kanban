@@ -42,9 +42,11 @@ pub(crate) fn resolve_model(model: Option<&str>) -> (Option<&str>, bool) {
 /// list. Adjust the groupings here when a model's supported efforts change.
 fn codex_reasoning_options(model_id: &str) -> Vec<ReasoningOption> {
     let efforts: &[&str] = match model_id {
-        "gpt-5.6-sol" | "gpt-5.6-terra" => &["low", "medium", "high", "xhigh", "max", "ultra"],
-        "gpt-5.6-luna" => &["low", "medium", "high", "xhigh", "max"],
-        // The v0.144.2 model catalog exposes the same base range for the
+        "gpt-6-astra" | "gpt-6-sol" | "gpt-5.6-sol" | "gpt-5.6-terra" => {
+            &["low", "medium", "high", "xhigh", "max", "ultra"]
+        }
+        "gpt-6-luna" | "gpt-5.6-luna" => &["low", "medium", "high", "xhigh", "max"],
+        // The v0.156.0 model catalog exposes the same base range for the
         // remaining picker-visible models.
         _ => &["low", "medium", "high", "xhigh"],
     };
@@ -52,11 +54,18 @@ fn codex_reasoning_options(model_id: &str) -> Vec<ReasoningOption> {
 }
 
 /// Whether a Codex model exposes the "fast" (high-throughput) service tier as a
-/// toggle. Only the flagship general models support it today.
+/// toggle. Every model in the v0.156.0 catalog does; kept per-model so a future
+/// tier-less model does not inherit the toggle.
 fn codex_supports_fast(model_id: &str) -> bool {
     matches!(
         model_id,
-        "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.5" | "gpt-5.4"
+        "gpt-6-astra"
+            | "gpt-6-sol"
+            | "gpt-6-luna"
+            | "gpt-5.6-luna"
+            | "gpt-5.6-sol"
+            | "gpt-5.6-terra"
+            | "gpt-5.5"
     )
 }
 
@@ -229,13 +238,13 @@ fn static_openai_models() -> ModelSelectorConfig {
 
     ModelSelectorConfig {
         models: vec![
-            model("gpt-5.6-luna", "GPT-5.6 Luna"),
-            model("gpt-5.6-sol", "GPT-5.6 Sol"),
-            model("gpt-5.6-terra", "GPT-5.6 Terra"),
+            model("gpt-6-astra", "GPT-6-Astra"),
+            model("gpt-6-sol", "GPT-6-Sol"),
+            model("gpt-6-luna", "GPT-6-Luna"),
+            model("gpt-5.6-sol", "GPT-5.6-Sol"),
+            model("gpt-5.6-terra", "GPT-5.6-Terra"),
+            model("gpt-5.6-luna", "GPT-5.6-Luna"),
             model("gpt-5.5", "GPT-5.5"),
-            model("gpt-5.4", "GPT-5.4"),
-            model("gpt-5.4-mini", "GPT-5.4 Mini"),
-            model("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"),
         ],
         permissions: vec![
             PermissionPolicy::Auto,

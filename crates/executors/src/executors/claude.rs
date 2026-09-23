@@ -974,17 +974,18 @@ const DEFAULT_CLAUDE_CONTEXT_WINDOW: u32 = 200_000;
 /// - Fable / Mythos ship a 1M context window *by default* (no opt-in variant).
 /// - A `[1m]` suffix forces the 1M window explicitly (e.g. via an
 ///   `ANTHROPIC_DEFAULT_OPUS_MODEL='...[1m]'` pin; no longer in the picker).
-/// - Current-generation Opus (4.7+) and Sonnet 5 run at 1M by default on the
-///   Anthropic API, and Opus is auto-upgraded to 1M on Max/Team/Enterprise
-///   plans; the bare `opus`/`sonnet` aliases resolve to these. A rare 200K
-///   deployment (Pro tier, an LLM gateway, or `CLAUDE_CODE_DISABLE_1M_CONTEXT`)
-///   self-corrects downward from `modelUsage`.
+/// - Current-generation Opus (4.7+, including Opus 5.x) and Sonnet 5 run at 1M
+///   by default on the Anthropic API, and Opus is auto-upgraded to 1M on
+///   Max/Team/Enterprise plans; the bare `opus`/`sonnet` aliases resolve to
+///   these. A rare 200K deployment (Pro tier, an LLM gateway, or
+///   `CLAUDE_CODE_DISABLE_1M_CONTEXT`) self-corrects downward from
+///   `modelUsage`.
 ///
 /// Older Opus (≤4.6) and everything else fall back to the 200K default and
 /// self-correct once the first result arrives — new 1M models need no change.
 fn initial_context_window_for_model(model: &str) -> u32 {
     let model = model.to_ascii_lowercase();
-    const OPUS_1M_IDS: [&str; 2] = ["claude-opus-4-7", "claude-opus-4-8"];
+    const OPUS_1M_IDS: [&str; 3] = ["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5"];
     let is_1m = model.contains("fable")
         || model.contains("mythos")
         || model.contains("[1m]")
@@ -4212,6 +4213,12 @@ mod tests {
         assert_eq!(initial_context_window_for_model("sonnet"), 1_000_000);
         assert_eq!(
             initial_context_window_for_model("claude-opus-4-8"),
+            1_000_000
+        );
+        // `claude-opus-5` also prefix-matches Opus 5.5, which the CLI reports
+        // without a `[1m]` suffix when the bare `opus` alias is used.
+        assert_eq!(
+            initial_context_window_for_model("claude-opus-5-5"),
             1_000_000
         );
         assert_eq!(
