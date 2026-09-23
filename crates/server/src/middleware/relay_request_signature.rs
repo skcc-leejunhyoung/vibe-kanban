@@ -15,6 +15,7 @@ use relay_control::signing::{
     RESPONSE_TIMESTAMP_HEADER, RequestSignature, SIGNING_SESSION_HEADER, TIMESTAMP_HEADER,
     build_response_signing_message,
 };
+use services::services::artifacts;
 use url::form_urlencoded;
 use uuid::Uuid;
 
@@ -24,8 +25,10 @@ pub type RelayRequestSignatureContext = RequestSignature;
 
 /// Maximum body size (50 MiB) for relay-signed requests. Both the request body
 /// (for signature verification) and the response body (for signing) are buffered
-/// into memory. This cap prevents a large payload from causing OOM.
+/// into memory. These caps prevent a large payload from causing OOM.
 const RELAY_SIGNED_BODY_MAX_BYTES: usize = 50 * 1024 * 1024;
+/// Responses must still fit a whole artifact snapshot (90 MiB).
+const RELAY_SIGNED_RESPONSE_MAX_BYTES: usize = artifacts::MAX_FILE_BYTES as usize;
 
 pub async fn require_relay_request_signature(
     State(deployment): State<DeploymentImpl>,
@@ -90,7 +93,7 @@ pub async fn sign_relay_response(
     }
 
     let (mut parts, body) = response.into_parts();
-    let body_bytes = to_bytes(body, RELAY_SIGNED_BODY_MAX_BYTES)
+    let body_bytes = to_bytes(body, RELAY_SIGNED_RESPONSE_MAX_BYTES)
         .await
         .map_err(|_| ApiError::PayloadTooLarge)?;
     let response_timestamp = unix_timestamp_now().map_err(|_| ApiError::Unauthorized)?;

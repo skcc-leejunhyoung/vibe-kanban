@@ -151,6 +151,7 @@ export function buildArtifactPreview(
 
 export type InlinePreviewKind =
   | 'image'
+  | 'video'
   | 'frame'
   | 'mermaid'
   | 'pdf'
@@ -182,6 +183,7 @@ export function inlinePreviewKind(
     /^image\/(png|jpeg|gif|webp|bmp|x-icon|vnd.microsoft.icon|tiff)$/.test(mime)
   )
     return 'image';
+  if (mime.startsWith('video/')) return 'video';
   if (mime === 'text/html' || mime === 'image/svg+xml') return 'frame';
   if (mime === 'text/vnd.mermaid') return 'mermaid';
   if (mime === 'application/pdf') return 'pdf';

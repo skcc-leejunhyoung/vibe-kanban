@@ -8,6 +8,7 @@ import {
   BrowserIcon,
   DownloadSimpleIcon,
   EyeIcon,
+  PlayIcon,
   SpinnerIcon,
 } from '@phosphor-icons/react';
 import { Download, Loader2, Share2 } from 'lucide-react';
@@ -89,7 +90,8 @@ type ArtifactContent = {
 function useArtifactContent(
   artifact: ArtifactReference,
   scope: Scope,
-  mode: 'thumbnail' | 'preview' | 'source'
+  mode: 'thumbnail' | 'preview' | 'source',
+  enabled = true
 ) {
   const { t } = useTranslation('common');
   const { processId, workspaceId, sessionId, hostId } = scope;
@@ -104,6 +106,7 @@ function useArtifactContent(
       artifact.content_hash,
       mode,
     ],
+    enabled,
     retry: false,
     staleTime: 5 * 60 * 1000,
     queryFn: async ({ signal }): Promise<ArtifactContent> => {
@@ -299,8 +302,8 @@ function ArtifactViewer({
   // WebKit stops an embedded PDF at page one, so those engines get the canvas
   // renderer instead of the browser's own viewer.
   const embedDocument = isDocument && canEmbedPdf();
-  const documentUrl = useObjectUrl(
-    embedDocument ? query.data?.blob : undefined
+  const blobUrl = useObjectUrl(
+    embedDocument || kind === 'video' ? query.data?.blob : undefined
   );
   const warnings = [
     ...(query.data?.warnings ?? []),
@@ -346,14 +349,24 @@ function ArtifactViewer({
     if (isDocument) {
       if (!embedDocument)
         return <PdfPages blob={query.data.blob} title={artifact.name} />;
-      return documentUrl ? (
+      return blobUrl ? (
         <iframe
           className="h-full w-full border-0 bg-white"
           title={artifact.name}
-          src={documentUrl}
+          src={blobUrl}
         />
       ) : null;
     }
+    if (kind === 'video')
+      return blobUrl ? (
+        <video
+          className="h-full w-full object-contain"
+          src={blobUrl}
+          controls
+          autoPlay
+          playsInline
+        />
+      ) : null;
     if (artifact.mime === 'text/vnd.mermaid')
       return (
         <div className="h-full overflow-auto bg-primary text-normal">
@@ -574,13 +587,19 @@ function ArtifactTile({
     (state) => state.setRightMainPanelMode
   );
   const isDocument = kind === 'pdf' || kind === 'office';
+  // Large videos are fetched whole, so they wait for a click instead of
+  // downloading as the chat scrolls past.
+  const [load, setLoad] = useState(
+    kind !== 'video' || artifact.size_bytes <= 20 * 1024 * 1024
+  );
   const query = useArtifactContent(
     artifact,
     scope,
-    isDocument ? 'thumbnail' : 'preview'
+    isDocument ? 'thumbnail' : 'preview',
+    load
   );
   const { run, busy, error: actionError } = useArtifactActions(artifact, scope);
-  const needsUrl = kind === 'image' || isDocument;
+  const needsUrl = kind === 'image' || kind === 'video' || isDocument;
   const url = useObjectUrl(needsUrl ? query.data?.blob : undefined);
   if (query.error)
     return (
@@ -606,13 +625,25 @@ function ArtifactTile({
     void ArtifactPreviewDialog.show({ artifact, scope });
   };
   const renderPreview = () => {
+    if (!load)
+      return (
+        <button
+          type="button"
+          onClick={() => setLoad(true)}
+          className="flex w-full items-center justify-center gap-half p-double text-low hover:text-normal"
+        >
+          <PlayIcon className="size-icon-sm" weight="fill" />
+          {t('artifacts.preview')} ·{' '}
+          {formatFileSize(BigInt(artifact.size_bytes))}
+        </button>
+      );
     if (query.isPending || (needsUrl && !url))
       return (
         // Framed kinds always settle at 320px; reserve it so virtualized
         // rows do not resize once the snapshot arrives.
         <p
           role="status"
-          className={`p-base text-low${kind === 'image' || kind === 'mermaid' ? '' : ' h-[320px]'}`}
+          className={`p-base text-low${kind === 'image' || kind === 'video' || kind === 'mermaid' ? '' : ' h-[320px]'}`}
         >
           {t('artifacts.loading')}
         </p>
@@ -626,6 +657,15 @@ function ArtifactTile({
             alt={artifact.name}
             loading="lazy"
             className="mx-auto max-h-[320px] max-w-full object-contain"
+          />
+        );
+      case 'video':
+        return (
+          <video
+            src={url}
+            controls
+            playsInline
+            className="mx-auto max-h-[320px] max-w-full"
           />
         );
       case 'mermaid':
@@ -671,10 +711,11 @@ function ArtifactTile({
   const note = actionError ?? artifact.error;
   return (
     <figure className="my-half overflow-hidden rounded-sm border border-border bg-panel text-base">
-      {/* Thumbnails never trap wheel or clicks; frames stay inert until opened. */}
+      {/* Thumbnails never trap wheel or clicks; frames stay inert until opened.
+          Videos keep their own controls; expand opens the full view. */}
       <div
-        className="max-h-[320px] cursor-zoom-in overflow-hidden [&_iframe]:pointer-events-none"
-        onClick={open}
+        className={`max-h-[320px] overflow-hidden [&_iframe]:pointer-events-none${kind === 'video' ? '' : ' cursor-zoom-in'}`}
+        onClick={kind === 'video' ? undefined : open}
       >
         {renderPreview()}
       </div>

@@ -25,13 +25,13 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    file::FileService,
+    file::{FileError, FileService},
     filesystem_watcher::{WatcherComponents, artifact_watcher},
     subagent_transcript,
 };
 
-pub const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
-const MAX_EXECUTION_BYTES: u64 = 128 * 1024 * 1024;
+pub const MAX_FILE_BYTES: u64 = 90 * 1024 * 1024;
+const MAX_EXECUTION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 256;
 // ponytail: serialize rare legacy recovery; use per-execution locks if
 // concurrent history recovery becomes a measured bottleneck.
@@ -189,7 +189,7 @@ fn read_stable(root: &Path, path: &Path) -> Result<Vec<u8>> {
     let canonical = resolve_path(root, root, path.to_str().context("Invalid file name")?)?;
     let before = stamp(&canonical).context("Not a regular file")?;
     if before.len > MAX_FILE_BYTES {
-        bail!("File exceeds 20 MiB snapshot limit");
+        bail!("File exceeds 90 MiB snapshot limit");
     }
     let mut options = OpenOptions::new();
     options.read(true);
@@ -208,7 +208,7 @@ fn read_stable(root: &Path, path: &Path) -> Result<Vec<u8>> {
     let mut data = Vec::new();
     file.take(MAX_FILE_BYTES + 1).read_to_end(&mut data)?;
     if data.len() as u64 > MAX_FILE_BYTES {
-        bail!("File exceeds 20 MiB snapshot limit");
+        bail!("File exceeds 90 MiB snapshot limit");
     }
     // Recheck after reading as writers may replace the file or an ancestor.
     if resolve_path(root, root, path.to_str().unwrap_or_default())? != canonical
@@ -1035,14 +1035,21 @@ impl ArtifactObserver {
             return Ok(hash);
         }
         if self.bytes + data.len() as u64 > MAX_EXECUTION_BYTES {
-            bail!("Execution exceeds 128 MiB snapshot limit");
+            bail!("Execution exceeds 512 MiB snapshot limit");
         }
-        let cached = self.file_service.store_file(data, name).await?;
         let destination = self.destination.join(&hash);
-        let source = self.file_service.get_absolute_path(&cached);
-        // A global orphan cleanup may race the attachment write. Atomic copy
-        // from the already bounded bytes is the fallback, never the live file.
-        if tokio::fs::hard_link(source, &destination).await.is_err() {
+        let linked = match self.file_service.store_file(data, name).await {
+            // A global orphan cleanup may race the attachment write. Atomic copy
+            // from the already bounded bytes is the fallback, never the live file.
+            Ok(cached) => {
+                let source = self.file_service.get_absolute_path(&cached);
+                tokio::fs::hard_link(source, &destination).await.is_ok()
+            }
+            // Snapshots above the attachment cap live only in this execution.
+            Err(FileError::TooLarge(..)) => false,
+            Err(error) => return Err(error.into()),
+        };
+        if !linked {
             atomic_write(&destination, data).await?;
         }
         self.bytes += data.len() as u64;
@@ -1560,17 +1567,30 @@ mod tests {
                 .is_empty()
         );
         std::fs::write(root.join("out/diagram.svg"), "<svg/>").unwrap();
+        // Above the 20 MiB attachment store cap, below the snapshot cap.
+        std::fs::File::create(root.join("out/demo.mp4"))
+            .unwrap()
+            .set_len(21 * 1024 * 1024)
+            .unwrap();
         observer.observe_entry(7, &NormalizedEntry {
             entry_type: NormalizedEntryType::AssistantMessage,
-            content: "[report](out/report.html \"vibe-artifact\")\n[diagram](out/diagram.svg \"vibe-artifact\")".into(),
+            content: "[report](out/report.html \"vibe-artifact\")\n[diagram](out/diagram.svg \"vibe-artifact\")\n[demo](out/demo.mp4 \"vibe-artifact\")".into(),
             ..entry
         }).await;
         observer.tick(true).await.unwrap();
         drop(observer);
         let completed = load(session, execution).await.unwrap().unwrap();
         assert!(completed.list.complete);
-        assert_eq!(completed.list.artifacts.len(), 2);
+        assert_eq!(completed.list.artifacts.len(), 3);
         assert!(completed.list.warnings.is_empty());
+        let video = completed
+            .list
+            .artifacts
+            .iter()
+            .find(|a| a.name == "out/demo.mp4")
+            .unwrap();
+        assert_eq!(video.status, ArtifactStatus::Ready);
+        assert_eq!(video.mime, "video/mp4");
         let outputs = completed
             .list
             .artifacts
@@ -1900,7 +1920,7 @@ mod tests {
         let refs = preserved_transcript_references(&limited, "claude:other-child");
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].status, ArtifactStatus::Error);
-        assert!(refs[0].error.as_deref().unwrap().contains("128 MiB"));
+        assert!(refs[0].error.as_deref().unwrap().contains("512 MiB"));
         tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
             .await
             .unwrap();
