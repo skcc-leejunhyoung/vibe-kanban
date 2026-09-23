@@ -1257,11 +1257,12 @@ export function KanbanContainer() {
   // otherwise Shift+Arrow would range over whichever pane rendered last.
   useEffect(() => {
     if (!isActivePane) return;
-    setOrderedIssueIds(orderedIssueIds, selectedKanbanIssueId);
+    setOrderedIssueIds(orderedIssueIds, selectedKanbanIssueId, projectId);
   }, [
     isActivePane,
     orderedIssueIds,
     selectedKanbanIssueId,
+    projectId,
     setOrderedIssueIds,
   ]);
 

@@ -15,6 +15,8 @@ interface IssueSelectionState {
   cursorIssueId: string | null;
   /** Flat ordered list of all visible issue IDs (set by the kanban container) */
   orderedIssueIds: string[];
+  /** Board (project) that published orderedIssueIds; the selection is on it */
+  selectionScopeId: string | null;
 
   /** Turn on explicit selection mode (e.g. from the mobile select button) */
   enterSelectionMode: () => void;
@@ -37,7 +39,11 @@ interface IssueSelectionState {
   focusCursor: (issueId: string) => void;
   /** Clear the keyboard cursor/anchor (e.g. when focus moves to a group header). */
   blurCursor: () => void;
-  setOrderedIssueIds: (ids: string[], openedIssueId?: string | null) => void;
+  setOrderedIssueIds: (
+    ids: string[],
+    openedIssueId?: string | null,
+    scopeId?: string | null
+  ) => void;
 }
 
 export const useIssueSelectionStore = create<IssueSelectionState>(
@@ -47,6 +53,7 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
     anchorIssueId: null,
     cursorIssueId: null,
     orderedIssueIds: [],
+    selectionScopeId: null,
 
     enterSelectionMode: () => {
       set({ isSelectionMode: true });
@@ -196,15 +203,24 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
       set({ cursorIssueId: null, anchorIssueId: null });
     },
 
-    setOrderedIssueIds: (ids: string[], openedIssueId) => {
+    setOrderedIssueIds: (ids: string[], openedIssueId, scopeId = null) => {
       set((state) => {
         const visibleIssueIds = new Set(ids);
         const visibleOpenedIssueId =
           openedIssueId && visibleIssueIds.has(openedIssueId)
             ? openedIssueId
             : null;
+        // Split panes share this store: once another board publishes, the
+        // selection holds the previous board's issues — drop it so bulk
+        // actions never pair them with this board's project.
+        const scopeChanged = state.selectionScopeId !== scopeId;
         return {
           orderedIssueIds: ids,
+          selectionScopeId: scopeId,
+          ...(scopeChanged && {
+            selectedIssueIds: new Set<string>(),
+            isSelectionMode: false,
+          }),
           cursorIssueId:
             state.cursorIssueId && visibleIssueIds.has(state.cursorIssueId)
               ? state.cursorIssueId

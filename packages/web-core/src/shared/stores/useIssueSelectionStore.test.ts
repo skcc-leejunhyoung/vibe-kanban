@@ -34,6 +34,24 @@ describe('useIssueSelectionStore', () => {
     });
   });
 
+  it('drops the selection only when another board publishes', () => {
+    // Split panes share this store: board B must not inherit board A's
+    // selection, or bulk actions would pair A's issues with B's project.
+    const store = useIssueSelectionStore.getState();
+    store.setOrderedIssueIds(['a1', 'a2'], null, 'project-a');
+    store.toggleIssue('a1');
+    store.toggleIssue('a2');
+
+    store.setOrderedIssueIds(['a1', 'a2', 'a3'], null, 'project-a');
+    expect([...useIssueSelectionStore.getState().selectedIssueIds]).toEqual([
+      'a1',
+      'a2',
+    ]);
+
+    store.setOrderedIssueIds(['b1'], null, 'project-b');
+    expect(useIssueSelectionStore.getState().selectedIssueIds.size).toBe(0);
+  });
+
   it('restores the opened issue as anchor when it becomes visible again', () => {
     const store = useIssueSelectionStore.getState();
     store.setOrderedIssueIds(['opened-issue', 'another-issue']);
