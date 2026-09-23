@@ -1252,10 +1252,18 @@ export function KanbanContainer() {
     [focusAddRow]
   );
 
-  // Keep the store's ordered IDs in sync
+  // Keep the store's ordered IDs in sync. The selection store is shared by
+  // every split pane, so only the active pane's board publishes its order —
+  // otherwise Shift+Arrow would range over whichever pane rendered last.
   useEffect(() => {
+    if (!isActivePane) return;
     setOrderedIssueIds(orderedIssueIds, selectedKanbanIssueId);
-  }, [orderedIssueIds, selectedKanbanIssueId, setOrderedIssueIds]);
+  }, [
+    isActivePane,
+    orderedIssueIds,
+    selectedKanbanIssueId,
+    setOrderedIssueIds,
+  ]);
 
   // Clear multi-selection, keyboard cursor, and any focused header/add row when
   // the project or view mode changes (clearSelection resets cursorIssueId too).
@@ -1268,10 +1276,10 @@ export function KanbanContainer() {
   // Keep anchor in sync with the currently opened issue (e.g. from URL on
   // page load) so Shift/Cmd+Click on another issue includes it.
   useEffect(() => {
-    if (selectedKanbanIssueId) {
+    if (isActivePane && selectedKanbanIssueId) {
       setAnchor(selectedKanbanIssueId);
     }
-  }, [selectedKanbanIssueId, setAnchor]);
+  }, [isActivePane, selectedKanbanIssueId, setAnchor]);
 
   const handleCardClick = useCallback(
     (issueId: string, e?: MouseEvent) => {

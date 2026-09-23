@@ -15,6 +15,7 @@ import {
 import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { isProjectDestination } from '@/shared/lib/routes/appNavigation';
+import { useIsPaneGridTargeted } from '@/shared/lib/openInSplitPane';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
@@ -56,8 +57,15 @@ export function useIssueShortcuts(options?: UseIssueShortcutsOptions) {
   const { isCreateMode: isCreatingIssue } = useCurrentKanbanRouteState();
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
 
+  // While the pane grid targets an active pane, the document URL mirrors that
+  // pane, so this document-level instance would resolve the same project as
+  // the pane's own instance and both would answer one keypress (Shift+Arrow
+  // extending the selection twice). Only the pane's instance stays live.
+  const isPaneGridTargeted = useIsPaneGridTargeted();
   const isKanban =
-    isProjectDestination(destination) && (options?.enabled ?? true);
+    isProjectDestination(destination) &&
+    (options?.enabled ?? true) &&
+    !isPaneGridTargeted;
 
   // Multi-selection support
   const multiSelectedIssueIds = useIssueSelectionStore(

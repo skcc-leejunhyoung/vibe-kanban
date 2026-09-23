@@ -10,6 +10,7 @@ import {
 } from '@/shared/lib/electric/electricTestKit';
 import { OrgContext, type OrgContextValue } from '@/shared/hooks/useOrgContext';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
+import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import { KanbanContainer } from './KanbanContainer';
 
 /**
@@ -28,6 +29,7 @@ const {
   HOST_MAP,
   APP_NAVIGATION,
   route,
+  pane,
   t,
 } = vi.hoisted(() => ({
   contentRenders: vi.fn<(displayId: string) => void>(),
@@ -43,6 +45,7 @@ const {
     goToProjectIssueWorkspace: () => {},
   },
   route: { projectId: '' },
+  pane: { active: true },
   t: (key: string, fallback?: string) =>
     typeof fallback === 'string' ? fallback : key,
 }));
@@ -103,7 +106,7 @@ vi.mock('@/shared/components/workspace-panes/PaneWidthContext', () => ({
   usePaneNarrowerThan: () => false,
 }));
 vi.mock('@/shared/components/workspace-panes/PaneActiveContext', () => ({
-  useIsActivePane: () => true,
+  useIsActivePane: () => pane.active,
 }));
 vi.mock('@/shared/hooks/useCurrentKanbanRouteState', () => ({
   useCurrentKanbanRouteState: () => ({
@@ -166,6 +169,9 @@ let projectCounter = 0;
 beforeEach(() => {
   vi.useFakeTimers();
   contentRenders.mockClear();
+  pane.active = true;
+  useIssueSelectionStore.getState().clearSelection();
+  useIssueSelectionStore.getState().setOrderedIssueIds([]);
   resetElectricSessions();
   configureTestAuthRuntime();
   dom = installFakeDomReact();
@@ -401,5 +407,22 @@ describe('KanbanContainer card re-renders', () => {
     });
     expect(board.rendersOf('VK-2')).toBe(1);
     expect(board.rendersOf('VK-1')).toBe(0);
+  });
+});
+
+describe('KanbanContainer selection store', () => {
+  it('publishes the issue order only while it is the active pane', async () => {
+    // The selection store is shared by every split pane: an inactive board
+    // must not overwrite the active one's order (Shift+Arrow ranges over it).
+    pane.active = false;
+    const board = await renderBoard();
+    expect(useIssueSelectionStore.getState().orderedIssueIds).toEqual([]);
+
+    pane.active = true;
+    await board.rerenderHost();
+    expect(useIssueSelectionStore.getState().orderedIssueIds).toEqual([
+      'i1',
+      'i2',
+    ]);
   });
 });
