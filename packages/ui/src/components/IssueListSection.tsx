@@ -147,7 +147,7 @@ export function IssueListSection({
           <div
             ref={provided.innerRef}
             {...provided.droppableProps}
-            className="flex flex-col min-h-8"
+            className={cn('flex flex-col', isExpanded && 'min-h-8')}
           >
             {isExpanded &&
               issueIds.map((issueId, index) => {
