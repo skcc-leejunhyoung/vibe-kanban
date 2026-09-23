@@ -19,12 +19,14 @@ import { Switch } from '@vibe/ui/components/Switch';
 import { Dialog } from '@vibe/ui/components/KeyboardDialog';
 import { artifactsApi } from '@/shared/lib/api';
 import { defineModal } from '@/shared/lib/modals';
+import { canEmbedPdf } from '@/shared/lib/pdf-embed';
 import { shareFile } from '@/shared/lib/share-file';
 import { formatFileSize } from '@/shared/lib/utils';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import { MermaidDiagram } from '@/shared/components/MermaidDiagram';
+import { PdfPages } from '@/shared/components/PdfPages';
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
@@ -294,7 +296,12 @@ function ArtifactViewer({
   }, [onClose]);
   const { run, busy, error: actionError } = useArtifactActions(artifact, scope);
   const query = useArtifactContent(artifact, scope, mode);
-  const documentUrl = useObjectUrl(isDocument ? query.data?.blob : undefined);
+  // WebKit stops an embedded PDF at page one, so those engines get the canvas
+  // renderer instead of the browser's own viewer.
+  const embedDocument = isDocument && canEmbedPdf();
+  const documentUrl = useObjectUrl(
+    embedDocument ? query.data?.blob : undefined
+  );
   const warnings = [
     ...(query.data?.warnings ?? []),
     ...(query.data?.preview?.warnings ?? []),
@@ -336,7 +343,9 @@ function ArtifactViewer({
           srcDoc={preview.srcDoc}
         />
       );
-    if (isDocument)
+    if (isDocument) {
+      if (!embedDocument)
+        return <PdfPages blob={query.data.blob} title={artifact.name} />;
       return documentUrl ? (
         <iframe
           className="h-full w-full border-0 bg-white"
@@ -344,6 +353,7 @@ function ArtifactViewer({
           src={documentUrl}
         />
       ) : null;
+    }
     if (artifact.mime === 'text/vnd.mermaid')
       return (
         <div className="h-full overflow-auto bg-primary text-normal">
