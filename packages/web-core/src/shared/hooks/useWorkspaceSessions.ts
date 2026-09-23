@@ -29,9 +29,13 @@ export function workspaceSessionsQuery(
 /** Stable empty list so "no data yet" renders don't churn downstream memos. */
 const EMPTY_SESSIONS: Session[] = [];
 
-/** Discriminated union for session selection state */
+/**
+ * Discriminated union for session selection state. `auto` marks a selection
+ * this hook made itself (following the most recently used session); anything
+ * the user or a flow picked explicitly has no `auto` and stays put.
+ */
 export type SessionSelection =
-  | { mode: 'existing'; sessionId: string }
+  | { mode: 'existing'; sessionId: string; auto?: boolean }
   | { mode: 'new' };
 
 interface WorkspaceSessionSelectionState {
@@ -99,7 +103,7 @@ export function useWorkspaceSessions(
     (state) => state.setSelection
   );
 
-  const { data, isLoading } = useQuery<Session[]>({
+  const { data, isLoading, isFetching } = useQuery<Session[]>({
     ...workspaceSessionsQuery(workspaceId, hostId),
     enabled: enabled && !!workspaceId,
   });
@@ -116,11 +120,12 @@ export function useWorkspaceSessions(
   // workspace switch used to overwrite the new-session mode a pane was showing.
   // Per-workspace keys already keep one workspace's mode out of another's.
   //
-  // So this only ever *seeds* a selection: whatever the user picked — the
-  // new-session composer or an older session — stands until they pick something
-  // else, and only a selection pointing at a session that no longer exists is
-  // replaced. Explicit jumps (send, vibe review, command bar) call
-  // selectSession/onSelectSession themselves.
+  // So instance-local "workspace changed" checks are out. What decides is who
+  // made the selection: the user's picks (the new-session composer, an older
+  // session, or a session a flow created and selected) stand until they pick
+  // something else; the hook's own `auto` choice keeps following the most
+  // recently used session, so a session created elsewhere — e.g. a review the
+  // automated workflow started — is what reopening the workspace shows.
   useEffect(() => {
     // Nothing known about this workspace's sessions yet (still loading, query
     // disabled, cache evicted). The chat shows the composer meanwhile, so the
@@ -134,18 +139,30 @@ export function useWorkspaceSessions(
     const currentSelection =
       useWorkspaceSessionSelectionStore.getState().selections[selectionKey];
     if (currentSelection?.mode === 'new') return;
+    if (currentSelection?.mode === 'existing' && !currentSelection.auto) {
+      if (data.some((session) => session.id === currentSelection.sessionId)) {
+        return;
+      }
+      // A flow that creates a session (vibe review, review + PR) selects it
+      // right after invalidating the list; if the pane was closed meanwhile the
+      // cached list is stale and doesn't have it yet. Wait for the refetch
+      // instead of reading "not in this list" as "deleted".
+      if (isFetching) return;
+    }
+    // Sessions are ordered by most recently used, so first is the most recently used
     if (
       currentSelection?.mode === 'existing' &&
-      data.some((session) => session.id === currentSelection.sessionId)
+      currentSelection.auto &&
+      currentSelection.sessionId === data[0].id
     ) {
       return;
     }
-    // Sessions are ordered by most recently used, so first is the most recently used
     setStoredSelection(selectionKey, {
       mode: 'existing',
       sessionId: data[0].id,
+      auto: true,
     });
-  }, [data, selectionKey, setStoredSelection]);
+  }, [data, isFetching, selectionKey, setStoredSelection]);
 
   const isNewSessionMode = selection?.mode === 'new' || sessions.length === 0;
   const selectedSessionId =

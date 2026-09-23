@@ -3,8 +3,10 @@ import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from 'shared/types';
+import { sessionsApi } from '@/shared/lib/api';
 import { workspaceSessionKeys } from './workspaceSessionKeys';
 import {
+  selectWorkspaceSession,
   useWorkspaceSessionSelectionStore,
   useWorkspaceSessions,
 } from './useWorkspaceSessions';
@@ -97,7 +99,32 @@ function renderPaneAndDocument() {
     /** Move the document URL (active pane) to another destination and back. */
     focusDocumentOn: (documentWorkspaceId?: string) =>
       render(<Probe documentWorkspaceId={documentWorkspaceId} />),
+    /** Close the pane: nothing shows the workspace any more. */
+    close: () => render(null),
   };
+}
+
+/** Let react-query resolve fetches and notify observers. */
+async function settle() {
+  for (let i = 0; i < 3; i++) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+}
+
+/**
+ * What a session-creating flow does while nothing shows the workspace: the
+ * list is only marked invalid (no active observer to refetch it), and the next
+ * fetch returns the new session first.
+ */
+async function createSessionWhileClosed(ids: string[]) {
+  await queryClient.invalidateQueries({
+    queryKey: workspaceSessionKeys.byWorkspace('ws-a', null),
+  });
+  vi.mocked(sessionsApi.getByWorkspace).mockImplementationOnce(async () =>
+    sessionList(ids)
+  );
 }
 
 describe('useWorkspaceSessions', () => {
@@ -207,6 +234,51 @@ describe('useWorkspaceSessions', () => {
 
     expect(
       useWorkspaceSessionSelectionStore.getState().selections[':ws-b']
-    ).toEqual({ mode: 'existing', sessionId: 'b-latest' });
+    ).toEqual({ mode: 'existing', sessionId: 'b-latest', auto: true });
+  });
+
+  it('opens on the session a review created while the pane was closed', async () => {
+    const probe = renderPaneAndDocument();
+    await probe.focusDocumentOn('ws-a');
+    await probe.close();
+
+    // vibe review: create, invalidate, then select the new session.
+    await createSessionWhileClosed(['a-review', 'a-latest', 'a-older']);
+    selectWorkspaceSession('ws-a', null, 'a-review');
+
+    // Reopen: the stale cached list renders first and lacks the new session.
+    await probe.focusDocumentOn('ws-a');
+    expect(probe.pane.selectedSessionId).toBe('a-review');
+    await settle();
+
+    expect(probe.pane.selectedSessionId).toBe('a-review');
+  });
+
+  it('follows a session created elsewhere when nothing was picked', async () => {
+    const probe = renderPaneAndDocument();
+    await probe.focusDocumentOn('ws-a');
+    await probe.close();
+
+    // e.g. the automated workflow spawned a review session server-side.
+    await createSessionWhileClosed(['a-review', 'a-latest', 'a-older']);
+
+    await probe.focusDocumentOn('ws-a');
+    await settle();
+
+    expect(probe.pane.selectedSessionId).toBe('a-review');
+  });
+
+  it('keeps a user-picked session when the list gains a newer one', async () => {
+    const probe = renderPaneAndDocument();
+    await probe.focusDocumentOn('ws-a');
+    await act(async () => probe.pane.selectSession('a-older'));
+
+    queryClient.setQueryData(
+      workspaceSessionKeys.byWorkspace('ws-a', null),
+      sessionList(['a-review', 'a-latest', 'a-older'])
+    );
+    await settle();
+
+    expect(probe.pane.selectedSessionId).toBe('a-older');
   });
 });
