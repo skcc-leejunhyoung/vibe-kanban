@@ -81,6 +81,9 @@ pub struct ExecutionEnv {
     pub repo_context: RepoContext,
     pub commit_reminder: bool,
     pub commit_reminder_prompt: String,
+    /// Session-wide rules for executors with a system channel. Only executors
+    /// that apply them receive them; everyone else gets them in the prompt.
+    pub system_instructions: Option<String>,
 }
 
 impl ExecutionEnv {
@@ -94,6 +97,16 @@ impl ExecutionEnv {
             repo_context,
             commit_reminder,
             commit_reminder_prompt,
+            system_instructions: None,
+        }
+    }
+
+    /// The executor's own instructions followed by the session-wide ones.
+    pub fn with_system_instructions(&self, own: Option<&str>) -> Option<String> {
+        match (&self.system_instructions, own) {
+            (Some(extra), Some(own)) if !own.trim().is_empty() => Some(format!("{own}\n\n{extra}")),
+            (Some(extra), _) => Some(extra.clone()),
+            (None, own) => own.map(str::to_string),
         }
     }
 

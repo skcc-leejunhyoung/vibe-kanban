@@ -859,6 +859,32 @@ impl StandardCodingAgentExecutor for ClaudeCode {
     }
 }
 
+/// Session-wide rules ride on the system prompt, rebuilt from flags on every
+/// `--resume`. A profile's own flag is extended rather than duplicated because a
+/// second occurrence replaces the first.
+fn append_system_prompt(args: &mut Vec<String>, env: &ExecutionEnv) {
+    const FLAG: &str = "--append-system-prompt";
+    if env.system_instructions.is_none() {
+        return;
+    }
+    if let Some(index) = args.iter().position(|arg| arg == FLAG)
+        && let Some(own) = args.get_mut(index + 1)
+    {
+        *own = env.with_system_instructions(Some(own)).unwrap_or_default();
+    } else if let Some(arg) = args
+        .iter_mut()
+        .find(|arg| arg.starts_with(&format!("{FLAG}=")))
+    {
+        let own = &arg[FLAG.len() + 1..];
+        *arg = format!(
+            "{FLAG}={}",
+            env.with_system_instructions(Some(own)).unwrap_or_default()
+        );
+    } else if let Some(rules) = env.with_system_instructions(None) {
+        args.extend([FLAG.to_string(), rules]);
+    }
+}
+
 impl ClaudeCode {
     async fn spawn_internal(
         &self,
@@ -867,7 +893,8 @@ impl ClaudeCode {
         command_parts: CommandParts,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        let (program_path, args) = command_parts.into_resolved().await?;
+        let (program_path, mut args) = command_parts.into_resolved().await?;
+        append_system_prompt(&mut args, env);
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
 
         let mut command = Command::new(program_path);
@@ -3847,6 +3874,28 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].content, "Error: Claude process failed\n");
+    }
+
+    #[test]
+    fn session_rules_extend_the_system_prompt_once() {
+        let mut env = ExecutionEnv::new(Default::default(), false, String::new());
+        let base = vec!["-p".to_string()];
+        let mut args = base.clone();
+        append_system_prompt(&mut args, &env);
+        assert_eq!(args, base, "no rules, no flag");
+
+        env.system_instructions = Some("[Artifacts]".into());
+        let mut args = base.clone();
+        append_system_prompt(&mut args, &env);
+        assert_eq!(args, ["-p", "--append-system-prompt", "[Artifacts]"]);
+
+        // A profile's own flag keeps its text and gains the rules.
+        let mut args = vec!["--append-system-prompt".to_string(), "Be brief".to_string()];
+        append_system_prompt(&mut args, &env);
+        assert_eq!(args, ["--append-system-prompt", "Be brief\n\n[Artifacts]"]);
+        let mut args = vec!["--append-system-prompt=Be brief".to_string()];
+        append_system_prompt(&mut args, &env);
+        assert_eq!(args, ["--append-system-prompt=Be brief\n\n[Artifacts]"]);
     }
 
     #[test]

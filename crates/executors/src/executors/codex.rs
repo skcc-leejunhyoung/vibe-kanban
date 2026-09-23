@@ -958,8 +958,13 @@ impl Codex {
         apply_overrides(builder, &self.cmd)
     }
 
-    fn build_thread_start_params(&self, cwd: &Path) -> ThreadStartParams {
-        self.thread_start_params(cwd, self.selected_model())
+    /// Session-wide rules join the profile's developer instructions. Codex
+    /// injects them once per thread and again after every compaction.
+    fn build_thread_start_params(&self, cwd: &Path, env: &ExecutionEnv) -> ThreadStartParams {
+        let mut params = self.thread_start_params(cwd, self.selected_model());
+        params.developer_instructions =
+            env.with_system_instructions(params.developer_instructions.as_deref());
+        params
     }
 
     fn thread_start_params(
@@ -1092,7 +1097,7 @@ impl Codex {
         resume_session: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        let params = self.build_thread_start_params(current_dir);
+        let params = self.build_thread_start_params(current_dir, env);
         let resume_session = resume_session.map(|s| s.to_string());
 
         self.spawn_app_server(
@@ -1299,6 +1304,7 @@ mod tests {
         resolve_model, resolve_selected_model, static_model_selector, static_openai_models,
     };
     use crate::{
+        env::ExecutionEnv,
         executors::{BaseCodingAgent, StandardCodingAgentExecutor},
         profile::ExecutorConfig,
     };
@@ -1433,6 +1439,34 @@ base_url = "https://api.sailresearch.com/v1"
                 .config
                 .and_then(|c| c.get("model_reasoning_effort").cloned()),
             Some(json!("high"))
+        );
+    }
+
+    #[test]
+    fn session_rules_follow_profile_developer_instructions_into_forks() {
+        let codex: Codex =
+            serde_json::from_value(json!({ "developer_instructions": "Profile rules" })).unwrap();
+        let mut env = ExecutionEnv::new(Default::default(), false, String::new());
+        let cwd = std::path::Path::new("/tmp");
+        assert_eq!(
+            codex
+                .build_thread_start_params(cwd, &env)
+                .developer_instructions
+                .as_deref(),
+            Some("Profile rules")
+        );
+        env.system_instructions = Some("[Artifacts]".into());
+        let params = codex.build_thread_start_params(cwd, &env);
+        assert_eq!(
+            params.developer_instructions.as_deref(),
+            Some("Profile rules\n\n[Artifacts]")
+        );
+        // Follow-up turns fork the thread with the same instructions.
+        assert_eq!(
+            super::fork_params_from("thread-1".into(), params)
+                .developer_instructions
+                .as_deref(),
+            Some("Profile rules\n\n[Artifacts]")
         );
     }
 
