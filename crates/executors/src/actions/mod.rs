@@ -14,9 +14,10 @@ use crate::{
     approvals::ExecutorApprovalService,
     env::ExecutionEnv,
     executors::{
-        BaseCodingAgent, ExecutorError, SpawnedChild,
+        BaseCodingAgent, CodingAgent, ExecutorError, SpawnedChild,
         utils::{SlashCommandCall, parse_slash_command},
     },
+    profile::ExecutorConfigs,
 };
 pub mod coding_agent_follow_up;
 pub mod coding_agent_initial;
@@ -127,24 +128,18 @@ impl Executable for ExecutorAction {
 /// instructions, so each session holds one copy that survives compaction. The
 /// prompt then carries only a one-line reminder: without it Sonnet ignored the
 /// system copy in every trial (Opus and Codex followed it either way). Other
-/// executors, and Codex reviews (their turns drop developer instructions),
-/// receive the full rules at the end of every prompt.
+/// executors receive the full rules at the end of every prompt.
 fn apply_artifact_instructions(action: &mut ExecutorActionType, env: &mut ExecutionEnv) {
-    let system_channel = match action {
-        ExecutorActionType::ReviewRequest(request) => {
-            request.base_executor() == BaseCodingAgent::ClaudeCode
+    let (config, review) = match action {
+        ExecutorActionType::CodingAgentInitialRequest(request) => (&request.executor_config, false),
+        ExecutorActionType::CodingAgentFollowUpRequest(request) => {
+            (&request.executor_config, false)
         }
-        ExecutorActionType::CodingAgentInitialRequest(request) => matches!(
-            request.base_executor(),
-            BaseCodingAgent::ClaudeCode | BaseCodingAgent::Codex
-        ),
-        ExecutorActionType::CodingAgentFollowUpRequest(request) => matches!(
-            request.base_executor(),
-            BaseCodingAgent::ClaudeCode | BaseCodingAgent::Codex
-        ),
+        ExecutorActionType::ReviewRequest(request) => (&request.executor_config, true),
         ExecutorActionType::ScriptRequest(_) => return,
     };
-    let suffix = if system_channel {
+    let agent = ExecutorConfigs::get_cached().get_coding_agent(&config.profile_id());
+    let suffix = if has_system_channel(agent.as_ref(), review) {
         // Native commands still get the rules, so a compaction reinjects them.
         env.system_instructions = Some(ARTIFACT_INSTRUCTIONS.to_string());
         ARTIFACT_REMINDER
@@ -158,6 +153,16 @@ fn apply_artifact_instructions(action: &mut ExecutorActionType, env: &mut Execut
         ExecutorActionType::ScriptRequest(_) => return,
     };
     append_artifact_instructions(prompt, suffix);
+}
+
+/// Codex reviews drop developer instructions. `ccr code` re-joins Claude's
+/// argv into a `sh -c` line where the rules' backticks break the command.
+fn has_system_channel(agent: Option<&CodingAgent>, review: bool) -> bool {
+    match agent {
+        Some(CodingAgent::ClaudeCode(claude)) => !claude.claude_code_router.unwrap_or(false),
+        Some(CodingAgent::Codex(_)) => !review,
+        _ => false,
+    }
 }
 
 fn append_artifact_instructions(prompt: &mut String, suffix: &str) {
@@ -278,6 +283,19 @@ mod tests {
             assert!(after.ends_with(ARTIFACT_INSTRUCTIONS));
             assert_eq!(system, None);
         }
+    }
+
+    #[test]
+    fn routed_claude_keeps_the_rules_in_the_prompt() {
+        let claude = |router: bool| {
+            CodingAgent::ClaudeCode(
+                serde_json::from_value(serde_json::json!({ "claude_code_router": router }))
+                    .unwrap(),
+            )
+        };
+        assert!(has_system_channel(Some(&claude(false)), true));
+        assert!(!has_system_channel(Some(&claude(true)), false));
+        assert!(!has_system_channel(None, false));
     }
 
     #[test]
