@@ -729,7 +729,7 @@ function ViewEditorPanel({
                 >
                   <span
                     className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: tag.color }}
+                    style={{ backgroundColor: `hsl(${tag.color})` }}
                   />
                   {tag.name}
                 </button>
