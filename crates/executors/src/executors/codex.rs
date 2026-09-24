@@ -200,12 +200,13 @@ fn merge_custom_models(selector: &mut ModelSelectorConfig, custom: Vec<CustomMod
             });
         }
         selector.models.push(ModelInfo {
+            // ponytail: base effort range for every custom provider; per-provider
+            // lists if one ever rejects `reasoning.effort`.
+            reasoning_options: codex_reasoning_options(&custom.model),
             id: custom.model.clone(),
             name: custom.model,
             provider_id: Some(custom.provider_id),
-            // A third-party model shares neither Codex's reasoning-effort
-            // scale nor its fast tier.
-            reasoning_options: vec![],
+            // A third-party model has no fast tier.
             supports_fast: false,
         });
     }
@@ -827,15 +828,6 @@ impl Codex {
             .map(|model| resolve_selected_model(model, &custom_models()))
     }
 
-    /// Reasoning effort to send. A third-party provider never advertised
-    /// Codex's effort scale, so a leftover selection must not ride along.
-    fn effective_reasoning_effort(&self) -> Option<&ReasoningEffort> {
-        match self.selected_model() {
-            Some(SelectedModel::Custom { .. }) => None,
-            _ => self.model_reasoning_effort.as_ref(),
-        }
-    }
-
     pub fn base_command() -> &'static str {
         "codex"
     }
@@ -990,7 +982,7 @@ impl Codex {
             Some(AskForApproval::Never) => Some(V2AskForApproval::Never),
         };
 
-        let mut config = self.build_config_overrides(&selected);
+        let mut config = self.build_config_overrides();
         // V1 top-level params that moved into config overrides in v2
         if let Some(profile) = &self.profile {
             config
@@ -1049,17 +1041,10 @@ impl Codex {
         }
     }
 
-    fn build_config_overrides(
-        &self,
-        selected: &Option<SelectedModel>,
-    ) -> Option<HashMap<String, Value>> {
+    fn build_config_overrides(&self) -> Option<HashMap<String, Value>> {
         let mut overrides = HashMap::new();
 
-        let effort = match selected {
-            Some(SelectedModel::Custom { .. }) => None,
-            _ => self.model_reasoning_effort.as_ref(),
-        };
-        if let Some(effort) = effort {
+        if let Some(effort) = &self.model_reasoning_effort {
             overrides.insert(
                 "model_reasoning_effort".to_string(),
                 Value::String(effort.as_str().to_string()),
@@ -1228,7 +1213,8 @@ impl Codex {
             approvals,
             auto_approve,
             plan_mode,
-            self.effective_reasoning_effort()
+            self.model_reasoning_effort
+                .as_ref()
                 .and_then(|effort| effort.as_str().parse().ok()),
             repo_context,
             commit_reminder,
@@ -1368,7 +1354,7 @@ base_url = "https://api.sailresearch.com/v1"
         assert_eq!(kimi.len(), 1);
         assert_eq!(kimi[0].id, "moonshotai/Kimi-K3");
         assert_eq!(kimi[0].provider_id.as_deref(), Some("sailresearch"));
-        assert!(kimi[0].reasoning_options.is_empty());
+        assert!(!kimi[0].reasoning_options.is_empty());
     }
 
     #[test]
@@ -1417,7 +1403,8 @@ base_url = "https://api.sailresearch.com/v1"
         let config = params.config.unwrap_or_default();
         // The app server rejects a `profile` override outright.
         assert!(!config.contains_key("profile"));
-        assert!(!config.contains_key("model_reasoning_effort"));
+        // Sail honours `reasoning.effort`, so the selection rides along.
+        assert_eq!(config.get("model_reasoning_effort"), Some(&json!("high")));
     }
 
     #[test]

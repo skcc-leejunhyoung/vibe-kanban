@@ -232,9 +232,9 @@ impl ClaudeCode {
             };
             builder = builder.extend_params(["--model".to_string(), model]);
         }
-        // Effort maps to Anthropic's thinking budget; a routed third-party model
-        // may reject it, and a stale value can survive switching to the router.
-        if let Some(effort) = self.effort.as_ref().filter(|_| !router) {
+        // Routed, the CLI still sends `output_config.effort`; CCR drops it unless
+        // a provider transformer forwards it (e.g. as `reasoning_effort`).
+        if let Some(effort) = &self.effort {
             builder = builder.extend_params(["--effort", effort.as_ref()]);
         }
         if let Some(agent) = &self.agent {
@@ -378,9 +378,11 @@ fn permission_policies() -> Vec<PermissionPolicy> {
 }
 
 fn parse_ccr_model_selector(raw: &str) -> Option<crate::model_selector::ModelSelectorConfig> {
-    use crate::model_selector::{ModelInfo, ModelProvider, ModelSelectorConfig};
+    use crate::model_selector::{ModelInfo, ModelProvider, ModelSelectorConfig, ReasoningOption};
 
     let config: CcrConfig = serde_json::from_str(raw).ok()?;
+    let effort_options =
+        ReasoningOption::from_names(slash_commands::CLAUDE_EFFORT_LEVELS.map(String::from));
 
     let providers: Vec<ModelProvider> = config
         .providers
@@ -400,9 +402,9 @@ fn parse_ccr_model_selector(raw: &str) -> Option<crate::model_selector::ModelSel
                 id: model.clone(),
                 name: model.clone(),
                 provider_id: Some(provider.name.clone()),
-                // Routed models are third-party; Claude's `--effort` levels and
-                // the Fast tier do not apply to them.
-                reasoning_options: vec![],
+                // `--effort` only reaches the provider through a CCR transformer;
+                // the Fast tier never applies to routed models.
+                reasoning_options: effort_options.clone(),
                 supports_fast: false,
             })
         })
@@ -3960,7 +3962,7 @@ mod tests {
             .find(|m| m.id == "moonshotai/Kimi-K3")
             .expect("kimi listed");
         assert_eq!(kimi.provider_id.as_deref(), Some("sailresearch"));
-        assert!(kimi.reasoning_options.is_empty());
+        assert_eq!(kimi.reasoning_options.len(), 5);
 
         // CCR's `provider,model` becomes the selector's `provider/model`, and a
         // model id containing slashes has to survive the round trip intact.
