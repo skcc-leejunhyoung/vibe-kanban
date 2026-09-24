@@ -424,6 +424,18 @@ function ViewEditorPanel({
     [view.filters, onChange]
   );
 
+  const toggleCreateTag = useCallback(
+    (tagId: string) => {
+      const current = view.createTagIds ?? [];
+      onChange({
+        createTagIds: current.includes(tagId)
+          ? current.filter((id) => id !== tagId)
+          : [...current, tagId],
+      });
+    },
+    [view.createTagIds, onChange]
+  );
+
   return (
     <div className="px-base pb-base pt-half space-y-base border-t border-border">
       {/* Name */}
@@ -680,12 +692,6 @@ function ViewEditorPanel({
                     </option>
                   ))}
                 </select>
-                <span>
-                  {t(
-                    'kanban.viewsEditor.tagFilterHint',
-                    'Issues created in this view get these tags automatically.'
-                  )}
-                </span>
               </label>
             )}
             <ToggleRow
@@ -697,6 +703,50 @@ function ViewEditorPanel({
             />
           </div>
         )}
+      </div>
+
+      {/* Auto tags for new issues (independent of the filter mode) */}
+      <div className="flex flex-col gap-half">
+        <span className="text-xs text-low">
+          {t('kanban.viewsEditor.createTags', 'Auto tags for new issues')}
+        </span>
+        {tags.length > 0 ? (
+          <div className="flex flex-wrap gap-half">
+            {tags.map((tag) => {
+              const selected = view.createTagIds?.includes(tag.id) ?? false;
+              return (
+                <button
+                  key={tag.id}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => toggleCreateTag(tag.id)}
+                  className={cn(
+                    'flex items-center gap-half px-base py-half rounded-sm border text-sm transition-colors',
+                    selected
+                      ? 'border-brand text-high bg-panel'
+                      : 'border-border text-low hover:text-normal'
+                  )}
+                >
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: tag.color }}
+                  />
+                  {tag.name}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <span className="text-sm text-low">
+            {t('kanban.noTagsAvailable', 'No tags available')}
+          </span>
+        )}
+        <span className="text-xs text-low">
+          {t(
+            'kanban.viewsEditor.createTagsHint',
+            'Every issue created in this view gets these tags, whatever the filter mode.'
+          )}
+        </span>
       </div>
 
       {/* Board toggles (orthogonal to the filter mode) */}

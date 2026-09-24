@@ -206,6 +206,8 @@ export type ProjectViewDefinition = {
   showSubIssues: boolean;
   showWorkspaces: boolean;
   hideBlocked: boolean;
+  /** Tags attached to every issue created from this view, in any filter mode. */
+  createTagIds?: string[];
 };
 
 export const DEFAULT_PROJECT_VIEW_IDS = {

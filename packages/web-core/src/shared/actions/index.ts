@@ -572,6 +572,7 @@ function navigateToCreateSubIssue(
     .map((a) => a.user_id);
   ctx.navigateToCreateIssue({
     statusId: ctx.defaultCreateOptions?.statusId,
+    tagIds: ctx.defaultCreateOptions?.tagIds,
     parentIssueId,
     assigneeIds: assigneeIds?.length ? assigneeIds : undefined,
   });

@@ -604,13 +604,18 @@ export function KanbanContainer() {
     return [...assigneeIds];
   }, [createMirrorFilters.assigneeIds, userId]);
 
-  // Tags mirror the active tag filter the same way, so a view whose default
-  // filter (project settings) selects tags labels every issue created in it.
-  // Deleted tags can linger in a saved filter; skip them.
+  // Tags: the view's own auto tags (project settings, any filter mode) plus the
+  // flat tag filter, mirrored like assignees. Deleted tags can linger in a
+  // saved view; skip them.
+  const viewCreateTagIds = activeView?.createTagIds;
   const createTagIds = useMemo(() => {
-    const tagIds = new Set(tags.map((tag) => tag.id));
-    return createMirrorFilters.tagIds.filter((tagId) => tagIds.has(tagId));
-  }, [createMirrorFilters.tagIds, tags]);
+    const existing = new Set(tags.map((tag) => tag.id));
+    const wanted = new Set([
+      ...(viewCreateTagIds ?? []),
+      ...createMirrorFilters.tagIds,
+    ]);
+    return [...wanted].filter((tagId) => existing.has(tagId));
+  }, [viewCreateTagIds, createMirrorFilters.tagIds, tags]);
 
   // Board-level create defaults, shared by the "+" buttons and the command
   // bar / `I C` shortcut so every create path from this view is labeled alike.

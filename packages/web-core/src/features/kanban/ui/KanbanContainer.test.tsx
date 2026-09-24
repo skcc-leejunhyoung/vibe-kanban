@@ -438,24 +438,30 @@ describe('KanbanContainer selection store', () => {
 });
 
 describe('KanbanContainer create defaults', () => {
-  const withView = (filters: Partial<KanbanFilterState>) => (p: string) =>
-    useUiPreferencesStore.setState((state) => ({
-      projectViewsById: {
-        ...state.projectViewsById,
-        [p]: [
-          {
-            id: 'v1',
-            name: 'Bugs',
-            layout: 'kanban',
-            groupStatusIds: null,
-            filters: { ...DEFAULT_KANBAN_FILTER_STATE, ...filters },
-            showSubIssues: true,
-            showWorkspaces: true,
-            hideBlocked: false,
-          },
-        ],
-      },
-    }));
+  const withView =
+    (
+      filters: Partial<KanbanFilterState>,
+      extra: { createTagIds?: string[] } = {}
+    ) =>
+    (p: string) =>
+      useUiPreferencesStore.setState((state) => ({
+        projectViewsById: {
+          ...state.projectViewsById,
+          [p]: [
+            {
+              id: 'v1',
+              name: 'Bugs',
+              layout: 'kanban',
+              groupStatusIds: null,
+              filters: { ...DEFAULT_KANBAN_FILTER_STATE, ...filters },
+              showSubIssues: true,
+              showWorkspaces: true,
+              hideBlocked: false,
+              ...extra,
+            },
+          ],
+        },
+      }));
 
   it('labels new issues with the view tag filter, minus deleted tags', async () => {
     await renderBoard(withView({ tagIds: ['t1', 't-deleted'] }));
@@ -475,6 +481,19 @@ describe('KanbanContainer create defaults', () => {
     );
     expect(setDefaultCreateOptions).toHaveBeenLastCalledWith({
       statusId: 's1',
+    });
+  });
+
+  it('attaches the view auto tags in any filter mode', async () => {
+    await renderBoard(
+      withView(
+        { advancedFilter: newGroup('and') },
+        { createTagIds: ['t1', 't-deleted'] }
+      )
+    );
+    expect(setDefaultCreateOptions).toHaveBeenLastCalledWith({
+      statusId: 's1',
+      tagIds: ['t1'],
     });
   });
 });
