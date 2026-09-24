@@ -103,6 +103,9 @@ export function useMachineProfiles(
     },
     enabled: machineClient != null,
     staleTime: 1000 * 60,
+    // Picking a model in chat bumps the server revision without touching this
+    // cache; a stale revision would make every settings save 409.
+    refetchOnMount: 'always',
   });
 
   const { mutateAsync: saveMutation, isPending: isSaving } = useMutation({

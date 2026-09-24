@@ -518,6 +518,7 @@
         "deleteTitle": "마지막 구성은 삭제할 수 없습니다",
         "deleteButton": "{{name}} 삭제",
         "deleteText": "삭제",
+        "renameText": "이름 변경",
         "makeDefault": "기본값으로 설정",
         "isDefault": "기본값",
         "jsonLabel": "에이전트 구성 (JSON)",
@@ -535,6 +536,7 @@
       },
       "errors": {
         "deleteFailed": "구성을 삭제하지 못했습니다. 다시 시도해 주세요.",
+        "renameFailed": "구성 이름을 변경하지 못했습니다. 다시 시도해 주세요.",
         "saveFailed": "에이전트 구성을 저장하지 못했습니다. 다시 시도해 주세요.",
         "saveConfigFailed": "구성을 저장하지 못했습니다. 다시 시도해 주세요.",
         "schemaNotFound": "실행자 유형 {{executor}}에 대한 스키마를 찾을 수 없습니다"

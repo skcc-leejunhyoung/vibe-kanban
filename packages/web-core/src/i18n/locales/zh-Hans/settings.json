@@ -355,6 +355,7 @@
         "deleteTitle": "无法删除最后一个配置",
         "deleteButton": "删除 {{name}}",
         "deleteText": "删除",
+        "renameText": "重命名",
         "makeDefault": "设为默认",
         "isDefault": "默认",
         "jsonLabel": "代理配置（JSON）",
@@ -364,6 +365,7 @@
       },
       "errors": {
         "deleteFailed": "删除配置失败。请重试。",
+        "renameFailed": "重命名配置失败。请重试。",
         "saveFailed": "保存代理配置失败。请重试。",
         "saveConfigFailed": "保存配置失败。请重试。",
         "schemaNotFound": "未找到执行器类型 {{executor}} 的架构"

@@ -355,6 +355,7 @@
         "deleteTitle": "No se puede eliminar la última configuración",
         "deleteButton": "Eliminar {{name}}",
         "deleteText": "Eliminar",
+        "renameText": "Renombrar",
         "makeDefault": "Establecer por defecto",
         "isDefault": "Por defecto",
         "jsonLabel": "Configuración de Agente (JSON)",
@@ -364,6 +365,7 @@
       },
       "errors": {
         "deleteFailed": "Error al eliminar la configuración. Por favor, inténtalo de nuevo.",
+        "renameFailed": "Error al renombrar la configuración. Por favor, inténtalo de nuevo.",
         "saveFailed": "Error al guardar la configuración de los agentes. Por favor, inténtalo de nuevo.",
         "saveConfigFailed": "Error al guardar la configuración. Por favor, inténtalo de nuevo.",
         "schemaNotFound": "Esquema no encontrado para el tipo de ejecutor: {{executor}}"

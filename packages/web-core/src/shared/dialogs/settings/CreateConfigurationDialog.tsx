@@ -24,16 +24,18 @@ import { defineModal } from '@/shared/lib/modals';
 export interface CreateConfigurationDialogProps {
   executorType: string;
   existingConfigs: string[];
+  /** Existing config to rename; switches the dialog into rename mode. */
+  renameFrom?: string;
 }
 
 export type CreateConfigurationResult = {
-  action: 'created' | 'canceled';
+  action: 'created' | 'renamed' | 'canceled';
   configName?: string;
   cloneFrom?: string | null;
 };
 
 const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
-  ({ executorType, existingConfigs }) => {
+  ({ executorType, existingConfigs, renameFrom }) => {
     const modal = useModal();
     const [configName, setConfigName] = useState('');
     const [cloneFrom, setCloneFrom] = useState<string | null>(null);
@@ -42,11 +44,11 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
     useEffect(() => {
       // Reset form when dialog opens
       if (modal.visible) {
-        setConfigName('');
+        setConfigName(renameFrom ?? '');
         setCloneFrom(null);
         setError(null);
       }
-    }, [modal.visible]);
+    }, [modal.visible, renameFrom]);
 
     const validateConfigName = (name: string): string | null => {
       const trimmedName = name.trim();
@@ -56,7 +58,17 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
       if (!/^[a-zA-Z0-9_-]+$/.test(trimmedName)) {
         return 'Configuration name can only contain letters, numbers, underscores, and hyphens';
       }
-      if (existingConfigs.includes(trimmedName)) {
+      // The backend canonicalises keys (`kimi-k3` → `KIMI_K3`), so compare the
+      // same way or a clash would silently drop one of the two configs.
+      // ponytail: camelCase splits (`kimiK3` → `KIMI_K_3`) aren't mirrored.
+      const canonical = (key: string) => key.toUpperCase().replace(/-/g, '_');
+      if (
+        existingConfigs.some(
+          (existing) =>
+            existing !== renameFrom &&
+            canonical(existing) === canonical(trimmedName)
+        )
+      ) {
         return 'A configuration with this name already exists';
       }
       return null;
@@ -70,7 +82,7 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
       }
 
       modal.resolve({
-        action: 'created',
+        action: renameFrom ? 'renamed' : 'created',
         configName: configName.trim(),
         cloneFrom,
       } as CreateConfigurationResult);
@@ -92,9 +104,13 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
       <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="md">
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create New Configuration</DialogTitle>
+            <DialogTitle>
+              {renameFrom ? 'Rename Configuration' : 'Create New Configuration'}
+            </DialogTitle>
             <DialogDescription>
-              Add a new configuration for the {executorType} executor.
+              {renameFrom
+                ? `Rename the ${renameFrom} configuration of the ${executorType} executor.`
+                : `Add a new configuration for the ${executorType} executor.`}
             </DialogDescription>
           </DialogHeader>
 
@@ -124,27 +140,29 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
               />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="clone-from">Clone from (optional)</Label>
-              <Select
-                value={cloneFrom || '__blank__'}
-                onValueChange={(value) =>
-                  setCloneFrom(value === '__blank__' ? null : value)
-                }
-              >
-                <SelectTrigger id="clone-from">
-                  <SelectValue placeholder="Start blank or clone existing" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__blank__">Start blank</SelectItem>
-                  {existingConfigs.map((configuration) => (
-                    <SelectItem key={configuration} value={configuration}>
-                      Clone from {configuration}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {!renameFrom && (
+              <div className="space-y-2">
+                <Label htmlFor="clone-from">Clone from (optional)</Label>
+                <Select
+                  value={cloneFrom || '__blank__'}
+                  onValueChange={(value) =>
+                    setCloneFrom(value === '__blank__' ? null : value)
+                  }
+                >
+                  <SelectTrigger id="clone-from">
+                    <SelectValue placeholder="Start blank or clone existing" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__blank__">Start blank</SelectItem>
+                    {existingConfigs.map((configuration) => (
+                      <SelectItem key={configuration} value={configuration}>
+                        Clone from {configuration}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             {error && (
               <Alert variant="destructive">
@@ -162,7 +180,7 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
               onClick={handleCreate}
               disabled={!configName.trim()}
             >
-              Create Configuration
+              {renameFrom ? 'Rename' : 'Create Configuration'}
             </Button>
           </DialogFooter>
         </DialogContent>

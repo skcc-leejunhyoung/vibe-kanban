@@ -526,6 +526,7 @@
         "deleteTitle": "Cannot delete the last configuration",
         "deleteButton": "Delete {{name}}",
         "deleteText": "Delete",
+        "renameText": "Rename",
         "makeDefault": "Make Default",
         "isDefault": "Default",
         "jsonLabel": "Agent Configuration (JSON)",
@@ -543,6 +544,7 @@
       },
       "errors": {
         "deleteFailed": "Failed to delete configuration. Please try again.",
+        "renameFailed": "Failed to rename configuration. Please try again.",
         "saveFailed": "Failed to save agent configurations. Please try again.",
         "saveConfigFailed": "Failed to save configuration. Please try again.",
         "schemaNotFound": "Schema not found for executor type: {{executor}}"

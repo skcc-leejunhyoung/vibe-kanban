@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ExecutorConfigs } from 'shared/types';
 import { BaseCodingAgent } from 'shared/types';
-import { getInitialExecutorConfig } from './executor';
+import { getInitialExecutorConfig, renameExecutorVariant } from './executor';
 
 describe('getInitialExecutorConfig', () => {
   it('prefers DEFAULT when the executor provides it', () => {
@@ -37,5 +37,24 @@ describe('getInitialExecutorConfig', () => {
       executor: BaseCodingAgent.CODEX,
       variant: null,
     });
+  });
+});
+
+describe('renameExecutorVariant', () => {
+  it('moves the config to the new key without reordering or dropping keys', () => {
+    const profile = {
+      recently_used_models: { models: [] },
+      KIMI_K_3: { CLAUDE_CODE: { model: 'kimi' } },
+      DEFAULT: { CLAUDE_CODE: {} },
+    };
+
+    const renamed = renameExecutorVariant(profile, 'KIMI_K_3', 'KIMI');
+
+    expect(Object.keys(renamed)).toEqual([
+      'recently_used_models',
+      'KIMI',
+      'DEFAULT',
+    ]);
+    expect(renamed.KIMI).toBe(profile.KIMI_K_3);
   });
 });

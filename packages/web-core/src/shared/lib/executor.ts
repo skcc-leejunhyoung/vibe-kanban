@@ -18,6 +18,20 @@ export function getExecutorVariantKeys(
   );
 }
 
+/** Rename a variant in place, keeping its list position and reserved keys. */
+export function renameExecutorVariant<T extends Record<string, unknown>>(
+  executorProfile: T,
+  from: string,
+  to: string
+): T {
+  return Object.fromEntries(
+    Object.entries(executorProfile).map(([key, value]) => [
+      key === from ? to : key,
+      value,
+    ])
+  ) as T;
+}
+
 function sortVariantKeys(variants: string[]): string[] {
   return variants.sort((a, b) => {
     if (a === 'DEFAULT') return -1;

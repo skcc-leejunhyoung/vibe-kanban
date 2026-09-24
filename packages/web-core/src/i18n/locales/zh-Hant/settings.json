@@ -355,6 +355,7 @@
         "deleteTitle": "無法刪除最後一個設定",
         "deleteButton": "刪除 {{name}}",
         "deleteText": "刪除",
+        "renameText": "重新命名",
         "makeDefault": "設為預設",
         "isDefault": "預設",
         "jsonLabel": "代理設定（JSON）",
@@ -364,6 +365,7 @@
       },
       "errors": {
         "deleteFailed": "刪除設定失敗。請重試。",
+        "renameFailed": "重新命名設定失敗。請重試。",
         "saveFailed": "儲存代理設定失敗。請重試。",
         "saveConfigFailed": "儲存設定失敗。請重試。",
         "schemaNotFound": "找不到執行器類型 {{executor}} 的結構描述"

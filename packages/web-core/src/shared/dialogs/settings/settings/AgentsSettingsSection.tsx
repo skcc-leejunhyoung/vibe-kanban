@@ -4,6 +4,7 @@ import {
   SpinnerIcon,
   PlusIcon,
   TrashIcon,
+  PencilSimpleIcon,
   DotsThreeIcon,
   StarIcon,
 } from '@phosphor-icons/react';
@@ -42,7 +43,10 @@ import {
 import { useSettingsDirty } from './SettingsDirtyContext';
 import { useSettingsMachineClient } from './SettingsHostContext';
 import { AgentIcon } from '@/shared/components/AgentIcon';
-import { getExecutorVariantKeys } from '@/shared/lib/executor';
+import {
+  getExecutorVariantKeys,
+  renameExecutorVariant,
+} from '@/shared/lib/executor';
 
 type ExecutorsMap = Record<string, Record<string, Record<string, unknown>>>;
 
@@ -156,6 +160,79 @@ export function AgentsSettingsSection() {
     markDirty(updatedProfiles);
     setSelectedExecutorType(executorType as BaseCodingAgent);
     setSelectedConfiguration(configName);
+  };
+
+  const handleRenameConfig = async (executor: string, configName: string) => {
+    try {
+      const result = await CreateConfigurationDialog.show({
+        executorType: executor as BaseCodingAgent,
+        existingConfigs: getExecutorVariantKeys(
+          localParsedProfiles?.executors?.[executor as BaseCodingAgent]
+        ),
+        renameFrom: configName,
+      });
+
+      if (
+        result.action === 'renamed' &&
+        result.configName &&
+        result.configName !== configName
+      ) {
+        await renameConfiguration(executor, configName, result.configName);
+      }
+    } catch {
+      // User cancelled
+    }
+  };
+
+  const renameConfiguration = async (
+    executorType: string,
+    from: string,
+    to: string
+  ) => {
+    if (!localParsedProfiles) return;
+    setSaveError(null);
+
+    const executorsMap =
+      localParsedProfiles.executors as unknown as ExecutorsMap;
+    const renamed = renameExecutorVariant(
+      executorsMap[executorType] ?? {},
+      from,
+      to
+    );
+    const updatedProfiles = {
+      ...localParsedProfiles,
+      executors: { ...localParsedProfiles.executors, [executorType]: renamed },
+    } as ExecutorConfigs;
+
+    try {
+      await saveProfiles(JSON.stringify(updatedProfiles, null, 2));
+      setLocalParsedProfiles(updatedProfiles);
+      setIsDirty(false);
+      if (
+        selectedExecutorType === executorType &&
+        selectedConfiguration === from
+      ) {
+        setSelectedConfiguration(to);
+      }
+      // Keep the global default on the same config under its new name.
+      if (
+        config?.executor_profile?.executor === executorType &&
+        config.executor_profile.variant === from
+      ) {
+        await updateAndSaveConfig({
+          executor_profile: {
+            executor: executorType as BaseCodingAgent,
+            variant: to,
+          },
+        });
+      }
+      setProfilesSuccess(true);
+      setTimeout(() => setProfilesSuccess(false), 3000);
+      reloadSystem();
+    } catch (error: unknown) {
+      console.error('Failed to rename configuration:', error);
+      setSaveError(t('settings.agents.errors.renameFailed'));
+    }
   };
 
   const handleDeleteConfig = async (executor: string, configName: string) => {
@@ -506,9 +583,6 @@ export function AgentsSettingsSection() {
                     config?.executor_profile?.executor ===
                       selectedExecutorType &&
                     config?.executor_profile?.variant === configName;
-                  const configCount = getExecutorVariantKeys(
-                    localParsedProfiles.executors[selectedExecutorType]
-                  ).length;
                   return (
                     <TwoColumnPickerItem
                       key={configName}
@@ -525,8 +599,8 @@ export function AgentsSettingsSection() {
                             executorType={selectedExecutorType}
                             configName={configName}
                             isDefault={isDefault}
-                            configCount={configCount}
                             onMakeDefault={handleMakeDefault}
+                            onRename={handleRenameConfig}
                             onDelete={handleDeleteConfig}
                           />
                         </>
@@ -694,27 +768,28 @@ function ConfigActionsDropdown({
   executorType,
   configName,
   isDefault,
-  configCount,
   onMakeDefault,
+  onRename,
   onDelete,
 }: {
   executorType: BaseCodingAgent;
   configName: string;
   isDefault: boolean;
-  configCount: number;
   onMakeDefault: (executor: string, config: string) => void;
+  onRename: (executor: string, config: string) => void;
   onDelete: (executor: string, config: string) => void;
 }) {
   const { t } = useTranslation(['settings']);
+  // DEFAULT is built in: the backend refuses to drop it, so it can be neither
+  // renamed nor deleted. Because it always stays, deleting any other config
+  // can never empty the list.
+  const isBuiltIn = configName === 'DEFAULT';
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
-          className={cn(
-            'p-half rounded-sm hover:bg-panel text-low hover:text-normal',
-            'opacity-0 group-hover:opacity-100 transition-opacity'
-          )}
+          className="p-half rounded-sm hover:bg-panel text-low hover:text-normal"
           onClick={(e) => e.stopPropagation()}
         >
           <DotsThreeIcon className="size-icon-xs" weight="bold" />
@@ -736,9 +811,21 @@ function ConfigActionsDropdown({
         <DropdownMenuItem
           onClick={(e) => {
             e.stopPropagation();
+            onRename(executorType, configName);
+          }}
+          disabled={isBuiltIn}
+        >
+          <div className="flex items-center gap-half w-full">
+            <PencilSimpleIcon className="size-icon-xs mr-base" />
+            {t('settings.agents.editor.renameText')}
+          </div>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={(e) => {
+            e.stopPropagation();
             onDelete(executorType, configName);
           }}
-          disabled={configCount <= 1}
+          disabled={isBuiltIn}
           className="text-error focus:text-error"
         >
           <div className="flex items-center gap-half w-full">
