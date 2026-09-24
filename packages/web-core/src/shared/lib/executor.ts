@@ -18,6 +18,24 @@ export function getExecutorVariantKeys(
   );
 }
 
+/**
+ * The key the backend stores a variant under (`canonical_variant_key`:
+ * convert_case snake → SCREAMING_SNAKE). Two names with the same key collapse
+ * into one config on save, so clashes have to be checked on this form.
+ */
+export function canonicalVariantKey(name: string): string {
+  if (name.toUpperCase() === 'DEFAULT') return 'DEFAULT';
+  return name
+    .replace(/([a-z])(?=[A-Z])/g, '$1_')
+    .replace(/([A-Z])(?=[A-Z][a-z])/g, '$1_')
+    .replace(/([A-Za-z])(?=[0-9])/g, '$1_')
+    .replace(/([0-9])(?=[A-Za-z])/g, '$1_')
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .join('_')
+    .toUpperCase();
+}
+
 /** Rename a variant in place, keeping its list position and reserved keys. */
 export function renameExecutorVariant<T extends Record<string, unknown>>(
   executorProfile: T,

@@ -20,6 +20,7 @@ import {
 import { Alert, AlertDescription } from '@vibe/ui/components/Alert';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/shared/lib/modals';
+import { canonicalVariantKey } from '@/shared/lib/executor';
 
 export interface CreateConfigurationDialogProps {
   executorType: string;
@@ -58,15 +59,13 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
       if (!/^[a-zA-Z0-9_-]+$/.test(trimmedName)) {
         return 'Configuration name can only contain letters, numbers, underscores, and hyphens';
       }
-      // The backend canonicalises keys (`kimi-k3` → `KIMI_K3`), so compare the
-      // same way or a clash would silently drop one of the two configs.
-      // ponytail: camelCase splits (`kimiK3` → `KIMI_K_3`) aren't mirrored.
-      const canonical = (key: string) => key.toUpperCase().replace(/-/g, '_');
+      // The backend canonicalises keys (`gpt6` → `GPT_6`), so compare the same
+      // way or a clash would silently drop one of the two configs.
+      const key = canonicalVariantKey(trimmedName);
       if (
         existingConfigs.some(
           (existing) =>
-            existing !== renameFrom &&
-            canonical(existing) === canonical(trimmedName)
+            existing !== renameFrom && canonicalVariantKey(existing) === key
         )
       ) {
         return 'A configuration with this name already exists';
@@ -83,7 +82,8 @@ const CreateConfigurationDialogImpl = create<CreateConfigurationDialogProps>(
 
       modal.resolve({
         action: renameFrom ? 'renamed' : 'created',
-        configName: configName.trim(),
+        // The stored key, so selection and the default config match it.
+        configName: canonicalVariantKey(configName.trim()),
         cloneFrom,
       } as CreateConfigurationResult);
       modal.hide();
