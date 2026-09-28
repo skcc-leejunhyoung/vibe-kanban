@@ -930,7 +930,14 @@ function useTurnTiming(
       : undefined;
   const visible = processesCtx?.executionProcessesVisible;
   const turn = useMemo(() => {
-    if (!own || own.run_reason === 'codingagent') return own;
+    // A failed/killed setup never starts its chained agent, so any later
+    // agent run answers a different prompt.
+    if (
+      !own ||
+      own.run_reason === 'codingagent' ||
+      own.status !== ExecutionProcessStatus.completed
+    )
+      return own;
     const ownCreated = Date.parse(own.created_at);
     return visible
       ?.filter(
