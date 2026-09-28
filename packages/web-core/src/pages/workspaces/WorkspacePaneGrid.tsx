@@ -38,6 +38,7 @@ import { NotificationsPage } from './NotificationsPage';
 import { WorkspaceDetail } from './WorkspaceDetail';
 import { WorkspacesSidebarContainer } from './WorkspacesSidebarContainer';
 import { GithubIssueBadge, PrBadge } from '@vibe/ui/components/PrBadge';
+import { FloatingBoundaryContext } from '@vibe/ui/lib/floating-boundary';
 import { useWorkspaceIssueGrouping } from '@/shared/hooks/useWorkspaceIssueGrouping';
 import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
@@ -87,6 +88,10 @@ function PaneChrome({
   children: ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Popovers and dropdowns opened in this pane stay inside it.
+  const [floatingBoundary, setFloatingBoundary] =
+    useState<HTMLDivElement | null>(null);
+  useLayoutEffect(() => setFloatingBoundary(containerRef.current), []);
   const focusSerial = useWorkspacePanesStore((s) => s.focusSerial);
   const movePane = useWorkspacePanesStore((s) => s.movePane);
   const [dropAfter, setDropAfter] = useState<boolean | null>(null);
@@ -171,7 +176,9 @@ function PaneChrome({
           active && showActiveRing ? 'opacity-60' : 'opacity-0'
         )}
       />
-      {children}
+      <FloatingBoundaryContext.Provider value={floatingBoundary}>
+        {children}
+      </FloatingBoundaryContext.Provider>
     </div>
   );
 }

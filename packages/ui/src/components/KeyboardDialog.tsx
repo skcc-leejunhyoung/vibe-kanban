@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 
 import { cn } from '../lib/cn';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
+import { FloatingBoundaryContext } from '../lib/floating-boundary';
 import {
   activatesOnEnter,
   findDialogPrimaryAction,
@@ -213,7 +214,11 @@ const Dialog = React.forwardRef<
                 <span className="sr-only">Close</span>
               </button>
             )}
-            {children}
+            {/* Menus inside a viewport-wide dialog aren't bound to the pane
+                it was opened from. */}
+            <FloatingBoundaryContext.Provider value={null}>
+              {children}
+            </FloatingBoundaryContext.Provider>
           </div>
         </DialogFocusScope>
       </div>,

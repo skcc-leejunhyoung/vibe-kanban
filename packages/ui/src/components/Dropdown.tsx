@@ -10,6 +10,10 @@ import {
 
 import { cn } from '../lib/cn';
 import { keepDialogFocusOnLayerClose } from '../lib/dialog-keyboard';
+import {
+  floatingContentStyle,
+  useFloatingBoundary,
+} from '../lib/floating-boundary';
 
 const DropdownMenu = DropdownMenuPrimitive.Root;
 
@@ -123,11 +127,14 @@ DropdownMenuSubTrigger.displayName =
 const DropdownMenuSubContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.SubContent>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubContent>
->(({ className, ...props }, ref) => {
+>(({ className, style, ...props }, ref) => {
+  const collisionBoundary = useFloatingBoundary();
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.SubContent
         ref={ref}
+        collisionBoundary={collisionBoundary}
+        style={floatingContentStyle(style)}
         className={cn(
           'z-[10000] min-w-[8rem] overflow-hidden',
           'bg-panel border border-border rounded-sm py-half shadow-md',
@@ -150,12 +157,15 @@ DropdownMenuSubContent.displayName =
 const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, onCloseAutoFocus, ...props }, ref) => {
+>(({ className, sideOffset = 4, onCloseAutoFocus, style, ...props }, ref) => {
+  const collisionBoundary = useFloatingBoundary();
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         ref={ref}
         sideOffset={sideOffset}
+        collisionBoundary={collisionBoundary}
+        style={floatingContentStyle(style)}
         onCloseAutoFocus={(event) =>
           keepDialogFocusOnLayerClose(event, onCloseAutoFocus)
         }

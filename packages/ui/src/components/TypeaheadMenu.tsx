@@ -19,6 +19,7 @@ interface TypeaheadPlacement {
   maxHeight: number;
   left: number;
   top: number;
+  width: number;
 }
 
 function getViewportHeight() {
@@ -63,6 +64,7 @@ function placementsEqual(
     a.side === b.side &&
     a.left === b.left &&
     a.top === b.top &&
+    a.width === b.width &&
     a.maxHeight === b.maxHeight
   );
 }
@@ -115,16 +117,19 @@ function computePlacement(
     );
   }
 
-  const measuredWidth =
-    round(menuRect.width) ||
-    round(parseLength(menuStyles.width)) ||
-    round(parseLength(menuStyles.minWidth));
-  const minLeft = marginLeft;
-  const maxLeft = Math.max(
-    minLeft,
-    viewportWidth - measuredWidth - marginRight
+  // The menu belongs to its editor: it never spills past the editor's edges
+  // (and so never over a neighbouring pane). It opens at the trigger with the
+  // configured max width, and takes the editor's width when that is narrower.
+  const boundLeft = Math.max(editorRect?.left ?? 0, 0) + marginLeft;
+  const boundRight =
+    Math.min(editorRect?.right ?? viewportWidth, viewportWidth) - marginRight;
+  const maxWidth = parseLength(menuStyles.maxWidth) || viewportWidth;
+  const width = round(Math.max(Math.min(maxWidth, boundRight - boundLeft), 0));
+  const left = clamp(
+    round(anchorRect.left),
+    round(boundLeft),
+    round(boundRight - width)
   );
-  const left = clamp(round(anchorRect.left), round(minLeft), round(maxLeft));
   const top =
     side === 'bottom'
       ? round(anchorRect.bottom + marginTop)
@@ -135,6 +140,7 @@ function computePlacement(
     maxHeight: round(maxHeight),
     left,
     top,
+    width,
   };
 }
 
@@ -240,12 +246,14 @@ function TypeaheadMenuRoot({
       ? ({
           position: 'fixed',
           left: placement.left,
+          width: placement.width,
           top: placement.top,
           '--typeahead-menu-max-height': `${placement.maxHeight}px`,
         } as CSSProperties)
       : ({
           position: 'fixed',
           left: placement.left,
+          width: placement.width,
           bottom: getViewportHeight() - placement.top,
           '--typeahead-menu-max-height': `${placement.maxHeight}px`,
         } as CSSProperties);
@@ -254,7 +262,7 @@ function TypeaheadMenuRoot({
     <div
       ref={menuRef}
       style={style}
-      className="z-[10000] w-auto min-w-80 max-w-[min(28rem,100%)] p-0 overflow-hidden bg-panel border border-border rounded-sm shadow-md flex flex-col"
+      className="z-[10000] w-full max-w-[28rem] p-0 overflow-hidden bg-panel border border-border rounded-sm shadow-md flex flex-col"
     >
       {children}
     </div>

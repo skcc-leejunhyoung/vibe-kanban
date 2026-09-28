@@ -90,7 +90,12 @@ export const CommitSelector = memo(function CommitSelector({
             <CaretDownIcon className="size-icon-xs shrink-0 text-low" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="max-w-[440px]">
+        <DropdownMenuContent
+          align="start"
+          style={{
+            maxWidth: 'min(440px, var(--radix-popper-available-width))',
+          }}
+        >
           <DropdownMenuItem
             className="flex items-center gap-2"
             onSelect={() => select(workspaceId, hostId, null)}

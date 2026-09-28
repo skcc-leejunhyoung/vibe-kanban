@@ -103,14 +103,19 @@ export function ToolbarPlugin() {
       top = rect.bottom + GAP + window.scrollY;
     }
 
-    // Keep within viewport horizontally
-    left = Math.max(
-      VIEWPORT_PADDING,
-      Math.min(left, window.innerWidth - toolbarWidth - VIEWPORT_PADDING)
-    );
+    // Keep within the editor (so never over a neighbouring pane) and the
+    // viewport horizontally
+    const editorRect = editor.getRootElement()?.getBoundingClientRect();
+    const minLeft = Math.max(editorRect?.left ?? 0, VIEWPORT_PADDING);
+    const maxLeft =
+      Math.min(
+        editorRect?.right ?? window.innerWidth,
+        window.innerWidth - VIEWPORT_PADDING
+      ) - toolbarWidth;
+    left = Math.max(minLeft, Math.min(left, maxLeft));
 
     setPosition({ top, left });
-  }, []);
+  }, [editor]);
 
   // Update toolbar state on selection change
   useEffect(() => {

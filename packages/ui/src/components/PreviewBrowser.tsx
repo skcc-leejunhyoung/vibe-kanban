@@ -516,7 +516,13 @@ export function PreviewBrowser({
                         <CaretDownIcon className="size-icon-sm" weight="bold" />
                       </button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="max-w-72">
+                    <DropdownMenuContent
+                      align="end"
+                      style={{
+                        maxWidth:
+                          'min(18rem, var(--radix-popper-available-width))',
+                      }}
+                    >
                       <DropdownMenuLabel>
                         {t('preview.toolbar.shortcuts')}
                       </DropdownMenuLabel>

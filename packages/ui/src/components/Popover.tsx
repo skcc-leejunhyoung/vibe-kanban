@@ -6,6 +6,10 @@ import {
 } from 'react';
 import { cn } from '../lib/cn';
 import { keepDialogFocusOnLayerClose } from '../lib/dialog-keyboard';
+import {
+  floatingContentStyle,
+  useFloatingBoundary,
+} from '../lib/floating-boundary';
 
 const Popover = PopoverPrimitive.Root;
 
@@ -20,15 +24,25 @@ const PopoverContent = forwardRef<
   ComponentPropsWithoutRef<typeof PopoverPrimitive.Content>
 >(
   (
-    { className, align = 'center', sideOffset = 4, onCloseAutoFocus, ...props },
+    {
+      className,
+      align = 'center',
+      sideOffset = 4,
+      onCloseAutoFocus,
+      style,
+      ...props
+    },
     ref
   ) => {
+    const collisionBoundary = useFloatingBoundary();
     return (
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Content
           ref={ref}
           align={align}
           sideOffset={sideOffset}
+          collisionBoundary={collisionBoundary}
+          style={floatingContentStyle(style)}
           onCloseAutoFocus={(event) =>
             keepDialogFocusOnLayerClose(event, onCloseAutoFocus)
           }

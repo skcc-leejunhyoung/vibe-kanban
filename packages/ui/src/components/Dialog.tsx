@@ -8,6 +8,7 @@ import {
   dialogContentBaseClasses,
 } from '../lib/dialog-centering';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
+import { FloatingBoundaryContext } from '../lib/floating-boundary';
 import {
   findDialogPrimaryAction,
   isDialogConfirmKey,
@@ -63,7 +64,15 @@ function DialogPortal({
   children,
   ...props
 }: DialogPrimitive.DialogPortalProps) {
-  return <DialogPrimitive.Portal {...props}>{children}</DialogPrimitive.Portal>;
+  // A dialog sits over the whole viewport, so menus inside it are no longer
+  // bound to the pane the dialog was opened from.
+  return (
+    <DialogPrimitive.Portal {...props}>
+      <FloatingBoundaryContext.Provider value={null}>
+        {children}
+      </FloatingBoundaryContext.Provider>
+    </DialogPrimitive.Portal>
+  );
 }
 
 const DialogOverlay = React.forwardRef<
