@@ -9,7 +9,10 @@ import { useActions } from '@/shared/hooks/useActions';
 import { usePageTitle } from '@/shared/hooks/usePageTitle';
 import { KanbanContainer } from '@/features/kanban/ui/KanbanContainer';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
-import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
+import {
+  PaneWidthProvider,
+  usePaneNarrowerThan,
+} from '@/shared/components/workspace-panes/PaneWidthContext';
 import { ProjectRightSidebarContainer } from './ProjectRightSidebarContainer';
 import { LoginRequiredPrompt } from '@/shared/dialogs/shared/LoginRequiredPrompt';
 import {
@@ -29,6 +32,14 @@ import {
   buildKanbanIssueComposerKey,
   closeKanbanIssueComposer,
 } from '@/shared/stores/useKanbanIssueComposerStore';
+
+// Split view (board | right panel) needs room for both minimums plus the
+// separator; below that the pane shows one at a time (mobile layout).
+const BOARD_MIN_WIDTH = 400;
+const PANEL_MIN_WIDTH = 400;
+const SEPARATOR_WIDTH = 4; // w-1
+const SPLIT_MIN_WIDTH = BOARD_MIN_WIDTH + SEPARATOR_WIDTH + PANEL_MIN_WIDTH;
+
 /**
  * Component that registers project mutations with ActionsContext.
  * Must be rendered inside both ActionsProvider and ProjectProvider.
@@ -143,19 +154,21 @@ function ProjectMutationsRegistration({ children }: { children: ReactNode }) {
 }
 
 function ProjectKanbanBoard() {
+  // Measure the board's own width so it adapts to the space left beside the
+  // right panel, not to the whole pane.
   return (
-    <div className="flex h-full min-h-0 w-full flex-col">
+    <PaneWidthProvider>
       <div className="min-h-0 flex-1">
         <KanbanContainer />
       </div>
-    </div>
+    </PaneWidthProvider>
   );
 }
 
 function ProjectKanbanLayout({ projectName }: { projectName: string }) {
   const { issueId, isPanelOpen } = useCurrentKanbanRouteState();
   const isMobile = useIsMobile();
-  const isNarrow = usePaneNarrowerThan(768);
+  const isNarrow = usePaneNarrowerThan(SPLIT_MIN_WIDTH);
   const { getIssue } = useProjectContext();
   const issue = issueId ? getIssue(issueId) : undefined;
   usePageTitle(issue?.title, projectName);
@@ -201,7 +214,7 @@ function ProjectKanbanLayout({ projectName }: { projectName: string }) {
     >
       <Panel
         id="kanban-left"
-        minSize="20%"
+        minSize={BOARD_MIN_WIDTH}
         className="min-w-0 h-full overflow-hidden bg-primary"
       >
         <ProjectKanbanBoard />
@@ -217,8 +230,8 @@ function ProjectKanbanLayout({ projectName }: { projectName: string }) {
       {isRightPanelOpen && (
         <Panel
           id="kanban-right"
-          minSize="400px"
-          maxSize="800px"
+          minSize={PANEL_MIN_WIDTH}
+          maxSize={800}
           className="min-w-0 h-full overflow-hidden bg-secondary"
         >
           <ProjectRightSidebarContainer />
