@@ -74,8 +74,10 @@ describe('useIssueSelectionStore', () => {
     store.toggleIssue('a');
     store.toggleIssue('b');
 
-    // A single card edited outside the selection keeps it.
+    // A single card edited outside the selection keeps it, as does editing
+    // just one of the selected issues (e.g. from the opened issue's panel).
     store.clearSelectionFor(['c']);
+    store.clearSelectionFor(['a']);
     expect(useIssueSelectionStore.getState().selectedIssueIds.size).toBe(2);
 
     store.clearSelectionFor(['a', 'b']);
@@ -83,5 +85,15 @@ describe('useIssueSelectionStore', () => {
       selectedIssueIds: new Set(),
       isSelectionMode: false,
     });
+  });
+
+  it('keeps the keyboard cursor when nothing is selected', () => {
+    const store = useIssueSelectionStore.getState();
+    store.setOrderedIssueIds(['a', 'b']);
+    store.focusCursor('a');
+
+    store.clearSelectionFor(['a']);
+
+    expect(useIssueSelectionStore.getState().cursorIssueId).toBe('a');
   });
 });
