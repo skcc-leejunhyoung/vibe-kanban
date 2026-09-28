@@ -46,6 +46,11 @@
     "selectOption": "옵션 선택..."
   },
   "conversation": {
+    "timing": {
+      "sent": "보낸 시각",
+      "finished": "응답 완료",
+      "elapsed": "걸린 시간"
+    },
     "deniedByUser": "{{toolName}} 사용자에 의해 거부됨",
     "output": "출력",
     "plan": "계획",

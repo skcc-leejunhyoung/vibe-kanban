@@ -38,6 +38,11 @@
     "browserDefault": "Browser Default"
   },
   "conversation": {
+    "timing": {
+      "sent": "Sent",
+      "finished": "Finished",
+      "elapsed": "Elapsed"
+    },
     "plan": "Plan",
     "output": "Output",
     "deniedByUser": "{{toolName}} denied by user",

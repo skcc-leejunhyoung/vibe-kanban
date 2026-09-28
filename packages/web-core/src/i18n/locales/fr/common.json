@@ -33,6 +33,11 @@
     "browserDefault": "Par défaut du navigateur"
   },
   "conversation": {
+    "timing": {
+      "sent": "Envoyé",
+      "finished": "Terminé",
+      "elapsed": "Durée"
+    },
     "plan": "Plan",
     "output": "Sortie",
     "deniedByUser": "{{toolName}} refusé par l'utilisateur",

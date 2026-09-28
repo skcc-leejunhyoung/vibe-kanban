@@ -46,6 +46,11 @@
     "selectOption": "Seleccionar una opción..."
   },
   "conversation": {
+    "timing": {
+      "sent": "Enviado",
+      "finished": "Finalizado",
+      "elapsed": "Duración"
+    },
     "deniedByUser": "{{toolName}} denegado por el usuario",
     "output": "Salida",
     "plan": "Plan",

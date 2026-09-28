@@ -5,7 +5,7 @@ import { getModifierKey } from '../lib/platform';
 
 interface TooltipProps {
   children: ReactNode;
-  content: string;
+  content: ReactNode;
   shortcut?: string;
   side?: 'top' | 'bottom' | 'left' | 'right';
   className?: string;

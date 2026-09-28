@@ -839,6 +839,7 @@ function UserMessageEntry({
   resetAction: UseResetProcessResult;
   readOnly: boolean;
 }) {
+  const { t } = useTranslation('common');
   const [expanded, toggle] = usePersistedExpanded(`user:${expansionKey}`, true);
   const { startEdit, isEntryGreyed, isInEditMode } = useMessageEditContext();
   const { resetProcess, canResetProcess, isResetPending } = resetAction;
@@ -876,7 +877,28 @@ function UserMessageEntry({
       onReset={canReset ? handleReset : undefined}
       isGreyed={isGreyed}
       meta={timing?.text}
-      metaTitle={timing?.title}
+      metaTooltip={
+        timing && (
+          <dl className="grid grid-cols-[auto_auto] gap-x-base gap-y-half tabular-nums">
+            <dt className="text-low">{t('conversation.timing.sent')}</dt>
+            <dd>{timing.sentAt}</dd>
+            {timing.finishedAt && (
+              <>
+                <dt className="text-low">
+                  {t('conversation.timing.finished')}
+                </dt>
+                <dd>{timing.finishedAt}</dd>
+              </>
+            )}
+            {timing.elapsed && (
+              <>
+                <dt className="text-low">{t('conversation.timing.elapsed')}</dt>
+                <dd>{timing.elapsed}</dd>
+              </>
+            )}
+          </dl>
+        )
+      }
       renderMarkdown={({ content, workspaceId }) => (
         <AppChatMarkdown
           content={content}

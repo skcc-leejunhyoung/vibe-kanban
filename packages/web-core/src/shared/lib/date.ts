@@ -45,33 +45,64 @@ function formatClock(dateString: string): string {
   );
 }
 
+/** Full date and time with seconds, e.g. "2026. 09. 28. 15:28:05" (KST). */
+export function formatDateTimeFull(dateString: string): string {
+  return new Date(dateString).toLocaleString(
+    undefined,
+    withDisplayTimeZone({
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+  );
+}
+
+export interface TurnTiming {
+  /** Header note: "10:30 → 10:42 · 12m 3s", or "10:30 → … · 3m 12s" while running. */
+  text: string;
+  /** Full send / finish timestamps and elapsed for the hover detail. */
+  sentAt: string;
+  finishedAt: string | null;
+  elapsed: string | null;
+}
+
 /**
- * Header note for a conversation turn: "10:30 → 10:42 · 12m 3s" once the
- * agent finished, "10:30 → … · 3m 12s" while it is still running (`now` is
- * the ticking clock). `title` carries the full dates for the tooltip.
+ * Timing of a conversation turn. `now` is the ticking clock while the agent
+ * is still running; pass `null` once `completedAt` is known.
  */
 export function formatTurnTiming(
   startedAt: string,
   completedAt: string | null,
   now: number | null
-): { text: string; title: string } | null {
+): TurnTiming | null {
   const start = new Date(startedAt).getTime();
   if (Number.isNaN(start)) return null;
   const end = completedAt ? new Date(completedAt).getTime() : now;
+  const sentAt = formatDateTimeFull(startedAt);
   if (end == null || Number.isNaN(end)) {
     return {
       text: formatClock(startedAt),
-      title: formatDateShortWithTime(startedAt),
+      sentAt,
+      finishedAt: null,
+      elapsed: null,
     };
   }
   const elapsed = formatElapsed(end - start);
   return completedAt
     ? {
         text: `${formatClock(startedAt)} → ${formatClock(completedAt)} · ${elapsed}`,
-        title: `${formatDateShortWithTime(startedAt)} → ${formatDateShortWithTime(completedAt)}`,
+        sentAt,
+        finishedAt: formatDateTimeFull(completedAt),
+        elapsed,
       }
     : {
         text: `${formatClock(startedAt)} → … · ${elapsed}`,
-        title: formatDateShortWithTime(startedAt),
+        sentAt,
+        finishedAt: null,
+        elapsed,
       };
 }

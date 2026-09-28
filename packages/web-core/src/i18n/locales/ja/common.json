@@ -46,6 +46,11 @@
     "selectOption": "オプションを選択..."
   },
   "conversation": {
+    "timing": {
+      "sent": "送信",
+      "finished": "完了",
+      "elapsed": "所要時間"
+    },
     "deniedByUser": "{{toolName}} がユーザーによって拒否されました",
     "output": "出力",
     "plan": "計画",

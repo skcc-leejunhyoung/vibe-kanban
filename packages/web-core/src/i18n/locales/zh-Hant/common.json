@@ -33,6 +33,11 @@
     "browserDefault": "瀏覽器預設"
   },
   "conversation": {
+    "timing": {
+      "sent": "傳送",
+      "finished": "完成",
+      "elapsed": "耗時"
+    },
     "plan": "計畫",
     "output": "輸出",
     "deniedByUser": "使用者拒絕了 {{toolName}}",

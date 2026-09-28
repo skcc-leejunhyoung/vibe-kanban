@@ -18,9 +18,9 @@ interface ChatUserMessageProps {
   onEdit?: () => void;
   onReset?: () => void;
   isGreyed?: boolean;
-  /** Short header note (e.g. turn timing); `metaTitle` is its tooltip. */
+  /** Short header note (e.g. turn timing); `metaTooltip` opens on hover. */
   meta?: string;
-  metaTitle?: string;
+  metaTooltip?: ReactNode;
   renderMarkdown: (props: ChatUserMessageRenderProps) => ReactNode;
 }
 
@@ -34,7 +34,7 @@ export function ChatUserMessage({
   onReset,
   isGreyed,
   meta,
-  metaTitle,
+  metaTooltip,
   renderMarkdown,
 }: ChatUserMessageProps) {
   const { t } = useTranslation('tasks');
@@ -43,14 +43,18 @@ export function ChatUserMessage({
   const headerActions =
     meta || showActions ? (
       <div className="flex items-center gap-1">
-        {meta && (
-          <span
-            className="text-xs text-low tabular-nums whitespace-nowrap"
-            title={metaTitle}
-          >
-            {meta}
-          </span>
-        )}
+        {meta &&
+          (metaTooltip ? (
+            <Tooltip content={metaTooltip}>
+              <span className="text-xs text-low tabular-nums whitespace-nowrap">
+                {meta}
+              </span>
+            </Tooltip>
+          ) : (
+            <span className="text-xs text-low tabular-nums whitespace-nowrap">
+              {meta}
+            </span>
+          ))}
         {showActions && onReset && (
           <Tooltip content={t('conversation.actions.resetTooltip')}>
             <button
