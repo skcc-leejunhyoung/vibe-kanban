@@ -102,20 +102,169 @@ export function findDialogPrimaryAction(
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+/** True while keyboard focus sits inside an open dialog. */
+export function isFocusInDialog(): boolean {
+  const active = document.activeElement;
+  return (
+    !!active && active !== document.body && !!active.closest('[role="dialog"]')
+  );
+}
+
+// Dialog element -> the trigger of the menu/select/popover an item of which
+// opened it (recorded by keepDialogFocusOnLayerClose). The item itself is gone
+// with the layer, so this is where focus belongs once the dialog closes.
+const layerOpeners = new WeakMap<Element, HTMLElement>();
+
 /**
- * Hands focus back to the element that opened a dialog. Declines when the
- * opener is gone, or when focus already sits in another dialog: focus scopes
+ * Hands focus back to the element that opened a dialog — or, when the dialog
+ * was opened from a menu item, to that menu's trigger. Declines when the
+ * target is gone, or when focus already sits in another dialog: focus scopes
  * restore on a `setTimeout(0)`, so in an `await ConfirmDialog.show()` chain the
  * next dialog has already mounted and focused itself by then — restoring would
  * yank focus out of it, back behind the modal.
  */
-export function restoreDialogFocus(opener: HTMLElement | null): void {
-  if (!opener?.isConnected) return;
-  const active = document.activeElement;
-  if (active && active !== document.body && active.closest('[role="dialog"]')) {
-    return;
+export function restoreDialogFocus(
+  opener: HTMLElement | null,
+  dialog?: Element | null
+): void {
+  const target = (dialog && layerOpeners.get(dialog)) ?? opener;
+  if (!target?.isConnected || isFocusInDialog()) return;
+  target.focus({ preventScroll: true });
+}
+
+/** The trigger of a Radix menu/select/popover, from its content element. */
+function layerTrigger(content: Element | null): HTMLElement | null {
+  if (!content) return null;
+  // Menus are labelled by their trigger; selects and popovers point the
+  // trigger at the content through aria-controls.
+  const labelledBy = content.getAttribute('aria-labelledby');
+  if (content.getAttribute('role') === 'menu' && labelledBy) {
+    return document.getElementById(labelledBy);
   }
-  opener.focus({ preventScroll: true });
+  return content.id
+    ? document.querySelector<HTMLElement>(
+        `[aria-controls="${CSS.escape(content.id)}"]`
+      )
+    : null;
+}
+
+/**
+ * `onCloseAutoFocus` for Radix menus, selects and popovers. On close they
+ * return focus to their trigger on a `setTimeout(0)` — by then an item may
+ * have opened a dialog that already focused itself, and the trigger sits
+ * behind that dialog. Leave focus where the dialog put it, and make the
+ * trigger that dialog's restore target instead.
+ */
+export function keepDialogFocusOnLayerClose(
+  event: Event,
+  onCloseAutoFocus?: (event: Event) => void
+): void {
+  onCloseAutoFocus?.(event);
+  if (!isFocusInDialog()) return;
+  event.preventDefault();
+  const dialog = document.activeElement?.closest('[role="dialog"]');
+  const trigger = layerTrigger(event.currentTarget as Element | null);
+  // A menu inside the dialog itself (an item that focused one of its fields)
+  // is not the dialog's opener.
+  if (dialog && trigger && !dialog.contains(trigger)) {
+    layerOpeners.set(dialog, trigger);
+  }
+}
+
+// Node.DOCUMENT_POSITION_FOLLOWING
+const DOCUMENT_POSITION_FOLLOWING = 4;
+
+function portalRoot(el: Element): Element {
+  let root = el;
+  while (root.parentElement && root.parentElement !== document.body) {
+    root = root.parentElement;
+  }
+  return root;
+}
+
+/**
+ * Whether `target` sits in a layer stacked above the dialog `container`.
+ * Layers (menus, selects, popovers, nested dialogs) portal into <body> when
+ * they open, so anything opened after this dialog follows its portal root in
+ * DOM order; the app tree and earlier layers precede it — they are behind.
+ */
+export function isLayeredAbove(container: Element, target: Element): boolean {
+  const dialogRoot = portalRoot(container);
+  const targetRoot = portalRoot(target);
+  return (
+    targetRoot === dialogRoot ||
+    !!(
+      dialogRoot.compareDocumentPosition(targetRoot) &
+      DOCUMENT_POSITION_FOLLOWING
+    )
+  );
+}
+
+interface DialogFocusGuardOptions {
+  /** Ref accessor for the dialog container element. Must be stable. */
+  getContainer: () => HTMLElement | null;
+  /** Top-of-stack check from useModalKeyboardLayer. */
+  isTopLayer: () => boolean;
+}
+
+/**
+ * Keeps focus inside the top-most dialog. Something behind it can still grab
+ * focus after it opened — a closing menu refocusing its trigger, a background
+ * `autoFocus` mounting after a load — and from there keys drive the page
+ * behind the modal. Layers stacked above (see `isLayeredAbove`) are left
+ * alone, so this is not a trap: menus and selects opened from the dialog work.
+ */
+export function useDialogFocusGuard({
+  getContainer,
+  isTopLayer,
+}: DialogFocusGuardOptions) {
+  useEffect(() => {
+    let alive = true;
+    let lastInside: HTMLElement | null = null;
+    const container = getContainer();
+    const active = document.activeElement as HTMLElement | null;
+    if (container && active && container.contains(active)) lastInside = active;
+
+    const reclaim = () => {
+      const container = getContainer();
+      if (!alive || !container || !isTopLayer()) return;
+      const active = document.activeElement;
+      if (
+        active &&
+        active !== document.body &&
+        (container.contains(active) || isLayeredAbove(container, active))
+      ) {
+        return;
+      }
+      if (lastInside?.isConnected && container.contains(lastInside)) {
+        lastInside.focus({ preventScroll: true });
+      }
+      // A disabled control declines focus; the container never does.
+      if (!container.contains(document.activeElement)) {
+        container.focus({ preventScroll: true });
+      }
+    };
+
+    const handleFocusIn = (event: FocusEvent) => {
+      const container = getContainer();
+      const target = event.target as HTMLElement | null;
+      if (!container || !target) return;
+      if (container.contains(target)) {
+        lastInside = target;
+        return;
+      }
+      if (!isTopLayer() || isLayeredAbove(container, target)) return;
+      // Deferred: a handler may move focus behind on purpose right before
+      // closing this dialog (quick chat focuses the pane it opened, then
+      // hides) — by the next task that close has committed and `alive` is off.
+      setTimeout(reclaim, 0);
+    };
+    document.addEventListener('focusin', handleFocusIn);
+    return () => {
+      alive = false;
+      document.removeEventListener('focusin', handleFocusIn);
+    };
+  }, [getContainer, isTopLayer]);
 }
 
 /** Cmd+Enter (mac) / Ctrl+Enter — the dialog "confirm" gesture. */

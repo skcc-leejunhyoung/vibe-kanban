@@ -179,7 +179,7 @@ const DialogContent = React.forwardRef<
         // No opener recorded still falls through to Radix's trigger restore;
         // once we have one we own the outcome, even if it declines.
         event.preventDefault();
-        restoreDialogFocus(opener);
+        restoreDialogFocus(opener, event.currentTarget as Element | null);
       },
       [onCloseAutoFocus]
     );

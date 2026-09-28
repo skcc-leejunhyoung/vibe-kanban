@@ -40,6 +40,8 @@ import { SettingsMachineUserSystemProvider } from './settings/SettingsMachineUse
 import { SettingsRemoteUserSystemProvider } from './settings/SettingsRemoteUserSystemProvider';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { useModalKeyboardLayer } from '@vibe/ui/lib/modal-keyboard';
+import { useDialogKeyboard } from '@vibe/ui/lib/dialog-keyboard';
+import { DialogFocusScope } from '@vibe/ui/components/DialogFocusScope';
 
 export interface SettingsDialogProps {
   initialSection?: SettingsSectionType;
@@ -260,7 +262,9 @@ function SettingsDialogContent({
   initialState,
   onClose,
 }: SettingsDialogContentProps) {
-  useModalKeyboardLayer(true);
+  const { isTopLayer } = useModalKeyboardLayer(true);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const getContainer = useCallback(() => containerRef.current, []);
   const { t } = useTranslation('settings');
   const { isDirty } = useSettingsDirty();
   const { availableHosts, hostsResolved, selectedHost, selectedHostId } =
@@ -344,20 +348,15 @@ function SettingsDialogContent({
     setMobileShowContent(false);
   };
 
-  // Handle ESC key. Skip when an inner layer already consumed the Escape (e.g.
-  // the unsaved-changes confirmation dialog, an open select, or an inline edit
-  // being cancelled), so closing those doesn't also re-trigger the settings
-  // close/confirm flow.
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.defaultPrevented) {
-        e.preventDefault();
-        handleCloseWithConfirmation();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleCloseWithConfirmation]);
+  // Escape (close, with the unsaved-changes confirmation) and Tab trapping via
+  // the shared dialog keyboard layer; it skips when an inner layer (the
+  // confirmation dialog, an open select) already consumed the key.
+  useDialogKeyboard({
+    open: true,
+    getContainer,
+    isTopLayer,
+    onClose: handleCloseWithConfirmation,
+  });
 
   return (
     <>
@@ -367,128 +366,135 @@ function SettingsDialogContent({
         className="fixed inset-0 z-[9998] bg-black/50 animate-in fade-in-0 duration-200"
         onClick={handleCloseWithConfirmation}
       />
-      {/* Dialog wrapper - handles positioning */}
-      <div
-        className={cn(
-          'fixed z-[9999]',
-          // Mobile: full screen
-          'inset-0',
-          // Desktop: centered with fixed size
-          'md:inset-auto md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2'
-        )}
-      >
-        {/* Dialog content - handles animation */}
+      {/* Dialog wrapper - handles positioning; focus contract (initial focus,
+          guard, restore) is the shared DialogFocusScope */}
+      <DialogFocusScope isTopLayer={isTopLayer}>
         <div
+          ref={containerRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
           className={cn(
-            'h-full w-full flex overflow-hidden',
-            'bg-panel/95 backdrop-blur-sm shadow-lg',
-            'animate-in fade-in-0 slide-in-from-bottom-4 duration-200',
-            // Mobile: full screen, no rounded corners
-            'rounded-none border-0',
-            // Desktop: fixed size with rounded corners
-            'md:w-[900px] md:h-[700px] md:rounded-sm md:border md:border-border/50'
+            'fixed z-[9999] outline-none',
+            // Mobile: full screen
+            'inset-0',
+            // Desktop: centered with fixed size
+            'md:inset-auto md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2'
           )}
         >
-          {/* Sidebar - hidden on mobile when showing content */}
+          {/* Dialog content - handles animation */}
           <div
             className={cn(
-              'bg-secondary/80 border-r border-border flex flex-col',
-              // Mobile: full width, hidden when showing content
-              'w-full',
-              mobileShowContent && 'hidden',
-              // Desktop: fixed width sidebar, always visible
-              'md:w-56 md:block'
+              'h-full w-full flex overflow-hidden',
+              'bg-panel/95 backdrop-blur-sm shadow-lg',
+              'animate-in fade-in-0 slide-in-from-bottom-4 duration-200',
+              // Mobile: full screen, no rounded corners
+              'rounded-none border-0',
+              // Desktop: fixed size with rounded corners
+              'md:w-[900px] md:h-[700px] md:rounded-sm md:border md:border-border/50'
             )}
           >
-            {/* Header */}
-            <div className="p-4 border-b border-border flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-high">
-                {t('settings.layout.nav.title')}
-              </h2>
-              {/* Close button - mobile only */}
-              <button
-                onClick={handleCloseWithConfirmation}
-                className="p-1 rounded-sm hover:bg-secondary text-low hover:text-normal md:hidden"
-              >
-                <XIcon className="size-icon-sm" weight="bold" />
-              </button>
-            </div>
-            <SettingsDialogNavigation
-              activeSection={activeSection}
-              onSectionSelect={handleSectionSelect}
-            />
-          </div>
-          {/* Content - hidden on mobile when showing nav */}
-          <div
-            className={cn(
-              'flex-1 flex flex-col relative overflow-hidden',
-              // Mobile: full width, hidden when showing nav
-              !mobileShowContent && 'hidden',
-              // Desktop: always visible
-              'md:flex'
-            )}
-          >
-            {/* Mobile header with back button */}
-            <div className="flex items-center gap-2 p-3 border-b border-border md:hidden">
-              <button
-                onClick={handleMobileBack}
-                className="p-1 rounded-sm hover:bg-secondary text-low hover:text-normal"
-              >
-                <CaretLeftIcon className="size-icon-sm" weight="bold" />
-              </button>
-              <span className="text-sm font-medium text-high">
-                {t(`settings.layout.nav.${activeSection}`)}
-              </span>
-              <button
-                onClick={handleCloseWithConfirmation}
-                className="ml-auto p-1 rounded-sm hover:bg-secondary text-low hover:text-normal"
-              >
-                <XIcon className="size-icon-sm" weight="bold" />
-              </button>
-            </div>
-            {/* Section content */}
-            <div className="flex-1 overflow-y-auto">
-              {isHostSpecificSettingsSection(activeSection) ? (
-                isRemoteShared ? (
-                  <SettingsRemoteUserSystemProvider>
-                    <SettingsSection
-                      type={activeSection}
-                      onClose={handleCloseWithConfirmation}
-                      initialState={initialState}
-                    />
-                  </SettingsRemoteUserSystemProvider>
-                ) : selectedHost ? (
-                  <SettingsMachineUserSystemProvider>
-                    <SettingsSection
-                      type={activeSection}
-                      onClose={handleCloseWithConfirmation}
-                      initialState={initialState}
-                    />
-                  </SettingsMachineUserSystemProvider>
-                ) : !hostsResolved ? (
-                  <div className="px-6 py-8 text-sm text-low">
-                    {t('settings.general.loading')}
-                  </div>
-                ) : availableHosts.length > 0 ? (
-                  <div className="px-6 py-8 text-sm text-low">
-                    {t('settings.hostPicker.selectMachineHint')}
-                  </div>
-                ) : (
-                  <div className="px-6 py-8 text-sm text-low">
-                    {t('settings.hostPicker.noHostAvailable')}
-                  </div>
-                )
-              ) : (
-                <SettingsSection
-                  type={activeSection}
-                  onClose={handleCloseWithConfirmation}
-                  initialState={initialState}
-                />
+            {/* Sidebar - hidden on mobile when showing content */}
+            <div
+              className={cn(
+                'bg-secondary/80 border-r border-border flex flex-col',
+                // Mobile: full width, hidden when showing content
+                'w-full',
+                mobileShowContent && 'hidden',
+                // Desktop: fixed width sidebar, always visible
+                'md:w-56 md:block'
               )}
+            >
+              {/* Header */}
+              <div className="p-4 border-b border-border flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-high">
+                  {t('settings.layout.nav.title')}
+                </h2>
+                {/* Close button - mobile only */}
+                <button
+                  onClick={handleCloseWithConfirmation}
+                  className="p-1 rounded-sm hover:bg-secondary text-low hover:text-normal md:hidden"
+                >
+                  <XIcon className="size-icon-sm" weight="bold" />
+                </button>
+              </div>
+              <SettingsDialogNavigation
+                activeSection={activeSection}
+                onSectionSelect={handleSectionSelect}
+              />
+            </div>
+            {/* Content - hidden on mobile when showing nav */}
+            <div
+              className={cn(
+                'flex-1 flex flex-col relative overflow-hidden',
+                // Mobile: full width, hidden when showing nav
+                !mobileShowContent && 'hidden',
+                // Desktop: always visible
+                'md:flex'
+              )}
+            >
+              {/* Mobile header with back button */}
+              <div className="flex items-center gap-2 p-3 border-b border-border md:hidden">
+                <button
+                  onClick={handleMobileBack}
+                  className="p-1 rounded-sm hover:bg-secondary text-low hover:text-normal"
+                >
+                  <CaretLeftIcon className="size-icon-sm" weight="bold" />
+                </button>
+                <span className="text-sm font-medium text-high">
+                  {t(`settings.layout.nav.${activeSection}`)}
+                </span>
+                <button
+                  onClick={handleCloseWithConfirmation}
+                  className="ml-auto p-1 rounded-sm hover:bg-secondary text-low hover:text-normal"
+                >
+                  <XIcon className="size-icon-sm" weight="bold" />
+                </button>
+              </div>
+              {/* Section content */}
+              <div className="flex-1 overflow-y-auto">
+                {isHostSpecificSettingsSection(activeSection) ? (
+                  isRemoteShared ? (
+                    <SettingsRemoteUserSystemProvider>
+                      <SettingsSection
+                        type={activeSection}
+                        onClose={handleCloseWithConfirmation}
+                        initialState={initialState}
+                      />
+                    </SettingsRemoteUserSystemProvider>
+                  ) : selectedHost ? (
+                    <SettingsMachineUserSystemProvider>
+                      <SettingsSection
+                        type={activeSection}
+                        onClose={handleCloseWithConfirmation}
+                        initialState={initialState}
+                      />
+                    </SettingsMachineUserSystemProvider>
+                  ) : !hostsResolved ? (
+                    <div className="px-6 py-8 text-sm text-low">
+                      {t('settings.general.loading')}
+                    </div>
+                  ) : availableHosts.length > 0 ? (
+                    <div className="px-6 py-8 text-sm text-low">
+                      {t('settings.hostPicker.selectMachineHint')}
+                    </div>
+                  ) : (
+                    <div className="px-6 py-8 text-sm text-low">
+                      {t('settings.hostPicker.noHostAvailable')}
+                    </div>
+                  )
+                ) : (
+                  <SettingsSection
+                    type={activeSection}
+                    onClose={handleCloseWithConfirmation}
+                    initialState={initialState}
+                  />
+                )}
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </DialogFocusScope>
     </>
   );
 }

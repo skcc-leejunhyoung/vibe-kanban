@@ -73,14 +73,24 @@ Two sanctioned exceptions, both using `KEYBOARD_CURSOR_RING` from
   SettingsDialog section nav) — excluded from the global rule, so they draw
   their own `focus:` ring.
 
-Dialog initial focus is owned by the shell, not the content: `KeyboardDialog`
-focuses the button `Enter` would activate (`findDialogPrimaryAction`, i.e. the
+Dialog focus is owned by the shell, not the content, through
+`@vibe/ui/components/DialogFocusScope` (used by `KeyboardDialog`,
+`GuideDialogShell`, `SettingsDialog`, `KeyboardShortcutsDialog`; Radix
+`Dialog` gets the same from Radix): on open it focuses the button `Enter`
+would activate (`findDialogPrimaryAction`, i.e. the
 `type="submit"`/`data-dialog-primary` button — an OK-only alert lands on OK)
-and falls back to the container; a dialog that autofocuses its own field keeps
-it. Do NOT add `autoFocus` to footer buttons — it runs before the shell
-captures the opener, so focus would no longer return to the opener (e.g. the
-issue list add-row or the command bar input) on close. `KeyboardDialog` joins
-Radix's FocusScope stack, so it may stack over Radix modals (command bar).
+or the container; a dialog that autofocuses its own field keeps it. While the
+dialog is the top modal layer it reclaims focus that lands behind it
+(`useDialogFocusGuard`) — layers portaled above it (menus, selects, popovers,
+nested dialogs) are left alone. On close focus returns to the opener, or to
+the trigger of the menu the dialog was opened from (the closing menu hands it
+over through `keepDialogFocusOnLayerClose`).
+Do NOT add `autoFocus` to footer buttons (the shell already focuses the
+primary). A new custom shell must wrap its `role="dialog"` / `tabIndex={-1}`
+panel in `DialogFocusScope` and use `useDialogKeyboard` — never a bare
+window keydown listener. The Radix menu/select/popover wrappers in `@vibe/ui`
+keep focus in a dialog an item opened (`keepDialogFocusOnLayerClose`); use
+them rather than raw `*Primitive.Content`.
 
 ### Example Component Styling
 

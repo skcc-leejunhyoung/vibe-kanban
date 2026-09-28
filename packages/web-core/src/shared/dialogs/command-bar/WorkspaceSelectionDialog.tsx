@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { restoreDialogFocus } from '@vibe/ui/lib/dialog-keyboard';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { useTranslation } from 'react-i18next';
 import { GitBranchIcon, PlusIcon } from '@phosphor-icons/react';
@@ -232,7 +233,8 @@ function WorkspaceSelectionContent({
   // Restore focus when dialog closes
   const handleCloseAutoFocus = useCallback((event: Event) => {
     event.preventDefault();
-    previousFocusRef.current?.focus();
+    // Declines when a dialog this one opened already holds focus.
+    restoreDialogFocus(previousFocusRef.current);
   }, []);
 
   // Prevent Radix from managing focus on open - let cmdk handle it

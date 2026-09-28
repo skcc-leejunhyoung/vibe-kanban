@@ -9,6 +9,7 @@ import {
 } from '@phosphor-icons/react';
 
 import { cn } from '../lib/cn';
+import { keepDialogFocusOnLayerClose } from '../lib/dialog-keyboard';
 
 const DropdownMenu = DropdownMenuPrimitive.Root;
 
@@ -149,12 +150,15 @@ DropdownMenuSubContent.displayName =
 const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, ...props }, ref) => {
+>(({ className, sideOffset = 4, onCloseAutoFocus, ...props }, ref) => {
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         ref={ref}
         sideOffset={sideOffset}
+        onCloseAutoFocus={(event) =>
+          keepDialogFocusOnLayerClose(event, onCloseAutoFocus)
+        }
         className={cn(
           'z-[10000] min-w-[8rem] overflow-y-auto overflow-x-hidden',
           'max-h-[var(--radix-dropdown-menu-content-available-height)]',

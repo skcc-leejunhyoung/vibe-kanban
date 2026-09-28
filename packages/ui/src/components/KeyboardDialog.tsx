@@ -2,16 +2,15 @@ import * as React from 'react';
 import { X } from 'lucide-react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { createPortal } from 'react-dom';
-import { FocusScope } from '@radix-ui/react-focus-scope';
 
 import { cn } from '../lib/cn';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
 import {
   activatesOnEnter,
   findDialogPrimaryAction,
-  restoreDialogFocus,
   useDialogKeyboard,
 } from '../lib/dialog-keyboard';
+import { DialogFocusScope } from './DialogFocusScope';
 import {
   getKeyboardDialogMaxWidth,
   type KeyboardDialogSize,
@@ -72,7 +71,6 @@ const Dialog = React.forwardRef<
     const { isTopLayer, isOverPointerBlockingLayer } =
       useModalKeyboardLayer(!!open);
     const dialogRef = React.useRef<HTMLDivElement | null>(null);
-    const openerRef = React.useRef<HTMLElement | null>(null);
 
     const setDialogRef = React.useCallback(
       (node: HTMLDivElement | null) => {
@@ -100,39 +98,6 @@ const Dialog = React.forwardRef<
       isTopLayer,
       onClose: handleClose,
     });
-
-    // Focus management runs through Radix's FocusScope (trapping stays with
-    // useDialogKeyboard) so this dialog joins the same focus-scope stack as
-    // Radix dialogs: a Radix modal underneath (e.g. the command bar) is
-    // paused instead of pulling focus back to its own input.
-    //
-    // On open, FocusScope raises this only when nothing inside is focused yet
-    // (dialogs that autofocus their own field keep it). Focus the button that
-    // Enter activates — an OK-only alert lands on OK — else the container, so
-    // keys don't leak into whatever was focused before (e.g. the chat box).
-    const handleMountAutoFocus = React.useCallback((event: Event) => {
-      event.preventDefault();
-      const el = dialogRef.current;
-      if (!el) return;
-      openerRef.current = document.activeElement as HTMLElement | null;
-      (findDialogPrimaryAction(el) ?? el).focus();
-    }, []);
-    // On close, hand focus back to the opener ourselves: Radix's default also
-    // select()s text inputs, which would clobber a draft on the next keystroke.
-    // Always preventDefault — the fallback would target the same opener, so
-    // letting it run would defeat restoreDialogFocus declining.
-    const handleUnmountAutoFocus = React.useCallback(
-      (event: Event) => {
-        onCloseAutoFocus?.(event);
-        const declined = event.defaultPrevented;
-        event.preventDefault();
-        const opener = openerRef.current;
-        openerRef.current = null;
-        if (declined) return;
-        restoreDialogFocus(opener);
-      },
-      [onCloseAutoFocus]
-    );
 
     useHotkeys(
       'enter',
@@ -208,11 +173,12 @@ const Dialog = React.forwardRef<
           className="fixed inset-0 bg-black/50"
           onClick={() => (uncloseable ? {} : onOpenChange?.(false))}
         />
-        <FocusScope
-          asChild
-          trapped={false}
-          onMountAutoFocus={handleMountAutoFocus}
-          onUnmountAutoFocus={handleUnmountAutoFocus}
+        {/* Initial focus, focus guard and restore-to-opener (Tab trapping
+            stays with useDialogKeyboard). */}
+        <DialogFocusScope
+          isTopLayer={isTopLayer}
+          focusPrimary
+          onCloseAutoFocus={onCloseAutoFocus}
         >
           <div
             ref={setDialogRef}
@@ -249,7 +215,7 @@ const Dialog = React.forwardRef<
             )}
             {children}
           </div>
-        </FocusScope>
+        </DialogFocusScope>
       </div>,
       document.body
     );

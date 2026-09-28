@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { restoreDialogFocus } from '@vibe/ui/lib/dialog-keyboard';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { useTranslation } from 'react-i18next';
 import type { IssueTag } from 'shared/remote-types';
@@ -141,7 +142,8 @@ function TagSelectionContent({
 
   const handleCloseAutoFocus = useCallback((event: Event) => {
     event.preventDefault();
-    previousFocusRef.current?.focus();
+    // Declines when a dialog this one opened already holds focus.
+    restoreDialogFocus(previousFocusRef.current);
   }, []);
 
   return (
