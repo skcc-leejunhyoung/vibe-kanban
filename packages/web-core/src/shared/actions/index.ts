@@ -72,6 +72,7 @@ import {
   GithubLogoIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
+import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import {
   useUiPreferencesStore,
   RIGHT_MAIN_PANEL_MODES,
@@ -3469,6 +3470,7 @@ export const Actions = {
           },
         }))
       );
+      useIssueSelectionStore.getState().clearSelectionFor(issueIds);
     },
   } satisfies IssueActionDefinition,
 
@@ -3549,6 +3551,7 @@ export const Actions = {
         const mutation = removeIssue(issueId);
         if (mutation) await mutation.persisted;
       }
+      useIssueSelectionStore.getState().clearSelectionFor(issueIds);
     },
   } satisfies IssueActionDefinition,
 

@@ -29,6 +29,12 @@ interface IssueSelectionState {
   ) => void;
   selectAll: () => void;
   clearSelection: () => void;
+  /**
+   * Clear the selection once a bulk action has been applied to it. No-op when
+   * the action targeted issues outside the selection (e.g. one card edited
+   * while another issue is selected), so that selection survives.
+   */
+  clearSelectionFor: (issueIds: string[]) => void;
   /** Set anchor for range selection without selecting the issue */
   setAnchor: (issueId: string) => void;
   /**
@@ -185,6 +191,11 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
         anchorIssueId: null,
         cursorIssueId: null,
       });
+    },
+
+    clearSelectionFor: (issueIds: string[]) => {
+      const { selectedIssueIds, clearSelection } = get();
+      if (issueIds.some((id) => selectedIssueIds.has(id))) clearSelection();
     },
 
     setAnchor: (issueId: string) => {

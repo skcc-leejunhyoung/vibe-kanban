@@ -34,10 +34,11 @@ export function BulkActionBarContainer({
     await openAssigneeSelection(projectId, issueIds);
   }, [projectId, issueIds, openAssigneeSelection]);
 
+  // DeleteIssue clears the selection itself once confirmed, so canceling the
+  // confirm dialog keeps it.
   const handleDelete = useCallback(async () => {
     await executeAction(Actions.DeleteIssue, undefined, projectId, issueIds);
-    clearSelection();
-  }, [executeAction, projectId, issueIds, clearSelection]);
+  }, [executeAction, projectId, issueIds]);
 
   return (
     <BulkActionBar

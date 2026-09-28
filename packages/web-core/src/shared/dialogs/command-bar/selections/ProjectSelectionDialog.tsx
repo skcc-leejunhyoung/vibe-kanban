@@ -3,6 +3,7 @@ import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/shared/lib/modals';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
+import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import { CommandDialog } from '@vibe/ui/components/Command';
 import {
   CommandBar,
@@ -67,6 +68,7 @@ function ProjectSelectionContent({ selection }: { selection: SelectionMode }) {
     updateIssue,
     insertIssueRelationship,
   } = useProjectContext();
+  const clearSelectionFor = useIssueSelectionStore((s) => s.clearSelectionFor);
   const initialPageId = useMemo(
     () => getInitialPageId(selection.type),
     [selection.type]
@@ -207,12 +209,14 @@ function ProjectSelectionContent({ selection }: { selection: SelectionMode }) {
         for (const issueId of selection.issueIds) {
           updateIssue(issueId, { status_id: result.statusId });
         }
+        clearSelectionFor(selection.issueIds);
       } else if (selection.type === 'priority') {
         const result = data as PrioritySelectionResult;
         if (selection.isCreateMode) return;
         for (const issueId of selection.issueIds) {
           updateIssue(issueId, { priority: result.priority });
         }
+        clearSelectionFor(selection.issueIds);
       } else if (selection.type === 'subIssue') {
         const result = data as SubIssueSelectionResult;
         if (result.type === 'selected') {
@@ -244,7 +248,7 @@ function ProjectSelectionContent({ selection }: { selection: SelectionMode }) {
         }
       }
     },
-    [selection, updateIssue, insertIssueRelationship]
+    [selection, updateIssue, insertIssueRelationship, clearSelectionFor]
   );
 
   const fallbackPage = pages[initialPageId] ?? Object.values(pages)[0];

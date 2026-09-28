@@ -10,6 +10,7 @@ import {
 } from '@vibe/ui/components/MultiSelectCommandBar';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
+import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 
 export type TagSelectionMode = 'add' | 'remove';
 
@@ -49,12 +50,17 @@ function TagSelectionContent({
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const { tags, getTagsForIssue, insertIssueTag, removeIssueTag } =
     useProjectContext();
+  const clearSelectionFor = useIssueSelectionStore((s) => s.clearSelectionFor);
   const [search, setSearch] = useState('');
+  // Set once a toggle mutates issues; the dialog stays open for more toggles,
+  // so the board selection is dropped on close instead.
+  const changedRef = useRef(false);
 
   useEffect(() => {
     if (modal.visible) {
       previousFocusRef.current = document.activeElement as HTMLElement;
       setSearch('');
+      changedRef.current = false;
     }
   }, [modal.visible]);
 
@@ -116,6 +122,9 @@ function TagSelectionContent({
         issueIds,
         mode
       );
+      if (removeLinkIds.length > 0 || addIssueIds.length > 0) {
+        changedRef.current = true;
+      }
       for (const id of removeLinkIds) removeIssueTag(id);
       for (const issueId of addIssueIds) {
         insertIssueTag({ issue_id: issueId, tag_id: tagId });
@@ -126,8 +135,9 @@ function TagSelectionContent({
   );
 
   const handleClose = useCallback(() => {
+    if (changedRef.current) clearSelectionFor(issueIds);
     modal.hide();
-  }, [modal]);
+  }, [modal, clearSelectionFor, issueIds]);
 
   const handleCloseAutoFocus = useCallback((event: Event) => {
     event.preventDefault();
@@ -137,7 +147,7 @@ function TagSelectionContent({
   return (
     <CommandDialog
       open={modal.visible}
-      onOpenChange={(open) => !open && modal.hide()}
+      onOpenChange={(open) => !open && handleClose()}
       onCloseAutoFocus={handleCloseAutoFocus}
     >
       <MultiSelectCommandBar

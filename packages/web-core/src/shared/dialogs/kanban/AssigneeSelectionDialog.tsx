@@ -15,6 +15,7 @@ import { useOrgContext } from '@/shared/hooks/useOrgContext';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
+import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import { useOrganizationProjects } from '@/shared/hooks/useOrganizationProjects';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import {
@@ -89,6 +90,10 @@ function AssigneeSelectionContent({
   // Get issue assignees and mutation functions from ProjectContext
   const { issueAssignees, insertIssueAssignee, removeIssueAssignee } =
     useProjectContext();
+  const clearSelectionFor = useIssueSelectionStore((s) => s.clearSelectionFor);
+  // Set once an edit-mode toggle mutates issues; the dialog stays open for
+  // more toggles, so the board selection is dropped on close instead.
+  const changedRef = useRef(false);
 
   // Local state for create mode when using callback pattern
   const [localCreateAssignees, setLocalCreateAssignees] = useState<string[]>(
@@ -139,6 +144,7 @@ function AssigneeSelectionContent({
     if (modal.visible) {
       previousFocusRef.current = document.activeElement as HTMLElement;
       setSearch('');
+      changedRef.current = false;
     }
   }, [modal.visible]);
 
@@ -178,6 +184,7 @@ function AssigneeSelectionContent({
         }
       } else {
         // Edit mode: apply mutation immediately for each issue
+        changedRef.current = true;
         for (const issueId of issueIds) {
           if (isSelected) {
             // Remove the assignee
@@ -209,8 +216,9 @@ function AssigneeSelectionContent({
   );
 
   const handleClose = useCallback(() => {
+    if (changedRef.current) clearSelectionFor(issueIds);
     modal.hide();
-  }, [modal]);
+  }, [modal, clearSelectionFor, issueIds]);
 
   // Restore focus when dialog closes
   const handleCloseAutoFocus = useCallback((event: Event) => {
@@ -221,7 +229,7 @@ function AssigneeSelectionContent({
   return (
     <CommandDialog
       open={modal.visible}
-      onOpenChange={(open) => !open && modal.hide()}
+      onOpenChange={(open) => !open && handleClose()}
       onCloseAutoFocus={handleCloseAutoFocus}
     >
       <MultiSelectCommandBar

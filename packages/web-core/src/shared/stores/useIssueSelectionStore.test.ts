@@ -67,4 +67,21 @@ describe('useIssueSelectionStore', () => {
       anchorIssueId: 'opened-issue',
     });
   });
+
+  it('clears the selection only after an action targeted it', () => {
+    const store = useIssueSelectionStore.getState();
+    store.setOrderedIssueIds(['a', 'b', 'c']);
+    store.toggleIssue('a');
+    store.toggleIssue('b');
+
+    // A single card edited outside the selection keeps it.
+    store.clearSelectionFor(['c']);
+    expect(useIssueSelectionStore.getState().selectedIssueIds.size).toBe(2);
+
+    store.clearSelectionFor(['a', 'b']);
+    expect(useIssueSelectionStore.getState()).toMatchObject({
+      selectedIssueIds: new Set(),
+      isSelectionMode: false,
+    });
+  });
 });

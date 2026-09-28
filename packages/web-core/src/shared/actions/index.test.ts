@@ -113,6 +113,7 @@ import { publishChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
 import { listGithubIssueLinksForIssue } from '@/shared/lib/remoteApi';
 import { useWorkspaceSessionSelectionStore } from '@/shared/hooks/useWorkspaceSessions';
 import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
+import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 
 const update = vi.mocked(workspacesApi.update);
 const updateScratch = vi.mocked(scratchApi.update);
@@ -2202,5 +2203,39 @@ describe('open in IDE host pairing', () => {
 
     expect(openRemote).not.toHaveBeenCalled();
     expect(openEditor).toHaveBeenCalledWith('pane-ws', expect.anything(), null);
+  });
+});
+
+describe('bulk issue actions and the multi-selection', () => {
+  const selectIssues = (...ids: string[]) => {
+    const store = useIssueSelectionStore.getState();
+    store.clearSelection();
+    ids.forEach((id) => store.toggleIssue(id));
+  };
+  const selectedCount = () =>
+    useIssueSelectionStore.getState().selectedIssueIds.size;
+
+  it('clears the selection once a bulk delete is confirmed', async () => {
+    const removeIssue = vi.fn(() => ({ persisted: Promise.resolve() }));
+    const { ctx } = makeCtx({}, { projectMutations: { removeIssue } as never });
+    selectIssues('issue-1', 'issue-2');
+    showConfirm.mockResolvedValueOnce('confirmed');
+
+    await Actions.DeleteIssue.execute(ctx, 'project-1', ['issue-1', 'issue-2']);
+
+    expect(removeIssue).toHaveBeenCalledTimes(2);
+    expect(selectedCount()).toBe(0);
+  });
+
+  it('keeps the selection when the delete is canceled', async () => {
+    const removeIssue = vi.fn();
+    const { ctx } = makeCtx({}, { projectMutations: { removeIssue } as never });
+    selectIssues('issue-1', 'issue-2');
+    showConfirm.mockResolvedValueOnce('canceled');
+
+    await Actions.DeleteIssue.execute(ctx, 'project-1', ['issue-1', 'issue-2']);
+
+    expect(removeIssue).not.toHaveBeenCalled();
+    expect(selectedCount()).toBe(2);
   });
 });
