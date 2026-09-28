@@ -544,9 +544,10 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
             // within the editor instead of hugging (or overflowing past) the
             // left edge when "1. "/"- " auto-converts. pl-6 keeps the marker
             // gutter wide enough for multi-digit numbers; `outside` preserves
-            // hanging indentation when an item wraps.
+            // hanging indentation when an item wraps. The ol marker style
+            // (1. → a. → i.) cycles by nesting depth in index.css.
             ul: 'my-1 ml-3 list-disc pl-6',
-            ol: 'my-1 ml-3 list-decimal pl-6',
+            ol: 'my-1 ml-3 pl-6',
             checklist: 'wysiwyg-checklist',
             listitem: '',
             listitemChecked:
@@ -555,7 +556,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
               'wysiwyg-checklist-item wysiwyg-checklist-item-unchecked',
             nested: {
               // Hide the structural wrapper marker Lexical adds for nested items.
-              listitem: 'list-none pl-4',
+              listitem: 'wysiwyg-nested-listitem list-none pl-4',
             },
           },
           link: 'text-blue-600 dark:text-blue-400 underline underline-offset-2 cursor-pointer hover:text-blue-800 dark:hover:text-blue-300',

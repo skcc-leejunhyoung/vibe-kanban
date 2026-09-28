@@ -570,6 +570,43 @@ html {
     transform: rotate(45deg);
   }
 
+  /* Lexical wraps nested lists in an extra <li>; inside a checklist it gets
+     the item classes too, so drop its checkbox and strike-through. */
+  .wysiwyg-nested-listitem::before,
+  .wysiwyg-nested-listitem::after {
+    content: none;
+  }
+
+  .wysiwyg-nested-listitem {
+    text-decoration: none;
+    color: inherit;
+  }
+
+  /* Notion-style ordered list markers: 1. → a. → i. per nesting level. */
+  .wysiwyg ol {
+    list-style-type: decimal;
+  }
+
+  .wysiwyg ol ol {
+    list-style-type: lower-alpha;
+  }
+
+  .wysiwyg ol ol ol {
+    list-style-type: lower-roman;
+  }
+
+  .wysiwyg ol ol ol ol {
+    list-style-type: decimal;
+  }
+
+  .wysiwyg ol ol ol ol ol {
+    list-style-type: lower-alpha;
+  }
+
+  .wysiwyg ol ol ol ol ol ol {
+    list-style-type: lower-roman;
+  }
+
   @media (hover: hover) and (pointer: fine) {
     .wysiwyg-readonly-actions {
       opacity: 0;
