@@ -128,18 +128,26 @@ export function ChatBoxBase({
         </div>
       )}
 
-      {/* Banner content (queued list, agent question, review comments). In a
-          height-capped box this is the part that gives way: it shrinks and
-          scrolls, so a long question or queue can't push the input and the
-          action buttons out of the box. The divider lives on the wrapper (each
-          banner's own bottom border is dropped on the last one) so it stays
-          put while the banners scroll; `empty:hidden` covers a banner that
-          renders nothing (e.g. an answered question awaiting the agent). */}
+      {/* Banner content (queued list, agent question, review comments).
+          `shrink-0`: the banner keeps its natural height, so a one-line queue
+          or a short question never gets squeezed into a scrolling sliver just
+          because the prompt below is long (flex would otherwise shave every
+          region by the same fraction). Only a genuinely long banner scrolls,
+          at the cap: the box is at most half the column (≈ 50svh - chrome),
+          and the cap leaves the header, the footer and 3-4 lines of input
+          (more on taller viewports) inside that, so the buttons never leave
+          the box. The 6rem floor keeps a title and a question readable on
+          very short viewports. The
+          divider lives on the wrapper (each banner's own bottom border is
+          dropped on the last one) so it stays put while the banners scroll;
+          `empty:hidden` covers a banner that renders nothing (e.g. an answered
+          question awaiting the agent). */}
       {banner && (
         <div
           className={cn(
             'border-b empty:hidden [&>*:last-child]:border-b-0',
-            fillHeight && 'min-h-0 overflow-y-auto'
+            fillHeight &&
+              'shrink-0 overflow-y-auto max-h-[max(6rem,40svh_-_150px)]'
           )}
         >
           {banner}
@@ -156,14 +164,15 @@ export function ChatBoxBase({
         </div>
       )}
 
-      {/* Editor area. `flex-auto` (basis = content) makes it share a squeeze
-          with the banner in proportion to their sizes, and the floor keeps one
-          line of input visible however long the banner is. The floor is
-          exactly `pt-base` + one `text-base` line (1.5rem, scaled by the text
-          size preference like the font token), so a one-line box is never
-          taller than its content. The footer is deliberately NOT inside this
-          element: when it was, squeezing the editor area squeezed the action
-          buttons out of the box with it. */}
+      {/* Editor area. `flex-auto` (basis = content) makes it the region that
+          gives way: it takes whatever the box has left after the banner and
+          scrolls internally. The floor keeps one line of input visible even
+          when the box is too short for the banner's cap. The floor is exactly
+          `pt-base` + one `text-base` line (1.5rem, scaled by the text size
+          preference like the font token), so a one-line box is never taller
+          than its content. The footer is deliberately NOT inside this element:
+          when it was, squeezing the editor area squeezed the action buttons
+          out of the box with it. */}
       <div
         className={cn(
           'flex flex-col px-plusfifty pt-base',
