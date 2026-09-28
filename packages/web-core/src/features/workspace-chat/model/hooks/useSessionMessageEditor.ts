@@ -89,8 +89,23 @@ export function useSessionMessageEditor({
     }
   }, [deleteScratch]);
 
-  const { debounced: debouncedSave, cancel: cancelDebouncedSave } =
-    useDebouncedCallback(saveToScratch, 500);
+  const {
+    debounced: debouncedSave,
+    cancel: cancelDebouncedSave,
+    flush: flushDebouncedSave,
+  } = useDebouncedCallback(saveToScratch, 500);
+
+  // Save the pending draft instead of dropping it when the page reloads/closes
+  // or the composer switches scratch (session/approval) or unmounts. Cleanup
+  // runs before the debounce hook picks up the new saveToScratch, so the draft
+  // lands in the scratch it was typed into. Send/clear paths cancel first.
+  useEffect(() => {
+    window.addEventListener('pagehide', flushDebouncedSave);
+    return () => {
+      window.removeEventListener('pagehide', flushDebouncedSave);
+      flushDebouncedSave();
+    };
+  }, [scratchId, flushDebouncedSave]);
 
   // Track whether initial load has happened to avoid re-syncing during typing
   const hasLoadedRef = useRef(false);

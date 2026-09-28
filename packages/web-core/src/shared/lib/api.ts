@@ -2752,12 +2752,16 @@ export const scratchApi = {
     data: UpdateScratch,
     hostId?: string | null
   ): Promise<void> => {
+    const body = JSON.stringify(data);
     const response = await makeHostAwareRequest(
       `/api/scratch/${scratchType}/${id}`,
       hostId,
       {
         method: 'PUT',
-        body: JSON.stringify(data),
+        body,
+        // Lets a draft flushed on pagehide survive the reload. Browsers reject
+        // keepalive bodies over 64KB, so larger drafts go as a plain request.
+        keepalive: new TextEncoder().encode(body).length < 60_000,
       }
     );
     return handleApiResponse<void>(response);
