@@ -1,4 +1,10 @@
-import { type KeyboardEventHandler, type ReactNode } from 'react';
+import {
+  type KeyboardEventHandler,
+  type ReactNode,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+} from 'react';
 import { type Icon, ImageIcon, SpinnerIcon } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
@@ -63,6 +69,13 @@ interface ChatBoxBaseProps {
   onKeyDownCapture?: KeyboardEventHandler<HTMLDivElement>;
 }
 
+// The most a banner is guaranteed in a height-capped box. The box is at most
+// half the column (≈ 50svh - chrome); this leaves the header, the footer and
+// 3-4 lines of input (more on taller viewports) beside it, so the buttons
+// never leave the box. The 6rem floor keeps a title and a question readable
+// on very short viewports.
+const BANNER_FLOOR = 'max(6rem, 40svh - 150px)';
+
 /**
  * Base chat box layout component.
  * Provides shared structure for CreateChatBox and SessionChatBox.
@@ -84,6 +97,43 @@ export function ChatBoxBase({
   onKeyDownCapture,
 }: ChatBoxBaseProps) {
   const { t } = useTranslation(['common', 'tasks']);
+  const bannerRef = useRef<HTMLDivElement>(null);
+  const bannerContentRef = useRef<HTMLDivElement>(null);
+
+  // Give the banner a floor of its own natural height, capped by
+  // BANNER_FLOOR. Flex would otherwise shave every region by the same
+  // fraction, squeezing a one-line queue or a short question into a scrolling
+  // sliver whenever the prompt below is long. Above the floor the banner
+  // shares the squeeze with the input in proportion to their sizes, so a long
+  // question takes whatever the input doesn't need (an empty input leaves it
+  // almost the whole box) and still yields down to the floor when the prompt
+  // is long too. CSS can't express "min(natural, cap)", so the natural height
+  // is measured off the inner content wrapper: unlike the scroll container's
+  // scrollHeight, which never reads below the box's own height and would
+  // leave the floor inflated after the content shrinks, the wrapper is the
+  // content. Observing it catches every change that matters, including a
+  // narrower box wrapping the text taller without a render. Writing the same
+  // value again is a no-op, so the observer settles immediately.
+  const applyBannerFloor = useCallback(() => {
+    const el = bannerRef.current;
+    const content = bannerContentRef.current;
+    if (!el || !content) return;
+    // Add the border: the floor is a border-box size, and a floor that's
+    // short by the border would leave a 1px scroll.
+    const natural =
+      content.getBoundingClientRect().height +
+      (el.offsetHeight - el.clientHeight);
+    el.style.minHeight = `min(${natural}px, ${BANNER_FLOOR})`;
+  }, []);
+  const hasBanner = Boolean(banner);
+  useLayoutEffect(() => {
+    const content = bannerContentRef.current;
+    if (!fillHeight || !hasBanner || !content) return;
+    applyBannerFloor();
+    const observer = new ResizeObserver(applyBannerFloor);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [fillHeight, hasBanner, applyBannerFloor]);
 
   const isDragActive = dropzone?.isDragActive ?? false;
   const rootProps = dropzone?.getRootProps({
@@ -128,29 +178,25 @@ export function ChatBoxBase({
         </div>
       )}
 
-      {/* Banner content (queued list, agent question, review comments).
-          `shrink-0`: the banner keeps its natural height, so a one-line queue
-          or a short question never gets squeezed into a scrolling sliver just
-          because the prompt below is long (flex would otherwise shave every
-          region by the same fraction). Only a genuinely long banner scrolls,
-          at the cap: the box is at most half the column (≈ 50svh - chrome),
-          and the cap leaves the header, the footer and 3-4 lines of input
-          (more on taller viewports) inside that, so the buttons never leave
-          the box. The 6rem floor keeps a title and a question readable on
-          very short viewports. The
-          divider lives on the wrapper (each banner's own bottom border is
-          dropped on the last one) so it stays put while the banners scroll;
-          `empty:hidden` covers a banner that renders nothing (e.g. an answered
-          question awaiting the agent). */}
+      {/* Banner content (queued list, agent question, review comments). In a
+          height-capped box it shrinks and scrolls, but never below the floor
+          set in applyBannerFloor (min-h-0 only holds until that runs, before
+          first paint). The divider lives on the scroll wrapper (each banner's
+          own bottom border is dropped on the last one) so it stays put while
+          the banners scroll; the `:has` rule hides the whole thing when the
+          banner renders nothing (e.g. an answered question awaiting the
+          agent). */}
       {banner && (
         <div
+          ref={bannerRef}
           className={cn(
-            'border-b empty:hidden [&>*:last-child]:border-b-0',
-            fillHeight &&
-              'shrink-0 overflow-y-auto max-h-[max(6rem,40svh_-_150px)]'
+            'border-b [&:has(>:empty)]:hidden',
+            fillHeight && 'min-h-0 overflow-y-auto'
           )}
         >
-          {banner}
+          <div ref={bannerContentRef} className="[&>*:last-child]:border-b-0">
+            {banner}
+          </div>
         </div>
       )}
 
@@ -164,10 +210,10 @@ export function ChatBoxBase({
         </div>
       )}
 
-      {/* Editor area. `flex-auto` (basis = content) makes it the region that
-          gives way: it takes whatever the box has left after the banner and
-          scrolls internally. The floor keeps one line of input visible even
-          when the box is too short for the banner's cap. The floor is exactly
+      {/* Editor area. `flex-auto` (basis = content) shares the squeeze with
+          the banner in proportion to their sizes and scrolls internally. The
+          floor keeps one line of input visible even when the box is too short
+          for the banner's floor. The floor is exactly
           `pt-base` + one `text-base` line (1.5rem, scaled by the text size
           preference like the font token), so a one-line box is never taller
           than its content. The footer is deliberately NOT inside this element:
