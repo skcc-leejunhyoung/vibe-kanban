@@ -357,14 +357,33 @@ export function KanbanIssuePanel({
       }
 
       const activeElement = document.activeElement;
+      const panelRoot = panelRootRef.current;
+
+      if (event.key === 'Enter') {
+        // Enter on the focused panel edits the issue title. Keyboard pane
+        // switching focuses the pane shell around the panel instead of the
+        // panel root, and that keydown never reaches the panel's own handlers.
+        const isPanelFocused =
+          activeElement === panelRoot ||
+          (activeElement?.hasAttribute('data-workspace-pane') === true &&
+            activeElement.contains(panelRoot));
+        if (!isPanelFocused) return;
+
+        titleInputRef.current?.focus();
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        return;
+      }
+
       const hasNoFocusedControl =
         activeElement === null ||
         activeElement === document.body ||
         activeElement === document.documentElement ||
-        // The panel root receives focus when an issue opens so Enter can
-        // focus the title. It is not an editable control, so arrow keys still
-        // belong to the panel rather than the board behind it.
-        activeElement === panelRootRef.current;
+        // The panel root receives focus when an issue opens. It is not an
+        // editable control, so arrow keys still belong to the panel rather
+        // than the board behind it.
+        activeElement === panelRoot;
       if (!hasNoFocusedControl) return;
 
       const delta =
@@ -383,7 +402,7 @@ export function KanbanIssuePanel({
     return () => {
       window.removeEventListener('keydown', handleUnfocusedPanelKeyDown, true);
     };
-  }, []);
+  }, [titleInputRef]);
 
   // Click outside the description area to exit editing
   const handleDescriptionBlur = useCallback(() => {
@@ -403,12 +422,6 @@ export function KanbanIssuePanel({
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.defaultPrevented) {
       e.preventDefault();
       onCmdEnterSubmit?.();
-      return;
-    }
-
-    if (e.key === 'Enter' && e.target === e.currentTarget) {
-      e.preventDefault();
-      titleInputRef.current?.focus();
       return;
     }
 
