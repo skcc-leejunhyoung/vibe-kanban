@@ -582,29 +582,36 @@ html {
     color: inherit;
   }
 
-  /* Notion-style ordered list markers: 1. → a. → i. per nesting level. */
-  .wysiwyg ol {
-    list-style-type: decimal;
-  }
-
-  .wysiwyg ol ol {
-    list-style-type: lower-alpha;
-  }
-
-  .wysiwyg ol ol ol {
-    list-style-type: lower-roman;
-  }
-
+  /* Notion-style list markers per nesting level, cycling after three:
+     1. → a. → i. and • → ◦ → ▪. */
+  .wysiwyg ol,
   .wysiwyg ol ol ol ol {
     list-style-type: decimal;
   }
 
+  .wysiwyg ol ol,
   .wysiwyg ol ol ol ol ol {
     list-style-type: lower-alpha;
   }
 
+  .wysiwyg ol ol ol,
   .wysiwyg ol ol ol ol ol ol {
     list-style-type: lower-roman;
+  }
+
+  .wysiwyg ul,
+  .wysiwyg ul ul ul ul {
+    list-style-type: disc;
+  }
+
+  .wysiwyg ul ul,
+  .wysiwyg ul ul ul ul ul {
+    list-style-type: circle;
+  }
+
+  .wysiwyg ul ul ul,
+  .wysiwyg ul ul ul ul ul ul {
+    list-style-type: square;
   }
 
   @media (hover: hover) and (pointer: fine) {

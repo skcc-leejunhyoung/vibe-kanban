@@ -544,9 +544,9 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
             // within the editor instead of hugging (or overflowing past) the
             // left edge when "1. "/"- " auto-converts. pl-6 keeps the marker
             // gutter wide enough for multi-digit numbers; `outside` preserves
-            // hanging indentation when an item wraps. The ol marker style
-            // (1. → a. → i.) cycles by nesting depth in index.css.
-            ul: 'my-1 ml-3 list-disc pl-6',
+            // hanging indentation when an item wraps. Marker styles
+            // (1. → a. → i., • → ◦ → ▪) cycle by nesting depth in index.css.
+            ul: 'my-1 ml-3 pl-6',
             ol: 'my-1 ml-3 pl-6',
             checklist: 'wysiwyg-checklist',
             listitem: '',
