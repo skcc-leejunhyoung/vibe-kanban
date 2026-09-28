@@ -72,9 +72,11 @@ interface ChatBoxBaseProps {
 // The most a banner is guaranteed in a height-capped box. The box is at most
 // half the column (≈ 50svh - chrome); this leaves the header, the footer and
 // 3-4 lines of input (more on taller viewports) beside it, so the buttons
-// never leave the box. The 6rem floor keeps a title and a question readable
-// on very short viewports.
-const BANNER_FLOOR = 'max(6rem, 40svh - 150px)';
+// never leave the box. The reserve is in rem so it grows with the UI size
+// like the header and footer do. No fixed minimum: on a short viewport
+// (phone landscape) any floor the box can't fit pushes the footer out of it,
+// so there the banner shrinks and scrolls like the input.
+const BANNER_FLOOR = 'max(0px, 40svh - 9.375rem)';
 
 /**
  * Base chat box layout component.
