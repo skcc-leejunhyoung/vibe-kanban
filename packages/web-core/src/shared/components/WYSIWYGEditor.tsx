@@ -59,7 +59,7 @@ import { PasteMarkdownPlugin } from '@vibe/ui/components/PasteMarkdownPlugin';
 import { MarkdownSyncPlugin } from '@vibe/ui/components/MarkdownSyncPlugin';
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
 import { HeadingNode, QuoteNode } from '@lexical/rich-text';
-import { ListNode, ListItemNode } from '@lexical/list';
+import { ListNode, ListItemNode, $isListItemNode } from '@lexical/list';
 import { ListPlugin } from '@lexical/react/LexicalListPlugin';
 import { CodeNode, CodeHighlightNode } from '@lexical/code';
 import { CodeHighlightPlugin } from '@vibe/ui/components/CodeHighlightPlugin';
@@ -70,8 +70,11 @@ import { TablePlugin } from '@lexical/react/LexicalTablePlugin';
 import {
   $createParagraphNode,
   $getRoot,
+  $getSelection,
+  $isRangeSelection,
   type EditorState,
   type LexicalEditor,
+  type LexicalNode,
 } from 'lexical';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { useDiffPaths } from '@/shared/stores/useWorkspaceDiffStore';
@@ -110,6 +113,23 @@ import {
 
 /** Markdown string representing the editor content */
 export type SerializedEditorState = string;
+
+const isNestedListItem = (node: LexicalNode): boolean => {
+  const listItem = $isListItemNode(node)
+    ? node
+    : node.getParents().find($isListItemNode);
+  return $isListItemNode(listItem) && listItem.getIndent() > 0;
+};
+
+/** True when Shift+Tab should outdent a list item instead of leaving the editor. */
+export function $canOutdentSelection(): boolean {
+  const selection = $getSelection();
+  return (
+    $isRangeSelection(selection) &&
+    (isNestedListItem(selection.anchor.getNode()) ||
+      isNestedListItem(selection.focus.getNode()))
+  );
+}
 
 type WysiwygProps = {
   placeholder?: string;
@@ -631,9 +651,13 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       (event: React.KeyboardEvent) => {
         if (event.key !== 'Tab' || !event.shiftKey || !onShiftTab) return;
 
-        // Lexical consumes Shift+Tab for list outdent during bubbling. This
-        // editor is part of a two-field form, so capture it first to keep
-        // keyboard navigation between description and title deterministic.
+        // Nested list items outdent first (handled by KeyboardCommandsPlugin);
+        // otherwise Shift+Tab moves focus back to the title field.
+        const canOutdent = editorInstanceRef.current
+          ?.getEditorState()
+          .read($canOutdentSelection);
+        if (canOutdent) return;
+
         event.preventDefault();
         event.stopPropagation();
         onShiftTab();
