@@ -305,7 +305,12 @@ export function ModelSelectorPopover({
   const { t } = useTranslation('common');
   const popoverRef = useRef<HTMLDivElement>(null);
   const models = config.models;
-  const hasProviders = config.providers.length > 1;
+  // Only providers that still have models (after hidden-model filtering) get a
+  // group; with a single such provider the flat list is shown instead.
+  const providers = config.providers.filter((provider) =>
+    models.some((model) => model.provider_id === provider.id)
+  );
+  const hasProviders = providers.length > 1;
   const hasReasoning = models.some(
     (model) => model.reasoning_options.length > 0
   );
@@ -335,7 +340,7 @@ export function ModelSelectorPopover({
   if (hasProviders) {
     content = (
       <ProviderAccordion
-        config={config}
+        config={{ ...config, providers }}
         selectedProviderId={selectedProviderId}
         selectedModelId={selectedModelId}
         selectedReasoningId={selectedReasoningId}
