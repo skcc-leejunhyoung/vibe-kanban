@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { useDropzone } from 'react-dropzone';
 import { useQuery } from '@tanstack/react-query';
@@ -339,7 +340,10 @@ const QuickChatDialogImpl = create<NoProps>(() => {
         );
       if (!openInNewPane) goToDocument();
       modal.resolve(workspace.id);
-      modal.hide();
+      // Commit the hide together with the pane's (sync) focus: left to the
+      // scheduler, WebKit runs the dialog focus guard's deferred reclaim
+      // first and pulls focus back out of the pane.
+      flushSync(() => modal.hide());
     } catch (e) {
       setError(getErrorMessage(e) || 'Failed to start quick chat.');
       setSubmitting(false);

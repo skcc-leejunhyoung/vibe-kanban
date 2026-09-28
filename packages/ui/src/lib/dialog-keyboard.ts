@@ -255,8 +255,10 @@ export function useDialogFocusGuard({
       }
       if (!isTopLayer() || isLayeredAbove(container, target)) return;
       // Deferred: a handler may move focus behind on purpose right before
-      // closing this dialog (quick chat focuses the pane it opened, then
-      // hides) — by the next task that close has committed and `alive` is off.
+      // closing this dialog — a close committed in the same React batch turns
+      // `alive` off first. A close left to the scheduler after an await can
+      // commit after this timer (WebKit), so such callers flushSync it (quick
+      // chat focuses the pane it opened, then hides).
       setTimeout(reclaim, 0);
     };
     document.addEventListener('focusin', handleFocusIn);
