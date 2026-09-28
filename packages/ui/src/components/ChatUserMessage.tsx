@@ -18,6 +18,9 @@ interface ChatUserMessageProps {
   onEdit?: () => void;
   onReset?: () => void;
   isGreyed?: boolean;
+  /** Short header note (e.g. turn timing); `metaTitle` is its tooltip. */
+  meta?: string;
+  metaTitle?: string;
   renderMarkdown: (props: ChatUserMessageRenderProps) => ReactNode;
 }
 
@@ -30,14 +33,25 @@ export function ChatUserMessage({
   onEdit,
   onReset,
   isGreyed,
+  meta,
+  metaTitle,
   renderMarkdown,
 }: ChatUserMessageProps) {
   const { t } = useTranslation('tasks');
 
+  const showActions = !isGreyed && Boolean(onEdit || onReset);
   const headerActions =
-    !isGreyed && (onEdit || onReset) ? (
+    meta || showActions ? (
       <div className="flex items-center gap-1">
-        {onReset && (
+        {meta && (
+          <span
+            className="text-xs text-low tabular-nums whitespace-nowrap"
+            title={metaTitle}
+          >
+            {meta}
+          </span>
+        )}
+        {showActions && onReset && (
           <Tooltip content={t('conversation.actions.resetTooltip')}>
             <button
               type="button"
@@ -52,7 +66,7 @@ export function ChatUserMessage({
             </button>
           </Tooltip>
         )}
-        {onEdit && (
+        {showActions && onEdit && (
           <Tooltip content={t('conversation.actions.edit')}>
             <button
               type="button"

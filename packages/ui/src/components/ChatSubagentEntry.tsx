@@ -11,6 +11,7 @@ import {
   CircleNotchIcon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { formatElapsed } from '../lib/datetime';
 import type { ToolStatusLike } from './ToolStatusDot';
 
 export interface ChatSubagentResultLike {
@@ -41,16 +42,6 @@ interface ChatSubagentEntryProps {
   status?: ToolStatusLike;
   workspaceId?: string;
   renderMarkdown: (props: ChatSubagentEntryRenderProps) => ReactNode;
-}
-
-function formatElapsed(ms: number): string {
-  const totalSeconds = Math.round(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
-  return `${seconds}s`;
 }
 
 /**

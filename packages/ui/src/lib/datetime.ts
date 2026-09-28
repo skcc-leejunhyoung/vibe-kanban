@@ -25,3 +25,14 @@ export function withDisplayTimeZone(
 ): Intl.DateTimeFormatOptions {
   return { ...options, timeZone: DISPLAY_TIME_ZONE };
 }
+
+/** Compact duration: "1h 2m", "12m 3s", "45s". Negative input reads as 0s. */
+export function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}

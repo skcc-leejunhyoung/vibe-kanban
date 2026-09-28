@@ -66,6 +66,7 @@ import {
 } from '@vibe/ui/components/ChatFileEntry';
 import { ChatApprovalCard } from '@vibe/ui/components/ChatApprovalCard';
 import { ChatUserMessage } from '@vibe/ui/components/ChatUserMessage';
+import { formatTurnTiming } from '@/shared/lib/date';
 import { ChatAssistantMessage } from '@vibe/ui/components/ChatAssistantMessage';
 import { ChatSystemMessage } from '@vibe/ui/components/ChatSystemMessage';
 import { ChatThinkingMessage } from '@vibe/ui/components/ChatThinkingMessage';
@@ -841,6 +842,7 @@ function UserMessageEntry({
   const [expanded, toggle] = usePersistedExpanded(`user:${expansionKey}`, true);
   const { startEdit, isEntryGreyed, isInEditMode } = useMessageEditContext();
   const { resetProcess, canResetProcess, isResetPending } = resetAction;
+  const timing = useTurnTiming(expansionKey, executionProcessId);
 
   const isGreyed = isEntryGreyed(expansionKey);
 
@@ -873,6 +875,8 @@ function UserMessageEntry({
       onEdit={canEdit ? handleEdit : undefined}
       onReset={canReset ? handleReset : undefined}
       isGreyed={isGreyed}
+      meta={timing?.text}
+      metaTitle={timing?.title}
       renderMarkdown={({ content, workspaceId }) => (
         <AppChatMarkdown
           content={content}
@@ -883,6 +887,53 @@ function UserMessageEntry({
         />
       )}
     />
+  );
+}
+
+/**
+ * Sent / finished / elapsed for the turn a synthetic user prompt opened
+ * (`{processId}:user`, see conversation-row-model). Only the prompt echoed
+ * after a setup script belongs to a script process; its answer is the first
+ * coding-agent process created after it, so timing looks that one up.
+ * Ticks once a second while the agent is still running.
+ */
+function useTurnTiming(
+  expansionKey: string,
+  executionProcessId: string | undefined
+) {
+  const processesCtx = useContext(ExecutionProcessesContext);
+  const own =
+    executionProcessId && expansionKey === `${executionProcessId}:user`
+      ? processesCtx?.executionProcessesByIdAll[executionProcessId]
+      : undefined;
+  const visible = processesCtx?.executionProcessesVisible;
+  const turn = useMemo(() => {
+    if (!own || own.run_reason === 'codingagent') return own;
+    const ownCreated = Date.parse(own.created_at);
+    return visible
+      ?.filter(
+        (p) =>
+          p.run_reason === 'codingagent' &&
+          Date.parse(p.created_at) >= ownCreated
+      )
+      .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0];
+  }, [own, visible]);
+  // Before the agent process exists (setup still running / failed), the
+  // script process itself bounds the turn.
+  const active = turn ?? own;
+  const running = active?.status === ExecutionProcessStatus.running;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+  if (!own) return null;
+  return formatTurnTiming(
+    own.started_at,
+    active?.completed_at ?? null,
+    running ? now : null
   );
 }
 
