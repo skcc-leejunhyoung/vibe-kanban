@@ -167,19 +167,41 @@ const markdownEditor = () =>
   });
 
 /** Import `markdown` into a fresh editor and export it again. */
-function roundTrip(markdown: string) {
+function roundTrip(markdown: string, keepEscapes = true) {
   const editor = markdownEditor();
   let blocks = 0;
   let exported = '';
   editor.update(
     () => {
-      $markdownToEditor(markdown, EDITOR_TRANSFORMERS);
+      $markdownToEditor(markdown, EDITOR_TRANSFORMERS, undefined, {
+        keepEscapes,
+      });
       blocks = $getRoot().getChildrenSize();
       exported = $editorToMarkdown(EDITOR_TRANSFORMERS);
     },
     { discrete: true }
   );
   return { blocks, exported };
+}
+
+/** Export a paragraph built from `[text, format]` runs. */
+function exportRuns(runs: [string, 'bold' | 'italic' | 'code' | null][]) {
+  const editor = markdownEditor();
+  let exported = '';
+  editor.update(
+    () => {
+      const paragraph = $createParagraphNode();
+      for (const [text, format] of runs) {
+        const node = $createTextNode(text);
+        if (format) node.toggleFormat(format);
+        paragraph.append(node);
+      }
+      $getRoot().append(paragraph);
+      exported = $editorToMarkdown(EDITOR_TRANSFORMERS);
+    },
+    { discrete: true }
+  );
+  return exported;
 }
 
 /** Export a paragraph holding one text node with `format` applied. */
@@ -221,7 +243,9 @@ describe('markdown round trip', () => {
     '`a\\_b` and `\\\\` and `x*y`',
     'a \\* b **c** and [a_b](http://x) and \\_ *i*',
     '&#32;typed entity and `&#65;` stay',
+    '&#99999999; out of range and `&#99999999;` too',
     '100. a\n    - b\n    - c',
+    '| [X] done | a |\n| --- | --- |',
     '```\na\\*b \\\\ c\n```',
     '~~~\nnot a fence here\n~~~',
   ])('does not add or drop backslashes: %s', (markdown) => {
@@ -239,6 +263,28 @@ describe('markdown round trip', () => {
     expect(exportFormatted('i ', 'italic')).toBe('*i* ');
     expect(exportFormatted(' c', 'code')).toBe('` c`');
     expect(exportFormatted('&#65;x', 'bold')).toBe('**&#65;x**');
+    expect(
+      exportRuns([
+        ['(', null],
+        [' x', 'bold'],
+        [')', null],
+      ])
+    ).toBe('( **x**)');
+    expect(
+      exportRuns([
+        ['a', null],
+        [' ', 'bold'],
+        ['b', null],
+      ])
+    ).toBe('a b');
+  });
+
+  it('resolves escapes like a renderer only for read-only display', () => {
+    const legacy = 'my\\_var `a\\_b` C:\\\\p &#65; &#99999999; \\*x\\*';
+    expect(roundTrip(legacy).exported).toBe(legacy);
+    expect(roundTrip(legacy, false).exported).toBe(
+      'my_var `a\\_b` C:\\p A &#99999999; *x*'
+    );
   });
 
   it('keeps [X] checked and 2-space nesting', () => {

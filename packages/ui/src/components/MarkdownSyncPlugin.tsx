@@ -30,6 +30,7 @@ export function MarkdownSyncPlugin({
   const [editor] = useLexicalComposerContext();
   const lastSerializedRef = useRef<string | undefined>(undefined);
   const prevTransformersRef = useRef(transformers);
+  const prevEditableRef = useRef(editable);
 
   // Detect transformer changes and force re-parse
   if (transformers !== prevTransformersRef.current) {
@@ -42,16 +43,22 @@ export function MarkdownSyncPlugin({
     editor.setEditable(editable);
   }, [editor, editable]);
 
-  // Handle controlled value changes (external → editor)
+  // Handle controlled value changes (external → editor). Read-only resolves
+  // `\x` and `&#NN;` like a markdown renderer while editing keeps them as
+  // typed, so a mode switch re-imports: edit mode must start from the text as
+  // stored, not from its rendered form.
   useEffect(() => {
-    if (value === lastSerializedRef.current) return;
+    const modeChanged = editable !== prevEditableRef.current;
+    prevEditableRef.current = editable;
+    if (!modeChanged && value === lastSerializedRef.current) return;
     const parsedValue = normalizeGitHubImageHtml(value);
 
     try {
       // Lexical invokes update listeners synchronously during editor.update().
-      // Set this first, and tag the update so the listener skips it: the
-      // round trip may still normalize markers or indentation, and that must
-      // not rewrite the issue before the user makes an edit.
+      // Tag the update so the listener skips it, and baseline the ref on what
+      // the imported state exports: the round trip may still normalize
+      // markers or indentation, and that must not rewrite the issue until the
+      // user actually edits (selection-only updates fire the listener too).
       lastSerializedRef.current = parsedValue;
       editor.update(() => {
         if (parsedValue.trim() === '') {
@@ -65,8 +72,11 @@ export function MarkdownSyncPlugin({
           root.clear();
           root.append($createParagraphNode());
         } else {
-          $markdownToEditor(parsedValue, transformers);
+          $markdownToEditor(parsedValue, transformers, undefined, {
+            keepEscapes: editable,
+          });
         }
+        lastSerializedRef.current = $editorToMarkdown(transformers);
 
         // Only position cursor at end if editor already has focus (user is actively editing)
         // This prevents unwanted focus when value changes externally (e.g., panel opening)
@@ -83,7 +93,7 @@ export function MarkdownSyncPlugin({
       lastSerializedRef.current = undefined;
       console.error('Failed to parse markdown', err);
     }
-  }, [editor, value, transformers]);
+  }, [editor, value, transformers, editable]);
 
   // Handle editor changes (editor → external)
   useEffect(() => {
