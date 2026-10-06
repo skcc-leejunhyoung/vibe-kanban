@@ -31,6 +31,8 @@ export function MarkdownSyncPlugin({
   const lastSerializedRef = useRef<string | undefined>(undefined);
   const prevTransformersRef = useRef(transformers);
   const prevEditableRef = useRef(editable);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   // Detect transformer changes and force re-parse
   if (transformers !== prevTransformersRef.current) {
@@ -76,7 +78,11 @@ export function MarkdownSyncPlugin({
             keepEscapes: editable,
           });
         }
-        lastSerializedRef.current = $editorToMarkdown(transformers);
+        // Read-only displays (streamed agent messages re-import on every
+        // chunk) have no listener to baseline for, so skip the export there.
+        if (onChangeRef.current) {
+          lastSerializedRef.current = $editorToMarkdown(transformers);
+        }
 
         // Only position cursor at end if editor already has focus (user is actively editing)
         // This prevents unwanted focus when value changes externally (e.g., panel opening)

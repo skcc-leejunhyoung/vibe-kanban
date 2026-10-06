@@ -198,7 +198,7 @@ export function prepareMarkdownForImport(
     const rest = line.slice(list[1].length);
     return (
       ' '.repeat(level * INDENT) +
-      (checklists ? rest.replace(/^((?:- )? ?)\[X\]/, '$1[x]') : rest)
+      (checklists ? rest.replace(/^((?:-[ \t])?[ \t]?)\[X\]/, '$1[x]') : rest)
     );
   });
 }

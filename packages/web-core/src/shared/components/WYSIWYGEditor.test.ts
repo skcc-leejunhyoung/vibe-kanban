@@ -291,6 +291,7 @@ describe('markdown round trip', () => {
     expect(roundTrip('- [X] done\n- [ ] todo').exported).toBe(
       '- [x] done\n- [ ] todo'
     );
+    expect(roundTrip('-\t[X] tabbed').exported).toBe('- [x] tabbed');
     expect(roundTrip('- a\n  - b\n    - c\n  - d\n- e').exported).toBe(
       '- a\n    - b\n        - c\n    - d\n- e'
     );
