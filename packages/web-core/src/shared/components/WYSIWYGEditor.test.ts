@@ -220,6 +220,8 @@ describe('markdown round trip', () => {
     '/^\\d+$/ and ~1 and a ` b',
     '`a\\_b` and `\\\\` and `x*y`',
     'a \\* b **c** and [a_b](http://x) and \\_ *i*',
+    '&#32;typed entity and `&#65;` stay',
+    '100. a\n    - b\n    - c',
     '```\na\\*b \\\\ c\n```',
     '~~~\nnot a fence here\n~~~',
   ])('does not add or drop backslashes: %s', (markdown) => {
@@ -236,6 +238,7 @@ describe('markdown round trip', () => {
     expect(exportFormatted(' b ', 'bold')).toBe(' **b** ');
     expect(exportFormatted('i ', 'italic')).toBe('*i* ');
     expect(exportFormatted(' c', 'code')).toBe('` c`');
+    expect(exportFormatted('&#65;x', 'bold')).toBe('**&#65;x**');
   });
 
   it('keeps [X] checked and 2-space nesting', () => {

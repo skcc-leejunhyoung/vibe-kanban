@@ -5,6 +5,8 @@ import { $createParagraphNode, $getRoot, type EditorState } from 'lexical';
 import { normalizeGitHubImageHtml } from '@vibe/ui/lib/githubImageMarkdown';
 import { $editorToMarkdown, $markdownToEditor } from '../lib/markdown';
 
+const IMPORT_TAG = 'markdown-sync-import';
+
 type MarkdownSyncPluginProps = {
   value: string;
   onChange?: (markdown: string) => void;
@@ -47,8 +49,9 @@ export function MarkdownSyncPlugin({
 
     try {
       // Lexical invokes update listeners synchronously during editor.update().
-      // Set this first so importing an externally supplied value never emits
-      // onChange and rewrites the issue before the user makes an edit.
+      // Set this first, and tag the update so the listener skips it: the
+      // round trip may still normalize markers or indentation, and that must
+      // not rewrite the issue before the user makes an edit.
       lastSerializedRef.current = parsedValue;
       editor.update(() => {
         if (parsedValue.trim() === '') {
@@ -75,7 +78,7 @@ export function MarkdownSyncPlugin({
             lastNode.selectEnd();
           }
         }
-      });
+      }, { tag: IMPORT_TAG });
     } catch (err) {
       lastSerializedRef.current = undefined;
       console.error('Failed to parse markdown', err);
@@ -84,9 +87,9 @@ export function MarkdownSyncPlugin({
 
   // Handle editor changes (editor → external)
   useEffect(() => {
-    return editor.registerUpdateListener(({ editorState }) => {
+    return editor.registerUpdateListener(({ editorState, tags }) => {
       onEditorStateChange?.(editorState);
-      if (!onChange) return;
+      if (!onChange || tags.has(IMPORT_TAG)) return;
 
       const markdown = editorState.read(() =>
         $editorToMarkdown(transformers)

@@ -25,6 +25,7 @@ export function $markdownToEditor(
     prepareMarkdownForImport(markdown),
     [
       KEEP_BACKSLASHES,
+      KEEP_ENTITIES,
       KEEP_INLINE_CODE,
       ...transformers.filter((t) => t !== INLINE_CODE),
     ],
@@ -55,6 +56,12 @@ const KEEP_BACKSLASHES: TextMatchTransformer = {
     );
   },
   export: () => null,
+};
+
+/** Same for `&#NN;`, which that pass also decodes; typed entities stay text. */
+const KEEP_ENTITIES: TextMatchTransformer = {
+  ...KEEP_BACKSLASHES,
+  importRegExp: /&#\d+;/,
 };
 
 /**
@@ -139,7 +146,9 @@ export function prepareMarkdownForImport(markdown: string): string {
       columns.pop();
     }
     const level = columns.length;
-    columns.push(width + list[2].length);
+    // Cap the marker width: Lexical always exports nesting as 4 spaces, so a
+    // child of "100. a" must still count as nested on the way back in.
+    columns.push(width + Math.min(list[2].length, INDENT));
     return (
       ' '.repeat(level * INDENT) +
       line.slice(list[1].length).replace(/^((?:- )? ?)\[X\]/, '$1[x]')
@@ -147,28 +156,33 @@ export function prepareMarkdownForImport(markdown: string): string {
   });
 }
 
+const decodeEntities = (s: string) =>
+  s.replace(/&#(\d+);/g, (_, cp: string) => String.fromCodePoint(Number(cp)));
+// Lexical only ever encodes whitespace; anything else was typed and stays.
+const isWhitespaceEntities = (s: string) =>
+  [...s.matchAll(/&#(\d+);/g)].every((m) =>
+    /\s/.test(String.fromCodePoint(Number(m[1])))
+  );
+
 /**
  * Undo Lexical's export-side rewriting: drop the backslashes it adds before
  * `*_\`~\` and `\` outside inline code, and turn the `&#32;` it uses for
- * whitespace at the edges of formatted text back into whitespace, moved
- * outside the format markers so the markdown stays valid.
+ * whitespace at the edges of formatted text back into whitespace — moved
+ * outside the format markers so the markdown stays valid, decoded in place
+ * inside inline code. Entities anywhere else were typed and stay.
  */
 export function restoreMarkdownAfterExport(markdown: string): string {
-  const decode = (s: string) =>
-    s.replace(/&#(\d+);/g, (_, cp: string) =>
-      String.fromCodePoint(Number(cp))
-    );
   return mapOutsideFences(markdown, (line) =>
     unescapeOutsideCode(
-      decode(
-        line
-          .replace(OPENING_ENTITIES, (_, before, tags, ents) =>
-            `${before}${decode(ents)}${tags}`
-          )
-          .replace(CLOSING_ENTITIES, (_, ents, tags) =>
-            `${tags}${decode(ents)}`
-          )
-      )
+      line
+        .replace(OPENING_ENTITIES, (m, before, tags, ents) =>
+          isWhitespaceEntities(ents)
+            ? `${before}${decodeEntities(ents)}${tags}`
+            : m
+        )
+        .replace(CLOSING_ENTITIES, (m, ents, tags) =>
+          isWhitespaceEntities(ents) ? `${tags}${decodeEntities(ents)}` : m
+        )
     )
   );
 }
@@ -185,7 +199,14 @@ function unescapeOutsideCode(line: string): string {
       if (end === -1) {
         out += ch;
       } else {
-        out += line.slice(i, end + 1);
+        out += line
+          .slice(i, end + 1)
+          .replace(/^`((?:&#\d+;)+)/, (m, ents) =>
+            isWhitespaceEntities(ents) ? '`' + decodeEntities(ents) : m
+          )
+          .replace(/((?:&#\d+;)+)`$/, (m, ents) =>
+            isWhitespaceEntities(ents) ? decodeEntities(ents) + '`' : m
+          );
         i = end;
       }
     } else {
