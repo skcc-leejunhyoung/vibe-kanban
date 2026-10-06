@@ -1,8 +1,4 @@
-import {
-  ElementTransformer,
-  $convertFromMarkdownString,
-  TRANSFORMERS,
-} from '@lexical/markdown';
+import { ElementTransformer, TRANSFORMERS } from '@lexical/markdown';
 import {
   TableNode,
   TableRowNode,
@@ -15,6 +11,7 @@ import {
   $isTableCellNode,
   TableCellHeaderStates,
 } from '@lexical/table';
+import { $markdownToEditor } from './markdown';
 
 const TABLE_ROW_REG_EXP = /^(?:\|)(.+)(?:\|)\s?$/;
 const TABLE_ROW_DIVIDER_REG_EXP = /^(\| ?:?-+:? ?)+\|\s?$/;
@@ -22,17 +19,13 @@ const TABLE_ROW_DIVIDER_REG_EXP = /^(\| ?:?-+:? ?)+\|\s?$/;
 function $createTableCell(textContent: string): TableCellNode {
   textContent = textContent.replace(/\\n/g, '\n');
   const cell = $createTableCellNode(TableCellHeaderStates.NO_STATUS);
-  $convertFromMarkdownString(textContent, TRANSFORMERS, cell);
+  $markdownToEditor(textContent, TRANSFORMERS, cell);
   return cell;
 }
 
 function mapToTableCells(textContent: string): Array<TableCellNode> | null {
-  const cells = textContent
-    .split('|')
-    .map((c) => c.trim())
-    .filter((c) => c.length > 0);
-
-  if (cells.length === 0) return null;
+  // Keep empty cells: dropping them shifts every later column left.
+  const cells = textContent.split('|').map((c) => c.trim());
   return cells.map($createTableCell);
 }
 
@@ -76,9 +69,11 @@ export const TABLE_TRANSFORMER: ElementTransformer = {
   },
 
   replace: (parentNode, _children, match) => {
-    // Handle header divider detection
-    const lineText = parentNode.getTextContent();
-    if (TABLE_ROW_DIVIDER_REG_EXP.test(lineText)) {
+    // Handle header divider detection. Use the matched line: by the time
+    // replace() runs, the importer has already stripped the match from the
+    // paragraph, so its text content is empty and a divider would be read as
+    // a data row of "---" cells (one more per save).
+    if (TABLE_ROW_DIVIDER_REG_EXP.test(match[0])) {
       // Find previous sibling and mark as header
       const prevSibling = parentNode.getPreviousSibling();
       if ($isTableNode(prevSibling)) {
