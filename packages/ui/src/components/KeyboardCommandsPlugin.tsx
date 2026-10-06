@@ -188,6 +188,15 @@ export function KeyboardCommandsPlugin({
         }
 
         if (sendShortcut === 'Enter') {
+          // Shift+Cmd+Enter submits via KEY_MODIFIER_COMMAND; swallow it here
+          // so rich text doesn't also insert a line break.
+          if (
+            event.shiftKey &&
+            (event.metaKey || event.ctrlKey) &&
+            onShiftCmdEnter
+          ) {
+            return true;
+          }
           if (event.shiftKey || event.metaKey || event.ctrlKey) {
             return false;
           }
