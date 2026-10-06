@@ -945,7 +945,7 @@ export const ConversationList = forwardRef<
   }, [conversationVirtualizer]);
 
   // Hands the viewport back: TanStack's own above-viewport size adjustments
-  // resume. The history hold is left as the last flush armed it — a batch
+  // resume (once a post-settle guard, if any, lets go). The history hold is left as the last flush armed it — a batch
   // that is still waiting to commit (nothing older to jump to) must still be
   // compensated; the loop's own steps disarm it while they run.
   const endNavigation = useCallback((token: number) => {
@@ -993,6 +993,10 @@ export const ConversationList = forwardRef<
           scrollEl.scrollTop += delta;
         }
         const top = scrollEl.scrollTop;
+        // TanStack's size adjustment stays off while the guard holds the row:
+        // running alongside it, its compensation can overshoot, and the guard
+        // reads that write as the reader scrolling and lets the row go.
+        programmaticScrollDeadlineRef.current = performance.now() + 100;
         requestAnimationFrame(() => guard(until, top));
       };
 
