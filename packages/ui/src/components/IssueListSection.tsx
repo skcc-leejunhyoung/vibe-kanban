@@ -226,6 +226,9 @@ function IssueListAddRow({
   const { t } = useTranslation('common');
   const [title, setTitle] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  // Draft discarded on blur. The input unmounts on blur, taking its native
+  // undo history with it, so Cmd/Ctrl+Z on the empty input restores it.
+  const discardedDraftRef = useRef('');
 
   // Autofocus the input whenever the container switches this row into edit mode
   // (via mouse click or keyboard Enter on the focused button).
@@ -249,6 +252,17 @@ function IssueListAddRow({
       if (e.key === 'Enter') {
         e.preventDefault();
         submit();
+      } else if (
+        // e.code covers non-Latin input sources (e.g. Korean IME).
+        (e.key.toLowerCase() === 'z' || e.code === 'KeyZ') &&
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey &&
+        !e.currentTarget.value &&
+        discardedDraftRef.current
+      ) {
+        e.preventDefault();
+        setTitle(discardedDraftRef.current);
+        discardedDraftRef.current = '';
       } else if (e.key === 'Escape') {
         // Leave the input but keep the add-row keyboard-focused so arrow keys
         // resume and Enter re-enters.
@@ -297,6 +311,7 @@ function IssueListAddRow({
           if ((e.relatedTarget as Element | null)?.closest('[role="dialog"]')) {
             return;
           }
+          if (title) discardedDraftRef.current = title;
           setTitle('');
           onStopEditing?.(false);
         }}
