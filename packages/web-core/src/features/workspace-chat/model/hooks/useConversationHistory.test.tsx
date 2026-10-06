@@ -1,8 +1,13 @@
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ExecutionProcess } from 'shared/types';
+import type { ExecutionProcess, PatchType } from 'shared/types';
 import { installDomlessReact } from '@/shared/lib/electric/electricTestKit';
 import { setLocalApiTransport } from '@/shared/lib/localApiTransport';
+import type { AddEntryType } from '@/shared/hooks/useConversationHistory/types';
+import {
+  clearProcessEntriesCache,
+  setCachedProcessEntries,
+} from '@/features/workspace-chat/model/processEntriesCache';
 
 const context = vi.hoisted(() => ({
   processes: [] as unknown[],
@@ -21,6 +26,7 @@ vi.mock('@/shared/providers/HostIdProvider', () => ({
 }));
 
 const { useConversationHistory } = await import('./useConversationHistory');
+type HistoryResult = ReturnType<typeof useConversationHistory>;
 
 // Minimal socket double: records close() calls and never emits on its own.
 class FakeWebSocket {
@@ -93,6 +99,7 @@ beforeEach(() => {
 afterEach(async () => {
   await dom.unmount();
   setLocalApiTransport(null);
+  clearProcessEntriesCache();
 });
 
 /** Let the load effects and the async stream open settle. */
@@ -131,5 +138,118 @@ describe('useConversationHistory — live stream ownership', () => {
     await dom.unmount();
 
     expect(socket.closeCalls).toBe(1);
+  });
+});
+
+// Finished turns whose logs are already cached load without a socket, so the
+// paging path can be driven end to end with plain awaits.
+const completedProcess = (id: string, second: number): ExecutionProcess =>
+  ({
+    ...runningProcess(id),
+    status: 'completed',
+    exit_code: 0n,
+    created_at: `2026-09-19T00:00:${String(second).padStart(2, '0')}Z`,
+    completed_at: '2026-09-19T00:01:00Z',
+  }) as unknown as ExecutionProcess;
+
+const message = (text: string): PatchType => ({
+  type: 'NORMALIZED_ENTRY',
+  content: {
+    entry_type: { type: 'assistant_message' },
+    content: text,
+    timestamp: null,
+  },
+});
+
+function seedCompletedTurns(count: number, entriesPerTurn: number) {
+  const processes: ExecutionProcess[] = [];
+  for (let i = 1; i <= count; i += 1) {
+    const id = `p${i}`;
+    processes.push(completedProcess(id, i));
+    setCachedProcessEntries(
+      null,
+      id,
+      Array.from({ length: entriesPerTurn }, (_, j) => message(`${id}:${j}`))
+    );
+  }
+  return processes;
+}
+
+type Emit = { addType: AddEntryType; loaded: string[] };
+
+function PagingHarness({
+  resultRef,
+  emits,
+}: {
+  resultRef: { current: HistoryResult | null };
+  emits: Emit[];
+}) {
+  resultRef.current = useConversationHistory({
+    scopeKey: 'attempt:session-a',
+    onTimelineUpdated: (source, addType) => {
+      emits.push({
+        addType,
+        loaded: Object.keys(source.executionProcessState).sort(),
+      });
+    },
+  });
+  return null;
+}
+
+describe('useConversationHistory — awaited history paging', () => {
+  it('loadOlderBatch resolves after the batch is emitted and false once nothing older remains', async () => {
+    // 6 entries per turn: the initial window stops after the newest three
+    // turns (18 > MIN_INITIAL_ENTRIES) and leaves p1 behind pagination.
+    context.processes = seedCompletedTurns(4, 6);
+    const resultRef = { current: null as HistoryResult | null };
+    const emits: Emit[] = [];
+    await dom.render(<PagingHarness resultRef={resultRef} emits={emits} />);
+    await settle();
+
+    expect(emits.at(-1)).toEqual({
+      addType: 'initial',
+      loaded: ['p2', 'p3', 'p4'],
+    });
+    expect(resultRef.current?.hasMoreHistory).toBe(true);
+
+    let loaded: boolean | undefined;
+    await act(async () => {
+      loaded = await resultRef.current!.loadOlderBatch();
+    });
+    expect(loaded).toBe(true);
+    expect(emits.at(-1)).toEqual({
+      addType: 'historic',
+      loaded: ['p1', 'p2', 'p3', 'p4'],
+    });
+    expect(resultRef.current?.hasMoreHistory).toBe(false);
+
+    const emitCount = emits.length;
+    await act(async () => {
+      loaded = await resultRef.current!.loadOlderBatch();
+    });
+    expect(loaded).toBe(false);
+    expect(emits).toHaveLength(emitCount);
+  });
+
+  it('loadUntilProcess pages in older turns until the requested one is present', async () => {
+    context.processes = seedCompletedTurns(5, 6);
+    const resultRef = { current: null as HistoryResult | null };
+    const emits: Emit[] = [];
+    await dom.render(<PagingHarness resultRef={resultRef} emits={emits} />);
+    await settle();
+    expect(emits.at(-1)?.loaded).toEqual(['p3', 'p4', 'p5']);
+
+    await act(async () => {
+      await resultRef.current!.loadUntilProcess('p1');
+    });
+    expect(emits.at(-1)?.addType).toBe('historic');
+    expect(emits.at(-1)?.loaded).toContain('p1');
+
+    // Already loaded: resolves without another fetch or emit.
+    const emitCount = emits.length;
+    await act(async () => {
+      await resultRef.current!.loadUntilProcess('p1');
+    });
+    expect(emits).toHaveLength(emitCount);
   });
 });

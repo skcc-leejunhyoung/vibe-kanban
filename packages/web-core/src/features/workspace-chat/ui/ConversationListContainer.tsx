@@ -79,6 +79,28 @@ export interface ConversationListHandle {
 
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
 const STREAMING_UNVIRTUALIZED_BUFFER_ROWS = 24;
+// A navigation is done once its row has held the top of the viewport for this
+// many frames; the timeout bounds pathological layouts, not normal settling.
+const NAVIGATION_SETTLE_FRAMES = 3;
+const NAVIGATION_TIMEOUT_MS = 4000;
+
+const nextFrame = () =>
+  new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+// Semantic key of the first row whose bottom edge is inside the viewport.
+// Rows render in index order (virtual window, then the unvirtualized tail), so
+// document order works. Read from the DOM rather than mapped through an
+// index: a batch that has reached the rows but not yet the DOM shifts indices.
+function findFirstVisibleRowKey(scrollEl: HTMLElement): string | null {
+  const containerTop = scrollEl.getBoundingClientRect().top;
+  for (const node of scrollEl.querySelectorAll<HTMLElement>(
+    '[data-semantic-key]'
+  )) {
+    if (node.getBoundingClientRect().bottom <= containerTop + 1) continue;
+    return node.dataset.semanticKey ?? null;
+  }
+  return null;
+}
 
 const isUserEntry = (entry: PatchTypeWithKey) =>
   entry.type === 'NORMALIZED_ENTRY' &&
@@ -491,6 +513,12 @@ export const ConversationList = forwardRef<
   // reads a zero delta and never fires — exactly the drift users still saw.
   const topGrowthHoldDeadlineRef = useRef(0);
   const lastScrollHeightRef = useRef(0);
+  // A navigation owns the viewport from the click until its row has settled.
+  // The token cancels a superseded loop; the flag keeps the bottom follow from
+  // re-pinning while batches land and lets the history hold run from the
+  // bottom too, so the view stays put until the jump.
+  const navigationTokenRef = useRef(0);
+  const navigationActiveRef = useRef(false);
 
   // Use ref to access current repos without causing callback recreation
   const reposRef = useRef(repos);
@@ -536,6 +564,8 @@ export const ConversationList = forwardRef<
     pendingUpdateRef.current = null;
     topGrowthHoldDeadlineRef.current = 0;
     lastScrollHeightRef.current = 0;
+    navigationTokenRef.current += 1;
+    navigationActiveRef.current = false;
     deriveConversationRef.current = createConversationDerivation();
     if (planRevealSpacerRef.current) {
       planRevealSpacerRef.current.style.height = '0px';
@@ -561,6 +591,7 @@ export const ConversationList = forwardRef<
   // ---- TanStack Virtual plumbing ----
   const tanstackScrollRef = useRef<HTMLDivElement | null>(null);
   const conversationContentRef = useRef<HTMLDivElement | null>(null);
+  const virtualBlockRef = useRef<HTMLDivElement | null>(null);
 
   const clearPendingInteractionAnchor = useCallback(() => {
     if (pendingInteractionAnchorFrameRef.current !== null) {
@@ -649,11 +680,12 @@ export const ConversationList = forwardRef<
       const scrollEl = tanstackScrollRef.current;
       if (
         scrollEl &&
-        !isNearBottom(
-          scrollEl.scrollTop,
-          scrollEl.clientHeight,
-          scrollEl.scrollHeight
-        )
+        (navigationActiveRef.current ||
+          !isNearBottom(
+            scrollEl.scrollTop,
+            scrollEl.clientHeight,
+            scrollEl.scrollHeight
+          ))
       ) {
         topGrowthHoldDeadlineRef.current = performance.now() + 600;
       }
@@ -701,6 +733,7 @@ export const ConversationList = forwardRef<
     isLoadingHistory,
     hasMoreHistory,
     loadOlderHistory,
+    loadOlderBatch,
     loadUntilProcess,
   } = useConversationHistory({
     attempt,
@@ -820,18 +853,19 @@ export const ConversationList = forwardRef<
       );
 
       if (targetNode) {
-        let top = targetNode.offsetTop;
+        // Content-space top via rects: virtualized rows are positioned with
+        // translateY, which offsetTop does not see.
+        const nodeTop =
+          scrollEl.scrollTop +
+          targetNode.getBoundingClientRect().top -
+          scrollEl.getBoundingClientRect().top;
+        let top = nodeTop;
 
         if (align === 'center') {
           top =
-            targetNode.offsetTop -
-            scrollEl.clientHeight / 2 +
-            targetNode.offsetHeight / 2;
+            nodeTop - scrollEl.clientHeight / 2 + targetNode.offsetHeight / 2;
         } else if (align === 'end') {
-          top =
-            targetNode.offsetTop -
-            scrollEl.clientHeight +
-            targetNode.offsetHeight;
+          top = nodeTop - scrollEl.clientHeight + targetNode.offsetHeight;
         }
 
         const requestedTop = Math.max(0, top);
@@ -863,6 +897,8 @@ export const ConversationList = forwardRef<
 
   const scrollToBottomAndClearSpacer = useCallback(
     (behavior?: 'auto' | 'smooth') => {
+      navigationTokenRef.current += 1;
+      navigationActiveRef.current = false;
       if (planRevealSpacerRef.current) {
         planRevealSpacerRef.current.style.height = '0px';
       }
@@ -871,80 +907,142 @@ export const ConversationList = forwardRef<
     [conversationVirtualizer]
   );
 
+  // Batches paged in for a navigation must resolve to preserve-anchor, never
+  // follow-bottom: that would re-engage the bottom lock and undo the jump.
+  const checkIsAtBottomForIntent = useCallback(
+    () =>
+      !navigationActiveRef.current && conversationVirtualizer.checkIsAtBottom(),
+    [conversationVirtualizer]
+  );
+
   const scrollExecutor = useScrollCommandExecutor({
     virtualizer: conversationVirtualizer.virtualizer,
     itemCount: conversationRows.length,
     dataVersion,
-    checkIsAtBottom: conversationVirtualizer.checkIsAtBottom,
+    checkIsAtBottom: checkIsAtBottomForIntent,
     scrollToBottom: scrollToBottomAndClearSpacer,
     scrollToAbsoluteIndex,
   });
   scrollOnEntriesChangedRef.current = scrollExecutor.onEntriesChanged;
 
-  // Live ref so the async turn-jump (which spans several renders while older
-  // history pages in) always calls the latest scroll helper, not a stale one.
-  const scrollToAbsoluteIndexRef = useRef(scrollToAbsoluteIndex);
-  scrollToAbsoluteIndexRef.current = scrollToAbsoluteIndex;
+  const beginNavigation = useCallback(() => {
+    conversationVirtualizer.releaseBottomLock();
+    navigationActiveRef.current = true;
+    return ++navigationTokenRef.current;
+  }, [conversationVirtualizer]);
 
-  // Jump to a turn by execution-process id: page in older history until the
-  // process is loaded, then scroll its user message to the top. Reads the
-  // latest rows from prevRowsRef (not the render-scoped copy) so it stays
-  // correct as batches arrive, and polls briefly for the row to be rendered.
-  const scrollToProcess = useCallback(
-    (processId: string) => {
+  // Hands the viewport back: TanStack's own above-viewport size adjustments
+  // resume, and the history hold is disarmed so it cannot add the same growth
+  // a second time on top of them.
+  const endNavigation = useCallback((token: number) => {
+    if (navigationTokenRef.current !== token) return;
+    navigationActiveRef.current = false;
+    programmaticScrollDeadlineRef.current = 0;
+    topGrowthHoldDeadlineRef.current = 0;
+  }, []);
+
+  // Every navigation (previous-message button, turn navigator, patch-key jump)
+  // routes through here. The row is addressed by its semanticKey, not its
+  // index: older history prepending above shifts every index but no key. A
+  // row outside the virtual window has no DOM yet, so the loop first lands on
+  // the virtualizer's estimated offset for it, then corrects against the real
+  // DOM every frame until the row has held the top of the viewport for a few
+  // frames (estimates settling into measurements, markdown/code growing
+  // asynchronously, a prepend landing mid-flight) or the timeout passes.
+  const scrollRowToTop = useCallback(
+    (semanticKey: string, token: number) => {
       const scrollEl = tanstackScrollRef.current;
-      if (!scrollEl) return;
+      if (!scrollEl) {
+        endNavigation(token);
+        return;
+      }
 
-      conversationVirtualizer.releaseBottomLock();
+      const deadline = performance.now() + NAVIGATION_TIMEOUT_MS;
+      const selector = `[data-semantic-key="${CSS.escape(semanticKey)}"]`;
+      let stableFrames = 0;
 
-      void loadUntilProcess(processId).then(() => {
-        const deadline = performance.now() + 6000;
+      const step = () => {
+        if (navigationTokenRef.current !== token) return;
+        const index = prevRowsRef.current.findIndex(
+          (row) => row.semanticKey === semanticKey
+        );
+        if (index < 0 || performance.now() > deadline) {
+          endNavigation(token);
+          return;
+        }
+        // The loop is the only writer while it runs: no TanStack size
+        // adjustment, no history-hold compensation, no scroll-up paging.
+        programmaticScrollDeadlineRef.current = performance.now() + 500;
+        topGrowthHoldDeadlineRef.current = 0;
 
-        const findTargetIndex = () =>
-          prevRowsRef.current.findIndex(
-            (row) =>
-              row.isUserMessage && row.entry.executionProcessId === processId
-          );
-
-        const run = () => {
-          const targetIndex = findTargetIndex();
-          if (targetIndex < 0) {
-            if (performance.now() < deadline) requestAnimationFrame(run);
+        const node = scrollEl.querySelector<HTMLElement>(selector);
+        if (node) {
+          const delta =
+            node.getBoundingClientRect().top -
+            scrollEl.getBoundingClientRect().top;
+          const before = scrollEl.scrollTop;
+          if (Math.abs(delta) >= 1) scrollEl.scrollTop += delta;
+          // Aligned, or the container cannot scroll any further.
+          if (Math.abs(delta) < 1 || scrollEl.scrollTop === before) {
+            stableFrames += 1;
+          } else {
+            stableFrames = 0;
+          }
+          if (stableFrames >= NAVIGATION_SETTLE_FRAMES) {
+            endNavigation(token);
             return;
           }
-
-          programmaticScrollDeadlineRef.current = performance.now() + 1000;
-          scrollToAbsoluteIndexRef.current(targetIndex, 'start', 'auto');
-
-          let attempts = 0;
-          const correctScroll = () => {
-            if (attempts >= 8) return;
-            attempts += 1;
-            programmaticScrollDeadlineRef.current = performance.now() + 500;
-
-            const node = scrollEl.querySelector<HTMLElement>(
-              `[data-row-index="${targetIndex}"]`
-            );
-            if (!node) {
-              requestAnimationFrame(correctScroll);
-              return;
-            }
-
-            const delta =
-              node.getBoundingClientRect().top -
+        } else {
+          stableFrames = 0;
+          const block = virtualBlockRef.current;
+          const offset = conversationVirtualizer.virtualizer.getOffsetForIndex(
+            index,
+            'start'
+          )?.[0];
+          if (block && offset != null) {
+            const blockTop =
+              scrollEl.scrollTop +
+              block.getBoundingClientRect().top -
               scrollEl.getBoundingClientRect().top;
-            if (Math.abs(delta) < 2) return;
+            scrollEl.scrollTop = blockTop + offset;
+          }
+        }
+        requestAnimationFrame(step);
+      };
 
-            scrollEl.scrollTop += delta;
-            requestAnimationFrame(correctScroll);
-          };
-          requestAnimationFrame(correctScroll);
-        };
-
-        run();
-      });
+      step();
     },
-    [conversationVirtualizer, loadUntilProcess]
+    [conversationVirtualizer, endNavigation]
+  );
+
+  // Jump to a turn by execution-process id: page in older history until the
+  // process is loaded, wait for the batch to land in the rows, then scroll its
+  // user message to the top.
+  const scrollToProcess = useCallback(
+    async (processId: string) => {
+      const token = beginNavigation();
+      await loadUntilProcess(processId);
+
+      const findTarget = () => {
+        const rows = prevRowsRef.current;
+        const ofProcess = (row: ConversationRow) =>
+          row.entry.executionProcessId === processId;
+        return (
+          rows.find((row) => row.isUserMessage && ofProcess(row)) ??
+          rows.find(ofProcess)
+        )?.semanticKey;
+      };
+      const deadline = performance.now() + NAVIGATION_TIMEOUT_MS;
+      let targetKey = findTarget();
+      while (targetKey === undefined && performance.now() < deadline) {
+        await nextFrame();
+        if (navigationTokenRef.current !== token) return;
+        targetKey = findTarget();
+      }
+      if (targetKey === undefined) endNavigation(token);
+      else scrollRowToTop(targetKey, token);
+    },
+    [beginNavigation, endNavigation, loadUntilProcess, scrollRowToTop]
   );
 
   // Freeze the viewport while older history streams in from the top.
@@ -972,6 +1070,7 @@ export const ConversationList = forwardRef<
     if (delta === 0) return;
     if (performance.now() > topGrowthHoldDeadlineRef.current) return;
     if (
+      !navigationActiveRef.current &&
       isNearBottom(
         scrollEl.scrollTop,
         scrollEl.clientHeight,
@@ -1019,6 +1118,10 @@ export const ConversationList = forwardRef<
     if (!el || !hasMoreHistory) return;
 
     const maybeLoadOlder = () => {
+      // A navigation owns the viewport until it settles; a prepend landing
+      // then would move the row it is aligning. Older turns page in on the
+      // reader's next scroll instead.
+      if (navigationActiveRef.current) return;
       if (el.scrollTop <= NEAR_TOP_PAGINATION_PX) {
         loadOlderHistory();
       }
@@ -1045,86 +1148,49 @@ export const ConversationList = forwardRef<
     hasEntries &&
     isFirstTurn;
 
-  // Expose scroll functionality via ref — delegates to TanStack Virtual
-  const scrollToPreviousUserMessage = useCallback(() => {
-    conversationVirtualizer.releaseBottomLock();
-
+  // Previous-message button. Anchors on the first visible row by key, then
+  // walks back to the nearest user message. When that message is not loaded
+  // yet, older batches are fetched first (each prepend shifts the anchor's
+  // index, never its key) and the scroll starts only once the target row
+  // exists — accurate over fast.
+  const scrollToPreviousUserMessage = useCallback(async () => {
     const scrollEl = tanstackScrollRef.current;
-    if (!scrollEl || conversationRows.length === 0) return;
+    const rows = prevRowsRef.current;
+    if (!scrollEl || rows.length === 0) return;
 
-    const containerTop = scrollEl.getBoundingClientRect().top;
-    const rowNodes = Array.from(
-      scrollEl.querySelectorAll<HTMLElement>('[data-row-index]')
-    );
+    const token = beginNavigation();
+    const anchorKey =
+      findFirstVisibleRowKey(scrollEl) ?? rows[rows.length - 1].semanticKey;
 
-    let firstVisibleIndex = conversationRows.length - 1;
-
-    for (const node of rowNodes) {
-      const rect = node.getBoundingClientRect();
-      if (rect.bottom <= containerTop + 1) continue;
-      const indexAttr = node.dataset.rowIndex;
-      if (!indexAttr) continue;
-      const parsedIndex = Number.parseInt(indexAttr, 10);
-      if (!Number.isFinite(parsedIndex)) continue;
-      firstVisibleIndex = parsedIndex;
-      break;
-    }
-
-    const targetIndex = findPreviousUserMessageIndex(
-      conversationRows,
-      firstVisibleIndex
-    );
-
-    if (targetIndex < 0) return;
-
-    programmaticScrollDeadlineRef.current = performance.now() + 1000;
-
-    let attempts = 0;
-    const maxAttempts = 6;
-
-    const correctScroll = () => {
-      if (attempts >= maxAttempts) return;
-      attempts++;
-
-      programmaticScrollDeadlineRef.current = performance.now() + 500;
-
-      const node = scrollEl.querySelector<HTMLElement>(
-        `[data-row-index="${targetIndex}"]`
+    const findTarget = () => {
+      const current = prevRowsRef.current;
+      const anchorIndex = current.findIndex(
+        (row) => row.semanticKey === anchorKey
       );
-      if (!node) {
-        if (attempts === 1) {
-          conversationVirtualizer.scrollToIndex(targetIndex, {
-            align: 'start',
-            behavior: 'auto',
-          });
-        }
-        requestAnimationFrame(correctScroll);
-        return;
-      }
-
-      const nodeRect = node.getBoundingClientRect();
-      const contRect = scrollEl.getBoundingClientRect();
-      const delta = nodeRect.top - contRect.top;
-
-      if (Math.abs(delta) < 2) return;
-
-      scrollEl.scrollTop += delta;
-      requestAnimationFrame(correctScroll);
+      if (anchorIndex < 0) return undefined;
+      const index = findPreviousUserMessageIndex(current, anchorIndex);
+      return index >= 0 ? current[index].semanticKey : null;
     };
 
-    correctScroll();
-  }, [
-    conversationRows,
-    firstUnvirtualizedRowIndex,
-    conversationVirtualizer,
-    scrollToAbsoluteIndex,
-  ]);
+    let targetKey = findTarget();
+    while (targetKey === null) {
+      const loaded = await loadOlderBatch();
+      if (navigationTokenRef.current !== token) return;
+      if (!loaded) break;
+      // The batch reaches prevRowsRef on the rAF flush scheduled by the emit,
+      // which runs before a frame requested after it.
+      await nextFrame();
+      targetKey = findTarget();
+    }
+    if (targetKey) scrollRowToTop(targetKey, token);
+    else endNavigation(token);
+  }, [beginNavigation, endNavigation, loadOlderBatch, scrollRowToTop]);
 
   useImperativeHandle(
     ref,
     () => ({
       scrollToPreviousUserMessage: () => {
-        scrollToPreviousUserMessage();
+        void scrollToPreviousUserMessage();
       },
       scrollToBottom: (behavior = 'smooth') => {
         scrollToBottomAndClearSpacer(behavior);
@@ -1137,91 +1203,31 @@ export const ConversationList = forwardRef<
       },
       getScrollElement: () => tanstackScrollRef.current,
       scrollToEntryByPatchKey: (patchKey: string) => {
-        const targetIndex = conversationRows.findIndex(
+        const row = prevRowsRef.current.find(
           (row) => row.entry.patchKey === patchKey
         );
-        if (targetIndex < 0) return;
-
-        const scrollEl = tanstackScrollRef.current;
-        if (!scrollEl) return;
-
-        conversationVirtualizer.releaseBottomLock();
-        programmaticScrollDeadlineRef.current = performance.now() + 1000;
-
-        // Initial scroll via scrollToAbsoluteIndex which handles both
-        // virtualized and unvirtualized (tail) rows correctly.
-        scrollToAbsoluteIndex(targetIndex, 'start', 'auto');
-
-        // Correction loop: after the virtualizer lays out the target
-        // row, its actual size may differ from the estimate, so we
-        // iteratively adjust until the row is at the container top.
-        let attempts = 0;
-        const maxAttempts = 5;
-
-        const correctScroll = () => {
-          if (attempts >= maxAttempts) return;
-          attempts++;
-
-          programmaticScrollDeadlineRef.current = performance.now() + 500;
-
-          const node = scrollEl.querySelector<HTMLElement>(
-            `[data-row-index="${targetIndex}"]`
-          );
-          if (!node) {
-            requestAnimationFrame(correctScroll);
-            return;
-          }
-
-          const nodeRect = node.getBoundingClientRect();
-          const contRect = scrollEl.getBoundingClientRect();
-          const delta = nodeRect.top - contRect.top;
-
-          if (Math.abs(delta) < 2) return;
-
-          scrollEl.scrollTop += delta;
-          requestAnimationFrame(correctScroll);
-        };
-
-        requestAnimationFrame(correctScroll);
+        if (row) scrollRowToTop(row.semanticKey, beginNavigation());
       },
       scrollToProcess: (processId: string) => {
-        scrollToProcess(processId);
+        void scrollToProcess(processId);
       },
       getVisibleUserMessagePatchKey: () => {
         const scrollEl = tanstackScrollRef.current;
-        if (!scrollEl || conversationRows.length === 0) return null;
-
-        const containerTop = scrollEl.getBoundingClientRect().top;
-        const rowNodes = Array.from(
-          scrollEl.querySelectorAll<HTMLElement>('[data-row-index]')
-        );
-
-        let firstVisibleIndex = conversationRows.length - 1;
-
-        for (const node of rowNodes) {
-          const rect = node.getBoundingClientRect();
-          if (rect.bottom <= containerTop + 1) continue;
-          const indexAttr = node.dataset.rowIndex;
-          if (!indexAttr) continue;
-          const parsedIndex = Number.parseInt(indexAttr, 10);
-          if (!Number.isFinite(parsedIndex)) continue;
-          firstVisibleIndex = parsedIndex;
-          break;
-        }
-
-        // Find the nearest user message at or before the first visible index
-        for (let i = firstVisibleIndex; i >= 0; i--) {
-          if (conversationRows[i].isUserMessage) {
-            return conversationRows[i].entry.patchKey;
-          }
+        const rows = prevRowsRef.current;
+        if (!scrollEl || rows.length === 0) return null;
+        // Nearest user message at or before the first visible row.
+        const firstKey = findFirstVisibleRowKey(scrollEl);
+        let i = rows.findIndex((row) => row.semanticKey === firstKey);
+        if (i < 0) i = rows.length - 1;
+        for (; i >= 0; i--) {
+          if (rows[i].isUserMessage) return rows[i].entry.patchKey;
         }
         return null;
       },
     }),
     [
-      conversationRows,
-      conversationVirtualizer,
-      scrollToAbsoluteIndex,
+      beginNavigation,
+      scrollRowToTop,
       scrollToBottomAndClearSpacer,
       scrollToPreviousUserMessage,
       scrollToProcess,
@@ -1245,6 +1251,20 @@ export const ConversationList = forwardRef<
         {showLoader && (
           <div className="absolute inset-0 flex items-center justify-center z-10">
             <SpinnerIcon className="size-6 animate-spin text-low" />
+          </div>
+        )}
+        {/* Floats over the content: an in-flow indicator above the rows grew
+            and shrank the content and shifted whatever the reader (or a
+            navigation) had aligned at the top. */}
+        {isLoadingHistory && !showLoader && (
+          <div
+            aria-live="polite"
+            className="pointer-events-none absolute inset-x-0 top-base z-10 flex justify-center"
+          >
+            <div className="flex items-center gap-half rounded-full border border-border bg-panel/90 px-base py-half text-xs text-low shadow-sm backdrop-blur-sm">
+              <SpinnerIcon className="size-3 animate-spin" />
+              <span>{t('conversation.loadingEarlierMessages')}</span>
+            </div>
           </div>
         )}
         <div
@@ -1286,32 +1306,9 @@ export const ConversationList = forwardRef<
               )}
             </div>
 
-            {isLoadingHistory && !showLoader && (
-              <div className="flex flex-col items-center gap-2 px-double py-3">
-                <div className="flex w-full max-w-md flex-col gap-1.5">
-                  <div className="flex items-center gap-2">
-                    <div className="h-2.5 w-16 animate-pulse rounded-full bg-foreground/10" />
-                    <div className="h-2.5 flex-1 animate-pulse rounded-full bg-foreground/[0.06]" />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="h-2.5 w-24 animate-pulse rounded-full bg-foreground/[0.07]"
-                      style={{ animationDelay: '150ms' }}
-                    />
-                    <div
-                      className="h-2.5 w-32 animate-pulse rounded-full bg-foreground/[0.05]"
-                      style={{ animationDelay: '150ms' }}
-                    />
-                  </div>
-                </div>
-                <span className="text-xs text-low">
-                  {t('conversation.loadingEarlierMessages')}
-                </span>
-              </div>
-            )}
-
             {virtualizedRows.length > 0 && (
               <div
+                ref={virtualBlockRef}
                 style={{
                   height: `${totalSize}px`,
                   width: '100%',

@@ -34,6 +34,12 @@ export interface UseConversationHistoryResult {
    */
   loadOlderHistory: () => void;
   /**
+   * Awaited variant for navigation: fetch one older batch and resolve once it
+   * has been emitted (waits out an in-flight scroll-up fetch first). Resolves
+   * false when nothing older remains.
+   */
+  loadOlderBatch: () => Promise<boolean>;
+  /**
    * Fetch older batches until the given execution process is loaded. Used by
    * turn navigation to jump to an old turn that hasn't been paged in yet.
    */
@@ -444,69 +450,49 @@ export const useConversationHistory = ({
     );
   }, []);
 
+  // One older batch, awaited. Serializes with the scroll-up loader through
+  // loadingOlderRef so the two never double-fetch; a caller arriving mid-fetch
+  // waits for it and then fetches the next batch.
+  const loadOlderBatch = useCallback(async (): Promise<boolean> => {
+    if (!loadedInitialEntries.current) return false;
+    while (loadingOlderRef.current) {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    if (!loadedInitialEntries.current || !computeHasMoreHistory()) return false;
+
+    loadingOlderRef.current = true;
+    setIsLoadingHistory(true);
+    try {
+      const updated = await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE);
+      if (updated) {
+        emitEntries(displayedExecutionProcesses.current, 'historic', false);
+      }
+      setHasMoreHistory(computeHasMoreHistory());
+      return updated;
+    } finally {
+      loadingOlderRef.current = false;
+      setIsLoadingHistory(false);
+    }
+  }, [computeHasMoreHistory, loadRemainingEntriesInBatches, emitEntries]);
+
   // Scroll-up pagination: fetch the next older batch on demand instead of
   // eagerly streaming all history in the background (which prepended above the
   // reader and made the content shift while they were scrolled up reading).
   const loadOlderHistory = useCallback(() => {
     if (loadingOlderRef.current) return;
-    if (!loadedInitialEntries.current) return;
-    if (!computeHasMoreHistory()) return;
-
-    loadingOlderRef.current = true;
-    setIsLoadingHistory(true);
-    (async () => {
-      try {
-        const updated =
-          await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE);
-        if (updated) {
-          emitEntries(displayedExecutionProcesses.current, 'historic', false);
-        }
-        setHasMoreHistory(computeHasMoreHistory());
-      } finally {
-        loadingOlderRef.current = false;
-        setIsLoadingHistory(false);
-      }
-    })();
-  }, [computeHasMoreHistory, loadRemainingEntriesInBatches, emitEntries]);
+    void loadOlderBatch();
+  }, [loadOlderBatch]);
 
   // Turn navigation: keep fetching older batches until `processId` is loaded,
   // so a click on an old turn in the navigator lands on real content. Resolves
-  // once the process is present (or nothing older remains). Serializes with the
-  // scroll-up loader via loadingOlderRef so they don't double-fetch.
+  // once the process is present (or nothing older remains).
   const loadUntilProcess = useCallback(
     async (processId: string): Promise<void> => {
-      if (!loadedInitialEntries.current) return;
-      if (displayedExecutionProcesses.current[processId]) return;
-
-      while (loadingOlderRef.current) {
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        if (displayedExecutionProcesses.current[processId]) return;
-      }
-
-      loadingOlderRef.current = true;
-      setIsLoadingHistory(true);
-      try {
-        let guard = 0;
-        while (
-          !displayedExecutionProcesses.current[processId] &&
-          computeHasMoreHistory() &&
-          guard < 200
-        ) {
-          guard += 1;
-          const updated =
-            await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE);
-          if (updated) {
-            emitEntries(displayedExecutionProcesses.current, 'historic', false);
-          }
-          if (!updated) break;
-        }
-        setHasMoreHistory(computeHasMoreHistory());
-      } finally {
-        loadingOlderRef.current = false;
-        setIsLoadingHistory(false);
+      while (!displayedExecutionProcesses.current[processId]) {
+        if (!(await loadOlderBatch())) return;
       }
     },
-    [computeHasMoreHistory, loadRemainingEntriesInBatches, emitEntries]
+    [loadOlderBatch]
   );
 
   const ensureProcessVisible = useCallback((p: ExecutionProcess) => {
@@ -767,6 +753,7 @@ export const useConversationHistory = ({
     isLoadingHistory: isLoadingHistoryState,
     hasMoreHistory,
     loadOlderHistory,
+    loadOlderBatch,
     loadUntilProcess,
   };
 };
