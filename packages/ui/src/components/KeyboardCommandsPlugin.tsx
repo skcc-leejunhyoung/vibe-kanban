@@ -13,9 +13,10 @@ import {
   COMMAND_PRIORITY_HIGH,
   type LexicalNode,
 } from 'lexical';
-import { $convertToMarkdownString, type Transformer } from '@lexical/markdown';
+import { type Transformer } from '@lexical/markdown';
 import { $isListItemNode } from '@lexical/list';
 import { useTypeaheadOpen } from './TypeaheadOpenContext';
+import { $editorToMarkdown } from '../lib/markdown';
 
 type SendMessageShortcut = 'ModifierEnter' | 'Enter';
 
@@ -141,7 +142,7 @@ export function KeyboardCommandsPlugin({
       if (onChange && transformers) {
         const markdown = editor
           .getEditorState()
-          .read(() => $convertToMarkdownString(transformers));
+          .read(() => $editorToMarkdown(transformers));
         flushSync(() => {
           onChange(markdown);
         });

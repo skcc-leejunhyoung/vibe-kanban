@@ -1,12 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import {
-  $convertToMarkdownString,
-  $convertFromMarkdownString,
-  type Transformer,
-} from '@lexical/markdown';
+import { type Transformer } from '@lexical/markdown';
 import { $createParagraphNode, $getRoot, type EditorState } from 'lexical';
 import { normalizeGitHubImageHtml } from '@vibe/ui/lib/githubImageMarkdown';
+import { $editorToMarkdown, $markdownToEditor } from '../lib/markdown';
 
 type MarkdownSyncPluginProps = {
   value: string;
@@ -65,7 +62,7 @@ export function MarkdownSyncPlugin({
           root.clear();
           root.append($createParagraphNode());
         } else {
-          $convertFromMarkdownString(parsedValue, transformers);
+          $markdownToEditor(parsedValue, transformers);
         }
 
         // Only position cursor at end if editor already has focus (user is actively editing)
@@ -92,7 +89,7 @@ export function MarkdownSyncPlugin({
       if (!onChange) return;
 
       const markdown = editorState.read(() =>
-        $convertToMarkdownString(transformers)
+        $editorToMarkdown(transformers)
       );
 
       if (markdown === lastSerializedRef.current) return;

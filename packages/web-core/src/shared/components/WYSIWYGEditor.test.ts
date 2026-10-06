@@ -13,7 +13,12 @@ import {
   type LexicalNode,
 } from 'lexical';
 import { describe, expect, it } from 'vitest';
+import { TRANSFORMERS } from '@lexical/markdown';
+import { CodeNode } from '@lexical/code';
+import { LinkNode } from '@lexical/link';
+import { HeadingNode, QuoteNode } from '@lexical/rich-text';
 import { $handleListItemBackspace } from '@vibe/ui/components/ListBackspacePlugin';
+import { $editorToMarkdown, $markdownToEditor } from '@vibe/ui/lib/markdown';
 import { $canOutdentSelection } from './WYSIWYGEditor';
 
 const newEditor = () =>
@@ -135,5 +140,38 @@ describe('$handleListItemBackspace', () => {
       handled: false,
       result: 'ul(a,b,c)',
     });
+  });
+});
+
+/** Import `markdown` into a fresh editor and export it again. */
+function roundTrip(markdown: string) {
+  const editor = createEditor({
+    nodes: [ListNode, ListItemNode, HeadingNode, QuoteNode, CodeNode, LinkNode],
+    onError: (error) => {
+      throw error;
+    },
+  });
+  let blocks = 0;
+  let exported = '';
+  editor.update(
+    () => {
+      $markdownToEditor(markdown, TRANSFORMERS);
+      blocks = $getRoot().getChildrenSize();
+      exported = $editorToMarkdown(TRANSFORMERS);
+    },
+    { discrete: true }
+  );
+  return { blocks, exported };
+}
+
+describe('markdown round trip', () => {
+  it('keeps blank lines and single newlines as typed', () => {
+    const markdown =
+      'a\n\n\nb\nc\n\n- d\n- e\n\nf\n\n> q\n\n```\ncode\n\n\nmore\n```';
+    expect(roundTrip(markdown)).toEqual({ blocks: 13, exported: markdown });
+  });
+
+  it('does not merge adjacent lines into one paragraph', () => {
+    expect(roundTrip('a\nb')).toEqual({ blocks: 2, exported: 'a\nb' });
   });
 });

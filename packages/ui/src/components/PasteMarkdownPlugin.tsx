@@ -8,11 +8,9 @@ import {
   $createParagraphNode,
   $setSelection,
 } from 'lexical';
-import {
-  $convertFromMarkdownString,
-  type Transformer,
-} from '@lexical/markdown';
+import { type Transformer } from '@lexical/markdown';
 import { $toggleLink, LinkNode } from '@lexical/link';
+import { $markdownToEditor } from '../lib/markdown';
 import { getTauriInvoke, isTauriRuntime } from '../lib/platform';
 
 type Props = {
@@ -196,7 +194,7 @@ export function PasteMarkdownPlugin({ transformers }: Props) {
             const tempContainer = $createParagraphNode();
             // Note: $convertFromMarkdownString internally calls selectStart() on the container,
             // which corrupts the current selection - that's why we clone it above
-            $convertFromMarkdownString(plainText, transformers, tempContainer);
+            $markdownToEditor(plainText, transformers, tempContainer);
 
             // Restore selection that was corrupted by $convertFromMarkdownString
             $setSelection(savedSelection);

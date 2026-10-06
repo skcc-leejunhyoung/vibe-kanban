@@ -62,13 +62,6 @@ function findAttachmentMarkdownMatches(
   return matches;
 }
 
-function normalizeAttachmentWhitespace(content: string): string {
-  return content
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n[ \t]+/g, '\n')
-    .replace(/\n{3,}/g, '\n\n');
-}
-
 function removeAttachmentSlice(
   content: string,
   start: number,
@@ -87,7 +80,17 @@ function removeAttachmentSlice(
     after = after.slice(1);
   }
 
-  return normalizeAttachmentWhitespace(before + after);
+  // Collapse only the blank lines that framed the removed slice. Whitespace
+  // elsewhere (indentation, hard breaks, deliberate blank lines) is the
+  // user's and must survive an attachment removal untouched.
+  const tail = /\n*$/.exec(before)![0].length;
+  const head = /^\n*/.exec(after)![0].length;
+  if (tail + head > 2) {
+    before = before.slice(0, before.length - tail);
+    after = '\n\n' + after.slice(head);
+  }
+
+  return before + after;
 }
 
 /** Extracts attachment IDs from `attachment://` references in markdown content. */
