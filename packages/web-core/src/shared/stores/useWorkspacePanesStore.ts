@@ -491,11 +491,20 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
       adoptRouteDestination: (destination) =>
         set((state) => {
           const key = paneDestinationKey(destination);
-          const existing = state.panes.find(
+          const matches = state.panes.filter(
             (pane) =>
               pane.destination !== null &&
               paneDestinationKey(pane.destination) === key
           );
+          // Several panes can share a key (in-pane navigation never dedupes):
+          // a pane already showing it exactly, then the active pane, then the
+          // first — never retarget a sibling while the active pane matches.
+          const existing =
+            matches.find((pane) =>
+              sameDestination(pane.destination, destination)
+            ) ??
+            matches.find((pane) => pane.id === state.activePaneId) ??
+            matches[0];
           if (existing) {
             if (sameDestination(existing.destination, destination)) {
               return state.activePaneId === existing.id

@@ -34,6 +34,7 @@ import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useHasAppDestinationOverride } from '@/shared/hooks/useCurrentAppDestination';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
@@ -220,6 +221,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const isMobile = useIsMobile();
   const isNarrow = usePaneNarrowerThan(768);
   const isActivePane = useIsActivePane();
+  const isInPane = useHasAppDestinationOverride();
   const router = useRouter();
   const appNavigation = useAppNavigation();
   const queryClient = useQueryClient();
@@ -859,7 +861,8 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
             onClick={() => router.history.back()}
             className={cn(
               'flex items-center justify-center rounded-sm p-half text-low transition-colors',
-              !(isMobile || isNarrow) && 'sm:hidden',
+              // No document back inside a pane (see NotificationsPage).
+              isInPane ? 'hidden' : !(isMobile || isNarrow) && 'sm:hidden',
               'hover:bg-secondary hover:text-normal',
               'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand'
             )}

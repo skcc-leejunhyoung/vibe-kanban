@@ -14,6 +14,7 @@ import { UserAvatar } from '@vibe/ui/components/UserAvatar';
 import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useHasAppDestinationOverride } from '@/shared/hooks/useCurrentAppDestination';
 import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useNotificationMembers } from '@/shared/hooks/useNotificationMembers';
 import type { GroupedNotification } from '@/shared/lib/notifications';
@@ -170,6 +171,10 @@ function WebPushToggle({ compact }: { compact: boolean }) {
 export function NotificationsPage() {
   const isNarrow = usePaneNarrowerThan(768);
   const isActivePane = useIsActivePane();
+  // A pane has no history of its own; document back would hand another pane's
+  // URL to the grid, so only the routed page offers it.
+  const isInPane = useHasAppDestinationOverride();
+  const showBack = isNarrow && !isInPane;
   const router = useRouter();
   const appNavigation = useAppNavigation();
   const openInSplitPane = useOpenInSplitPane();
@@ -396,7 +401,7 @@ export function NotificationsPage() {
             onClick={() => router.history.back()}
             className={cn(
               'items-center justify-center rounded-sm p-half text-low transition-colors',
-              isNarrow ? 'flex' : 'hidden',
+              showBack ? 'flex' : 'hidden',
               'hover:bg-secondary hover:text-normal',
               'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand'
             )}

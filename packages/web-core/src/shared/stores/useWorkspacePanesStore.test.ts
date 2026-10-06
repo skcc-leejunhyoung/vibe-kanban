@@ -290,6 +290,32 @@ describe('adoptRouteDestination', () => {
     expect(store.getState().activePaneId).toBe(terminalPaneId);
   });
 
+  it('prefers the active pane when several panes show the project', () => {
+    const board = { kind: 'project', projectId: 'p1' } as const;
+    store.getState().openPaneForDestination(board);
+    store.getState().appendPane();
+    store.getState().setPaneDestination('pane-2', board);
+    store.getState().setActivePane('pane-2');
+
+    const issue: WorkspacePaneDestination = {
+      kind: 'project-issue',
+      projectId: 'p1',
+      issueId: 'i1',
+    };
+    store.getState().adoptRouteDestination(issue);
+    expect(store.getState().activePaneId).toBe('pane-2');
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      board,
+      issue,
+    ]);
+
+    // An exact match elsewhere is focused rather than duplicated.
+    store.getState().setActivePane('pane-1');
+    store.getState().adoptRouteDestination(issue);
+    expect(store.getState().activePaneId).toBe('pane-2');
+    expect(store.getState().panes[0].destination).toEqual(board);
+  });
+
   it('folds workspace-create into the existing project pane', () => {
     store
       .getState()
