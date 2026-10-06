@@ -23,7 +23,7 @@ function $createTableCell(textContent: string): TableCellNode {
   return cell;
 }
 
-function mapToTableCells(textContent: string): Array<TableCellNode> | null {
+function mapToTableCells(textContent: string): Array<TableCellNode> {
   // Keep empty cells: dropping them shifts every later column left.
   const cells = textContent.split('|').map((c) => c.trim());
   return cells.map($createTableCell);
@@ -92,7 +92,6 @@ export const TABLE_TRANSFORMER: ElementTransformer = {
 
     // Parse row cells
     const cells = mapToTableCells(match[1]);
-    if (!cells) return;
 
     const tableRow = $createTableRowNode();
     cells.forEach((cell) => tableRow.append(cell));

@@ -8,9 +8,11 @@ import {
 } from '@lexical/markdown';
 import {
   $createTextNode,
+  $isTextNode,
   TEXT_TYPE_TO_FORMAT,
   TextNode,
   type ElementNode,
+  type LexicalNode,
 } from 'lexical';
 
 const CODE_FORMAT = TEXT_TYPE_TO_FORMAT.code;
@@ -53,7 +55,9 @@ export function $markdownToEditor(
     $convertFromMarkdownString(
       prepareMarkdownForImport(markdown, transformers.includes(CHECK_LIST)),
       [
-        ...(keepEscapes ? [KEEP_BACKSLASHES, KEEP_ENTITIES] : [DECODE_ENTITIES]),
+        ...(keepEscapes
+          ? [KEEP_BACKSLASHES, KEEP_ENTITIES]
+          : [DECODE_ENTITIES]),
         KEEP_INLINE_CODE,
         ...transformers.filter((t) => t !== INLINE_CODE),
       ],
@@ -93,10 +97,28 @@ const KEEP_BACKSLASHES: TextMatchTransformer = {
   export: () => null,
 };
 
-/** Typed `&#NN;` stays text while editing. */
+const sameFormat = (sibling: LexicalNode | null, node: TextNode) =>
+  $isTextNode(sibling) && sibling.getFormat() === node.getFormat();
+
+/**
+ * Typed `&#NN;` stays text while editing, except whitespace at the edge of
+ * formatted text: that is Lexical's own encoding (`**a&#32;**b`), which the
+ * export side can only move outside the markers when a space or punctuation
+ * is next to them.
+ */
 const KEEP_ENTITIES: TextMatchTransformer = {
   ...KEEP_BACKSLASHES,
-  importRegExp: /&#\d+;/,
+  importRegExp: /(?:&#\d+;)+/,
+  replace: (node, match) =>
+    swapIn(
+      node,
+      node.getFormat() !== 0 &&
+        (!sameFormat(node.getPreviousSibling(), node) ||
+          !sameFormat(node.getNextSibling(), node)) &&
+        isWhitespaceEntities(match[0])
+        ? decodeEntities(match[0])
+        : match[0]
+    ),
 };
 
 /** Read-only display decodes `&#NN;` like a renderer; bad ones stay text. */
@@ -127,12 +149,18 @@ const ESCAPED = '*_`~\\';
 const LIST_LINE =
   /^([ \t]*)([-*+][ \t]|\d+\.[ \t]|(?:-[ \t])?[ \t]?\[[ xX]?\][ \t])/;
 const INDENT = 4; // Lexical's LIST_INDENT_SIZE
-const SINGLE_LINE_FENCE = /^[ \t]*```[^`]+(?:(?:`{1,2}|`{4,})[^`]+)*```(?:[^`]|$)/;
+const SINGLE_LINE_FENCE =
+  /^[ \t]*```[^`]+(?:(?:`{1,2}|`{4,})[^`]+)*```(?:[^`]|$)/;
 const TAGS = /(?:\*\*|\*|__|_|~~|==)+/.source;
 const ENTITIES = /(?:&#\d+;)+/.source;
 const BEFORE_OPENING = /(^|[\s([{"'])/.source;
 const AFTER_CLOSING = /(?=\s|$|[.,;:!?)\]}"'])/.source;
-const WHITESPACE_ONLY_SPAN = new RegExp(`(${TAGS})(${ENTITIES})\\1`, 'g');
+// Whole marker runs only: in `***a*&#32;**b` the `*` before the entity must
+// not pair with half of the `**` after it.
+const WHITESPACE_ONLY_SPAN = new RegExp(
+  `(?<![*_~=])(${TAGS})(${ENTITIES})\\1(?![*_~=])`,
+  'g'
+);
 const OPENING_ENTITIES = new RegExp(
   `${BEFORE_OPENING}(${TAGS})(${ENTITIES})`,
   'g'

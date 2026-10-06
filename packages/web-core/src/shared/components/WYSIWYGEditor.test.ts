@@ -170,6 +170,7 @@ const markdownEditor = () =>
 function roundTrip(markdown: string, keepEscapes = true) {
   const editor = markdownEditor();
   let blocks = 0;
+  let text = '';
   let exported = '';
   editor.update(
     () => {
@@ -177,11 +178,12 @@ function roundTrip(markdown: string, keepEscapes = true) {
         keepEscapes,
       });
       blocks = $getRoot().getChildrenSize();
+      text = $getRoot().getTextContent();
       exported = $editorToMarkdown(EDITOR_TRANSFORMERS);
     },
     { discrete: true }
   );
-  return { blocks, exported };
+  return { blocks, text, exported };
 }
 
 /** Export a paragraph built from `[text, format]` runs. */
@@ -226,11 +228,14 @@ describe('markdown round trip', () => {
   it('keeps blank lines and single newlines as typed', () => {
     const markdown =
       'a\n\n\nb\nc\n\n- d\n- e\n\nf\n\n> q\n\n```\ncode\n\n\nmore\n```';
-    expect(roundTrip(markdown)).toEqual({ blocks: 13, exported: markdown });
+    expect(roundTrip(markdown)).toMatchObject({
+      blocks: 13,
+      exported: markdown,
+    });
   });
 
   it('does not merge adjacent lines into one paragraph', () => {
-    expect(roundTrip('a\nb')).toEqual({ blocks: 2, exported: 'a\nb' });
+    expect(roundTrip('a\nb')).toMatchObject({ blocks: 2, exported: 'a\nb' });
   });
 
   it.each([
@@ -277,6 +282,46 @@ describe('markdown round trip', () => {
         ['b', null],
       ])
     ).toBe('a b');
+  });
+
+  it('reopens edge whitespace of formatted text as whitespace', () => {
+    // Exported with the entity kept (a letter follows the markers), so the
+    // import must decode it or edit mode shows a literal "&#32;".
+    const trailing = exportRuns([
+      ['굵게 ', 'bold'],
+      ['다음', null],
+    ]);
+    expect(trailing).toBe('**굵게&#32;**다음');
+    expect(roundTrip(trailing)).toMatchObject({
+      text: '굵게 다음',
+      exported: trailing,
+    });
+    expect(roundTrip('a**&#32;b**').text).toBe('a b');
+    expect(roundTrip('**a&#32;b** and a&#32;b').text).toBe(
+      'a&#32;b and a&#32;b'
+    );
+  });
+
+  it('keeps marker runs whole when moving whitespace out', () => {
+    const editor = markdownEditor();
+    let exported = '';
+    editor.update(
+      () => {
+        const paragraph = $createParagraphNode();
+        const a = $createTextNode('a').toggleFormat('bold');
+        a.toggleFormat('italic');
+        paragraph.append(
+          a,
+          $createTextNode(' ').toggleFormat('bold'),
+          $createTextNode('b')
+        );
+        $getRoot().append(paragraph);
+        exported = $editorToMarkdown(EDITOR_TRANSFORMERS);
+      },
+      { discrete: true }
+    );
+    // Not `***a *b`, which loses every marker to literal asterisks.
+    expect(exported).toBe('***a*&#32;**b');
   });
 
   it('resolves escapes like a renderer only for read-only display', () => {

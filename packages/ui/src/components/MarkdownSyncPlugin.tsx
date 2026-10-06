@@ -62,39 +62,42 @@ export function MarkdownSyncPlugin({
       // markers or indentation, and that must not rewrite the issue until the
       // user actually edits (selection-only updates fire the listener too).
       lastSerializedRef.current = parsedValue;
-      editor.update(() => {
-        if (parsedValue.trim() === '') {
-          // Leave a single empty paragraph, not a childless root. A childless
-          // root has no selection target, so focus landing on it (autofocus,
-          // click, panel activation, or the value being cleared while focused)
-          // focuses the element with no caret — the field looks focused but
-          // shows no blinking cursor. An empty paragraph keeps the placeholder
-          // visible (Lexical treats it as empty) while giving focus a caret.
-          const root = $getRoot();
-          root.clear();
-          root.append($createParagraphNode());
-        } else {
-          $markdownToEditor(parsedValue, transformers, undefined, {
-            keepEscapes: editable,
-          });
-        }
-        // Read-only displays (streamed agent messages re-import on every
-        // chunk) have no listener to baseline for, so skip the export there.
-        if (onChangeRef.current) {
-          lastSerializedRef.current = $editorToMarkdown(transformers);
-        }
-
-        // Only position cursor at end if editor already has focus (user is actively editing)
-        // This prevents unwanted focus when value changes externally (e.g., panel opening)
-        const rootElement = editor.getRootElement();
-        if (rootElement?.contains(document.activeElement)) {
-          const root = $getRoot();
-          const lastNode = root.getLastChild();
-          if (lastNode) {
-            lastNode.selectEnd();
+      editor.update(
+        () => {
+          if (parsedValue.trim() === '') {
+            // Leave a single empty paragraph, not a childless root. A childless
+            // root has no selection target, so focus landing on it (autofocus,
+            // click, panel activation, or the value being cleared while focused)
+            // focuses the element with no caret — the field looks focused but
+            // shows no blinking cursor. An empty paragraph keeps the placeholder
+            // visible (Lexical treats it as empty) while giving focus a caret.
+            const root = $getRoot();
+            root.clear();
+            root.append($createParagraphNode());
+          } else {
+            $markdownToEditor(parsedValue, transformers, undefined, {
+              keepEscapes: editable,
+            });
           }
-        }
-      }, { tag: IMPORT_TAG });
+          // Read-only displays (streamed agent messages re-import on every
+          // chunk) have no listener to baseline for, so skip the export there.
+          if (onChangeRef.current) {
+            lastSerializedRef.current = $editorToMarkdown(transformers);
+          }
+
+          // Only position cursor at end if editor already has focus (user is actively editing)
+          // This prevents unwanted focus when value changes externally (e.g., panel opening)
+          const rootElement = editor.getRootElement();
+          if (rootElement?.contains(document.activeElement)) {
+            const root = $getRoot();
+            const lastNode = root.getLastChild();
+            if (lastNode) {
+              lastNode.selectEnd();
+            }
+          }
+        },
+        { tag: IMPORT_TAG }
+      );
     } catch (err) {
       lastSerializedRef.current = undefined;
       console.error('Failed to parse markdown', err);
@@ -107,9 +110,7 @@ export function MarkdownSyncPlugin({
       onEditorStateChange?.(editorState);
       if (!onChange || tags.has(IMPORT_TAG)) return;
 
-      const markdown = editorState.read(() =>
-        $editorToMarkdown(transformers)
-      );
+      const markdown = editorState.read(() => $editorToMarkdown(transformers));
 
       if (markdown === lastSerializedRef.current) return;
 
