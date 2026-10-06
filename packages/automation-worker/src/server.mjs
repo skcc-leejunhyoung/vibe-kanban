@@ -3859,6 +3859,50 @@ async function createVibeIssue(connectorId, input, event, rule) {
     }
   }
 
+  // A GitHub issue linked from Vibe (create/existing mode) never enters the
+  // poll's seen sets, so once the user is assigned it looks new. Links are
+  // unique per (project, repository, number): adopt the linked issue instead of
+  // creating a copy whose link POST can only 409. A failed lookup throws, so
+  // runRules queues a retry rather than risking a copy.
+  // ponytail: lists every project link per candidate; add a repository+number
+  // filter to the API if backfills over large projects get slow.
+  if (
+    rule.kind === 'github_issue_sync' &&
+    event &&
+    event.type === 'issue' &&
+    event.url
+  ) {
+    const key = githubIssueLinkKey({
+      repository: event.repo,
+      number: event.number,
+    });
+    const linksBody = await vibeApi(
+      connector,
+      'GET',
+      `/v1/github_issue_links?project_id=${encodeURIComponent(config.projectId)}`
+    );
+    const existingLink = (linksBody?.github_issue_links || []).find(
+      (link) => githubIssueLinkKey(link) === key
+    );
+    if (existingLink) {
+      if (input.sourceKey) {
+        (connector.config.issueMap ||= {})[input.sourceKey] =
+          existingLink.issue_id;
+        await persistState();
+      }
+      await log(
+        'info',
+        'github issue already linked; skipping duplicate issue',
+        {
+          connectorId: effectiveConnectorId,
+          githubUrl: event.url,
+          issueId: existingLink.issue_id,
+        }
+      );
+      return null;
+    }
+  }
+
   const payload = {
     project_id: config.projectId,
     status_id: config.statusId,
@@ -5209,5 +5253,127 @@ async function testGithubIssueReconcile() {
     assert.equal(vibe.config.issueMap['owner/repo#5'], 'original');
     assert.equal(linkCalls.length, 0);
     assert.ok(logs.every(([level]) => level === 'info'));
+  });
+  await test('poll does not copy a GitHub issue already linked from Vibe', async () => {
+    // Vibe 에서 create 모드로 만든 GitHub 이슈는 seen 에 없어서, 담당자가
+    // 지정되면 poll 후보로 들어온다. 프로젝트 링크로 걸러 사본을 막는다.
+    const rule = {
+      id: 'sync',
+      kind: 'github_issue_sync',
+      enabled: true,
+      config: { githubConnectorId: 'github', vibeConnectorId: 'vibe' },
+    };
+    const github = {
+      id: 'github',
+      type: 'github',
+      enabled: true,
+      config: { token: 'token', owner: 'Owner', repo: 'repo' },
+    };
+    const vibe = {
+      id: 'vibe',
+      type: 'vibe_kanban',
+      enabled: true,
+      config: {
+        baseUrl: 'https://vibe.test',
+        projectId: 'project',
+        statusId: 'todo',
+        issueMap: {},
+      },
+    };
+    const links = [];
+    const created = [];
+    const context = vm.createContext({
+      state: { githubIssueLinkOperations: [] },
+      findRule: () => rule,
+      findConnector: (id) => (id === 'vibe' ? vibe : github),
+      vibeApi: async (_connector, method, url, payload) => {
+        if (method === 'GET' && url.startsWith('/v1/issues/')) {
+          return { id: 'original', project_id: 'project', updated_at: stamp };
+        }
+        if (
+          method === 'GET' &&
+          url.includes('github_issue_links?project_id=project')
+        ) {
+          return { github_issue_links: links.map((link) => ({ ...link })) };
+        }
+        if (method === 'POST' && url === '/v1/github_issue_links') {
+          links.push(payload);
+          return { data: payload };
+        }
+        throw new Error(`unexpected ${method} ${url}`);
+      },
+      findGithubIssueLinkForIssue: async () => null,
+      findGithubIssueByMarker: async () => null,
+      createGithubIssue: async () => ({
+        number: 7,
+        html_url: 'https://github.com/Owner/repo/issues/7',
+        node_id: 'node7',
+        state: 'open',
+        updated_at: stamp,
+      }),
+      syncGithubMilestone: async () => ({
+        milestoneId: null,
+        githubNumber: null,
+      }),
+      patchGithubIssueLink: async () => {},
+      postVibeIssue: async (_connector, payload) => {
+        created.push(payload);
+        return { data: { id: `new-${created.length}` } };
+      },
+      linkGithubIssue: async () => {},
+      persistState: async () => {},
+      log: async () => {},
+      cloneData: structuredClone,
+      assertGithubIssueProject,
+      ensureGithubIssueForLink,
+      shouldSyncGithubProjectStatus: () => false,
+      normalizeOptionalTimestamp,
+      githubIssueLinkKey,
+      githubIssueSyncVibeConnectorId,
+    });
+    vm.runInContext(
+      [linkGithubIssueOnce, removeGithubIssueLinkOperation, createVibeIssue]
+        .map((fn) => fn.toString())
+        .join('\n'),
+      context
+    );
+
+    await context.linkGithubIssueOnce(
+      {
+        ruleId: 'sync',
+        mode: 'create',
+        issueId: 'original',
+        title: 'original',
+      },
+      'sync:original'
+    );
+    const pollEvent = (number) => ({
+      source: 'github',
+      type: 'issue',
+      connectorId: 'github',
+      repo: 'owner/repo',
+      number,
+      title: `#${number}`,
+      url: `https://github.com/owner/repo/issues/${number}`,
+    });
+    const result = await context.createVibeIssue(
+      'vibe',
+      { title: '#7', sourceKey: 'owner/repo#7' },
+      pollEvent(7),
+      rule
+    );
+    assert.equal(result, null);
+    assert.equal(created.length, 0);
+    assert.equal(vibe.config.issueMap['owner/repo#7'], 'original');
+
+    // 링크되지 않은 이슈는 그대로 가져온다.
+    await context.createVibeIssue(
+      'vibe',
+      { title: '#8', sourceKey: 'owner/repo#8' },
+      pollEvent(8),
+      rule
+    );
+    assert.equal(created.length, 1);
+    assert.equal(vibe.config.issueMap['owner/repo#8'], 'new-1');
   });
 }
