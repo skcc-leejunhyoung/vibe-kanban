@@ -58,13 +58,18 @@ export function TurnNavigationPopup({
     if (turns.length === 0) return;
     clearCloseTimeout();
     // Prefer the last navigated turn (scroll may still be in progress),
-    // falling back to viewport detection for manual scrolls.
-    const active =
-      lastNavigatedRef.current ?? getActiveTurnPatchKey?.() ?? null;
+    // falling back to viewport detection for manual scrolls. A turn clicked
+    // while unloaded carried a `proc:` key that its loaded entry key has since
+    // replaced, so only a key still in the list counts.
+    const last = lastNavigatedRef.current;
     lastNavigatedRef.current = null;
+    const active =
+      (last && turns.some((turn) => turn.patchKey === last) ? last : null) ??
+      getActiveTurnPatchKey?.() ??
+      null;
     setActivePatchKey(active);
     setOpen(true);
-  }, [turns.length, clearCloseTimeout, getActiveTurnPatchKey]);
+  }, [turns, clearCloseTimeout, getActiveTurnPatchKey]);
 
   const handleTriggerLeave = useCallback(() => {
     scheduleClose();
