@@ -3804,13 +3804,14 @@ async function createVibeIssue(connectorId, input, event, rule) {
   }
 
   // Idempotency for review PRs. A review-requested PR is deduped in-poll only by
-  // `seenIds`, which is capped at the most-recent 1000 ids and never refreshes
-  // an entry's recency, so a PR that stays open while >1000 newer items churn
-  // through the connector is evicted and re-surfaced — the worker would then
-  // create a *second* `review` issue for the same PR. A DB unique constraint
-  // cannot prevent this: `pull_request_issues` is intentionally many-to-many and
-  // its row requires the issue to exist first, so the duplicate issue precedes
-  // any (rejected) link and would only be orphaned. So dedup here, in two layers:
+  // `seenIds`, which is capped at the most-recent 1000 ids, so a PR that drops
+  // out of the poll (e.g. its review request is fulfilled) while >1000 newer
+  // items churn through the connector is evicted, and if it re-surfaces the
+  // worker would create a *second* `review` issue for the same PR. A DB unique
+  // constraint cannot prevent this: `pull_request_issues` is intentionally
+  // many-to-many and its row requires the issue to exist first, so the
+  // duplicate issue precedes any (rejected) link and would only be orphaned. So
+  // dedup here, in two layers:
   if (event && event.type === 'pr' && event.url) {
     // Layer 1 — durable, url-keyed local record written at creation (below).
     // url is collision-free across repos (unlike sourceKey), survives `seenIds`
