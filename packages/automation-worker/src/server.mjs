@@ -17,6 +17,7 @@ import {
   decideGithubProjectStatusSync,
   ensureGithubIssueForLink,
   githubIssueMapBackfillEntries,
+  githubIssuePollSince,
   githubIssueSyncVibeConnectorId,
   githubMilestoneMetaDiffers,
   markGithubIssueSeen,
@@ -1572,7 +1573,7 @@ async function pollGithub(connector) {
   const perPage = String(githubPerPage(config));
   const issuesUrl = `${apiBase}/repos/${config.owner}/${config.repo}/issues`;
 
-  async function fetchPage(page, withSince) {
+  async function fetchPage(page, since) {
     const params = new URLSearchParams({
       state: String(config.state || 'open'),
       sort: 'updated',
@@ -1581,8 +1582,7 @@ async function pollGithub(connector) {
       page: String(page),
     });
     params.set(field, login);
-    if (withSince && config.cursorTs)
-      params.set('since', String(config.cursorTs));
+    if (since) params.set('since', since);
     const response = await fetch(`${issuesUrl}?${params}`, {
       headers: githubHeaders(config.token),
     });
@@ -1595,15 +1595,14 @@ async function pollGithub(connector) {
     return JSON.parse(text);
   }
 
-  // Backfill ignores the incremental cursor and walks every page so the whole
-  // assigned history is imported; normal polls walk pages filtered by `since`.
-  // Both paginate (bounded to 20 pages) — fetching only page 1 while the cursor
-  // jumps to the newest would silently drop a burst of >limit issues updated in
-  // a single interval.
+  // Backfill and open assigned polls list everything (see githubIssuePollSince);
+  // other polls are filtered by `since`. All paginate (bounded to 20 pages) —
+  // fetching only page 1 while the cursor jumps to the newest would silently
+  // drop a burst of >limit issues updated in a single interval.
   let items = [];
-  const useSince = !config.backfill;
+  const since = githubIssuePollSince(config, field);
   for (let page = 1; page <= 20; page += 1) {
-    const batch = await fetchPage(page, useSince);
+    const batch = await fetchPage(page, since);
     if (!Array.isArray(batch) || !batch.length) break;
     items = items.concat(batch);
     if (batch.length < Number(perPage)) break;

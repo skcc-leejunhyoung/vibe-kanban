@@ -13,6 +13,7 @@ import {
   ensureGithubIssueForLink,
   selectGithubImportCandidates,
   githubIssueMapBackfillEntries,
+  githubIssuePollSince,
   githubIssueMarker,
   githubIssueSyncVibeConnectorId,
   githubMilestoneMetaDiffers,
@@ -178,6 +179,57 @@ test('dedups the same issue arriving as a Project item and a REST result across 
   });
   assert.deepEqual(second.candidates, []);
   assert.equal(second.latest, '2026-08-05T00:00:00Z');
+});
+
+test('imports an old issue newly assigned after the cursor (skcc-ai/c2#6047)', () => {
+  // GitHub keeps `updated_at` when an assignee is added, so the issue is older
+  // than the cursor; a `since` filter would hide it (mirrors the REST list).
+  const listOpenAssigned = (since) =>
+    [
+      { id: 1, number: 6000, updated_at: '2026-10-06T07:00:00Z' },
+      { id: 2, number: 6047, updated_at: '2026-09-16T08:52:27Z' },
+    ].filter((issue) => !since || issue.updated_at >= since);
+  const config = { cursorTs: '2026-10-06T07:03:40Z', state: 'open' };
+  const seen = new Set(['1']);
+  const seenNumbers = new Set(['6000']);
+
+  const since = githubIssuePollSince(config, 'assignee');
+  const { candidates, latest } = selectGithubPollCandidates({
+    items: listOpenAssigned(since),
+    seen,
+    seenNumbers,
+    latest: config.cursorTs,
+  });
+  assert.deepEqual(
+    candidates.map((issue) => issue.number),
+    [6047]
+  );
+  assert.equal(latest, config.cursorTs);
+
+  // Other filters/states and backfill keep their existing behavior.
+  assert.equal(githubIssuePollSince(config, 'creator'), config.cursorTs);
+  assert.equal(
+    githubIssuePollSince({ ...config, state: 'all' }, 'assignee'),
+    config.cursorTs
+  );
+  assert.equal(
+    githubIssuePollSince({ ...config, backfill: true }, 'creator'),
+    null
+  );
+});
+
+test('re-surfaced seen keys survive the persisted dedup caps', () => {
+  // An issue seen long ago but still open/assigned is returned every poll; it
+  // must not age out of `slice(-N)` and be imported again as a duplicate.
+  const seen = new Set(['old', 'a', 'b']);
+  const seenNumbers = new Set(['1', '2', '3']);
+  selectGithubPollCandidates({
+    items: [{ id: 'old', number: 1 }],
+    seen,
+    seenNumbers,
+  });
+  assert.deepEqual(Array.from(seen).slice(-1), ['old']);
+  assert.deepEqual(Array.from(seenNumbers).slice(-1), ['1']);
 });
 
 test('never dedups review PRs by number (cross-repo numbers collide)', () => {

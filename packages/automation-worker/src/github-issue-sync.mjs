@@ -100,6 +100,8 @@ export function decideGithubMilestoneSync({
 // additive — it never relaxes the legacy `seen` check — so existing persisted
 // `seenIds` keep working across the upgrade, and skipping a project item via the
 // legacy `seen` set still records its number so the REST twin is caught.
+// Re-surfaced keys move to the tail so the persisted `slice(-1000)` caps only
+// ever evict entries no poll still returns.
 export function selectGithubPollCandidates({
   items,
   seen,
@@ -132,13 +134,30 @@ export function selectGithubPollCandidates({
       (numberKey && seenNumbers.has(numberKey)) ||
       batchIds.has(batchKey)
     ) {
-      if (numberKey) seenNumbers.add(numberKey);
+      if (seen.delete(seenKey)) seen.add(seenKey);
+      if (numberKey) {
+        seenNumbers.delete(numberKey);
+        seenNumbers.add(numberKey);
+      }
       continue;
     }
     batchIds.add(batchKey);
     candidates.push(issue);
   }
   return { candidates, latest: cursor };
+}
+
+// GitHub doesn't bump `updated_at` when an assignee is added, so a `since`
+// cursor never surfaces an old issue newly assigned to the user. The open
+// assigned set is small, so list it whole every poll; the dedup sets skip what
+// was already imported. Backfill lists everything too.
+// ponytail: other states keep the cursor (closed history is unbounded), so a
+// newly assigned old issue there still waits for its next update.
+export function githubIssuePollSince(config, field) {
+  const { backfill, cursorTs, state } = config || {};
+  if (backfill || !cursorTs) return null;
+  if (field === 'assignee' && (state || 'open') === 'open') return null;
+  return String(cursorTs);
 }
 
 // The first poll only seeds the dedup sets so enabling a connector never floods
