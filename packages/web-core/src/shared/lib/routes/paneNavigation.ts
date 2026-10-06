@@ -19,7 +19,8 @@ export interface PaneNavigationController {
 /**
  * Navigate the document router to a pane destination. Used to mirror the
  * active pane into the URL (replace) and to fall back to full-page navigation
- * on surfaces without the grid.
+ * on surfaces without the grid. Given a pane-scoped navigation
+ * ({@link createPaneAppNavigation}) it navigates that pane instead.
  */
 export function navigateDocumentTo(
   destination: WorkspacePaneDestination,

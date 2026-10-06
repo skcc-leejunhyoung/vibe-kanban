@@ -23,6 +23,8 @@ import {
   getPullRequestDetailsNavigationTarget,
 } from '@/shared/lib/notifications';
 import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
+import { navigateDocumentTo } from '@/shared/lib/routes/paneNavigation';
+import { isPaneRenderableDestination } from '@/shared/stores/useWorkspacePanesStore';
 import { useNotificationCursorStore } from '@/shared/stores/useNotificationCursorStore';
 import {
   getGroupedNotificationSegments,
@@ -350,7 +352,13 @@ export function NotificationsPage() {
         appNavigation.goToPullRequests(prDetails.prUrl);
         return;
       }
-      if (path) {
+      const destination = path ? appNavigation.resolveFromPath(path) : null;
+      if (isPaneRenderableDestination(destination)) {
+        // Through the (pane-scoped) app navigation, so the target opens in the
+        // pane showing this list — the document router would retarget another
+        // pane already showing the same project.
+        navigateDocumentTo(destination, appNavigation);
+      } else if (path) {
         void router.navigate({ to: path as '/' });
       } else if (
         group.latest.notification_type === 'pull_request_comment_added'
