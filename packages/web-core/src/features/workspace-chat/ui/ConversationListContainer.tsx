@@ -966,7 +966,7 @@ export const ConversationList = forwardRef<
   const scrollRowToTop = useCallback(
     (semanticKey: string, token: number) => {
       const scrollEl = tanstackScrollRef.current;
-      if (!scrollEl) {
+      if (!scrollEl || navigationTokenRef.current !== token) {
         endNavigation(token);
         return;
       }
@@ -982,7 +982,7 @@ export const ConversationList = forwardRef<
       // the token and ends it.
       const guard = (until: number, lastTop: number) => {
         if (navigationTokenRef.current !== token) return;
-        if (performance.now() > until) return;
+        if (performance.now() > until || !scrollEl.isConnected) return;
         const node = scrollEl.querySelector<HTMLElement>(selector);
         if (!node) return;
         const delta =
@@ -1001,7 +1001,11 @@ export const ConversationList = forwardRef<
         const index = prevRowsRef.current.findIndex(
           (row) => row.semanticKey === semanticKey
         );
-        if (index < 0 || performance.now() > deadline) {
+        if (
+          index < 0 ||
+          performance.now() > deadline ||
+          !scrollEl.isConnected
+        ) {
           endNavigation(token);
           return;
         }
@@ -1058,6 +1062,7 @@ export const ConversationList = forwardRef<
     async (processId: string) => {
       const token = beginNavigation();
       await loadUntilProcess(processId);
+      if (navigationTokenRef.current !== token) return;
 
       const findTarget = () => {
         const rows = prevRowsRef.current;
