@@ -9,6 +9,7 @@ import {
   reviewActivity,
 } from './github-pr-activity.mjs';
 import {
+  adoptLinkedGithubIssueMapEntries,
   assertGithubIssueProject,
   backfillLegacyGithubIssueLinks,
   decideGithubMilestoneSync,
@@ -63,6 +64,11 @@ import {
   scheduleOccurrence,
   validateRoutineScope,
 } from './routines.mjs';
+import { fetchWithRetry } from './fetch-retry.mjs';
+
+// Every worker call (GitHub, Vibe remote, token endpoint, Slack) shares one
+// timeout/retry policy; shadowing the global keeps the call sites unchanged.
+const fetch = (url, options) => fetchWithRetry(url, options);
 
 const PORT = Number(process.env.PORT || 8787);
 const DATA_DIR = process.env.AUTOMATION_DATA_DIR || path.resolve('data');
@@ -2442,6 +2448,18 @@ async function linkGithubIssueOnce(input, operationKey) {
     synced_parent_issue_id: null,
     synced_milestone_id: null,
     synced_github_milestone_number: null,
+  }).catch(async (error) => {
+    if (error.status !== 409) throw error;
+    // Links are unique per (project, repository, number): another Vibe issue of
+    // this project already holds the GitHub issue, so no retry can succeed.
+    removeGithubIssueLinkOperation(operationKey);
+    await persistState();
+    throw Object.assign(
+      new Error(
+        `GitHub issue ${repository}#${issue.number} is already linked to another Vibe issue`
+      ),
+      { alreadyLinked: true }
+    );
   });
   const milestoneSync = await syncGithubMilestone({
     github,
@@ -2591,6 +2609,14 @@ async function backfillGithubIssueMapLinks({
 }) {
   const repository = `${github.config.owner}/${github.config.repo}`;
   const skipped = (vibe.config.githubIssueLinkBackfillSkipped ||= []);
+  const adopted = adoptLinkedGithubIssueMapEntries(vibe.config.issueMap, links);
+  for (const entry of adopted) {
+    await log('info', 'github issue already linked; issueMap adopted it', {
+      ruleId: rule.id,
+      ...entry,
+    });
+  }
+  if (adopted.length) await persistState();
   const entries = githubIssueMapBackfillEntries({
     issueMap: vibe.config.issueMap,
     repository,
@@ -3724,7 +3750,8 @@ function createRuleContext(rule, event, conditionOnly = false) {
       },
       http: {
         request: async (url, options = {}) => {
-          const response = await fetch(url, options);
+          // Rule scripts send arbitrary requests; only they know what replays safely.
+          const response = await globalThis.fetch(url, options);
           return {
             ok: response.ok,
             status: response.status,
@@ -4037,8 +4064,11 @@ async function vibeApi(
       continue;
     }
     if (!response.ok) {
-      throw new Error(
-        `Vibe ${method} ${path} failed: ${response.status} ${text.slice(0, 300)}`
+      throw Object.assign(
+        new Error(
+          `Vibe ${method} ${path} failed: ${response.status} ${text.slice(0, 300)}`
+        ),
+        { status: response.status }
       );
     }
     if (!text) return null;
@@ -4597,6 +4627,7 @@ async function testGithubIssueReconcile() {
     h.context.retryPendingGithubIssueLinks = async () => 0;
     h.context.backfillGithubIssueMapLinks = async () => 0;
     h.context.githubIssueLinkKey = githubIssueLinkKey;
+    h.context.shouldReconcileGithubIssueLink = shouldReconcileGithubIssueLink;
     const api = h.context.vibeApi;
     h.context.vibeApi = async (connector, method, url, payload) => {
       if (url.includes('project_id=')) {
@@ -5089,5 +5120,94 @@ async function testGithubIssueReconcile() {
       assert.equal(rows.length, count);
       assert.equal(h.calls.length, Math.floor(count / 100) + 1);
     }
+  });
+  await test('a 409 link conflict is not queued and backfill adopts the existing link', async () => {
+    // 같은 GitHub 이슈가 다른 Vibe 이슈에 이미 연결돼 있으면 POST 는 영원히 409 다.
+    const rule = {
+      id: 'sync',
+      kind: 'github_issue_sync',
+      enabled: true,
+      config: { githubConnectorId: 'github', vibeConnectorId: 'vibe' },
+    };
+    const github = {
+      id: 'github',
+      type: 'github',
+      enabled: true,
+      config: { token: 'token', owner: 'owner', repo: 'repo' },
+    };
+    const vibe = {
+      id: 'vibe',
+      type: 'vibe_kanban',
+      enabled: true,
+      config: { projectId: 'project', issueMap: { 'owner/repo#5': 'copy' } },
+    };
+    const copy = { id: 'copy', project_id: 'project', title: 'copy #5' };
+    const logs = [];
+    const linkCalls = [];
+    const context = vm.createContext({
+      state: { githubIssueLinkOperations: [] },
+      findRule: () => rule,
+      findConnector: (id) => (id === 'vibe' ? vibe : github),
+      vibeApi: async (_connector, method, url) => {
+        if (method === 'GET') return { ...copy };
+        throw Object.assign(new Error(`Vibe POST ${url} failed: 409`), {
+          status: 409,
+        });
+      },
+      findGithubIssueLinkForIssue: async () => null,
+      fetchGithubIssueByUrl: async () => ({
+        number: 5,
+        html_url: 'https://github.com/owner/repo/issues/5',
+        state: 'open',
+      }),
+      persistState: async () => {},
+      log: async (level, message) => logs.push([level, message]),
+      linkGithubIssue: async (input) => linkCalls.push(input),
+      cloneData: structuredClone,
+      assertGithubIssueProject,
+      ensureGithubIssueForLink,
+      shouldSyncGithubProjectStatus: () => false,
+      normalizeOptionalTimestamp,
+      adoptLinkedGithubIssueMapEntries,
+      githubIssueMapBackfillEntries,
+      backfillLegacyGithubIssueLinks,
+      errorMessage,
+    });
+    vm.runInContext(
+      [
+        linkGithubIssueOnce,
+        removeGithubIssueLinkOperation,
+        backfillGithubIssueMapLinks,
+      ]
+        .map((fn) => fn.toString())
+        .join('\n'),
+      context
+    );
+
+    await assert.rejects(
+      context.linkGithubIssueOnce(
+        {
+          ruleId: 'sync',
+          mode: 'existing',
+          url: 'https://github.com/owner/repo/issues/5',
+          issueId: 'copy',
+          title: 'copy #5',
+        },
+        'sync:copy'
+      ),
+      (error) => error.alreadyLinked === true
+    );
+    assert.equal(context.state.githubIssueLinkOperations.length, 0);
+
+    await context.backfillGithubIssueMapLinks({
+      rule,
+      github,
+      vibe,
+      issues: new Map([['copy', copy]]),
+      links: [{ repository: 'owner/repo', number: 5, issue_id: 'original' }],
+    });
+    assert.equal(vibe.config.issueMap['owner/repo#5'], 'original');
+    assert.equal(linkCalls.length, 0);
+    assert.ok(logs.every(([level]) => level === 'info'));
   });
 }

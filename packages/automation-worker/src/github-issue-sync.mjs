@@ -1,3 +1,5 @@
+import { githubIssueLinkKey } from './github-sub-issues.mjs';
+
 const MARKER_PREFIX = '<!-- vibe-kanban-issue:';
 
 export function githubIssueMarker(issueId) {
@@ -416,6 +418,28 @@ export function githubIssueSyncVibeConnectorId(rule, requestedConnectorId) {
   return String(rule.config?.vibeConnectorId || requestedConnectorId || '');
 }
 
+// A GitHub issue can be linked once per project (unique project, repository,
+// number). An issueMap entry pointing at a different Vibe issue than the one
+// holding that link (a duplicate import) can never be linked — POST answers 409
+// forever. Re-point it at the linked issue so backfill stops selecting it.
+export function adoptLinkedGithubIssueMapEntries(issueMap, links) {
+  const linkedIssueIds = new Map(
+    (links || []).map((link) => [githubIssueLinkKey(link), link.issue_id])
+  );
+  const adopted = [];
+  for (const [sourceKey, issueId] of Object.entries(issueMap || {})) {
+    const linkedIssueId = linkedIssueIds.get(sourceKey.toLowerCase());
+    if (!linkedIssueId || linkedIssueId === issueId) continue;
+    issueMap[sourceKey] = linkedIssueId;
+    adopted.push({
+      sourceKey,
+      previousIssueId: issueId,
+      issueId: linkedIssueId,
+    });
+  }
+  return adopted;
+}
+
 export function githubIssueMapBackfillEntries({
   issueMap,
   repository,
@@ -536,6 +560,9 @@ export async function retryPendingGithubIssueLinkOperations({
       changed = true;
     } catch (error) {
       changed = true;
+      // Another Vibe issue already holds this GitHub issue; no retry can win.
+      // Drop it quietly — backfill re-points issueMap at the linked issue.
+      if (error?.alreadyLinked) continue;
       operation.attempts = (operation.attempts || 0) + 1;
       operation.updatedAt = now;
       operation.lastError =

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  adoptLinkedGithubIssueMapEntries,
   assertGithubIssueProject,
   backfillLegacyGithubIssueLinks,
   commentMarkerId,
@@ -479,6 +480,38 @@ test('selects only unlinked legacy issueMap entries for the configured repositor
   );
 });
 
+test('an issueMap entry whose GitHub issue is linked to another Vibe issue adopts that link', () => {
+  // 중복 import 로 issueMap 이 링크 없는 사본을 가리키면 POST 가 영원히 409 였다.
+  const issueMap = {
+    'skcc-ai/c2#5325': 'duplicate',
+    'skcc-ai/c2#7': 'vibe-7',
+    'skcc-ai/c2#8': 'unlinked',
+  };
+  const links = [
+    { repository: 'Skcc-AI/c2', number: 5325, issue_id: 'original' },
+    { repository: 'skcc-ai/c2', number: 7, issue_id: 'vibe-7' },
+  ];
+
+  assert.deepEqual(adoptLinkedGithubIssueMapEntries(issueMap, links), [
+    {
+      sourceKey: 'skcc-ai/c2#5325',
+      previousIssueId: 'duplicate',
+      issueId: 'original',
+    },
+  ]);
+  assert.equal(issueMap['skcc-ai/c2#5325'], 'original');
+  assert.deepEqual(
+    githubIssueMapBackfillEntries({
+      issueMap,
+      repository: 'skcc-ai/c2',
+      linkedIssueIds: links.map((link) => link.issue_id),
+      skippedSourceKeys: [],
+    }),
+    [{ sourceKey: 'skcc-ai/c2#8', issueId: 'unlinked', number: 8 }]
+  );
+  assert.deepEqual(adoptLinkedGithubIssueMapEntries(issueMap, links), []);
+});
+
 test('poller backfill links issues, skips PRs, and leaves transient failures retryable', async () => {
   const entries = [
     { sourceKey: 'org/repo#1', issueId: 'vibe-1', number: 1 },
@@ -638,6 +671,32 @@ test('permanently failing github link is dropped once attempts are exhausted', a
   assert.deepEqual(exhausted, ['vibe-gone']);
   assert.deepEqual(failures, []);
   assert.equal(changed, true);
+});
+
+test('a pending link whose GitHub issue is already linked is dropped without a warning', async () => {
+  const failures = [];
+  const exhausted = [];
+  const { remaining, recovered, changed } =
+    await retryPendingGithubIssueLinkOperations({
+      ...LINK_RETRY_POLICY,
+      operations: [
+        { githubConnectorId: 'github-1', input: { issueId: 'duplicate' } },
+      ],
+      connectorId: 'github-1',
+      linkIssue: async () => {
+        throw Object.assign(new Error('already linked'), {
+          alreadyLinked: true,
+        });
+      },
+      onFailure: async (op) => failures.push(op.input.issueId),
+      onExhausted: async (op) => exhausted.push(op.input.issueId),
+    });
+
+  assert.deepEqual(remaining, []);
+  assert.equal(recovered, 0);
+  assert.equal(changed, true);
+  assert.deepEqual(failures, []);
+  assert.deepEqual(exhausted, []);
 });
 
 const STATUS_MAPPINGS = [
