@@ -226,8 +226,8 @@ function IssueListAddRow({
   const { t } = useTranslation('common');
   const [title, setTitle] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
-  // Draft discarded on blur. The input unmounts on blur, taking its native
-  // undo history with it, so Cmd/Ctrl+Z on the empty input restores it.
+  // Draft discarded on blur or Escape. The input unmounts then, taking its
+  // native undo history with it, so Cmd/Ctrl+Z on the empty input restores it.
   const discardedDraftRef = useRef('');
 
   // Autofocus the input whenever the container switches this row into edit mode
@@ -268,6 +268,10 @@ function IssueListAddRow({
         // resume and Enter re-enters.
         e.preventDefault();
         e.stopPropagation();
+        // Stash explicitly: only Chromium fires blur when the input unmounts.
+        if (e.currentTarget.value) {
+          discardedDraftRef.current = e.currentTarget.value;
+        }
         setTitle('');
         onStopEditing?.(true);
       }
