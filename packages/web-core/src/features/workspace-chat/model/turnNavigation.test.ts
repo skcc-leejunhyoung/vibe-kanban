@@ -60,6 +60,29 @@ describe('buildTurnNavigationItems', () => {
     ]);
   });
 
+  it('keeps a review prompt off the follow-up turn after it', () => {
+    const review = process('review', 3, {
+      type: 'ReviewRequest',
+      prompt: 'review prompt',
+    });
+    const third = process('third', 4, {
+      type: 'CodingAgentFollowUpRequest',
+      prompt: 'third prompt',
+    });
+    const turns = buildTurnNavigationItems(
+      [
+        userEntry('first', 'first prompt'),
+        userEntry('review', 'review prompt'),
+        userEntry('third', 'third prompt'),
+      ],
+      [first, review, third]
+    );
+    expect(turns).toEqual([
+      { patchKey: 'first:user', content: 'first prompt', turnNumber: 1 },
+      { patchKey: 'third:user', content: 'third prompt', turnNumber: 2 },
+    ]);
+  });
+
   it('skips handoff turns without a user prompt', () => {
     const handoff = process('handoff', 3, {
       type: 'CodingAgentInitialRequest',

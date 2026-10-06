@@ -56,9 +56,10 @@ export function buildTurnNavigationItems(
     let processId = entry.executionProcessId;
     // Once its setup-script process is loaded, the first turn's prompt is
     // emitted under that process; attribute it to the coding turn it starts
-    // so that turn keeps its real patchKey.
+    // so that turn keeps its real patchKey. Only script processes: a review
+    // turn's own prompt must not be pinned onto the follow-up after it.
     const owner = processById.get(processId);
-    if (owner && getUserPromptFromProcess(owner) == null) {
+    if (owner?.executor_action.typ.type === 'ScriptRequest') {
       const started = ordered.find(
         (process) =>
           process.id !== owner.id &&
