@@ -155,6 +155,10 @@ function useShortcutGroups(): ShortcutGroup[] {
               description: t('shortcuts.actions.sendMessage'),
               useHintKey: true,
             },
+        {
+          keys: [mod, '⇧', enterKey],
+          description: t('shortcuts.actions.sendNow'),
+        },
       ],
     };
 

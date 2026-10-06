@@ -353,6 +353,7 @@
       "focusPane4": "Focus pane 4",
       "formatInlineCode": "Format inline code",
       "sendMessage": "Send message",
+      "sendNow": "Send now (interrupt the running turn)",
       "settings": "Go to Settings",
       "new-workspace": "Go to New Workspace",
       "new-session": "New session",

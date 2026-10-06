@@ -1386,6 +1386,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       value,
       onChange,
       onCmdEnter,
+      onShiftCmdEnter,
       disabled,
       repoIds,
       executor,
@@ -1398,6 +1399,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         value={value}
         onChange={onChange}
         onCmdEnter={onCmdEnter}
+        onShiftCmdEnter={onShiftCmdEnter}
         disabled={disabled}
         fillHeight
         // fillHeight makes the editor the internal scroll region so it grows

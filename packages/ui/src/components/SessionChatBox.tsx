@@ -204,6 +204,8 @@ export interface SessionChatBoxEditorRenderProps<
   value: string;
   onChange: (value: string) => void;
   onCmdEnter: () => void;
+  /** Shift+Cmd+Enter: "send now" (steer) while running; Cmd+Enter otherwise */
+  onShiftCmdEnter: () => void;
   disabled: boolean;
   repoIds?: string[];
   executor: TExecutor | null;
@@ -434,6 +436,24 @@ export function SessionChatBox<TExecutor extends string = string>({
       actions.onQueue();
     } else if (status === 'idle' && canSend) {
       actions.onSend();
+    }
+  };
+
+  // Shift+Cmd+Enter: keyboard twin of the lightning ("send now") button, which
+  // only exists in the plain running state. Everywhere else fall back to
+  // Cmd+Enter so the chord never silently does nothing.
+  const handleShiftCmdEnter = () => {
+    const canSteer =
+      isRunning &&
+      canSend &&
+      !isInFeedbackMode &&
+      !isInEditMode &&
+      !isInApprovalMode &&
+      !isInAskQuestionMode;
+    if (canSteer) {
+      actions.onSteer();
+    } else {
+      handleCmdEnter();
     }
   };
 
@@ -929,6 +949,7 @@ export function SessionChatBox<TExecutor extends string = string>({
         value: editor.value,
         onChange: editor.onChange,
         onCmdEnter: handleCmdEnter,
+        onShiftCmdEnter: handleShiftCmdEnter,
         disabled: isDisabled,
         repoIds,
         executor: agent || executor?.selected || null,

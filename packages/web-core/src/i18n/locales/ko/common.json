@@ -339,6 +339,7 @@
       "focusPane4": "패널 4 포커스",
       "formatInlineCode": "Format inline code",
       "sendMessage": "메시지 보내기",
+      "sendNow": "지금 보내기 (진행 중인 턴 중단)",
       "settings": "설정으로 이동",
       "new-workspace": "새 워크스페이스로 이동",
       "new-session": "새 세션",

@@ -323,6 +323,7 @@
       "focusPane4": "ペイン4にフォーカス",
       "formatInlineCode": "Format inline code",
       "sendMessage": "メッセージを送信",
+      "sendNow": "今すぐ送信（実行中のターンを中断）",
       "settings": "設定に移動",
       "new-workspace": "新しいワークスペースに移動",
       "new-session": "新規セッション",

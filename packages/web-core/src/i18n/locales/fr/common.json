@@ -323,6 +323,7 @@
       "focusPane4": "Focus panneau 4",
       "formatInlineCode": "Format inline code",
       "sendMessage": "Envoyer le message",
+      "sendNow": "Envoyer maintenant (interrompre le tour en cours)",
       "settings": "Aller aux Paramètres",
       "new-workspace": "Aller au Nouvel espace de travail",
       "new-session": "Nouvelle session",

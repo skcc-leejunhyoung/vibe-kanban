@@ -323,6 +323,7 @@
       "focusPane4": "聚焦窗格 4",
       "formatInlineCode": "Format inline code",
       "sendMessage": "傳送訊息",
+      "sendNow": "立即傳送（中斷目前回合）",
       "settings": "前往設定",
       "new-workspace": "前往新工作區",
       "new-session": "新工作階段",

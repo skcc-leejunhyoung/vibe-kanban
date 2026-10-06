@@ -138,7 +138,9 @@ export function KeyboardCommandsPlugin({
       return unregisterTab;
     }
 
-    const flushAndSubmit = () => {
+    // Push the editor's current markdown through onChange synchronously before
+    // submitting, so the submit handler reads the text that was just typed.
+    const flushAndSubmit = (submit?: () => void) => {
       if (onChange && transformers) {
         const markdown = editor
           .getEditorState()
@@ -147,7 +149,7 @@ export function KeyboardCommandsPlugin({
           onChange(markdown);
         });
       }
-      onCmdEnter?.();
+      submit?.();
     };
 
     const unregisterModifier = editor.registerCommand(
@@ -161,12 +163,12 @@ export function KeyboardCommandsPlugin({
         event.stopPropagation();
 
         if (event.shiftKey && onShiftCmdEnter) {
-          onShiftCmdEnter();
+          flushAndSubmit(onShiftCmdEnter);
           return true;
         }
 
         if (!event.shiftKey && onCmdEnter && sendShortcut === 'ModifierEnter') {
-          flushAndSubmit();
+          flushAndSubmit(onCmdEnter);
           return true;
         }
 
@@ -190,7 +192,7 @@ export function KeyboardCommandsPlugin({
             return false;
           }
           event.preventDefault();
-          flushAndSubmit();
+          flushAndSubmit(onCmdEnter);
           return true;
         }
 
