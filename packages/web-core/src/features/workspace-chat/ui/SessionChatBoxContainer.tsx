@@ -410,17 +410,38 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     // whole conversation, not just what's been paged in. For turns already
     // loaded we reuse the real entry patchKey (instant scroll); for the rest we
     // carry a `proc:<id>` key that the handler resolves by paging history in.
+    const createdAt = (process: ExecutionProcess) =>
+      new Date(process.created_at as unknown as string).getTime();
+    const ordered = [...processes].sort((a, b) => createdAt(a) - createdAt(b));
+    const processById = new Map(
+      ordered.map((process) => [process.id, process])
+    );
     const loadedByProcess = new Map<
       string,
       { patchKey: string; content: string }
     >();
     for (const entry of entries) {
       if (
-        entry.type === 'NORMALIZED_ENTRY' &&
-        entry.content.entry_type.type === 'user_message' &&
-        !loadedByProcess.has(entry.executionProcessId)
+        entry.type !== 'NORMALIZED_ENTRY' ||
+        entry.content.entry_type.type !== 'user_message'
       ) {
-        loadedByProcess.set(entry.executionProcessId, {
+        continue;
+      }
+      let processId = entry.executionProcessId;
+      // Once its setup-script process is loaded, the first turn's prompt is
+      // emitted under that process; attribute it to the coding turn it starts
+      // so that turn keeps its real patchKey (instant jump, active highlight).
+      const owner = processById.get(processId);
+      if (owner && getUserPromptFromProcess(owner) == null) {
+        const started = ordered.find(
+          (process) =>
+            createdAt(process) > createdAt(owner) &&
+            getUserPromptFromProcess(process) != null
+        );
+        if (started) processId = started.id;
+      }
+      if (!loadedByProcess.has(processId)) {
+        loadedByProcess.set(processId, {
           patchKey: entry.patchKey,
           content: entry.content.content,
         });
@@ -429,11 +450,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
     const turns: TurnNavigationItem[] = [];
     let turnNumber = 0;
-    const ordered = [...processes].sort(
-      (a, b) =>
-        new Date(a.created_at as unknown as string).getTime() -
-        new Date(b.created_at as unknown as string).getTime()
-    );
     for (const process of ordered) {
       const prompt = getUserPromptFromProcess(process);
       if (prompt == null) continue;

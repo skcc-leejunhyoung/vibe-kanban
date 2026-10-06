@@ -83,21 +83,30 @@ const STREAMING_UNVIRTUALIZED_BUFFER_ROWS = 24;
 // many frames; the timeout bounds pathological layouts, not normal settling.
 const NAVIGATION_SETTLE_FRAMES = 3;
 const NAVIGATION_TIMEOUT_MS = 4000;
+// After settling, the row is held through late layout shifts above it for a
+// moment longer: unvirtualized tail rows (a wide band while a turn streams)
+// have no size-change compensation of their own.
+const NAVIGATION_GUARD_MS = 1500;
 
 const nextFrame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-// Semantic key of the first row whose bottom edge is inside the viewport.
-// Rows render in index order (virtual window, then the unvirtualized tail), so
-// document order works. Read from the DOM rather than mapped through an
-// index: a batch that has reached the rows but not yet the DOM shifts indices.
-function findFirstVisibleRowKey(scrollEl: HTMLElement): string | null {
+// First row whose bottom edge is inside the viewport, with its top relative
+// to the viewport. Rows render in index order (virtual window, then the
+// unvirtualized tail), so document order works. Read from the DOM rather than
+// mapped through an index: a batch that has reached the rows but not yet the
+// DOM shifts indices.
+function findFirstVisibleRow(
+  scrollEl: HTMLElement
+): { key: string; offset: number } | null {
   const containerTop = scrollEl.getBoundingClientRect().top;
   for (const node of scrollEl.querySelectorAll<HTMLElement>(
     '[data-semantic-key]'
   )) {
-    if (node.getBoundingClientRect().bottom <= containerTop + 1) continue;
-    return node.dataset.semanticKey ?? null;
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom <= containerTop + 1) continue;
+    const key = node.dataset.semanticKey;
+    return key ? { key, offset: rect.top - containerTop } : null;
   }
   return null;
 }
@@ -519,6 +528,7 @@ export const ConversationList = forwardRef<
   // bottom too, so the view stays put until the jump.
   const navigationTokenRef = useRef(0);
   const navigationActiveRef = useRef(false);
+  const navigationTargetRef = useRef<string | null>(null);
 
   // Use ref to access current repos without causing callback recreation
   const reposRef = useRef(repos);
@@ -566,6 +576,7 @@ export const ConversationList = forwardRef<
     lastScrollHeightRef.current = 0;
     navigationTokenRef.current += 1;
     navigationActiveRef.current = false;
+    navigationTargetRef.current = null;
     deriveConversationRef.current = createConversationDerivation();
     if (planRevealSpacerRef.current) {
       planRevealSpacerRef.current.style.height = '0px';
@@ -899,6 +910,7 @@ export const ConversationList = forwardRef<
     (behavior?: 'auto' | 'smooth') => {
       navigationTokenRef.current += 1;
       navigationActiveRef.current = false;
+      navigationTargetRef.current = null;
       if (planRevealSpacerRef.current) {
         planRevealSpacerRef.current.style.height = '0px';
       }
@@ -928,17 +940,19 @@ export const ConversationList = forwardRef<
   const beginNavigation = useCallback(() => {
     conversationVirtualizer.releaseBottomLock();
     navigationActiveRef.current = true;
+    navigationTargetRef.current = null;
     return ++navigationTokenRef.current;
   }, [conversationVirtualizer]);
 
   // Hands the viewport back: TanStack's own above-viewport size adjustments
-  // resume, and the history hold is disarmed so it cannot add the same growth
-  // a second time on top of them.
+  // resume. The history hold is left as the last flush armed it — a batch
+  // that is still waiting to commit (nothing older to jump to) must still be
+  // compensated; the loop's own steps disarm it while they run.
   const endNavigation = useCallback((token: number) => {
     if (navigationTokenRef.current !== token) return;
     navigationActiveRef.current = false;
+    navigationTargetRef.current = null;
     programmaticScrollDeadlineRef.current = 0;
-    topGrowthHoldDeadlineRef.current = 0;
   }, []);
 
   // Every navigation (previous-message button, turn navigator, patch-key jump)
@@ -957,9 +971,30 @@ export const ConversationList = forwardRef<
         return;
       }
 
+      navigationTargetRef.current = semanticKey;
       const deadline = performance.now() + NAVIGATION_TIMEOUT_MS;
       const selector = `[data-semantic-key="${CSS.escape(semanticKey)}"]`;
       let stableFrames = 0;
+
+      // Post-settle guard. Yields to the reader: their scrolling moves the
+      // row and scrollTop together, while a layout shift above moves the row
+      // with scrollTop unchanged. A newer navigation or scroll-to-bottom bumps
+      // the token and ends it.
+      const guard = (until: number, lastTop: number) => {
+        if (navigationTokenRef.current !== token) return;
+        if (performance.now() > until) return;
+        const node = scrollEl.querySelector<HTMLElement>(selector);
+        if (!node) return;
+        const delta =
+          node.getBoundingClientRect().top -
+          scrollEl.getBoundingClientRect().top;
+        if (Math.abs(delta) >= 1) {
+          if (Math.abs(scrollEl.scrollTop - lastTop) >= 1) return;
+          scrollEl.scrollTop += delta;
+        }
+        const top = scrollEl.scrollTop;
+        requestAnimationFrame(() => guard(until, top));
+      };
 
       const step = () => {
         if (navigationTokenRef.current !== token) return;
@@ -990,6 +1025,7 @@ export const ConversationList = forwardRef<
           }
           if (stableFrames >= NAVIGATION_SETTLE_FRAMES) {
             endNavigation(token);
+            guard(performance.now() + NAVIGATION_GUARD_MS, scrollEl.scrollTop);
             return;
           }
         } else {
@@ -1027,10 +1063,15 @@ export const ConversationList = forwardRef<
         const rows = prevRowsRef.current;
         const ofProcess = (row: ConversationRow) =>
           row.entry.executionProcessId === processId;
-        return (
-          rows.find((row) => row.isUserMessage && ofProcess(row)) ??
-          rows.find(ofProcess)
-        )?.semanticKey;
+        const own = rows.find((row) => row.isUserMessage && ofProcess(row));
+        if (own) return own.semanticKey;
+        // Once its setup-script process is loaded, the first turn's prompt is
+        // emitted under that process instead, so the turn has no user row of
+        // its own: take the nearest user row above its first row.
+        const first = rows.findIndex(ofProcess);
+        if (first < 0) return undefined;
+        const above = findPreviousUserMessageIndex(rows, first);
+        return rows[above >= 0 ? above : first].semanticKey;
       };
       const deadline = performance.now() + NAVIGATION_TIMEOUT_MS;
       let targetKey = findTarget();
@@ -1158,15 +1199,44 @@ export const ConversationList = forwardRef<
     const rows = prevRowsRef.current;
     if (!scrollEl || rows.length === 0) return;
 
-    const token = beginNavigation();
+    // Rapid clicks step back one message each: while a jump is still landing
+    // its target, not the half-updated DOM, is where the reader "is".
+    const inFlightTarget = navigationTargetRef.current;
+    const visible = findFirstVisibleRow(scrollEl);
     const anchorKey =
-      findFirstVisibleRowKey(scrollEl) ?? rows[rows.length - 1].semanticKey;
+      inFlightTarget ?? visible?.key ?? rows[rows.length - 1].semanticKey;
+    const anchorRow = rows.find((row) => row.semanticKey === anchorKey);
+    const anchorProcessId = anchorRow?.entry.executionProcessId;
+    const token = beginNavigation();
 
+    // A prompt scrolled partly out of view is realigned first; the next click
+    // walks on to the earlier one. A settled landing sits within a pixel.
+    if (
+      inFlightTarget === null &&
+      visible &&
+      visible.offset < -8 &&
+      anchorRow?.isUserMessage
+    ) {
+      scrollRowToTop(anchorKey, token);
+      return;
+    }
+
+    // Older history can re-key the anchor's turn (its prompt moves under the
+    // setup-script process once that loads): fall back to the user row that
+    // now starts the turn.
+    const resolveAnchorIndex = (current: ConversationRow[]) => {
+      const direct = current.findIndex((row) => row.semanticKey === anchorKey);
+      if (direct >= 0 || anchorProcessId === undefined) return direct;
+      const first = current.findIndex(
+        (row) => row.entry.executionProcessId === anchorProcessId
+      );
+      if (first < 0) return -1;
+      const above = findPreviousUserMessageIndex(current, first);
+      return above >= 0 ? above : first;
+    };
     const findTarget = () => {
       const current = prevRowsRef.current;
-      const anchorIndex = current.findIndex(
-        (row) => row.semanticKey === anchorKey
-      );
+      const anchorIndex = resolveAnchorIndex(current);
       if (anchorIndex < 0) return undefined;
       const index = findPreviousUserMessageIndex(current, anchorIndex);
       return index >= 0 ? current[index].semanticKey : null;
@@ -1181,6 +1251,14 @@ export const ConversationList = forwardRef<
       // which runs before a frame requested after it.
       await nextFrame();
       targetKey = findTarget();
+    }
+    if (targetKey === null) {
+      // Nothing older: keep the anchor (re-keyed or not) where it is.
+      const anchorIndex = resolveAnchorIndex(prevRowsRef.current);
+      targetKey =
+        anchorIndex >= 0
+          ? prevRowsRef.current[anchorIndex].semanticKey
+          : undefined;
     }
     if (targetKey) scrollRowToTop(targetKey, token);
     else endNavigation(token);
@@ -1216,13 +1294,14 @@ export const ConversationList = forwardRef<
         const rows = prevRowsRef.current;
         if (!scrollEl || rows.length === 0) return null;
         // Nearest user message at or before the first visible row.
-        const firstKey = findFirstVisibleRowKey(scrollEl);
+        const firstKey = findFirstVisibleRow(scrollEl)?.key;
         let i = rows.findIndex((row) => row.semanticKey === firstKey);
         if (i < 0) i = rows.length - 1;
         for (; i >= 0; i--) {
           if (rows[i].isUserMessage) return rows[i].entry.patchKey;
         }
-        return null;
+        // Above the first prompt (setup rows): still the first turn.
+        return rows.find((row) => row.isUserMessage)?.entry.patchKey ?? null;
       },
     }),
     [
