@@ -21,6 +21,7 @@ import { CodeBlockEscapePlugin } from '@vibe/ui/components/CodeBlockEscapePlugin
 import { InlineCodeBoundaryPlugin } from '@vibe/ui/components/InlineCodeBoundaryPlugin';
 import { ChecklistClipboardPlugin } from '@vibe/ui/components/ChecklistClipboardPlugin';
 import { ImeDeleteGuardPlugin } from '@vibe/ui/components/ImeDeleteGuardPlugin';
+import { ListBackspacePlugin } from '@vibe/ui/components/ListBackspacePlugin';
 import {
   PrCommentNode,
   PR_COMMENT_TRANSFORMER,
@@ -754,6 +755,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                     {autoFocus && !isRealMobile && <AutoFocusPlugin />}
                     <HistoryPlugin />
                     <ImeDeleteGuardPlugin />
+                    <ListBackspacePlugin />
                     <CodeBlockEscapePlugin />
                     <InlineCodeBoundaryPlugin />
                     <PasteMarkdownPlugin transformers={allTransformers} />
