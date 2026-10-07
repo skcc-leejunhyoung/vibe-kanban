@@ -184,32 +184,39 @@ impl GitCli {
         Ok(!out.is_empty())
     }
 
-    /// Every uncommitted change in the checkout as `git status --porcelain`
-    /// lines (`XY path`), untracked files listed individually. Empty when clean.
+    /// Every uncommitted change as `XY path`, with untracked files listed
+    /// individually. Parse NUL records so spaces and rename arrows in names
+    /// are never mistaken for porcelain quoting or separators.
     pub fn status_porcelain(&self, worktree_path: &Path) -> Result<Vec<String>, GitCliError> {
-        let out = self.git(
+        let out = self.git_impl(
             worktree_path,
             [
-                "-c",
-                "core.quotePath=false",
                 "--no-optional-locks",
                 "status",
                 "--porcelain",
+                "-z",
                 "--untracked-files=all",
             ],
+            None,
+            None,
         )?;
-        Ok(out
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_string)
-            .collect())
+        let mut records = out.split(|byte| *byte == 0);
+        let mut lines = Vec::new();
+        while let Some(entry) = records.next() {
+            if entry.len() < 4 {
+                continue;
+            }
+            lines.push(String::from_utf8_lossy(entry).into_owned());
+            if matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C') {
+                records.next(); // The original path follows a rename/copy entry.
+            }
+        }
+        Ok(lines)
     }
 
-    /// The working-tree path named by a `git status --porcelain` line
-    /// (`XY path`, or `XY old -> new` for renames).
+    /// The working-tree path named by a normalized `status_porcelain` entry.
     pub fn porcelain_path(line: &str) -> &str {
-        let path = line.get(3..).unwrap_or("");
-        path.rsplit(" -> ").next().unwrap_or(path)
+        line.get(3..).unwrap_or("")
     }
 
     /// Diff status vs a base branch using a temporary index (always includes untracked).

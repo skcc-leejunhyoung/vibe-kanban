@@ -57,6 +57,7 @@ use services::services::{
     diff_stream::{self, DiffStreamHandle},
     events::EventService,
     file::FileService,
+    filesystem_watcher::canonicalize_lossy,
     notification::NotificationService,
     queued_message::QueuedMessageService,
     remote_client::RemoteClient,
@@ -695,6 +696,15 @@ struct PostCompletionPlan {
     /// draining any queued follow-up. `None` => leave finalization to a later
     /// execution in the chain.
     finalize_with_queue: Option<bool>,
+}
+
+/// A worktree workspace stores its root in `container_ref` and the actual
+/// checkout at `<root>/<repo_name>`; an in-place workspace stores the checkout.
+fn checkout_has_running_session(checkout: &Path, repo_name: &str, live_roots: &[PathBuf]) -> bool {
+    let checkout = canonicalize_lossy(checkout);
+    live_roots
+        .iter()
+        .any(|root| root == &checkout || canonicalize_lossy(&root.join(repo_name)) == checkout)
 }
 
 impl LocalContainerService {
@@ -2838,8 +2848,6 @@ impl LocalContainerService {
         workspace_id: Uuid,
         workspace_branch: &str,
     ) -> (Vec<DirtyBaseReport>, Vec<String>) {
-        use services::services::filesystem_watcher::canonicalize_lossy;
-
         let pool = &self.db.pool;
         let workspace_repos = match WorkspaceRepo::find_by_workspace_id(pool, workspace_id).await {
             Ok(repos) => repos,
@@ -2905,7 +2913,7 @@ impl LocalContainerService {
                     continue;
                 }
             };
-            if live.contains(&canonicalize_lossy(&path)) {
+            if checkout_has_running_session(&path, &repo.name, &live) {
                 tracing::info!(
                     "vibe: '{}' checkout {} has uncommitted changes but hosts a running session; not asking the review to settle them",
                     target_branch,
@@ -2914,22 +2922,23 @@ impl LocalContainerService {
                 live_checkouts.push(path.display().to_string());
                 continue;
             }
-            let blocking =
-                match self
-                    .git
-                    .uncommitted_blocking_merge(&path, &target_branch, workspace_branch)
-                {
-                    Ok(blocking) => blocking,
-                    Err(e) => {
-                        tracing::warn!(
-                            "vibe: blocking-files probe failed for {} ({}): {}",
-                            repo.name,
-                            target_branch,
-                            e
-                        );
-                        Vec::new()
-                    }
-                };
+            let blocking = match self.git.uncommitted_blocking_merge(
+                &path,
+                &target_branch,
+                workspace_branch,
+                &status_lines,
+            ) {
+                Ok(blocking) => blocking,
+                Err(e) => {
+                    tracing::warn!(
+                        "vibe: blocking-files probe failed for {} ({}): {}",
+                        repo.name,
+                        target_branch,
+                        e
+                    );
+                    Vec::new()
+                }
+            };
             let (blocking_lines, other_lines): (Vec<String>, Vec<String>) =
                 status_lines.into_iter().partition(|line| {
                     blocking
@@ -3374,7 +3383,7 @@ impl LocalContainerService {
                     failures.push(format!("{}: merge conflict", repo.name));
                     any_conflict = true;
                 }
-                Err(GitServiceError::WorktreeDirty(branch, files)) => {
+                Err(GitServiceError::WorktreeDirty(branch, files)) if branch == target_branch => {
                     tracing::warn!(
                         "vibe merge: '{}' checkout has uncommitted changes blocking {}: {}",
                         branch,
@@ -4233,6 +4242,32 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn running_session_guard_matches_worktree_checkout_and_in_place_checkout() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let checkout = root.join("vibe-kanban");
+        std::fs::create_dir_all(&checkout).unwrap();
+        let worktree_root = canonicalize_lossy(&root);
+        let in_place_root = canonicalize_lossy(&checkout);
+
+        assert!(checkout_has_running_session(
+            &checkout,
+            "vibe-kanban",
+            &[worktree_root]
+        ));
+        assert!(checkout_has_running_session(
+            &checkout,
+            "vibe-kanban",
+            &[in_place_root]
+        ));
+        assert!(!checkout_has_running_session(
+            &checkout,
+            "other-repo",
+            &[root]
+        ));
+    }
 
     fn rate_limit_msg(resets_at: Option<&str>) -> LogMsg {
         LogMsg::JsonPatch(ConversationPatch::add_normalized_entry(

@@ -155,8 +155,9 @@ pub fn dirty_base_instruction(reports: &[DirtyBaseReport]) -> String {
     let mut out = String::from(
         "\n\n[base 체크아웃 미커밋 변경 정리]\n\
 머지 대상 base 브랜치의 체크아웃에 커밋되지 않은 변경이 있어. `⛔` 표시 항목은 그대로 두면 자동 머지가 \
-막히는 것이라 반드시 정리해야 하고, 나머지는 같은 작업의 일부인지 보고 함께 판단해줘. 각 변경을 \
-`git -C <경로> diff` 로 확인하고 스스로 판단해서 정리해줘: 이 이슈나 다른 작업에 필요한 변경이면 base \
+막히는 것이라 반드시 정리해야 하고, 나머지는 같은 작업의 일부인지 보고 함께 판단해줘. \
+추적 파일은 `git -C <경로> diff HEAD -- <파일>` 로 스테이지·작업 트리 변경을 모두 확인하고, \
+미추적 파일은 내용을 직접 확인해 판단해줘: 이 이슈나 다른 작업에 필요한 변경이면 base \
 브랜치에 커밋하고(`git -C <경로> add <파일> && git -C <경로> commit`, 커밋 메시지는 `type(scope): 요약` \
 한 줄), 필요 없는 변경이면 drop 해줘(추적 파일은 스테이지 여부와 무관하게 \
 `git -C <경로> restore --staged --worktree -- <파일>`, 스테이지만 된 새 파일은 \
@@ -1093,6 +1094,8 @@ mod tests {
             "\n  ?? b.txt",
             "커밋",
             "drop",
+            "diff HEAD -- <파일>",
+            "미추적 파일은 내용을 직접 확인",
             "restore --staged --worktree",
         ] {
             assert!(text.contains(needle), "missing {needle:?} in {text}");

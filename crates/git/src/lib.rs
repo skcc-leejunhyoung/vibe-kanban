@@ -804,40 +804,39 @@ impl GitService {
     }
 
     /// Files with uncommitted changes (tracked or untracked) in `checkout_path`
-    /// that `base_branch..task_sha` also touches — the files a fast-forward of
+    /// that `base_branch...task_sha` also touches — the files a fast-forward of
     /// the checked-out `base_branch` would refuse to overwrite.
     fn uncommitted_overlap(
         &self,
         checkout_path: &Path,
         base_branch: &str,
         task_sha: &str,
+        dirty: &[String],
     ) -> Result<Vec<String>, GitServiceError> {
-        let git_cli = GitCli::new();
-        let dirty = git_cli
-            .status_porcelain(checkout_path)
-            .map_err(|e| GitServiceError::InvalidRepository(format!("git status failed: {e}")))?;
         if dirty.is_empty() {
             return Ok(Vec::new());
         }
+        let git_cli = GitCli::new();
+        let branch_changes = format!("{base_branch}...{task_sha}");
         let changed = git_cli
             .git(
                 checkout_path,
                 [
-                    "-c",
-                    "core.quotePath=false",
                     "diff",
                     "--name-only",
                     "--no-renames",
-                    base_branch,
-                    task_sha,
+                    "-z",
+                    &branch_changes,
                     "--",
                 ],
             )
             .map_err(|e| {
                 GitServiceError::InvalidRepository(format!("git diff --name-only failed: {e}"))
             })?;
-        let changed: std::collections::HashSet<&str> =
-            changed.lines().filter(|line| !line.is_empty()).collect();
+        let changed: std::collections::HashSet<&str> = changed
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .collect();
         Ok(dirty
             .iter()
             // A file deleted only in the worktree (` D`) does not block a
@@ -870,25 +869,23 @@ impl GitService {
     /// Uncommitted entries in `checkout_path` (the checkout of `base_branch`)
     /// that make a fast-forward to `task_branch` refuse: every staged change
     /// ([`Self::merge_changes`] rejects those outright) plus unstaged edits and
-    /// untracked files overlapping what the task branch changes. Paths as in
-    /// `git status --porcelain`.
+    /// untracked files overlapping what the task branch changes. `status_lines`
+    /// is the checkout's already-read `status_porcelain` snapshot.
     pub fn uncommitted_blocking_merge(
         &self,
         checkout_path: &Path,
         base_branch: &str,
         task_branch: &str,
+        status_lines: &[String],
     ) -> Result<Vec<String>, GitServiceError> {
         let task_sha = self.get_branch_oid(checkout_path, task_branch)?;
-        let git_cli = GitCli::new();
-        let mut blocking: Vec<String> = git_cli
-            .status_porcelain(checkout_path)
-            .map_err(|e| GitServiceError::InvalidRepository(format!("git status failed: {e}")))?
+        let mut blocking: Vec<String> = status_lines
             .iter()
             // Index column: anything but unmodified / untracked / ignored is staged.
             .filter(|line| !matches!(line.as_bytes().first(), None | Some(b' ' | b'?' | b'!')))
             .map(|line| GitCli::porcelain_path(line).to_string())
             .collect();
-        for path in self.uncommitted_overlap(checkout_path, base_branch, &task_sha)? {
+        for path in self.uncommitted_overlap(checkout_path, base_branch, &task_sha, status_lines)? {
             if !blocking.contains(&path) {
                 blocking.push(path);
             }
@@ -948,8 +945,15 @@ impl GitService {
                 // overwritten". Detect that up front as a typed error naming the
                 // files, so callers can tell "someone's uncommitted edits block
                 // the merge" apart from a genuine git failure.
-                let blocking =
-                    self.uncommitted_overlap(&base_checkout_path, base_branch_name, &sha)?;
+                let status_lines = git_cli.status_porcelain(&base_checkout_path).map_err(|e| {
+                    GitServiceError::InvalidRepository(format!("git status failed: {e}"))
+                })?;
+                let blocking = self.uncommitted_overlap(
+                    &base_checkout_path,
+                    base_branch_name,
+                    &sha,
+                    &status_lines,
+                )?;
                 if !blocking.is_empty() {
                     return Err(GitServiceError::WorktreeDirty(
                         base_branch_name.to_string(),

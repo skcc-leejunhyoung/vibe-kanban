@@ -74,6 +74,13 @@ fn add_path(repo_path: &Path, path: &str) {
     git.git(repo_path, ["add", path]).unwrap();
 }
 
+fn blocked_merge_paths(repo_path: &Path, base: &str, task: &str) -> Vec<String> {
+    let status = GitCli::new().status_porcelain(repo_path).unwrap();
+    GitService::new()
+        .uncommitted_blocking_merge(repo_path, base, task, &status)
+        .unwrap()
+}
+
 // Non-conflicting setup used by several tests
 fn setup_repo_with_worktree(root: &TempDir) -> (PathBuf, PathBuf) {
     let repo_path = root.path().join("repo");
@@ -1188,11 +1195,9 @@ fn merge_ignores_worktree_deleted_file_in_base() {
 fn uncommitted_blocking_merge_counts_staged_and_overlapping_entries_only() {
     let td = TempDir::new().unwrap();
     let (repo_path, _worktree_path) = setup_overlapping_edit_repo(&td, 1);
-    let s = GitService::new();
     write_file(&repo_path, "notes.md", "scratch\n");
     assert_eq!(
-        s.uncommitted_blocking_merge(&repo_path, "main", "feature")
-            .unwrap(),
+        blocked_merge_paths(&repo_path, "main", "feature"),
         vec!["shared.txt".to_string()]
     );
 
@@ -1204,9 +1209,69 @@ fn uncommitted_blocking_merge_counts_staged_and_overlapping_entries_only() {
     write_file(&repo_path, "staged.txt", "staged\n");
     add_path(&repo_path, "staged.txt");
     assert_eq!(
-        s.uncommitted_blocking_merge(&repo_path, "main", "feature")
-            .unwrap(),
+        blocked_merge_paths(&repo_path, "main", "feature"),
         vec!["staged.txt".to_string()]
+    );
+}
+
+#[test]
+fn merge_names_untracked_file_with_spaces_and_arrow() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let s = GitService::new();
+    GitCli::new()
+        .git(&repo_path, ["restore", "--", "shared.txt"])
+        .unwrap();
+    let file = "docs/My Notes -> Draft.md";
+    write_file(&worktree_path, file, "feature\n");
+    commit_all(&Repository::open(&worktree_path).unwrap(), "add notes");
+    write_file(&repo_path, file, "local scratch\n");
+
+    assert_eq!(
+        blocked_merge_paths(&repo_path, "main", "feature"),
+        vec![file.to_string()]
+    );
+    assert!(matches!(
+        s.merge_changes(&repo_path, &worktree_path, "feature", "main"),
+        Err(git::GitServiceError::WorktreeDirty(branch, blocked))
+            if branch == "main" && blocked == file
+    ));
+    assert_eq!(
+        fs::read_to_string(repo_path.join(file)).unwrap(),
+        "local scratch\n"
+    );
+}
+
+#[test]
+fn porcelain_status_rename_reports_only_destination_path() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, _worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let git = GitCli::new();
+    git.git(&repo_path, ["restore", "--", "shared.txt"])
+        .unwrap();
+    git.git(&repo_path, ["mv", "shared.txt", "renamed -> notes.txt"])
+        .unwrap();
+
+    let status = git.status_porcelain(&repo_path).unwrap();
+    assert_eq!(status, vec!["R  renamed -> notes.txt".to_string()]);
+    assert_eq!(GitCli::porcelain_path(&status[0]), "renamed -> notes.txt");
+}
+
+#[test]
+fn dirty_base_probe_ignores_base_only_changes_after_branches_diverge() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, _worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    GitCli::new()
+        .git(&repo_path, ["restore", "--", "shared.txt"])
+        .unwrap();
+    let repo = Repository::open(&repo_path).unwrap();
+    write_file(&repo_path, "base-only.txt", "committed\n");
+    commit_all(&repo, "main advances independently");
+    write_file(&repo_path, "base-only.txt", "local work\n");
+
+    assert!(
+        blocked_merge_paths(&repo_path, "main", "feature").is_empty(),
+        "the feature never touched base-only.txt"
     );
 }
 
@@ -1292,8 +1357,7 @@ fn incident_replay_drop_of_blocking_leftover_unblocks_merge() {
     );
     assert_eq!(lines.len(), 5, "{lines:?}");
     assert_eq!(
-        s.uncommitted_blocking_merge(&path, "jh", "vk/80ba")
-            .unwrap(),
+        blocked_merge_paths(&path, "jh", "vk/80ba"),
         vec![chat.to_string()]
     );
 
