@@ -1105,6 +1105,83 @@ fn dirty_checkout_of_branch_reports_only_dirty_checked_out_branches() {
     );
 }
 
+// An untracked file in the base checkout that the branch ADDS would be
+// overwritten by the fast-forward; git refuses, so we must report it as the
+// blocking file (and leave the untracked file alone).
+#[test]
+fn merge_refuses_untracked_base_file_that_branch_adds() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let s = GitService::new();
+    let git = GitCli::new();
+    git.git(&repo_path, ["checkout", "--", "shared.txt"])
+        .unwrap();
+    write_file(&repo_path, "new.rs", "local scratch\n");
+    write_file(&worktree_path, "new.rs", "feature\n");
+    commit_all(
+        &Repository::open(&worktree_path).unwrap(),
+        "feature adds new.rs",
+    );
+
+    match s.merge_changes(&repo_path, &worktree_path, "feature", "main") {
+        Err(git::GitServiceError::WorktreeDirty(branch, files)) => {
+            assert_eq!(branch, "main");
+            assert_eq!(files, "new.rs");
+        }
+        other => panic!("expected WorktreeDirty, got {other:?}"),
+    }
+    assert_eq!(
+        std::fs::read_to_string(repo_path.join("new.rs")).unwrap(),
+        "local scratch\n"
+    );
+}
+
+// Uncommitted changes that do not touch anything the branch changes are not
+// the merge's business: the fast-forward proceeds and leaves them in place.
+#[test]
+fn merge_ignores_unrelated_untracked_file_in_base() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let s = GitService::new();
+    let git = GitCli::new();
+    git.git(&repo_path, ["checkout", "--", "shared.txt"])
+        .unwrap();
+    write_file(&repo_path, "notes.md", "scratch\n");
+    let feature_oid = s.get_branch_oid(&repo_path, "feature").unwrap();
+
+    s.merge_changes(&repo_path, &worktree_path, "feature", "main")
+        .expect("unrelated untracked file must not block the merge");
+    assert_eq!(s.get_branch_oid(&repo_path, "main").unwrap(), feature_oid);
+    assert_eq!(
+        std::fs::read_to_string(repo_path.join("notes.md")).unwrap(),
+        "scratch\n"
+    );
+}
+
+// A file deleted only in the base worktree (` D`) never blocks a fast-forward:
+// git re-creates it from the merged tree, so the merge must go through.
+#[test]
+fn merge_ignores_worktree_deleted_file_in_base() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let s = GitService::new();
+    let git = GitCli::new();
+    git.git(&repo_path, ["checkout", "--", "shared.txt"])
+        .unwrap();
+    std::fs::remove_file(repo_path.join("shared.txt")).unwrap();
+    assert_eq!(
+        git.git(&repo_path, ["status", "--porcelain"])
+            .unwrap()
+            .trim(),
+        "D shared.txt"
+    );
+
+    s.merge_changes(&repo_path, &worktree_path, "feature", "main")
+        .expect("worktree-only deletion must not block the fast-forward");
+    let merged = std::fs::read_to_string(repo_path.join("shared.txt")).unwrap();
+    assert!(merged.ends_with("line 10 feature\n"), "{merged}");
+}
+
 #[test]
 fn update_ref_does_not_destroy_feature_worktree_dirty_state() {
     let td = TempDir::new().unwrap();

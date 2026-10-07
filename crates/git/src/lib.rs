@@ -823,6 +823,8 @@ impl GitService {
             .git(
                 checkout_path,
                 [
+                    "-c",
+                    "core.quotePath=false",
                     "diff",
                     "--name-only",
                     "--no-renames",
@@ -838,6 +840,9 @@ impl GitService {
             changed.lines().filter(|line| !line.is_empty()).collect();
         Ok(dirty
             .iter()
+            // A file deleted only in the worktree (` D`) does not block a
+            // fast-forward: git re-creates it from the new tree.
+            .filter(|line| line.as_bytes().get(1) != Some(&b'D'))
             .map(|line| GitCli::porcelain_path(line))
             .filter(|path| changed.contains(path))
             .map(str::to_string)
@@ -2008,8 +2013,16 @@ impl GitService {
         repo_path: &Path,
         remote_branch_name: &str,
     ) -> Result<String, GitServiceError> {
-        let local_name = self.local_name_for_remote_branch(repo_path, remote_branch_name)?;
         let repo = self.open_repo(repo_path)?;
+        let remote_branch = repo
+            .find_branch(remote_branch_name, BranchType::Remote)
+            .map_err(|_| GitServiceError::BranchNotFound(remote_branch_name.to_string()))?;
+        let local_name = self.local_name_for_remote_branch_in(
+            &repo,
+            repo_path,
+            &remote_branch,
+            remote_branch_name,
+        )?;
 
         // Reuse an existing local branch of the same name if present. This assumes
         // a same-named local branch is the intended merge target; if an unrelated
@@ -2019,9 +2032,6 @@ impl GitService {
             return Ok(local_name);
         }
 
-        let remote_branch = repo
-            .find_branch(remote_branch_name, BranchType::Remote)
-            .map_err(|_| GitServiceError::BranchNotFound(remote_branch_name.to_string()))?;
         let commit = remote_branch.get().peel_to_commit()?;
         let mut branch = repo.branch(&local_name, &commit, false)?;
         // Track the remote so pushes/status comparisons resolve naturally. Best
@@ -2033,9 +2043,7 @@ impl GitService {
 
     /// The local short name a remote-tracking branch maps to (`origin/feature/x`
     /// → `feature/x`), i.e. the branch [`Self::ensure_local_branch_for_remote`]
-    /// would materialize — without creating anything. Strips the branch's actual
-    /// remote prefix (remote names and branch names can both contain slashes,
-    /// so this does not just split on the first `/`).
+    /// would materialize — without creating anything.
     pub fn local_name_for_remote_branch(
         &self,
         repo_path: &Path,
@@ -2045,12 +2053,25 @@ impl GitService {
         let remote_branch = repo
             .find_branch(remote_branch_name, BranchType::Remote)
             .map_err(|_| GitServiceError::BranchNotFound(remote_branch_name.to_string()))?;
-        let remote = self.get_remote_from_branch_ref(&repo, remote_branch.get())?;
+        self.local_name_for_remote_branch_in(&repo, repo_path, &remote_branch, remote_branch_name)
+    }
+
+    /// Strip the branch's actual `<remote>/` prefix. Remote names and branch
+    /// names can both contain slashes, so this does not just split on the
+    /// first `/`.
+    fn local_name_for_remote_branch_in(
+        &self,
+        repo: &Repository,
+        repo_path: &Path,
+        remote_branch: &git2::Branch<'_>,
+        remote_branch_name: &str,
+    ) -> Result<String, GitServiceError> {
+        let remote = self.get_remote_from_branch_ref(repo, remote_branch.get())?;
         let remote_name = match remote.name() {
             Some(name) => name.to_string(),
             // Only resolve the default remote when the branch's remote is unnamed
             // (rare) — avoids an eager `git remote` lookup on the common path.
-            None => self.default_remote(&repo, repo_path)?.name,
+            None => self.default_remote(repo, repo_path)?.name,
         };
         let prefix = format!("{remote_name}/");
         Ok(remote_branch_name

@@ -2680,7 +2680,23 @@ impl LocalContainerService {
                     .await;
 
                 let (outcome, detail) = self.vibe_perform_merge(ctx).await;
-                match decide_after_merge(outcome, retry, &VibeBounds::default()) {
+                let mut post = decide_after_merge(outcome, retry, &VibeBounds::default());
+                // The settle-and-retry turn only makes sense when there is a
+                // listing the review session can act on. An empty probe (the
+                // dirty checkout hosts a running in-place session, or the probe
+                // failed) would just burn the retry budget on identical failures.
+                let mut dirty_reports = Vec::new();
+                if matches!(post, PostMergeAction::CleanDirtyBase { .. }) {
+                    dirty_reports = self.vibe_dirty_base_reports(workspace_id).await;
+                    if dirty_reports.is_empty() {
+                        tracing::warn!(
+                            "vibe: workspace {} merge blocked by uncommitted base changes the review session cannot settle; escalating",
+                            workspace_id
+                        );
+                        post = PostMergeAction::Escalate;
+                    }
+                }
+                match post {
                     PostMergeAction::MarkInReview => {
                         if let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await {
                             tracing::warn!(
@@ -2708,12 +2724,11 @@ impl LocalContainerService {
                     }
                     PostMergeAction::CleanDirtyBase { retry } => {
                         let _ = VibeRun::set_merge_retries(pool, workspace_id, retry as i64).await;
-                        let prompt = self
-                            .vibe_review_prompt(
-                                workspace_id,
-                                vibe_orchestrator::PROMPT_DIRTY_BASE_RETRY,
-                            )
-                            .await;
+                        let prompt = vibe_orchestrator::with_review_preamble(&format!(
+                            "{}{}",
+                            vibe_orchestrator::PROMPT_DIRTY_BASE_RETRY,
+                            vibe_orchestrator::dirty_base_instruction(&dirty_reports)
+                        ));
                         self.vibe_send_followup(ctx, &prompt).await?;
                     }
                     PostMergeAction::Escalate => {
@@ -2805,9 +2820,16 @@ impl LocalContainerService {
     /// (its half-written edits are live work, not leftovers).
     async fn vibe_dirty_base_reports(&self, workspace_id: Uuid) -> Vec<DirtyBaseReport> {
         let pool = &self.db.pool;
-        let Ok(workspace_repos) = WorkspaceRepo::find_by_workspace_id(pool, workspace_id).await
-        else {
-            return Vec::new();
+        let workspace_repos = match WorkspaceRepo::find_by_workspace_id(pool, workspace_id).await {
+            Ok(repos) => repos,
+            Err(e) => {
+                tracing::warn!(
+                    "vibe: load workspace repos failed for {} (dirty-base probe skipped): {}",
+                    workspace_id,
+                    e
+                );
+                return Vec::new();
+            }
         };
         let mut reports = Vec::new();
         for workspace_repo in workspace_repos {
@@ -2880,10 +2902,9 @@ impl LocalContainerService {
         let Ok(running) = ExecutionProcess::find_running(pool).await else {
             return false;
         };
-        let same_path = |a: &Path, b: &Path| {
-            a.canonicalize().unwrap_or_else(|_| a.to_path_buf())
-                == b.canonicalize().unwrap_or_else(|_| b.to_path_buf())
-        };
+        let checkout_path = checkout_path
+            .canonicalize()
+            .unwrap_or_else(|_| checkout_path.to_path_buf());
         let mut seen = std::collections::HashSet::new();
         for process in running {
             if matches!(process.run_reason, ExecutionProcessRunReason::DevServer) {
@@ -2899,11 +2920,13 @@ impl LocalContainerService {
             else {
                 continue;
             };
-            if workspace
-                .container_ref
-                .as_deref()
-                .is_some_and(|container| same_path(Path::new(container), checkout_path))
-            {
+            if workspace.container_ref.as_deref().is_some_and(|container| {
+                let container = Path::new(container);
+                container
+                    .canonicalize()
+                    .unwrap_or_else(|_| container.to_path_buf())
+                    == checkout_path
+            }) {
                 return true;
             }
         }

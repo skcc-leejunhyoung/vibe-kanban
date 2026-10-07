@@ -74,8 +74,7 @@ pub const PROMPT_CONFLICT: &str =
 /// fast-forward; ask the review session to settle them (see
 /// [`dirty_base_instruction`], appended by the shell), then we retry.
 pub const PROMPT_DIRTY_BASE_RETRY: &str = "머지 대상 base 브랜치 체크아웃에 커밋되지 않은 변경이 \
-있어서 머지가 막혔어. 아래 지침대로 정리한 뒤 다시 승인해줘. (아래에 정리 지침이 없으면 이미 \
-정리되었거나 그 체크아웃에서 다른 세션이 작업 중인 것이니 바로 다시 승인해줘.)";
+있어서 머지가 막혔어. 아래 지침대로 정리한 뒤 다시 승인해줘.";
 
 /// Rule 1a — paste the failed cleanup script log and ask the agent to fix it.
 pub fn cleanup_fix_prompt(log: &str) -> String {
@@ -155,7 +154,8 @@ pub fn dirty_base_instruction(reports: &[DirtyBaseReport]) -> String {
 필요한 변경이면 base 브랜치에 커밋하고(`git -C <경로> add <파일> && git -C <경로> commit`, \
 커밋 메시지는 `type(scope): 요약` 한 줄), 필요 없는 변경이면 drop 해줘(추적 파일은 \
 `git -C <경로> checkout -- <파일>`, 추적되지 않는 파일은 삭제). 아래에 나열된 파일 외에는 그 \
-체크아웃을 건드리지 마.",
+체크아웃을 건드리지 마. 이 브랜치가 이미 수정하는 파일과 겹치는 변경을 base에 커밋하면 이후 \
+rebase 충돌이 나니, 꼭 필요한 경우가 아니면 drop을 우선해라.",
     );
     for report in reports {
         out.push_str(&format!(
