@@ -1174,6 +1174,13 @@ fn merge_ignores_unrelated_untracked_file_in_base() {
         std::fs::read_to_string(repo_path.join("notes.md")).unwrap(),
         "scratch\n"
     );
+    assert_eq!(
+        s.dirty_checkout_of_branch(&repo_path, "main")
+            .unwrap()
+            .expect("post-merge probe must still see unrelated leftovers")
+            .1,
+        vec!["?? notes.md"]
+    );
 }
 
 // A file deleted only in the base worktree (` D`) never blocks a fast-forward:
@@ -1254,7 +1261,62 @@ fn merge_names_untracked_file_with_spaces_and_arrow() {
 }
 
 #[test]
-fn porcelain_status_rename_reports_only_destination_path() {
+fn merge_reports_untracked_file_blocking_new_directory() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let git = GitCli::new();
+    git.git(&repo_path, ["restore", "--", "shared.txt"])
+        .unwrap();
+    write_file(&worktree_path, "dir/file.txt", "feature\n");
+    commit_all(
+        &Repository::open(&worktree_path).unwrap(),
+        "add nested file",
+    );
+    write_file(&repo_path, "dir", "untracked base file\n");
+
+    assert_eq!(
+        blocked_merge_paths(&repo_path, "main", "feature"),
+        vec!["dir"]
+    );
+    assert!(matches!(
+        GitService::new().merge_changes(&repo_path, &worktree_path, "feature", "main"),
+        Err(git::GitServiceError::WorktreeDirty(branch, paths))
+            if branch == "main" && paths == "dir"
+    ));
+    assert_eq!(
+        fs::read_to_string(repo_path.join("dir")).unwrap(),
+        "untracked base file\n"
+    );
+}
+
+#[test]
+fn merge_reports_untracked_directory_blocking_new_file() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let git = GitCli::new();
+    git.git(&repo_path, ["restore", "--", "shared.txt"])
+        .unwrap();
+    write_file(&worktree_path, "dir", "feature file\n");
+    commit_all(&Repository::open(&worktree_path).unwrap(), "add file");
+    write_file(&repo_path, "dir/local.txt", "untracked base file\n");
+
+    assert_eq!(
+        blocked_merge_paths(&repo_path, "main", "feature"),
+        vec!["dir/local.txt"]
+    );
+    assert!(matches!(
+        GitService::new().merge_changes(&repo_path, &worktree_path, "feature", "main"),
+        Err(git::GitServiceError::WorktreeDirty(branch, paths))
+            if branch == "main" && paths == "dir/local.txt"
+    ));
+    assert_eq!(
+        fs::read_to_string(repo_path.join("dir/local.txt")).unwrap(),
+        "untracked base file\n"
+    );
+}
+
+#[test]
+fn porcelain_status_rename_reports_both_paths_for_cleanup() {
     let td = TempDir::new().unwrap();
     let (repo_path, _worktree_path) = setup_overlapping_edit_repo(&td, 1);
     let git = GitCli::new();
@@ -1264,8 +1326,37 @@ fn porcelain_status_rename_reports_only_destination_path() {
         .unwrap();
 
     let status = git.status_porcelain(&repo_path).unwrap();
-    assert_eq!(status, vec!["R  renamed -> notes.txt".to_string()]);
+    assert_eq!(status, vec!["R  renamed -> notes.txt", "D  shared.txt"]);
     assert_eq!(GitCli::porcelain_path(&status[0]), "renamed -> notes.txt");
+    assert_eq!(GitCli::porcelain_path(&status[1]), "shared.txt");
+    assert_eq!(
+        blocked_merge_paths(&repo_path, "main", "feature"),
+        vec!["renamed -> notes.txt", "shared.txt"]
+    );
+
+    // Restoring only the destination leaves the source staged for deletion.
+    // Both paths in the prompt let the review session drop the whole rename.
+    git.git(
+        &repo_path,
+        [
+            "restore",
+            "--staged",
+            "--worktree",
+            "--",
+            "renamed -> notes.txt",
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        git.status_porcelain(&repo_path).unwrap(),
+        vec!["D  shared.txt"]
+    );
+    git.git(
+        &repo_path,
+        ["restore", "--staged", "--worktree", "--", "shared.txt"],
+    )
+    .unwrap();
+    assert!(git.status_porcelain(&repo_path).unwrap().is_empty());
 }
 
 #[test]

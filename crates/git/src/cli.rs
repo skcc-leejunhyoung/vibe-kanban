@@ -185,8 +185,10 @@ impl GitCli {
     }
 
     /// Every uncommitted change as `XY path`, with untracked files listed
-    /// individually. Parse NUL records so spaces and rename arrows in names
-    /// are never mistaken for porcelain quoting or separators.
+    /// individually. A rename also lists its original path as a deletion so a
+    /// caller settling the changes can restore both halves of the rename.
+    /// Parse NUL records so spaces and rename arrows in names are never
+    /// mistaken for porcelain quoting or separators.
     pub fn status_porcelain(&self, worktree_path: &Path) -> Result<Vec<String>, GitCliError> {
         let out = self.git_impl(
             worktree_path,
@@ -208,7 +210,15 @@ impl GitCli {
             }
             lines.push(String::from_utf8_lossy(entry).into_owned());
             if matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C') {
-                records.next(); // The original path follows a rename/copy entry.
+                // The original path follows a rename/copy entry. A copy keeps
+                // its source, while a rename removes it from the old location.
+                if let Some(original) = records.next()
+                    && !original.is_empty()
+                    && (entry[0] == b'R' || entry[1] == b'R')
+                {
+                    let status = if entry[0] == b'R' { "D " } else { " D" };
+                    lines.push(format!("{status} {}", String::from_utf8_lossy(original)));
+                }
             }
         }
         Ok(lines)

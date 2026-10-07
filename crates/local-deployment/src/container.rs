@@ -707,13 +707,19 @@ fn checkout_has_running_session(checkout: &Path, repo_name: &str, live_roots: &[
         .any(|root| root == &checkout || canonicalize_lossy(&root.join(repo_name)) == checkout)
 }
 
-fn configure_vibe_review_executor(config: &mut ExecutorConfig) {
+fn configure_vibe_review_executor(config: &mut ExecutorConfig, needs_git_write: bool) {
     config.permission_policy = Some(PermissionPolicy::DontAsk);
     if config.executor == BaseCodingAgent::Codex {
-        // The review must commit/drop in the base checkout, which is outside
-        // the task worktree. Codex workspace-write also protects .git even in
-        // additional roots, so it cannot perform the requested Git operations.
-        config.sandbox_policy = Some(SandboxMode::DangerFullAccess);
+        if needs_git_write {
+            // Settling the base checkout or rebasing the task branch requires
+            // Git writes. Workspace-write protects .git even in the task
+            // checkout and in additional roots.
+            config.sandbox_policy = Some(SandboxMode::DangerFullAccess);
+        } else if config.sandbox_policy == Some(SandboxMode::DangerFullAccess) {
+            // The latest review turn may have been temporarily elevated. Do
+            // not carry that access into an ordinary review follow-up.
+            config.sandbox_policy = Some(SandboxMode::WorkspaceWrite);
+        }
     }
 }
 
@@ -2659,40 +2665,47 @@ impl LocalContainerService {
                             .await;
                     vibe_orchestrator::with_coding_preamble(&body)
                 };
-                self.vibe_send_followup(ctx, &prompt).await?;
+                self.vibe_send_followup(ctx, &prompt, false).await?;
             }
 
             VibeAction::ContinueCoding { turn } => {
                 let _ = VibeRun::set_coding_turns(pool, workspace_id, turn as i64).await;
                 let prompt =
                     vibe_orchestrator::with_coding_preamble(vibe_orchestrator::PROMPT_CONTINUE);
-                self.vibe_send_followup(ctx, &prompt).await?;
+                self.vibe_send_followup(ctx, &prompt, false).await?;
             }
 
             VibeAction::StartReview => {
                 self.vibe_tag(client, task_id, vibe_orchestrator::TAG_DONE)
                     .await;
-                let prompt = self
+                let (prompt, settle_dirty_base) = self
                     .vibe_review_prompt(
                         workspace_id,
                         &ctx.workspace.branch,
                         vibe_orchestrator::PROMPT_REVIEW_A,
                     )
                     .await;
-                self.vibe_start_review_session(&ctx.workspace, &ctx.session, &prompt, None)
-                    .await?;
+                self.vibe_start_review_session(
+                    &ctx.workspace,
+                    &ctx.session,
+                    &prompt,
+                    None,
+                    settle_dirty_base,
+                )
+                .await?;
             }
 
             VibeAction::ReviewFollowup { turn } => {
                 let _ = VibeRun::set_review_turns(pool, workspace_id, turn as i64).await;
-                let prompt = self
+                let (prompt, settle_dirty_base) = self
                     .vibe_review_prompt(
                         workspace_id,
                         &ctx.workspace.branch,
                         vibe_orchestrator::PROMPT_REVIEW_B,
                     )
                     .await;
-                self.vibe_send_followup(ctx, &prompt).await?;
+                self.vibe_send_followup(ctx, &prompt, settle_dirty_base)
+                    .await?;
             }
 
             VibeAction::Block { reason } => {
@@ -2711,7 +2724,7 @@ impl LocalContainerService {
                 // the base checkout. Require the review session to settle even
                 // non-overlapping changes before considering the merge done.
                 let mut dirty_probe = self
-                    .vibe_dirty_base_probe(workspace_id, &ctx.workspace.branch)
+                    .vibe_dirty_base_probe(workspace_id, &ctx.workspace.branch, false)
                     .await;
                 let (mut outcome, mut detail) = match &dirty_probe {
                     Err(e) => (
@@ -2731,6 +2744,31 @@ impl LocalContainerService {
                     }
                     Ok(_) => self.vibe_perform_merge(ctx).await,
                 };
+                // An unrelated edit can arrive after the preflight and still
+                // let Git fast-forward. Recheck merged targets before reporting
+                // success so that leftover work is sent to the cleanup turn.
+                if outcome == MergeOutcome::Success {
+                    match self
+                        .vibe_dirty_base_probe(workspace_id, &ctx.workspace.branch, true)
+                        .await
+                    {
+                        Ok((reports, live_checkouts))
+                            if !reports.is_empty() || !live_checkouts.is_empty() =>
+                        {
+                            detail = format!(
+                                "base checkout has uncommitted changes in {} checkout(s) after merge",
+                                reports.len() + live_checkouts.len()
+                            );
+                            outcome = MergeOutcome::DirtyBase;
+                            dirty_probe = Ok((reports, live_checkouts));
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            detail = format!("post-merge dirty-base probe failed: {e}");
+                            outcome = MergeOutcome::OtherFailure;
+                        }
+                    }
+                }
                 // Changes can arrive after the preflight and block git itself.
                 // Re-probe for the retry prompt; a failed probe must be visible
                 // as an error, never treated as a clean checkout.
@@ -2738,7 +2776,7 @@ impl LocalContainerService {
                     && matches!(&dirty_probe, Ok((reports, live)) if reports.is_empty() && live.is_empty())
                 {
                     dirty_probe = self
-                        .vibe_dirty_base_probe(workspace_id, &ctx.workspace.branch)
+                        .vibe_dirty_base_probe(workspace_id, &ctx.workspace.branch, false)
                         .await;
                     if let Err(e) = &dirty_probe {
                         outcome = MergeOutcome::OtherFailure;
@@ -2769,7 +2807,7 @@ impl LocalContainerService {
                         let prompt = vibe_orchestrator::with_review_preamble(
                             vibe_orchestrator::PROMPT_CONFLICT,
                         );
-                        self.vibe_send_followup(ctx, &prompt).await?;
+                        self.vibe_send_followup(ctx, &prompt, true).await?;
                     }
                     PostMergeAction::CleanDirtyBase { retry } => {
                         let _ = VibeRun::set_merge_retries(pool, workspace_id, retry as i64).await;
@@ -2781,7 +2819,8 @@ impl LocalContainerService {
                         // that checkout (wait for it, then re-approve so we probe
                         // again); or leftovers that vanished between the merge and
                         // the probe (just re-approve). Each costs one retry.
-                        let body = if !reports.is_empty() {
+                        let settle_dirty_base = !reports.is_empty();
+                        let body = if settle_dirty_base {
                             format!(
                                 "{}{}",
                                 vibe_orchestrator::PROMPT_DIRTY_BASE_RETRY,
@@ -2793,7 +2832,8 @@ impl LocalContainerService {
                             vibe_orchestrator::PROMPT_DIRTY_BASE_REAPPROVE.to_string()
                         };
                         let prompt = vibe_orchestrator::with_review_preamble(&body);
-                        self.vibe_send_followup(ctx, &prompt).await?;
+                        self.vibe_send_followup(ctx, &prompt, settle_dirty_base)
+                            .await?;
                     }
                     PostMergeAction::Escalate => {
                         if let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await {
@@ -2874,9 +2914,9 @@ impl LocalContainerService {
         workspace_id: Uuid,
         workspace_branch: &str,
         body: &str,
-    ) -> String {
+    ) -> (String, bool) {
         let reports = match self
-            .vibe_dirty_base_probe(workspace_id, workspace_branch)
+            .vibe_dirty_base_probe(workspace_id, workspace_branch, false)
             .await
         {
             Ok((reports, _)) => reports,
@@ -2889,10 +2929,12 @@ impl LocalContainerService {
                 Vec::new()
             }
         };
-        vibe_orchestrator::with_review_preamble(&format!(
+        let settle_dirty_base = !reports.is_empty();
+        let prompt = vibe_orchestrator::with_review_preamble(&format!(
             "{body}{}",
             vibe_orchestrator::dirty_base_instruction(&reports)
-        ))
+        ));
+        (prompt, settle_dirty_base)
     }
 
     /// Uncommitted changes in the checkout(s) of this workspace's merge target
@@ -2905,6 +2947,7 @@ impl LocalContainerService {
         &self,
         workspace_id: Uuid,
         workspace_branch: &str,
+        include_merged_targets: bool,
     ) -> Result<(Vec<DirtyBaseReport>, Vec<String>), String> {
         let pool = &self.db.pool;
         let workspace_repos = WorkspaceRepo::find_by_workspace_id(pool, workspace_id)
@@ -2936,7 +2979,7 @@ impl LocalContainerService {
             ) {
                 continue;
             }
-            if merges.iter().any(|m| matches!(m, Merge::Direct(_))) {
+            if !include_merged_targets && merges.iter().any(|m| matches!(m, Merge::Direct(_))) {
                 let (ahead, _) = self
                     .git
                     .get_branch_status(&repo.path, workspace_branch, &workspace_repo.target_branch)
@@ -3063,6 +3106,7 @@ impl LocalContainerService {
         &self,
         ctx: &ExecutionContext,
         prompt: &str,
+        needs_git_write: bool,
     ) -> Result<(), ContainerError> {
         // No profile means we cannot spawn anything; surface it as an error so
         // the finalize keeps `last_result` intact (rather than consuming it on a
@@ -3078,7 +3122,7 @@ impl LocalContainerService {
             .map_err(|e| ContainerError::Other(anyhow!("vibe: load run failed: {e}")))?
             .is_some_and(|run| run.review_session_id == Some(ctx.session.id))
         {
-            configure_vibe_review_executor(&mut executor_config);
+            configure_vibe_review_executor(&mut executor_config, needs_git_write);
         }
         let latest_session_info =
             CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?;
@@ -3131,6 +3175,7 @@ impl LocalContainerService {
         session: &Session,
         prompt: &str,
         executor_config: Option<ExecutorConfig>,
+        needs_git_write: bool,
     ) -> Result<Session, ContainerError> {
         // See `vibe_send_followup`: a missing profile must error, not no-op, so
         // the run is not silently abandoned in a non-terminal phase. A manual
@@ -3145,7 +3190,7 @@ impl LocalContainerService {
                 ))
             })?,
         };
-        configure_vibe_review_executor(&mut executor_config);
+        configure_vibe_review_executor(&mut executor_config, needs_git_write);
 
         let session_id = Uuid::new_v4();
         let create = CreateSession {
@@ -4283,15 +4328,21 @@ impl ContainerService for LocalContainerService {
         self.vibe_tag(&client, task_id, vibe_orchestrator::TAG_DONE)
             .await;
 
-        let prompt = self
+        let (prompt, settle_dirty_base) = self
             .vibe_review_prompt(
                 workspace.id,
                 &workspace.branch,
                 vibe_orchestrator::PROMPT_REVIEW_A,
             )
             .await;
-        self.vibe_start_review_session(workspace, session, &prompt, executor_config)
-            .await
+        self.vibe_start_review_session(
+            workspace,
+            session,
+            &prompt,
+            executor_config,
+            settle_dirty_base,
+        )
+        .await
     }
 }
 fn success_exit_status() -> std::process::ExitStatus {
@@ -4316,15 +4367,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vibe_codex_review_uses_full_access_for_base_checkout() {
+    fn vibe_codex_review_elevates_only_for_explicit_git_operations() {
         let mut codex = ExecutorConfig::new(BaseCodingAgent::Codex);
         codex.sandbox_policy = Some(SandboxMode::WorkspaceWrite);
-        configure_vibe_review_executor(&mut codex);
+        configure_vibe_review_executor(&mut codex, false);
+        assert_eq!(codex.permission_policy, Some(PermissionPolicy::DontAsk));
+        assert_eq!(codex.sandbox_policy, Some(SandboxMode::WorkspaceWrite));
+
+        configure_vibe_review_executor(&mut codex, true);
         assert_eq!(codex.permission_policy, Some(PermissionPolicy::DontAsk));
         assert_eq!(codex.sandbox_policy, Some(SandboxMode::DangerFullAccess));
+        configure_vibe_review_executor(&mut codex, false);
+        assert_eq!(codex.sandbox_policy, Some(SandboxMode::WorkspaceWrite));
+
+        let mut read_only = ExecutorConfig::new(BaseCodingAgent::Codex);
+        read_only.sandbox_policy = Some(SandboxMode::ReadOnly);
+        configure_vibe_review_executor(&mut read_only, false);
+        assert_eq!(read_only.sandbox_policy, Some(SandboxMode::ReadOnly));
 
         let mut claude = ExecutorConfig::new(BaseCodingAgent::ClaudeCode);
-        configure_vibe_review_executor(&mut claude);
+        configure_vibe_review_executor(&mut claude, true);
         assert_eq!(claude.permission_policy, Some(PermissionPolicy::DontAsk));
         assert_eq!(claude.sandbox_policy, None);
     }

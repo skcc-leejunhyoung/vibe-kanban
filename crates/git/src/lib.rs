@@ -833,7 +833,7 @@ impl GitService {
             .map_err(|e| {
                 GitServiceError::InvalidRepository(format!("git diff --name-only failed: {e}"))
             })?;
-        let changed: std::collections::HashSet<&str> = changed
+        let changed: std::collections::BTreeSet<&str> = changed
             .split('\0')
             .filter(|path| !path.is_empty())
             .collect();
@@ -843,7 +843,19 @@ impl GitService {
             // fast-forward: git re-creates it from the new tree.
             .filter(|line| !line.starts_with(" D"))
             .map(|line| GitCli::porcelain_path(line))
-            .filter(|path| changed.contains(path))
+            .filter(|path| {
+                // Git also refuses a file/directory collision: an untracked
+                // `dir` blocks a branch adding `dir/file`, and vice versa.
+                let prefix = format!("{path}/");
+                changed.contains(path)
+                    || path
+                        .match_indices('/')
+                        .any(|(end, _)| changed.contains(&path[..end]))
+                    || changed
+                        .range(prefix.as_str()..)
+                        .next()
+                        .is_some_and(|changed_path| changed_path.starts_with(&prefix))
+            })
             .map(str::to_string)
             .collect())
     }
