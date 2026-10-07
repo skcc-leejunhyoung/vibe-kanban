@@ -451,7 +451,15 @@ export function KanbanIssuePanelContainer({
     });
 
     return () => cancelAnimationFrame(frameId);
-  }, [mode, selectedKanbanIssueId, createFormData?.title]);
+    // The loading flags re-run this once the panel replaces the loading
+    // placeholder; the title has no autoFocus of its own anymore.
+  }, [
+    mode,
+    selectedKanbanIssueId,
+    createFormData?.title,
+    projectLoading,
+    orgLoading,
+  ]);
 
   // Display ID: use real simple_id in edit mode, placeholder for create mode
   const displayId = useMemo(() => {

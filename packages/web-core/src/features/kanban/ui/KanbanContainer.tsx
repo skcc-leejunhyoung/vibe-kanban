@@ -1626,9 +1626,15 @@ export function KanbanContainer() {
   // add row takes precedence over the issue cursor; while an add row is being
   // edited, its input owns focus so we leave it alone. The cursor store is
   // shared by every pane, so a background board on the same project must not
-  // scroll or focus along.
+  // scroll or focus along. Read through a ref: activation itself must not
+  // re-run this — a pointerdown that activates the pane would scroll its board
+  // to the stale shared cursor before the click lands, swallowing the click.
+  const isActivePaneRef = useRef(isActivePane);
   useEffect(() => {
-    if (!isActivePane) return;
+    isActivePaneRef.current = isActivePane;
+  }, [isActivePane]);
+  useEffect(() => {
+    if (!isActivePaneRef.current) return;
     if (focusedAddStatusId) {
       if (editingAddStatusId === focusedAddStatusId) return;
       const node = addRefs.current.get(focusedAddStatusId);
@@ -1650,7 +1656,6 @@ export function KanbanContainer() {
     if (isBoardFocused) node.focus({ preventScroll: true });
     node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [
-    isActivePane,
     cursorIssueId,
     focusedSectionId,
     focusedAddStatusId,
