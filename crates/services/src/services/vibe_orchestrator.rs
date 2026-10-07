@@ -1119,6 +1119,34 @@ mod tests {
         assert!(text.contains("⛔  M src/lib.rs"), "{text}");
     }
 
+    // The incident shape rendered end to end; `--nocapture` shows the exact
+    // text the review session receives.
+    #[test]
+    fn dirty_base_instruction_renders_the_incident_shape() {
+        let text = dirty_base_instruction(&[DirtyBaseReport {
+            checkout_path: "/Users/me/VSC/vibe-kanban".into(),
+            branch: "jh".into(),
+            blocking_lines: vec![
+                " M packages/web-core/src/features/workspace-chat/ui/SessionChatBoxContainer.tsx"
+                    .into(),
+            ],
+            other_lines: vec![
+                " M crates/db/src/models/execution_process.rs".into(),
+                " M crates/local-deployment/src/container.rs".into(),
+            ],
+        }]);
+        println!("{text}");
+        assert!(text.starts_with(
+            "\n\n[base 체크아웃 미커밋 변경 정리]\n머지 대상 base 브랜치의 체크아웃에 커밋되지 않은 변경이 있어."
+        ));
+        assert!(text.ends_with(
+            "\n- 경로: /Users/me/VSC/vibe-kanban (브랜치 jh)\n\
+             \x20 ⛔  M packages/web-core/src/features/workspace-chat/ui/SessionChatBoxContainer.tsx\n\
+             \x20  M crates/db/src/models/execution_process.rs\n\
+             \x20  M crates/local-deployment/src/container.rs\n"
+        ));
+    }
+
     #[test]
     fn dirty_base_wait_prompt_names_the_live_checkout_and_asks_to_reapprove() {
         let text = dirty_base_wait_prompt(&["/repo/main".into()]);

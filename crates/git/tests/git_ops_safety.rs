@@ -1210,6 +1210,167 @@ fn uncommitted_blocking_merge_counts_staged_and_overlapping_entries_only() {
     );
 }
 
+/// The 2026-10-07 incident shape at the git layer: `jh` (checked out in the main
+/// repo) carries five uncommitted files left behind by another session, one of
+/// which the task branch also changes. Returns (repo, worktree, files); the
+/// last file is the overlapping one.
+fn setup_incident_repo(root: &TempDir) -> (PathBuf, PathBuf, [&'static str; 5]) {
+    let repo_path = root.path().join("repo");
+    let worktree_path = root.path().join("wt-80ba");
+    let s = GitService::new();
+    s.initialize_repo_with_main_branch(&repo_path).unwrap();
+    let repo = Repository::open(&repo_path).unwrap();
+    configure_user(&repo);
+    checkout_branch(&repo, "main");
+    let files = [
+        "crates/db/src/models/execution_process.rs",
+        "crates/local-deployment/src/container.rs",
+        "crates/server/src/routes/workspaces/execution.rs",
+        "crates/services/src/services/container.rs",
+        "packages/web-core/src/features/workspace-chat/ui/SessionChatBoxContainer.tsx",
+    ];
+    for f in files {
+        write_file(
+            &repo_path,
+            f,
+            &format!("{f}\nline 2\nline 3\nline 4\nline 5\n"),
+        );
+    }
+    commit_all(&repo, "base");
+    create_branch_from_head(&repo, "jh");
+    checkout_branch(&repo, "jh");
+    create_branch_from_head(&repo, "vk/80ba");
+    s.add_worktree(&repo_path, &worktree_path, "vk/80ba", false)
+        .unwrap();
+    // The task branch rewrites the last line of the chat box container.
+    let chat = files[4];
+    write_file(
+        &worktree_path,
+        chat,
+        &format!("{chat}\nline 2\nline 3\nline 4\nline 5 (feature)\n"),
+    );
+    commit_all(
+        &Repository::open(&worktree_path).unwrap(),
+        "feat(chat): lightning send",
+    );
+    // Another session's leftovers: every file edited on line 1, unstaged.
+    for f in files {
+        write_file(
+            &repo_path,
+            f,
+            &format!("{f} (local wip)\nline 2\nline 3\nline 4\nline 5\n"),
+        );
+    }
+    (repo_path, worktree_path, files)
+}
+
+// Incident replay, path A: the merge is refused naming exactly the overlapping
+// file, the probes describe the checkout as the review prompt will, and once the
+// agent drops that one leftover (the instruction's recipe) the fast-forward lands
+// while the unrelated WIP survives untouched.
+#[test]
+fn incident_replay_drop_of_blocking_leftover_unblocks_merge() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path, files) = setup_incident_repo(&td);
+    let s = GitService::new();
+    let chat = files[4];
+
+    match s.merge_changes(&repo_path, &worktree_path, "vk/80ba", "jh") {
+        Err(git::GitServiceError::WorktreeDirty(branch, blocked)) => {
+            assert_eq!(branch, "jh");
+            assert_eq!(blocked, chat);
+        }
+        other => panic!("expected WorktreeDirty, got {other:?}"),
+    }
+    let (path, lines) = s
+        .dirty_checkout_of_branch(&repo_path, "jh")
+        .unwrap()
+        .expect("jh checkout is dirty");
+    assert_eq!(
+        path.canonicalize().unwrap(),
+        repo_path.canonicalize().unwrap()
+    );
+    assert_eq!(lines.len(), 5, "{lines:?}");
+    assert_eq!(
+        s.uncommitted_blocking_merge(&path, "jh", "vk/80ba")
+            .unwrap(),
+        vec![chat.to_string()]
+    );
+
+    GitCli::new()
+        .git(
+            &repo_path,
+            ["restore", "--staged", "--worktree", "--", chat],
+        )
+        .unwrap();
+    let tip = s.get_branch_oid(&repo_path, "vk/80ba").unwrap();
+    assert_eq!(
+        s.merge_changes(&repo_path, &worktree_path, "vk/80ba", "jh")
+            .unwrap(),
+        tip
+    );
+    assert_eq!(s.get_branch_oid(&repo_path, "jh").unwrap(), tip);
+    assert!(
+        std::fs::read_to_string(repo_path.join(chat))
+            .unwrap()
+            .contains("line 5 (feature)")
+    );
+    for f in &files[..4] {
+        assert!(
+            std::fs::read_to_string(repo_path.join(f))
+                .unwrap()
+                .contains("(local wip)"),
+            "unrelated WIP must survive: {f}"
+        );
+    }
+    assert_eq!(
+        s.dirty_checkout_of_branch(&repo_path, "jh")
+            .unwrap()
+            .unwrap()
+            .1
+            .len(),
+        4
+    );
+}
+
+// Incident replay, path B: the agent decides the overlapping leftover is wanted
+// and commits it to `jh`. The next merge sees a diverged base; the shell's
+// auto-rebase of the task branch then lets the fast-forward land with both edits.
+#[test]
+fn incident_replay_commit_to_base_then_rebase_unblocks_merge() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path, files) = setup_incident_repo(&td);
+    let s = GitService::new();
+    let git = GitCli::new();
+    let chat = files[4];
+
+    git.git(&repo_path, ["add", "--", chat]).unwrap();
+    git.git(
+        &repo_path,
+        ["commit", "-q", "-m", "chore(chat): keep local wip"],
+    )
+    .unwrap();
+
+    assert!(matches!(
+        s.merge_changes(&repo_path, &worktree_path, "vk/80ba", "jh"),
+        Err(git::GitServiceError::BranchesDiverged(_))
+    ));
+    // What `vibe_perform_merge` does on BranchesDiverged before retrying.
+    s.rebase_branch(&repo_path, &worktree_path, "jh", "jh", "vk/80ba")
+        .expect("edits on different lines rebase cleanly");
+    let tip = s.get_branch_oid(&repo_path, "vk/80ba").unwrap();
+    assert_eq!(
+        s.merge_changes(&repo_path, &worktree_path, "vk/80ba", "jh")
+            .unwrap(),
+        tip
+    );
+    let merged = std::fs::read_to_string(repo_path.join(chat)).unwrap();
+    assert!(
+        merged.contains("(local wip)") && merged.contains("line 5 (feature)"),
+        "{merged}"
+    );
+}
+
 #[test]
 fn update_ref_does_not_destroy_feature_worktree_dirty_state() {
     let td = TempDir::new().unwrap();
