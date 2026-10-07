@@ -17,6 +17,7 @@ import { cn } from '@/shared/lib/utils';
 import { splitMessageToTitleDescription } from '@/shared/lib/string';
 import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import {
   resolveAutoTargetBranchName,
   validateBranchName,
@@ -94,6 +95,10 @@ function RepoTargetBranchControl({
   locked?: LockedBranch | null;
 }) {
   const { t } = useTranslation('common');
+  // The branch mode is part of the persisted draft, so the "new" input can
+  // mount on reload in a background pane; it may only autofocus in the active
+  // one.
+  const isActivePane = useIsActivePane();
   const { config } = useUserSystem();
   const {
     targetBranches,
@@ -203,7 +208,7 @@ function RepoTargetBranchControl({
               onChange={(e) => handleNameChange(e.target.value)}
               placeholder={t('createMode.targetBranch.newPlaceholder')}
               className="h-7 text-sm"
-              autoFocus
+              autoFocus={isActivePane}
             />
           )}
           {mode === 'auto' && (

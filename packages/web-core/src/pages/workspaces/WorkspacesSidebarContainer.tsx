@@ -179,6 +179,19 @@ export function WorkspacesSidebarContainer({
   // While the pane grid is on screen, the list mirrors and targets the
   // active pane's workspace instead of the routed one.
   const isPaneGridTargeted = useIsPaneGridTargeted();
+  const activePaneId = useWorkspacePanesStore((s) => s.activePaneId);
+  const activePaneIsEmpty = useWorkspacePanesStore(
+    (s) =>
+      s.panes.find((pane) => pane.id === s.activePaneId)?.destination === null
+  );
+  // Several lists can be mounted at once (the document sidebar plus a picker
+  // per empty pane), and all of them hear document-level keys and command-bar
+  // events. Exactly one answers: a picker while its pane is active, else the
+  // document sidebar — otherwise one keypress acts in several panes and the
+  // shared archive flag toggles back and forth.
+  const answersDocumentKeys = targetPaneId
+    ? targetPaneId === activePaneId
+    : !(isPaneGridTargeted && activePaneIsEmpty);
   const rawActivePaneWorkspace = useActivePaneWorkspace();
   const activePaneWorkspace =
     isPaneGridTargeted && !targetPaneId ? rawActivePaneWorkspace : null;
@@ -244,24 +257,9 @@ export function WorkspacesSidebarContainer({
     false
   );
   useEffect(() => {
-    // The document sidebar and every empty pane's picker hear these events,
-    // and the archive flag is shared state (two toggles cancel out). A picker
-    // answers only while its pane is active; the document sidebar stands down
-    // while an empty pane is active.
-    const answers = () => {
-      const { activePaneId, panes } = useWorkspacePanesStore.getState();
-      const activePaneIsEmpty =
-        panes.find((pane) => pane.id === activePaneId)?.destination === null;
-      return targetPaneId
-        ? targetPaneId === activePaneId
-        : !(isPaneGridTargeted && activePaneIsEmpty);
-    };
-    const toggleArchive = () => {
-      if (answers()) setShowArchive();
-    };
-    const focusSearch = () => {
-      if (answers()) searchInputRef.current?.focus();
-    };
+    if (!answersDocumentKeys) return;
+    const toggleArchive = () => setShowArchive();
+    const focusSearch = () => searchInputRef.current?.focus();
     window.addEventListener(
       COMMAND_PALETTE_EVENT.toggleWorkspaceArchive,
       toggleArchive
@@ -280,7 +278,7 @@ export function WorkspacesSidebarContainer({
         focusSearch
       );
     };
-  }, [setShowArchive, targetPaneId, isPaneGridTargeted]);
+  }, [setShowArchive, answersDocumentKeys]);
   const [isAccordionLayout, setAccordionLayout] = usePersistedExpanded(
     PERSIST_KEYS.workspacesSidebarAccordionLayout,
     true
@@ -624,13 +622,13 @@ export function WorkspacesSidebarContainer({
   useReboundHotkey(
     resolveModifier(NEXT_WORKSPACE_BINDING_ID, shortcutOverrides),
     () => cycleWorkspace(1),
-    { enabled: !routeProjectId },
+    { enabled: !routeProjectId && answersDocumentKeys },
     [cycleWorkspace, shortcutOverrides]
   );
   useReboundHotkey(
     resolveModifier(PREVIOUS_WORKSPACE_BINDING_ID, shortcutOverrides),
     () => cycleWorkspace(-1),
-    { enabled: !routeProjectId },
+    { enabled: !routeProjectId && answersDocumentKeys },
     [cycleWorkspace, shortcutOverrides]
   );
 
@@ -699,11 +697,10 @@ export function WorkspacesSidebarContainer({
       // moving its cursor focuses the row and would activate that pane.
       const isUnfocusedMobileList =
         isMobile &&
+        answersDocumentKeys &&
         (!activeElement ||
           activeElement === document.body ||
-          activeElement === document.documentElement) &&
-        (!targetPaneId ||
-          targetPaneId === useWorkspacePanesStore.getState().activePaneId);
+          activeElement === document.documentElement);
       if (!isSidebarFocused && !isUnfocusedMobileList) return;
 
       if (e.key === 'ArrowUp') {
@@ -739,7 +736,7 @@ export function WorkspacesSidebarContainer({
       handleSelectWorkspace,
       isListVisible,
       isMobile,
-      targetPaneId,
+      answersDocumentKeys,
       activeWorkspaces,
       archivedWorkspaces,
     ]

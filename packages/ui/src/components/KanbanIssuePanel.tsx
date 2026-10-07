@@ -575,7 +575,8 @@ export function KanbanIssuePanel({
               onChange={(value) => onFormChange('title', value)}
               onKeyDown={handleTitleKeyDown}
               placeholder="Issue Title..."
-              autoFocus={isCreateMode}
+              // Create-mode focus is the container's job (pane-gated); a bare
+              // autoFocus would fire in a background pane sharing the composer.
               aria-label="Issue title"
               disabled={isSubmitting}
               className={cn(

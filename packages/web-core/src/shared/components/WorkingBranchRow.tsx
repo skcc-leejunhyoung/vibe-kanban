@@ -11,6 +11,7 @@ import {
 } from '@vibe/ui/components/DropdownMenu';
 import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import { pickBranchForRepo } from '@/shared/lib/branchPicker';
 import {
   resolveAutoWorkingBranchName,
@@ -75,6 +76,9 @@ export function LockedBranchButton({ locked }: { locked: LockedBranch }) {
  */
 export function WorkingBranchRow({ locked }: { locked?: LockedBranch | null }) {
   const { t } = useTranslation('common');
+  // The branch mode is part of the persisted draft, so this input can mount
+  // on reload in a background pane; it may only autofocus in the active one.
+  const isActivePane = useIsActivePane();
   const { repos, workingBranch, setWorkingBranch, linkedIssue } =
     useCreateMode();
   const { config } = useUserSystem();
@@ -198,7 +202,7 @@ export function WorkingBranchRow({ locked }: { locked?: LockedBranch | null }) {
               onChange={(e) => handleNameChange(e.target.value)}
               placeholder={t('createMode.workingBranch.newPlaceholder')}
               className="h-7 text-sm"
-              autoFocus
+              autoFocus={isActivePane}
             />
           )}
           {workingBranch.mode === 'existing' && (
