@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import { isInInactiveWorkspacePane } from '@vibe/ui/lib/workspace-pane';
 
 import { useTheme } from '@/shared/hooks/useTheme';
 import {
@@ -228,6 +229,9 @@ export function XTermInstance({
     // This tab may have been hidden while the panel was resized, so it comes
     // back with a stale grid.
     fitTerminal();
+    // A shell spawning in a background pane (reload, auto-created home tab)
+    // must not pull focus there; pane activation follows DOM focus.
+    if (isInInactiveWorkspacePane(containerRef.current)) return;
     terminalRef.current?.focus();
   }, [isActive, fitTerminal]);
 

@@ -391,6 +391,9 @@ export function KanbanIssuePanel({
         // than the board behind it.
         activeElement === panelRoot;
       if (!hasNoFocusedControl) return;
+      // With nothing focused every open issue panel hears the key; only the
+      // panel in the active pane may scroll and swallow it.
+      if (isInInactiveWorkspacePane(panelRoot)) return;
 
       const delta =
         event.key === 'ArrowUp' ? -80 : event.key === 'ArrowDown' ? 80 : null;

@@ -244,22 +244,23 @@ export function WorkspacesSidebarContainer({
     false
   );
   useEffect(() => {
-    const toggleArchive = () => setShowArchive();
-    const focusSearch = () => {
-      // The document sidebar and every empty pane's picker hear this event.
-      // A picker answers only while its pane is active; the document sidebar
-      // stands down while an empty pane is active.
+    // The document sidebar and every empty pane's picker hear these events,
+    // and the archive flag is shared state (two toggles cancel out). A picker
+    // answers only while its pane is active; the document sidebar stands down
+    // while an empty pane is active.
+    const answers = () => {
       const { activePaneId, panes } = useWorkspacePanesStore.getState();
       const activePaneIsEmpty =
         panes.find((pane) => pane.id === activePaneId)?.destination === null;
-      if (
-        targetPaneId
-          ? targetPaneId !== activePaneId
-          : isPaneGridTargeted && activePaneIsEmpty
-      ) {
-        return;
-      }
-      searchInputRef.current?.focus();
+      return targetPaneId
+        ? targetPaneId === activePaneId
+        : !(isPaneGridTargeted && activePaneIsEmpty);
+    };
+    const toggleArchive = () => {
+      if (answers()) setShowArchive();
+    };
+    const focusSearch = () => {
+      if (answers()) searchInputRef.current?.focus();
     };
     window.addEventListener(
       COMMAND_PALETTE_EVENT.toggleWorkspaceArchive,
@@ -693,11 +694,16 @@ export function WorkspacesSidebarContainer({
       const isSidebarFocused =
         activeElement !== null &&
         keyboardNavRef.current?.contains(activeElement);
+      // An empty pane's picker renders as the mobile list; with nothing
+      // focused, only the active pane's picker may take the arrow keys —
+      // moving its cursor focuses the row and would activate that pane.
       const isUnfocusedMobileList =
         isMobile &&
         (!activeElement ||
           activeElement === document.body ||
-          activeElement === document.documentElement);
+          activeElement === document.documentElement) &&
+        (!targetPaneId ||
+          targetPaneId === useWorkspacePanesStore.getState().activePaneId);
       if (!isSidebarFocused && !isUnfocusedMobileList) return;
 
       if (e.key === 'ArrowUp') {
@@ -733,6 +739,7 @@ export function WorkspacesSidebarContainer({
       handleSelectWorkspace,
       isListVisible,
       isMobile,
+      targetPaneId,
       activeWorkspaces,
       archivedWorkspaces,
     ]

@@ -637,7 +637,9 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   }, [filteredPullRequests.length]);
 
   useEffect(() => {
-    if (!isSignedIn) return;
+    // Command-bar events reach every mounted instance; only the active pane's
+    // list acts (focus search, filters, selected-PR actions).
+    if (!isSignedIn || !isActivePane) return;
 
     const openFilters = () => setFiltersOpen(true);
     const focusSearch = () => searchInputRef.current?.focus();
@@ -682,6 +684,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   }, [
     filteredPullRequests,
     goToMappedIssue,
+    isActivePane,
     isSignedIn,
     selectedIndex,
     selectedPullRequest,
