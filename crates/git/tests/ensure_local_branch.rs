@@ -191,6 +191,36 @@ fn local_name_for_remote_branch_derives_without_creating_the_branch() {
 }
 
 #[test]
+fn local_target_branch_name_prefers_local_and_derives_remote_only_targets() {
+    let temp = TempDir::new().unwrap();
+    let local_path = setup_with_remote_branch(&temp, "feature/x");
+    let service = GitService::new();
+
+    assert_eq!(
+        service
+            .local_target_branch_name(&local_path, "main")
+            .unwrap(),
+        "main"
+    );
+    assert_eq!(
+        service
+            .local_target_branch_name(&local_path, "origin/feature/x")
+            .unwrap(),
+        "feature/x"
+    );
+    assert!(
+        !service
+            .check_local_branch_exists(&local_path, "feature/x")
+            .unwrap(),
+        "probe must not create the local branch"
+    );
+    assert!(matches!(
+        service.local_target_branch_name(&local_path, "nope"),
+        Err(git::GitServiceError::BranchNotFound(_))
+    ));
+}
+
+#[test]
 fn strips_only_the_remote_prefix_for_slashed_branch_names() {
     let temp = TempDir::new().unwrap();
     let local_path = setup_with_remote_branch(&temp, "feature/x");

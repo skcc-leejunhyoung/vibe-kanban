@@ -1182,6 +1182,34 @@ fn merge_ignores_worktree_deleted_file_in_base() {
     assert!(merged.ends_with("line 10 feature\n"), "{merged}");
 }
 
+// What the review session MUST settle: staged changes (refused outright) and
+// unstaged/untracked entries overlapping the branch — never unrelated scratch.
+#[test]
+fn uncommitted_blocking_merge_counts_staged_and_overlapping_entries_only() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, _worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let s = GitService::new();
+    write_file(&repo_path, "notes.md", "scratch\n");
+    assert_eq!(
+        s.uncommitted_blocking_merge(&repo_path, "main", "feature")
+            .unwrap(),
+        vec!["shared.txt".to_string()]
+    );
+
+    // Drop the overlapping edit and stage an unrelated new file instead: staged
+    // changes block regardless of overlap, the untracked scratch still does not.
+    GitCli::new()
+        .git(&repo_path, ["checkout", "--", "shared.txt"])
+        .unwrap();
+    write_file(&repo_path, "staged.txt", "staged\n");
+    add_path(&repo_path, "staged.txt");
+    assert_eq!(
+        s.uncommitted_blocking_merge(&repo_path, "main", "feature")
+            .unwrap(),
+        vec!["staged.txt".to_string()]
+    );
+}
+
 #[test]
 fn update_ref_does_not_destroy_feature_worktree_dirty_state() {
     let td = TempDir::new().unwrap();

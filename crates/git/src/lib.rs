@@ -842,7 +842,7 @@ impl GitService {
             .iter()
             // A file deleted only in the worktree (` D`) does not block a
             // fast-forward: git re-creates it from the new tree.
-            .filter(|line| line.as_bytes().get(1) != Some(&b'D'))
+            .filter(|line| !line.starts_with(" D"))
             .map(|line| GitCli::porcelain_path(line))
             .filter(|path| changed.contains(path))
             .map(str::to_string)
@@ -865,6 +865,35 @@ impl GitService {
             .status_porcelain(&path)
             .map_err(|e| GitServiceError::InvalidRepository(format!("git status failed: {e}")))?;
         Ok((!lines.is_empty()).then_some((path, lines)))
+    }
+
+    /// Uncommitted entries in `checkout_path` (the checkout of `base_branch`)
+    /// that make a fast-forward to `task_branch` refuse: every staged change
+    /// ([`Self::merge_changes`] rejects those outright) plus unstaged edits and
+    /// untracked files overlapping what the task branch changes. Paths as in
+    /// `git status --porcelain`.
+    pub fn uncommitted_blocking_merge(
+        &self,
+        checkout_path: &Path,
+        base_branch: &str,
+        task_branch: &str,
+    ) -> Result<Vec<String>, GitServiceError> {
+        let task_sha = self.get_branch_oid(checkout_path, task_branch)?;
+        let git_cli = GitCli::new();
+        let mut blocking: Vec<String> = git_cli
+            .status_porcelain(checkout_path)
+            .map_err(|e| GitServiceError::InvalidRepository(format!("git status failed: {e}")))?
+            .iter()
+            // Index column: anything but unmodified / untracked / ignored is staged.
+            .filter(|line| !matches!(line.as_bytes().first(), None | Some(b' ' | b'?' | b'!')))
+            .map(|line| GitCli::porcelain_path(line).to_string())
+            .collect();
+        for path in self.uncommitted_overlap(checkout_path, base_branch, &task_sha)? {
+            if !blocking.contains(&path) {
+                blocking.push(path);
+            }
+        }
+        Ok(blocking)
     }
 
     /// Fast-forward merge a task branch into the base branch.
@@ -2017,12 +2046,7 @@ impl GitService {
         let remote_branch = repo
             .find_branch(remote_branch_name, BranchType::Remote)
             .map_err(|_| GitServiceError::BranchNotFound(remote_branch_name.to_string()))?;
-        let local_name = self.local_name_for_remote_branch_in(
-            &repo,
-            repo_path,
-            &remote_branch,
-            remote_branch_name,
-        )?;
+        let local_name = self.local_name_for_remote_branch_in(&repo, repo_path, &remote_branch)?;
 
         // Reuse an existing local branch of the same name if present. This assumes
         // a same-named local branch is the intended merge target; if an unrelated
@@ -2053,7 +2077,26 @@ impl GitService {
         let remote_branch = repo
             .find_branch(remote_branch_name, BranchType::Remote)
             .map_err(|_| GitServiceError::BranchNotFound(remote_branch_name.to_string()))?;
-        self.local_name_for_remote_branch_in(&repo, repo_path, &remote_branch, remote_branch_name)
+        self.local_name_for_remote_branch_in(&repo, repo_path, &remote_branch)
+    }
+
+    /// The local branch a merge into `target` actually lands on: `target`
+    /// itself when it is a local branch, otherwise the local counterpart of the
+    /// remote-tracking branch (`origin/develop` → `develop`) that
+    /// [`Self::ensure_local_branch_for_remote`] would materialize. Creates nothing.
+    pub fn local_target_branch_name(
+        &self,
+        repo_path: &Path,
+        target: &str,
+    ) -> Result<String, GitServiceError> {
+        let repo = self.open_repo(repo_path)?;
+        if repo.find_branch(target, BranchType::Local).is_ok() {
+            return Ok(target.to_string());
+        }
+        let remote_branch = repo
+            .find_branch(target, BranchType::Remote)
+            .map_err(|_| GitServiceError::BranchNotFound(target.to_string()))?;
+        self.local_name_for_remote_branch_in(&repo, repo_path, &remote_branch)
     }
 
     /// Strip the branch's actual `<remote>/` prefix. Remote names and branch
@@ -2064,8 +2107,10 @@ impl GitService {
         repo: &Repository,
         repo_path: &Path,
         remote_branch: &git2::Branch<'_>,
-        remote_branch_name: &str,
     ) -> Result<String, GitServiceError> {
+        let remote_branch_name = remote_branch.name()?.ok_or_else(|| {
+            GitServiceError::InvalidRepository("remote branch name is not valid UTF-8".to_string())
+        })?;
         let remote = self.get_remote_from_branch_ref(repo, remote_branch.get())?;
         let remote_name = match remote.name() {
             Some(name) => name.to_string(),

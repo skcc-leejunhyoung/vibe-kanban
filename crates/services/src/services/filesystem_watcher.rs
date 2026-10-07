@@ -43,7 +43,9 @@ pub enum FilesystemWatcherError {
     InvalidPath(String),
 }
 
-fn canonicalize_lossy(path: &Path) -> PathBuf {
+/// Canonicalize, falling back to the path as given when it cannot be resolved
+/// (missing file, permission) — for path *comparison*, never for access.
+pub fn canonicalize_lossy(path: &Path) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 

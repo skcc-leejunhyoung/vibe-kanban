@@ -132,12 +132,17 @@ pub struct DirtyBaseReport {
     /// Filesystem path of the checkout (for `git -C <path> …`).
     pub checkout_path: String,
     pub branch: String,
-    /// `git status --porcelain` lines (`XY path`).
-    pub status_lines: Vec<String>,
+    /// `git status --porcelain` lines whose uncommitted state blocks the
+    /// fast-forward (staged changes; edits / untracked files overlapping what
+    /// the task branch changes). Always listed in full.
+    pub blocking_lines: Vec<String>,
+    /// The checkout's remaining `git status --porcelain` lines (capped).
+    pub other_lines: Vec<String>,
 }
 
-/// Cap on `git status` lines listed per checkout in [`dirty_base_instruction`]
-/// — an un-ignored build directory must not turn the prompt into a file dump.
+/// Cap on non-blocking `git status` lines listed per checkout in
+/// [`dirty_base_instruction`] — an un-ignored build directory must not turn the
+/// prompt into a file dump. Blocking entries are never capped.
 pub const DIRTY_BASE_MAX_LINES: usize = 50;
 
 /// Instruction block appended to review prompts (review start, follow-ups and
@@ -149,12 +154,14 @@ pub fn dirty_base_instruction(reports: &[DirtyBaseReport]) -> String {
     }
     let mut out = String::from(
         "\n\n[base 체크아웃 미커밋 변경 정리]\n\
-머지 대상 base 브랜치의 체크아웃에 커밋되지 않은 변경이 있어. 이대로면 자동 머지가 막히니, \
-각 변경을 `git -C <경로> diff` 로 확인하고 스스로 판단해서 정리해줘: 이 이슈나 다른 작업에 \
-필요한 변경이면 base 브랜치에 커밋하고(`git -C <경로> add <파일> && git -C <경로> commit`, \
-커밋 메시지는 `type(scope): 요약` 한 줄), 필요 없는 변경이면 drop 해줘(추적 파일은 \
-`git -C <경로> checkout -- <파일>`, 추적되지 않는 파일은 삭제). 아래에 나열된 파일 외에는 그 \
-체크아웃을 건드리지 마. 이 브랜치가 이미 수정하는 파일과 겹치는 변경을 base에 커밋하면 이후 \
+머지 대상 base 브랜치의 체크아웃에 커밋되지 않은 변경이 있어. `⛔` 표시 항목은 그대로 두면 자동 머지가 \
+막히는 것이라 반드시 정리해야 하고, 나머지는 같은 작업의 일부인지 보고 함께 판단해줘. 각 변경을 \
+`git -C <경로> diff` 로 확인하고 스스로 판단해서 정리해줘: 이 이슈나 다른 작업에 필요한 변경이면 base \
+브랜치에 커밋하고(`git -C <경로> add <파일> && git -C <경로> commit`, 커밋 메시지는 `type(scope): 요약` \
+한 줄), 필요 없는 변경이면 drop 해줘(추적 파일은 스테이지 여부와 무관하게 \
+`git -C <경로> restore --staged --worktree -- <파일>`, 스테이지만 된 새 파일은 \
+`git -C <경로> restore --staged -- <파일>` 후 삭제, 추적되지 않는 파일은 삭제). 아래에 나열된 파일 \
+외에는 그 체크아웃을 건드리지 마. 이 브랜치가 이미 수정하는 파일과 겹치는 변경을 base에 커밋하면 이후 \
 rebase 충돌이 나니, 꼭 필요한 경우가 아니면 drop을 우선해라.",
     );
     for report in reports {
@@ -162,11 +169,14 @@ rebase 충돌이 나니, 꼭 필요한 경우가 아니면 drop을 우선해라.
             "\n- 경로: {} (브랜치 {})\n",
             report.checkout_path, report.branch
         ));
-        for line in report.status_lines.iter().take(DIRTY_BASE_MAX_LINES) {
+        for line in &report.blocking_lines {
+            out.push_str(&format!("  ⛔ {line}\n"));
+        }
+        for line in report.other_lines.iter().take(DIRTY_BASE_MAX_LINES) {
             out.push_str(&format!("  {line}\n"));
         }
         let hidden = report
-            .status_lines
+            .other_lines
             .len()
             .saturating_sub(DIRTY_BASE_MAX_LINES);
         if hidden > 0 {
@@ -178,6 +188,24 @@ rebase 충돌이 나니, 꼭 필요한 경우가 아니면 drop을 우선해라.
     }
     out
 }
+
+/// Rule 5 — the merge target checkout is dirty but a session is still running
+/// in it, so nothing can be settled yet: have the review session wait, then
+/// re-approve (the next merge attempt probes again).
+pub fn dirty_base_wait_prompt(live_checkouts: &[String]) -> String {
+    format!(
+        "머지 대상 base 브랜치 체크아웃({})에 커밋되지 않은 변경이 있어서 머지가 막혔는데, 그 체크아웃에서 \
+다른 세션이 아직 작업 중이라 지금은 정리할 수 없어. 다른 작업은 하지 말고 약 2분 기다린 뒤(예: `sleep 100`을 \
+두 번 실행) `VIBE_RESULT: approve` 로 다시 승인해줘. 그때도 막혀 있으면 다음 지침이 올 거야.",
+        live_checkouts.join(", ")
+    )
+}
+
+/// Rule 5 — the merge was refused for a dirty base checkout, but by the time we
+/// probed it there was nothing left to settle: just re-approve so the merge
+/// is attempted again.
+pub const PROMPT_DIRTY_BASE_REAPPROVE: &str = "머지 대상 base 브랜치 체크아웃의 커밋되지 않은 변경 때문에 \
+머지가 막혔는데, 지금은 정리된 것으로 보여. 다른 작업 없이 `VIBE_RESULT: approve` 로 다시 승인해줘.";
 
 /// The per-turn self-report parsed from the agent's final message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1055,15 +1083,17 @@ mod tests {
         let text = dirty_base_instruction(&[DirtyBaseReport {
             checkout_path: "/repo/main".into(),
             branch: "jh".into(),
-            status_lines: vec![" M a.rs".into(), "?? b.txt".into()],
+            blocking_lines: vec![" M a.rs".into()],
+            other_lines: vec!["?? b.txt".into()],
         }]);
         for needle in [
             "/repo/main",
             "브랜치 jh",
-            " M a.rs",
-            "?? b.txt",
+            "⛔  M a.rs",
+            "\n  ?? b.txt",
             "커밋",
             "drop",
+            "restore --staged --worktree",
         ] {
             assert!(text.contains(needle), "missing {needle:?} in {text}");
         }
@@ -1073,17 +1103,31 @@ mod tests {
     }
 
     #[test]
-    fn dirty_base_instruction_caps_the_listing() {
-        let status_lines: Vec<String> = (0..DIRTY_BASE_MAX_LINES + 7)
+    fn dirty_base_instruction_caps_only_non_blocking_lines() {
+        let other_lines: Vec<String> = (0..DIRTY_BASE_MAX_LINES + 7)
             .map(|i| format!("?? junk/{i}.tmp"))
             .collect();
         let text = dirty_base_instruction(&[DirtyBaseReport {
             checkout_path: "/repo/main".into(),
             branch: "jh".into(),
-            status_lines,
+            blocking_lines: vec![" M src/lib.rs".into()],
+            other_lines,
         }]);
         assert_eq!(text.matches("?? junk/").count(), DIRTY_BASE_MAX_LINES);
         assert!(text.contains("외 7개"), "{text}");
+        // The blocking entry is what the agent MUST settle — never hidden by the cap.
+        assert!(text.contains("⛔  M src/lib.rs"), "{text}");
+    }
+
+    #[test]
+    fn dirty_base_wait_prompt_names_the_live_checkout_and_asks_to_reapprove() {
+        let text = dirty_base_wait_prompt(&["/repo/main".into()]);
+        assert!(
+            text.contains("/repo/main") && text.contains("sleep"),
+            "{text}"
+        );
+        assert!(text.contains("VIBE_RESULT: approve"), "{text}");
+        assert!(PROMPT_DIRTY_BASE_REAPPROVE.contains("VIBE_RESULT: approve"));
     }
 
     // ---- decide_after_merge ------------------------------------------------
