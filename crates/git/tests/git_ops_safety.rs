@@ -1155,6 +1155,17 @@ fn merge_ignores_unrelated_untracked_file_in_base() {
         .unwrap();
     write_file(&repo_path, "notes.md", "scratch\n");
     let feature_oid = s.get_branch_oid(&repo_path, "feature").unwrap();
+    let (_, status_lines) = s
+        .dirty_checkout_of_branch(&repo_path, "main")
+        .unwrap()
+        .expect("pre-merge probe must see unrelated base changes");
+    assert_eq!(status_lines, vec!["?? notes.md"]);
+    assert!(
+        s.uncommitted_blocking_merge(&repo_path, "main", "feature", &status_lines)
+            .unwrap()
+            .is_empty(),
+        "git permits this merge, so Vibe must stop it before the merge"
+    );
 
     s.merge_changes(&repo_path, &worktree_path, "feature", "main")
         .expect("unrelated untracked file must not block the merge");

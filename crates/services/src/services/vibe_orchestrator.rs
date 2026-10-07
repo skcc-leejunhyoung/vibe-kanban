@@ -70,11 +70,11 @@ pub const PROMPT_REVIEW_B: &str = "머지 전 반드시 해결해야 하는 이�
 pub const PROMPT_CONFLICT: &str =
     "base 브랜치와 머지 충돌이 발생했어. base 브랜치로 rebase 해서 충돌을 모두 해결해줘.";
 
-/// Rule 5 — the merge target's checkout has uncommitted changes that block the
-/// fast-forward; ask the review session to settle them (see
+/// Rule 5 — the merge target's checkout has uncommitted changes; ask the
+/// review session to settle them before merging (see
 /// [`dirty_base_instruction`], appended by the shell), then we retry.
 pub const PROMPT_DIRTY_BASE_RETRY: &str = "머지 대상 base 브랜치 체크아웃에 커밋되지 않은 변경이 \
-있어서 머지가 막혔어. 아래 지침대로 정리한 뒤 다시 승인해줘.";
+남아 있어. 아래 지침대로 정리한 뒤 다시 승인해줘.";
 
 /// Rule 1a — paste the failed cleanup script log and ask the agent to fix it.
 pub fn cleanup_fix_prompt(log: &str) -> String {
@@ -195,7 +195,7 @@ rebase 충돌이 나니, 꼭 필요한 경우가 아니면 drop을 우선해라.
 /// re-approve (the next merge attempt probes again).
 pub fn dirty_base_wait_prompt(live_checkouts: &[String]) -> String {
     format!(
-        "머지 대상 base 브랜치 체크아웃({})에 커밋되지 않은 변경이 있어서 머지가 막혔는데, 그 체크아웃에서 \
+        "머지 대상 base 브랜치 체크아웃({})에 커밋되지 않은 변경이 있는데, 그 체크아웃에서 \
 다른 세션이 아직 작업 중이라 지금은 정리할 수 없어. 다른 작업은 하지 말고 약 2분 기다린 뒤(예: `sleep 100`을 \
 두 번 실행) `VIBE_RESULT: approve` 로 다시 승인해줘. 그때도 막혀 있으면 다음 지침이 올 거야.",
         live_checkouts.join(", ")

@@ -42,7 +42,7 @@ use executors::{
     env::{ExecutionEnv, RepoContext},
     executors::{
         BaseCodingAgent, CancellationToken, ExecutorExitResult, ExecutorExitSignal,
-        SubagentLiveHandle,
+        SubagentLiveHandle, codex::SandboxMode,
     },
     logs::{NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch},
     model_selector::PermissionPolicy,
@@ -705,6 +705,16 @@ fn checkout_has_running_session(checkout: &Path, repo_name: &str, live_roots: &[
     live_roots
         .iter()
         .any(|root| root == &checkout || canonicalize_lossy(&root.join(repo_name)) == checkout)
+}
+
+fn configure_vibe_review_executor(config: &mut ExecutorConfig) {
+    config.permission_policy = Some(PermissionPolicy::DontAsk);
+    if config.executor == BaseCodingAgent::Codex {
+        // The review must commit/drop in the base checkout, which is outside
+        // the task worktree. Codex workspace-write also protects .git even in
+        // additional roots, so it cannot perform the requested Git operations.
+        config.sandbox_policy = Some(SandboxMode::DangerFullAccess);
+    }
 }
 
 impl LocalContainerService {
@@ -2697,7 +2707,44 @@ impl LocalContainerService {
                 self.vibe_tag(client, task_id, vibe_orchestrator::TAG_APPROVE)
                     .await;
 
-                let (outcome, detail) = self.vibe_perform_merge(ctx).await;
+                // A clean final review verdict can race with new leftovers in
+                // the base checkout. Require the review session to settle even
+                // non-overlapping changes before considering the merge done.
+                let mut dirty_probe = self
+                    .vibe_dirty_base_probe(workspace_id, &ctx.workspace.branch)
+                    .await;
+                let (mut outcome, mut detail) = match &dirty_probe {
+                    Err(e) => (
+                        MergeOutcome::OtherFailure,
+                        format!("dirty-base probe failed: {e}"),
+                    ),
+                    Ok((reports, live_checkouts))
+                        if !reports.is_empty() || !live_checkouts.is_empty() =>
+                    {
+                        (
+                            MergeOutcome::DirtyBase,
+                            format!(
+                                "base checkout has uncommitted changes in {} checkout(s)",
+                                reports.len() + live_checkouts.len()
+                            ),
+                        )
+                    }
+                    Ok(_) => self.vibe_perform_merge(ctx).await,
+                };
+                // Changes can arrive after the preflight and block git itself.
+                // Re-probe for the retry prompt; a failed probe must be visible
+                // as an error, never treated as a clean checkout.
+                if outcome == MergeOutcome::DirtyBase
+                    && matches!(&dirty_probe, Ok((reports, live)) if reports.is_empty() && live.is_empty())
+                {
+                    dirty_probe = self
+                        .vibe_dirty_base_probe(workspace_id, &ctx.workspace.branch)
+                        .await;
+                    if let Err(e) = &dirty_probe {
+                        outcome = MergeOutcome::OtherFailure;
+                        detail = format!("{detail}; dirty-base retry probe failed: {e}");
+                    }
+                }
                 match decide_after_merge(outcome, retry, &VibeBounds::default()) {
                     PostMergeAction::MarkInReview => {
                         if let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await {
@@ -2726,9 +2773,9 @@ impl LocalContainerService {
                     }
                     PostMergeAction::CleanDirtyBase { retry } => {
                         let _ = VibeRun::set_merge_retries(pool, workspace_id, retry as i64).await;
-                        let (reports, live_checkouts) = self
-                            .vibe_dirty_base_probe(workspace_id, &ctx.workspace.branch)
-                            .await;
+                        let (reports, live_checkouts) = dirty_probe.map_err(|e| {
+                            ContainerError::Other(anyhow!("vibe: dirty-base probe failed: {e}"))
+                        })?;
                         // Three shapes of "the base checkout is dirty": a listing
                         // the session can settle now; a session still running in
                         // that checkout (wait for it, then re-approve so we probe
@@ -2828,9 +2875,20 @@ impl LocalContainerService {
         workspace_branch: &str,
         body: &str,
     ) -> String {
-        let (reports, _live_checkouts) = self
+        let reports = match self
             .vibe_dirty_base_probe(workspace_id, workspace_branch)
-            .await;
+            .await
+        {
+            Ok((reports, _)) => reports,
+            Err(e) => {
+                tracing::warn!(
+                    "vibe: dirty-base review probe failed for {}: {}",
+                    workspace_id,
+                    e
+                );
+                Vec::new()
+            }
+        };
         vibe_orchestrator::with_review_preamble(&format!(
             "{body}{}",
             vibe_orchestrator::dirty_base_instruction(&reports)
@@ -2847,38 +2905,46 @@ impl LocalContainerService {
         &self,
         workspace_id: Uuid,
         workspace_branch: &str,
-    ) -> (Vec<DirtyBaseReport>, Vec<String>) {
+    ) -> Result<(Vec<DirtyBaseReport>, Vec<String>), String> {
         let pool = &self.db.pool;
-        let workspace_repos = match WorkspaceRepo::find_by_workspace_id(pool, workspace_id).await {
-            Ok(repos) => repos,
-            Err(e) => {
-                tracing::warn!(
-                    "vibe: load workspace repos failed for {} (dirty-base probe skipped): {}",
-                    workspace_id,
-                    e
-                );
-                return (Vec::new(), Vec::new());
-            }
-        };
+        let workspace_repos = WorkspaceRepo::find_by_workspace_id(pool, workspace_id)
+            .await
+            .map_err(|e| format!("load workspace repos failed: {e}"))?;
+        if workspace_repos.is_empty() {
+            return Err("workspace has no repos to merge".to_string());
+        }
         // Checkouts hosting a live session, resolved once for every repo.
-        let live: Vec<PathBuf> = match Workspace::container_refs_with_running_processes(pool).await
-        {
-            Ok(refs) => refs
-                .iter()
-                .map(|container| canonicalize_lossy(Path::new(container)))
-                .collect(),
-            Err(e) => {
-                tracing::warn!("vibe: live-session probe failed: {}", e);
-                Vec::new()
-            }
-        };
+        let live: Vec<PathBuf> = Workspace::container_refs_with_running_processes(pool)
+            .await
+            .map_err(|e| format!("live-session probe failed: {e}"))?
+            .iter()
+            .map(|container| canonicalize_lossy(Path::new(container)))
+            .collect();
 
         let mut reports = Vec::new();
         let mut live_checkouts = Vec::new();
         for workspace_repo in workspace_repos {
-            let Ok(Some(repo)) = Repo::find_by_id(pool, workspace_repo.repo_id).await else {
+            let repo = Repo::find_by_id(pool, workspace_repo.repo_id)
+                .await
+                .map_err(|e| format!("load repo {} failed: {e}", workspace_repo.repo_id))?
+                .ok_or_else(|| format!("repo {} not found", workspace_repo.repo_id))?;
+            let merges = Merge::find_by_workspace_and_repo_id(pool, workspace_id, repo.id)
+                .await
+                .map_err(|e| format!("load merges for {} failed: {e}", repo.name))?;
+            if merges.iter().any(
+                |m| matches!(m, Merge::Pr(pr) if matches!(pr.pr_info.status, MergeStatus::Open)),
+            ) {
                 continue;
-            };
+            }
+            if merges.iter().any(|m| matches!(m, Merge::Direct(_))) {
+                let (ahead, _) = self
+                    .git
+                    .get_branch_status(&repo.path, workspace_branch, &workspace_repo.target_branch)
+                    .map_err(|e| format!("branch status failed for {}: {e}", repo.name))?;
+                if ahead == 0 {
+                    continue;
+                }
+            }
             // A remote-only target (`origin/develop`) is merged into its local
             // counterpart (`develop`, see `vibe_perform_merge`), so that is the
             // checkout whose leftovers matter.
@@ -2888,13 +2954,10 @@ impl LocalContainerService {
             {
                 Ok(branch) => branch,
                 Err(e) => {
-                    tracing::warn!(
-                        "vibe: target branch probe failed for {} ({}): {}",
-                        repo.name,
-                        workspace_repo.target_branch,
-                        e
-                    );
-                    continue;
+                    return Err(format!(
+                        "target branch probe failed for {} ({}): {e}",
+                        repo.name, workspace_repo.target_branch
+                    ));
                 }
             };
             let (path, status_lines) = match self
@@ -2904,13 +2967,10 @@ impl LocalContainerService {
                 Ok(Some(dirty)) => dirty,
                 Ok(None) => continue,
                 Err(e) => {
-                    tracing::warn!(
-                        "vibe: dirty-checkout probe failed for {} ({}): {}",
-                        repo.name,
-                        target_branch,
-                        e
-                    );
-                    continue;
+                    return Err(format!(
+                        "dirty-checkout probe failed for {} ({}): {e}",
+                        repo.name, target_branch
+                    ));
                 }
             };
             if checkout_has_running_session(&path, &repo.name, &live) {
@@ -2922,23 +2982,15 @@ impl LocalContainerService {
                 live_checkouts.push(path.display().to_string());
                 continue;
             }
-            let blocking = match self.git.uncommitted_blocking_merge(
-                &path,
-                &target_branch,
-                workspace_branch,
-                &status_lines,
-            ) {
-                Ok(blocking) => blocking,
-                Err(e) => {
-                    tracing::warn!(
-                        "vibe: blocking-files probe failed for {} ({}): {}",
-                        repo.name,
-                        target_branch,
-                        e
-                    );
-                    Vec::new()
-                }
-            };
+            let blocking = self
+                .git
+                .uncommitted_blocking_merge(&path, &target_branch, workspace_branch, &status_lines)
+                .map_err(|e| {
+                    format!(
+                        "blocking-files probe failed for {} ({}): {e}",
+                        repo.name, target_branch
+                    )
+                })?;
             let (blocking_lines, other_lines): (Vec<String>, Vec<String>) =
                 status_lines.into_iter().partition(|line| {
                     blocking
@@ -2952,7 +3004,7 @@ impl LocalContainerService {
                 other_lines,
             });
         }
-        (reports, live_checkouts)
+        Ok((reports, live_checkouts))
     }
 
     /// Best-effort attach of a `vibe-*` tag (for human visibility only).
@@ -3015,12 +3067,19 @@ impl LocalContainerService {
         // No profile means we cannot spawn anything; surface it as an error so
         // the finalize keeps `last_result` intact (rather than consuming it on a
         // false success) and the orphan watcher can later escalate this run.
-        let Some(executor_config) = self.vibe_executor_config(ctx.session.id).await else {
+        let Some(mut executor_config) = self.vibe_executor_config(ctx.session.id).await else {
             return Err(ContainerError::Other(anyhow!(
                 "vibe: no executor profile for session {}, cannot send follow-up",
                 ctx.session.id
             )));
         };
+        if VibeRun::find_by_workspace_id(&self.db.pool, ctx.workspace.id)
+            .await
+            .map_err(|e| ContainerError::Other(anyhow!("vibe: load run failed: {e}")))?
+            .is_some_and(|run| run.review_session_id == Some(ctx.session.id))
+        {
+            configure_vibe_review_executor(&mut executor_config);
+        }
         let latest_session_info =
             CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?;
         let repos =
@@ -3086,7 +3145,7 @@ impl LocalContainerService {
                 ))
             })?,
         };
-        executor_config.permission_policy = Some(PermissionPolicy::DontAsk);
+        configure_vibe_review_executor(&mut executor_config);
 
         let session_id = Uuid::new_v4();
         let create = CreateSession {
@@ -3149,7 +3208,12 @@ impl LocalContainerService {
         let workspace_repos =
             match WorkspaceRepo::find_by_workspace_id(&self.db.pool, workspace_id).await {
                 Ok(v) if !v.is_empty() => v,
-                Ok(_) => return (MergeOutcome::Success, String::new()),
+                Ok(_) => {
+                    return (
+                        MergeOutcome::OtherFailure,
+                        "workspace has no repos to merge".to_string(),
+                    );
+                }
                 Err(e) => {
                     tracing::error!("vibe merge: load workspace_repos failed: {}", e);
                     return (
@@ -3198,9 +3262,17 @@ impl LocalContainerService {
                 }
             };
 
-            let merges = Merge::find_by_workspace_and_repo_id(&self.db.pool, workspace_id, repo.id)
-                .await
-                .unwrap_or_default();
+            let merges =
+                match Merge::find_by_workspace_and_repo_id(&self.db.pool, workspace_id, repo.id)
+                    .await
+                {
+                    Ok(merges) => merges,
+                    Err(e) => {
+                        failures.push(format!("{}: load merges failed: {e}", repo.name));
+                        any_other_failure = true;
+                        continue;
+                    }
+                };
             if merges.iter().any(
                 |m| matches!(m, Merge::Pr(pr) if matches!(pr.pr_info.status, MergeStatus::Open)),
             ) {
@@ -4242,6 +4314,20 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn vibe_codex_review_uses_full_access_for_base_checkout() {
+        let mut codex = ExecutorConfig::new(BaseCodingAgent::Codex);
+        codex.sandbox_policy = Some(SandboxMode::WorkspaceWrite);
+        configure_vibe_review_executor(&mut codex);
+        assert_eq!(codex.permission_policy, Some(PermissionPolicy::DontAsk));
+        assert_eq!(codex.sandbox_policy, Some(SandboxMode::DangerFullAccess));
+
+        let mut claude = ExecutorConfig::new(BaseCodingAgent::ClaudeCode);
+        configure_vibe_review_executor(&mut claude);
+        assert_eq!(claude.permission_policy, Some(PermissionPolicy::DontAsk));
+        assert_eq!(claude.sandbox_policy, None);
+    }
 
     #[test]
     fn running_session_guard_matches_worktree_checkout_and_in_place_checkout() {
