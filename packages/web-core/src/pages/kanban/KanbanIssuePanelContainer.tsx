@@ -25,6 +25,7 @@ import {
   KanbanIssuePanel,
   type IssueFormData,
 } from '@vibe/ui/components/KanbanIssuePanel';
+import { isInInactiveWorkspacePane } from '@vibe/ui/lib/workspace-pane';
 import { useActions } from '@/shared/hooks/useActions';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
@@ -436,6 +437,9 @@ export function KanbanIssuePanelContainer({
 
     const titleInput = titleInputRef.current;
     if (!titleInput || document.activeElement === titleInput) return;
+    // The composer is shared per project, so a second pane on the same
+    // project enters create mode too; only the active pane's title may focus.
+    if (isInInactiveWorkspacePane(titleInput)) return;
 
     const frameId = requestAnimationFrame(() => {
       const node = titleInputRef.current;

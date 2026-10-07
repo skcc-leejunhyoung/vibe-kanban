@@ -245,7 +245,22 @@ export function WorkspacesSidebarContainer({
   );
   useEffect(() => {
     const toggleArchive = () => setShowArchive();
-    const focusSearch = () => searchInputRef.current?.focus();
+    const focusSearch = () => {
+      // The document sidebar and every empty pane's picker hear this event.
+      // A picker answers only while its pane is active; the document sidebar
+      // stands down while an empty pane is active.
+      const { activePaneId, panes } = useWorkspacePanesStore.getState();
+      const activePaneIsEmpty =
+        panes.find((pane) => pane.id === activePaneId)?.destination === null;
+      if (
+        targetPaneId
+          ? targetPaneId !== activePaneId
+          : isPaneGridTargeted && activePaneIsEmpty
+      ) {
+        return;
+      }
+      searchInputRef.current?.focus();
+    };
     window.addEventListener(
       COMMAND_PALETTE_EVENT.toggleWorkspaceArchive,
       toggleArchive
@@ -264,7 +279,7 @@ export function WorkspacesSidebarContainer({
         focusSearch
       );
     };
-  }, [setShowArchive]);
+  }, [setShowArchive, targetPaneId, isPaneGridTargeted]);
   const [isAccordionLayout, setAccordionLayout] = usePersistedExpanded(
     PERSIST_KEYS.workspacesSidebarAccordionLayout,
     true

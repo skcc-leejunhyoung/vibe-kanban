@@ -26,6 +26,7 @@ import type { LockedBranch } from './WorkingBranchRow';
 import { ReviewModeBanner } from './ReviewModeBanner';
 import { GithubLinkedBranchBanner } from './GithubLinkedBranchBanner';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
+import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 
 function getRepoDisplayName(repo: Repo) {
   return repo.display_name || repo.name;
@@ -47,6 +48,9 @@ export function CreateChatBoxContainer({
   onWorkspaceCreated,
 }: CreateChatBoxContainerProps) {
   const { t } = useTranslation('common');
+  // A create form mounting in a background pane (reload, sibling navigation)
+  // must not pull focus; pane activation follows DOM focus.
+  const isActivePane = useIsActivePane();
   const { profiles, config } = useUserSystem();
   const {
     repos,
@@ -598,7 +602,7 @@ export function CreateChatBoxContainer({
                       repoIds={repoIds}
                       repoId={repoId}
                       executor={executor}
-                      autoFocus
+                      autoFocus={isActivePane}
                       onPasteFiles={onPasteFiles}
                       localAttachments={localAttachments}
                       sendShortcut={config?.send_message_shortcut}

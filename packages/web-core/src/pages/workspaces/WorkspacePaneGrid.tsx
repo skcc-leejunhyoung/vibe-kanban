@@ -117,6 +117,9 @@ function PaneChrome({
       ref={containerRef}
       tabIndex={-1}
       data-workspace-pane
+      // Lets pane-agnostic ui components (issue panel, create form) tell
+      // whether they sit in the active pane before claiming focus.
+      data-workspace-pane-active={active ? 'true' : undefined}
       className={cn(
         'relative flex h-full min-h-0 flex-col overflow-hidden outline-none',
         // An iframe never surfaces its inner clicks to the embedding document

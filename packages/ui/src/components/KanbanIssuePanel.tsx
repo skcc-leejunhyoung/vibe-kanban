@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
 import { cn } from '../lib/cn';
 import { isModalKeyboardActive } from '../lib/modal-keyboard';
+import { isInInactiveWorkspacePane } from '../lib/workspace-pane';
 import {
   XIcon,
   LinkIcon,
@@ -339,7 +340,12 @@ export function KanbanIssuePanel({
   // (handled by the container), so leave focus alone there.
   useEffect(() => {
     if (isCreateMode) return;
-    panelRootRef.current?.focus({ preventScroll: true });
+    const panelRoot = panelRootRef.current;
+    // A background pane's panel mounts or switches issues without the user
+    // (data refresh, a sibling pane opening the issue there); taking focus
+    // would also activate that pane.
+    if (!panelRoot || isInInactiveWorkspacePane(panelRoot)) return;
+    panelRoot.focus({ preventScroll: true });
   }, [isCreateMode, issueId]);
 
   useEffect(() => {

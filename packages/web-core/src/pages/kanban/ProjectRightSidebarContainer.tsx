@@ -427,6 +427,10 @@ function WorkspaceSessionPanel({
                         : {
                             mode: 'placeholder' as const,
                           })}
+                  // Mirrors WorkspaceDetail: a background pane's chat must not
+                  // grab focus when it mounts or remounts (feedback mode,
+                  // session switch).
+                  autoFocus={isActivePane}
                   sessions={sessions}
                   filesChanged={workspaceSummary?.filesChanged ?? 0}
                   linesAdded={workspaceSummary?.linesAdded ?? 0}

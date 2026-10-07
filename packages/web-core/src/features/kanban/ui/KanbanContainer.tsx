@@ -1192,6 +1192,9 @@ export function KanbanContainer() {
   // focus-scoped workspace sidebar list.
   const [isBoardFocused, setIsBoardFocused] = useState(false);
   useEffect(() => {
+    // Every kanban pane hears the command-bar event; only the active pane's
+    // search box may take focus.
+    if (!isActivePane) return;
     const focusSearch = () => searchInputRef.current?.focus();
     window.addEventListener(
       COMMAND_PALETTE_EVENT.focusIssueSearch,
@@ -1202,7 +1205,7 @@ export function KanbanContainer() {
         COMMAND_PALETTE_EVENT.focusIssueSearch,
         focusSearch
       );
-  }, []);
+  }, [isActivePane]);
 
   // Ordered issue IDs used for keyboard navigation and range selection. In the
   // list view, issues inside a collapsed group are excluded so up/down never
@@ -1621,8 +1624,11 @@ export function KanbanContainer() {
   // arrow/Enter hotkeys stay active. Never pull focus when the board isn't
   // focused (e.g. on load with the issue panel open). A focused group header or
   // add row takes precedence over the issue cursor; while an add row is being
-  // edited, its input owns focus so we leave it alone.
+  // edited, its input owns focus so we leave it alone. The cursor store is
+  // shared by every pane, so a background board on the same project must not
+  // scroll or focus along.
   useEffect(() => {
+    if (!isActivePane) return;
     if (focusedAddStatusId) {
       if (editingAddStatusId === focusedAddStatusId) return;
       const node = addRefs.current.get(focusedAddStatusId);
@@ -1644,6 +1650,7 @@ export function KanbanContainer() {
     if (isBoardFocused) node.focus({ preventScroll: true });
     node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [
+    isActivePane,
     cursorIssueId,
     focusedSectionId,
     focusedAddStatusId,
