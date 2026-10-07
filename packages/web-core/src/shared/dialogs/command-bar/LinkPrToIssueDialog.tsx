@@ -35,7 +35,7 @@ import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 import type { GitRemote, PullRequestDetail } from 'shared/types';
 import type { PullRequestStatus } from 'shared/remote-types';
 import { pullRequestSummariesQueryOptions } from '@/pages/pull-requests/pullRequestSummariesQuery';
-import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { type AppRuntime, useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
@@ -47,6 +47,17 @@ export interface LinkPrToIssueDialogProps {
 }
 
 type TabMode = 'url' | 'browse';
+
+// Caches a bare PullRequestDetail; LinkPrByUrlDialog's Result lives elsewhere.
+export const prInfoQueryKey = (
+  url: string,
+  runtime: AppRuntime,
+  hostId: string | null
+) => [
+  'pr-info',
+  url,
+  runtime === 'remote' ? 'github' : getHostRequestScopeQueryKey(hostId),
+];
 
 function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   const modal = useModal();
@@ -122,11 +133,7 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
     isLoading: isLoadingPrInfo,
     error: prInfoError,
   } = useQuery({
-    queryKey: [
-      'pr-info',
-      debouncedUrl,
-      runtime === 'remote' ? 'github' : getHostRequestScopeQueryKey(hostId),
-    ],
+    queryKey: prInfoQueryKey(debouncedUrl, runtime, hostId),
     queryFn: () => loadPrInfo(debouncedUrl),
     enabled: modal.visible && activeTab === 'url' && debouncedUrl.length > 0,
   });
