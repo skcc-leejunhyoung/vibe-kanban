@@ -70,6 +70,12 @@ pub const PROMPT_REVIEW_B: &str = "머지 전 반드시 해결해야 하는 이�
 pub const PROMPT_CONFLICT: &str =
     "base 브랜치와 머지 충돌이 발생했어. base 브랜치로 rebase 해서 충돌을 모두 해결해줘.";
 
+/// Rule 5 — the merge target's checkout has uncommitted changes that block the
+/// fast-forward; ask the review session to settle them (see
+/// [`dirty_base_instruction`], appended by the shell), then we retry.
+pub const PROMPT_DIRTY_BASE_RETRY: &str = "머지 대상 base 브랜치 체크아웃에 커밋되지 않은 변경이 \
+있어서 머지가 막혔어. 아래 지침대로 정리한 뒤 다시 승인해줘.";
+
 /// Rule 1a — paste the failed cleanup script log and ask the agent to fix it.
 pub fn cleanup_fix_prompt(log: &str) -> String {
     let log = if log.trim().is_empty() {
@@ -115,6 +121,47 @@ pub fn with_coding_preamble(body: &str) -> String {
 /// Append the review self-report instruction to a prompt body.
 pub fn with_review_preamble(body: &str) -> String {
     format!("{body}{PREAMBLE_REVIEW}")
+}
+
+/// Uncommitted changes sitting in the checkout of a merge target (base) branch
+/// — typically leftovers of an in-place session on the main checkout. A
+/// fast-forward of that branch refuses to overwrite them, so the review session
+/// is told to settle them: commit what is wanted, drop the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirtyBaseReport {
+    /// Filesystem path of the checkout (for `git -C <path> …`).
+    pub checkout_path: String,
+    pub branch: String,
+    /// `git status --porcelain` lines (`XY path`).
+    pub status_lines: Vec<String>,
+}
+
+/// Instruction block appended to review prompts (review start, follow-ups and
+/// the post-merge-failure retry) while a merge target checkout is dirty. Empty
+/// when there is nothing to report.
+pub fn dirty_base_instruction(reports: &[DirtyBaseReport]) -> String {
+    if reports.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\n\n[base 체크아웃 미커밋 변경 정리]\n\
+머지 대상 base 브랜치의 체크아웃에 커밋되지 않은 변경이 있어. 이대로면 자동 머지가 막히니, \
+각 변경을 `git -C <경로> diff` 로 확인하고 스스로 판단해서 정리해줘: 이 이슈나 다른 작업에 \
+필요한 변경이면 base 브랜치에 커밋하고(`git -C <경로> add <파일> && git -C <경로> commit`, \
+커밋 메시지는 `type(scope): 요약` 한 줄), 필요 없는 변경이면 drop 해줘(추적 파일은 \
+`git -C <경로> checkout -- <파일>`, 추적되지 않는 파일은 삭제). 아래에 나열된 파일 외에는 그 \
+체크아웃을 건드리지 마.",
+    );
+    for report in reports {
+        out.push_str(&format!(
+            "\n- 경로: {} (브랜치 {})\n",
+            report.checkout_path, report.branch
+        ));
+        for line in &report.status_lines {
+            out.push_str(&format!("  {line}\n"));
+        }
+    }
+    out
 }
 
 /// The per-turn self-report parsed from the agent's final message.
@@ -274,6 +321,9 @@ pub enum MergeOutcome {
     /// A repo could not be fast-forward merged because the base diverged, or a
     /// rebase reported conflicts — resolvable by the agent.
     Conflict,
+    /// The merge target's checkout has uncommitted changes blocking the
+    /// fast-forward — the review session is asked to commit or drop them.
+    DirtyBase,
     /// A non-conflict failure (missing repo, git error, container failure) —
     /// not something the agent can rebase away.
     OtherFailure,
@@ -287,6 +337,9 @@ pub enum PostMergeAction {
     /// Conflict — ask the session to rebase/resolve, then retry. `retry` is the
     /// new `merge_retries` value.
     ResolveConflict { retry: u32 },
+    /// Dirty merge target checkout — ask the session to commit or drop the
+    /// uncommitted changes, then retry. `retry` is the new `merge_retries`.
+    CleanDirtyBase { retry: u32 },
     /// Give up on auto-merge — mark the issue for human review and block.
     Escalate,
 }
@@ -461,6 +514,14 @@ pub fn decide_after_merge(
             let next = merge_retries + 1;
             if next <= bounds.max_merge_retries {
                 PostMergeAction::ResolveConflict { retry: next }
+            } else {
+                PostMergeAction::Escalate
+            }
+        }
+        MergeOutcome::DirtyBase => {
+            let next = merge_retries + 1;
+            if next <= bounds.max_merge_retries {
+                PostMergeAction::CleanDirtyBase { retry: next }
             } else {
                 PostMergeAction::Escalate
             }
@@ -951,6 +1012,49 @@ mod tests {
                 reason: BlockReason::AgentReported
             }
         );
+    }
+
+    // ---- dirty base checkout -----------------------------------------------
+
+    #[test]
+    fn dirty_base_asks_session_to_settle_then_escalates() {
+        let b = VibeBounds::default();
+        assert_eq!(
+            decide_after_merge(MergeOutcome::DirtyBase, 0, &b),
+            PostMergeAction::CleanDirtyBase { retry: 1 }
+        );
+        assert_eq!(
+            decide_after_merge(MergeOutcome::DirtyBase, 2, &b),
+            PostMergeAction::CleanDirtyBase { retry: 3 }
+        );
+        // 4th attempt exceeds max_merge_retries (3).
+        assert_eq!(
+            decide_after_merge(MergeOutcome::DirtyBase, 3, &b),
+            PostMergeAction::Escalate
+        );
+    }
+
+    #[test]
+    fn dirty_base_instruction_lists_each_checkout_and_is_empty_when_clean() {
+        assert_eq!(dirty_base_instruction(&[]), "");
+        let text = dirty_base_instruction(&[DirtyBaseReport {
+            checkout_path: "/repo/main".into(),
+            branch: "jh".into(),
+            status_lines: vec![" M a.rs".into(), "?? b.txt".into()],
+        }]);
+        for needle in [
+            "/repo/main",
+            "브랜치 jh",
+            " M a.rs",
+            "?? b.txt",
+            "커밋",
+            "drop",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in {text}");
+        }
+        // Appended to a review prompt it must still end with the sentinel rules.
+        let prompt = with_review_preamble(&format!("{PROMPT_REVIEW_A}{text}"));
+        assert!(prompt.starts_with(PROMPT_REVIEW_A) && prompt.ends_with(PREAMBLE_REVIEW));
     }
 
     // ---- decide_after_merge ------------------------------------------------

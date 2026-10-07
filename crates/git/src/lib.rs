@@ -803,6 +803,65 @@ impl GitService {
         Ok(None)
     }
 
+    /// Files with uncommitted changes (tracked or untracked) in `checkout_path`
+    /// that `base_branch..task_sha` also touches — the files a fast-forward of
+    /// the checked-out `base_branch` would refuse to overwrite.
+    fn uncommitted_overlap(
+        &self,
+        checkout_path: &Path,
+        base_branch: &str,
+        task_sha: &str,
+    ) -> Result<Vec<String>, GitServiceError> {
+        let git_cli = GitCli::new();
+        let dirty = git_cli
+            .status_porcelain(checkout_path)
+            .map_err(|e| GitServiceError::InvalidRepository(format!("git status failed: {e}")))?;
+        if dirty.is_empty() {
+            return Ok(Vec::new());
+        }
+        let changed = git_cli
+            .git(
+                checkout_path,
+                [
+                    "diff",
+                    "--name-only",
+                    "--no-renames",
+                    base_branch,
+                    task_sha,
+                    "--",
+                ],
+            )
+            .map_err(|e| {
+                GitServiceError::InvalidRepository(format!("git diff --name-only failed: {e}"))
+            })?;
+        let changed: std::collections::HashSet<&str> =
+            changed.lines().filter(|line| !line.is_empty()).collect();
+        Ok(dirty
+            .iter()
+            .map(|line| GitCli::porcelain_path(line))
+            .filter(|path| changed.contains(path))
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Where `branch` is checked out plus that checkout's uncommitted changes
+    /// (`git status --porcelain` lines). `None` when the branch is not checked
+    /// out anywhere or its checkout is clean — lets callers tell a human/agent
+    /// about a merge target's leftover edits before a merge is attempted.
+    pub fn dirty_checkout_of_branch(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+    ) -> Result<Option<(std::path::PathBuf, Vec<String>)>, GitServiceError> {
+        let Some(path) = self.find_checkout_path_for_branch(repo_path, branch)? else {
+            return Ok(None);
+        };
+        let lines = GitCli::new()
+            .status_porcelain(&path)
+            .map_err(|e| GitServiceError::InvalidRepository(format!("git status failed: {e}")))?;
+        Ok((!lines.is_empty()).then_some((path, lines)))
+    }
+
     /// Fast-forward merge a task branch into the base branch.
     ///
     /// Requires that the base branch is an ancestor of the task branch (i.e. the
@@ -849,44 +908,24 @@ impl GitService {
                     ));
                 }
 
-                self.ensure_cli_commit_identity(&base_checkout_path)?;
-
-                // Uncommitted tracked edits in the base checkout (typically
-                // another session's in-progress work) used to abort the merge
-                // whenever they touched a file the task branch also changes.
-                // `merge --autostash` shelves and re-applies them around the
-                // fast-forward instead — but only after a dry-run proves the
-                // re-apply cannot conflict, since a conflicting autostash would
-                // leave conflict markers in someone else's working tree.
-                if let Some(local_changes) =
-                    git_cli.stash_create(&base_checkout_path).map_err(|e| {
-                        GitServiceError::InvalidRepository(format!("git stash create failed: {e}"))
-                    })?
-                {
-                    let conflicts = git_cli
-                        .merge_tree_conflicts(&base_checkout_path, &sha, &local_changes)
-                        .map_err(|e| {
-                            GitServiceError::InvalidRepository(format!(
-                                "git merge-tree failed: {e}"
-                            ))
-                        })?;
-                    if !conflicts.is_empty() {
-                        return Err(GitServiceError::WorktreeDirty(
-                            base_branch_name.to_string(),
-                            format!(
-                                "edits to {} conflict with '{task_branch_name}'",
-                                conflicts.join(", ")
-                            ),
-                        ));
-                    }
+                // Uncommitted changes in the base checkout (typically leftovers
+                // of an in-place session) to files the task branch also changes
+                // make `git merge` refuse with "Your local changes ... would be
+                // overwritten". Detect that up front as a typed error naming the
+                // files, so callers can tell "someone's uncommitted edits block
+                // the merge" apart from a genuine git failure.
+                let blocking =
+                    self.uncommitted_overlap(&base_checkout_path, base_branch_name, &sha)?;
+                if !blocking.is_empty() {
+                    return Err(GitServiceError::WorktreeDirty(
+                        base_branch_name.to_string(),
+                        blocking.join(", "),
+                    ));
                 }
 
+                self.ensure_cli_commit_identity(&base_checkout_path)?;
                 git_cli
-                    .merge_ff_only_autostash(
-                        &base_checkout_path,
-                        base_branch_name,
-                        task_branch_name,
-                    )
+                    .merge_ff_only(&base_checkout_path, base_branch_name, task_branch_name)
                     .map_err(|e| {
                         GitServiceError::InvalidRepository(format!(
                             "CLI fast-forward merge failed: {e}"

@@ -184,6 +184,34 @@ impl GitCli {
         Ok(!out.is_empty())
     }
 
+    /// Every uncommitted change in the checkout as `git status --porcelain`
+    /// lines (`XY path`), untracked files listed individually. Empty when clean.
+    pub fn status_porcelain(&self, worktree_path: &Path) -> Result<Vec<String>, GitCliError> {
+        let out = self.git(
+            worktree_path,
+            [
+                "-c",
+                "core.quotePath=false",
+                "--no-optional-locks",
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            ],
+        )?;
+        Ok(out
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// The working-tree path named by a `git status --porcelain` line
+    /// (`XY path`, or `XY old -> new` for renames).
+    pub fn porcelain_path(line: &str) -> &str {
+        let path = line.get(3..).unwrap_or("");
+        path.rsplit(" -> ").next().unwrap_or(path)
+    }
+
     /// Diff status vs a base branch using a temporary index (always includes untracked).
     /// Path filter limits the reported paths.
     pub fn diff_status(
@@ -760,88 +788,14 @@ impl GitCli {
         base_branch: &str,
         from_branch: &str,
     ) -> Result<String, GitCliError> {
-        self.merge_ff_only_impl(repo_path, base_branch, from_branch, false)
-    }
-
-    /// [`Self::merge_ff_only`] with `--autostash`: uncommitted tracked changes in
-    /// the checkout are shelved around the fast-forward and re-applied afterwards,
-    /// so a dirty base checkout no longer aborts the merge. Only safe once the
-    /// caller has proven the re-apply cannot conflict (see
-    /// [`Self::merge_tree_conflicts`]): git exits 0 even when the autostash
-    /// re-apply conflicts, leaving conflict markers in the user's working tree.
-    pub fn merge_ff_only_autostash(
-        &self,
-        repo_path: &Path,
-        base_branch: &str,
-        from_branch: &str,
-    ) -> Result<String, GitCliError> {
-        self.merge_ff_only_impl(repo_path, base_branch, from_branch, true)
-    }
-
-    fn merge_ff_only_impl(
-        &self,
-        repo_path: &Path,
-        base_branch: &str,
-        from_branch: &str,
-        autostash: bool,
-    ) -> Result<String, GitCliError> {
         self.git(repo_path, ["checkout", base_branch]).map(|_| ())?;
-        let mut args = vec!["merge", "--ff-only"];
-        if autostash {
-            args.push("--autostash");
-        }
-        args.push(from_branch);
-        self.git(repo_path, args).map(|_| ())?;
+        self.git(repo_path, ["merge", "--ff-only", from_branch])
+            .map(|_| ())?;
         let sha = self
             .git(repo_path, ["rev-parse", "HEAD"])?
             .trim()
             .to_string();
         Ok(sha)
-    }
-
-    /// Snapshot the checkout's uncommitted tracked changes as a dangling stash
-    /// commit (`git stash create`). Touches neither refs, the stash list, the
-    /// index, nor the working tree. `None` when there is nothing to stash.
-    pub fn stash_create(&self, worktree_path: &Path) -> Result<Option<String>, GitCliError> {
-        let out = self.git(worktree_path, ["stash", "create"])?;
-        let oid = out.trim();
-        Ok((!oid.is_empty()).then(|| oid.to_string()))
-    }
-
-    /// Dry-run the 3-way merge of two commits (`git merge-tree --write-tree`,
-    /// git >= 2.38) without touching the index or working tree. Returns the
-    /// conflicting paths; empty means the commits merge cleanly.
-    pub fn merge_tree_conflicts(
-        &self,
-        repo_path: &Path,
-        commit_a: &str,
-        commit_b: &str,
-    ) -> Result<Vec<String>, GitCliError> {
-        use utils::command_ext::NoWindowExt;
-        let out =
-            Command::new(resolve_executable_path_blocking("git").ok_or(GitCliError::NotAvailable)?)
-                .arg("-C")
-                .arg(repo_path)
-                .args(["-c", "core.quotePath=false", "merge-tree", "--write-tree"])
-                .args(["--name-only", commit_a, commit_b])
-                .no_window()
-                .output()
-                .map_err(|e| GitCliError::CommandFailed(e.to_string()))?;
-        match out.status.code() {
-            Some(0) => Ok(Vec::new()),
-            // Exit 1 = conflicts. stdout: the result tree oid, the conflicting
-            // paths one per line, then a blank line and informational messages.
-            Some(1) => Ok(String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .skip(1)
-                .take_while(|line| !line.trim().is_empty())
-                .map(str::to_string)
-                .collect()),
-            code => Err(GitCliError::CommandFailed(format!(
-                "merge-tree exited {code:?}: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))),
-        }
     }
 
     /// Fast-forward the branch currently checked out in `worktree_path` to

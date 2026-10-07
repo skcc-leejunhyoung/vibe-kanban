@@ -990,7 +990,7 @@ fn merge_preserves_unstaged_changes_on_base() {
     assert_eq!(m, "merged content\n");
 }
 
-/// Base checkout (`main`) and `feature` both edit the tracked 10-line
+/// Base checkout (`main`) and `feature` both touch the tracked 10-line
 /// `shared.txt`: `feature` COMMITS an edit to line 10, while `main` carries an
 /// UNCOMMITTED, unstaged edit to `local_line` (1-based). `main` stays checked
 /// out at `repo_path`, so the merge takes the CLI fast-forward path.
@@ -1035,63 +1035,20 @@ fn setup_overlapping_edit_repo(root: &TempDir, local_line: usize) -> (PathBuf, P
 }
 
 // Regression: another session's uncommitted edit to a file the branch also
-// changes aborted the fast-forward ("Your local changes ... would be overwritten
-// by merge"). The merge must autostash it when the re-apply is conflict-free.
+// changes made `git merge --ff-only` refuse with a raw "Your local changes ...
+// would be overwritten by merge" failure. Surface it as a typed WorktreeDirty
+// that names the files, and leave the base checkout exactly as it was.
 #[test]
-fn merge_autostashes_non_conflicting_unstaged_edits_on_base() {
+fn merge_refuses_uncommitted_base_edits_overlapping_branch_files() {
     let td = TempDir::new().unwrap();
     let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 1);
-    let s = GitService::new();
-    let feature_oid = s.get_branch_oid(&repo_path, "feature").unwrap();
-
-    s.merge_changes(&repo_path, &worktree_path, "feature", "main")
-        .expect("compatible uncommitted edits must not block the merge");
-
-    assert_eq!(
-        s.get_branch_oid(&repo_path, "main").unwrap(),
-        feature_oid,
-        "main must fast-forward to the feature tip"
-    );
-    let merged = std::fs::read_to_string(repo_path.join("shared.txt")).unwrap();
-    assert!(
-        merged.starts_with("line 1 local\n"),
-        "local edit must survive: {merged}"
-    );
-    assert!(
-        merged.ends_with("line 10 feature\n"),
-        "feature edit must land: {merged}"
-    );
-    let git = GitCli::new();
-    assert_eq!(
-        git.git(&repo_path, ["status", "--porcelain"])
-            .unwrap()
-            .trim(),
-        "M shared.txt",
-        "re-applied edit must be the only change and stay unstaged"
-    );
-    assert_eq!(
-        git.git(&repo_path, ["stash", "list"]).unwrap().trim(),
-        "",
-        "autostash must not leave a stash entry behind"
-    );
-}
-
-// The autostash re-apply would conflict: refuse up front with a clear error and
-// leave the base checkout exactly as it was (no conflict markers, no stash).
-#[test]
-fn merge_refuses_unstaged_edits_on_base_that_conflict_with_branch() {
-    let td = TempDir::new().unwrap();
-    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 10);
     let s = GitService::new();
     let main_before = s.get_branch_oid(&repo_path, "main").unwrap();
 
     match s.merge_changes(&repo_path, &worktree_path, "feature", "main") {
-        Err(git::GitServiceError::WorktreeDirty(branch, detail)) => {
+        Err(git::GitServiceError::WorktreeDirty(branch, files)) => {
             assert_eq!(branch, "main");
-            assert!(
-                detail.contains("shared.txt") && detail.contains("feature"),
-                "detail should name the conflicting file and branch: {detail}"
-            );
+            assert_eq!(files, "shared.txt");
         }
         other => panic!("expected WorktreeDirty, got {other:?}"),
     }
@@ -1103,11 +1060,49 @@ fn merge_refuses_unstaged_edits_on_base_that_conflict_with_branch() {
     );
     let local = std::fs::read_to_string(repo_path.join("shared.txt")).unwrap();
     assert!(
-        local.ends_with("line 10 local\n") && !local.contains("<<<<<<<"),
+        local.starts_with("line 1 local\n") && !local.contains("<<<<<<<"),
         "local edit must be untouched: {local}"
     );
-    let git = GitCli::new();
-    assert_eq!(git.git(&repo_path, ["stash", "list"]).unwrap().trim(), "");
+    assert_eq!(
+        GitCli::new()
+            .git(&repo_path, ["status", "--porcelain"])
+            .unwrap()
+            .trim(),
+        "M shared.txt"
+    );
+}
+
+#[test]
+fn dirty_checkout_of_branch_reports_only_dirty_checked_out_branches() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, _worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let s = GitService::new();
+
+    // `main` is checked out at repo_path with an unstaged edit.
+    let (path, lines) = s
+        .dirty_checkout_of_branch(&repo_path, "main")
+        .unwrap()
+        .expect("main checkout is dirty");
+    assert_eq!(
+        path.canonicalize().unwrap(),
+        repo_path.canonicalize().unwrap()
+    );
+    assert_eq!(lines, vec![" M shared.txt".to_string()]);
+
+    // `feature` is checked out in a clean worktree.
+    assert!(
+        s.dirty_checkout_of_branch(&repo_path, "feature")
+            .unwrap()
+            .is_none()
+    );
+
+    // A branch that is not checked out anywhere has no checkout to be dirty.
+    create_branch_from_head(&Repository::open(&repo_path).unwrap(), "unchecked");
+    assert!(
+        s.dirty_checkout_of_branch(&repo_path, "unchecked")
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
