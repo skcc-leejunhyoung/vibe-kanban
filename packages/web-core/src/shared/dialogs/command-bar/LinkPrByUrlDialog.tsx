@@ -25,6 +25,16 @@ import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
  * branch-based auto-matching can't find a PR to link. Resolves `undefined` when
  * dismissed.
  */
+// Not 'pr-info': LinkPrToIssueDialog caches a bare PullRequestDetail there,
+// while this caches the Result envelope, so a shared key breaks both readers.
+export const prInfoResultQueryOptions = (
+  url: string,
+  hostId?: string | null
+) => ({
+  queryKey: ['pr-info-result', url, getHostRequestScopeQueryKey(hostId)],
+  queryFn: () => issuePrsApi.getPrInfo(url, hostId),
+});
+
 interface LinkPrByUrlDialogProps {
   hostId?: string | null;
 }
@@ -63,8 +73,7 @@ const LinkPrByUrlDialogImpl = create<LinkPrByUrlDialogProps>((props) => {
     isLoading: isLoadingPrInfo,
     error: prInfoError,
   } = useQuery({
-    queryKey: ['pr-info', debouncedUrl, getHostRequestScopeQueryKey(hostId)],
-    queryFn: () => issuePrsApi.getPrInfo(debouncedUrl, hostId),
+    ...prInfoResultQueryOptions(debouncedUrl, hostId),
     enabled: modal.visible && debouncedUrl.length > 0,
   });
 
