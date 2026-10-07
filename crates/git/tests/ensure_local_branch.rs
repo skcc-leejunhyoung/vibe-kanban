@@ -164,6 +164,32 @@ fn is_idempotent_when_local_branch_exists() {
     assert_eq!(second, "feature");
 }
 
+// The pure name derivation backs the vibe dirty-base probe, which must look at
+// the local counterpart's checkout without materializing the branch.
+#[test]
+fn local_name_for_remote_branch_derives_without_creating_the_branch() {
+    let temp = TempDir::new().unwrap();
+    let local_path = setup_with_remote_branch(&temp, "feature/x");
+    let service = GitService::new();
+
+    assert_eq!(
+        service
+            .local_name_for_remote_branch(&local_path, "origin/feature/x")
+            .unwrap(),
+        "feature/x"
+    );
+    assert!(
+        !service
+            .check_local_branch_exists(&local_path, "feature/x")
+            .unwrap(),
+        "probe must not create the local branch"
+    );
+    assert!(matches!(
+        service.local_name_for_remote_branch(&local_path, "origin/nope"),
+        Err(git::GitServiceError::BranchNotFound(_))
+    ));
+}
+
 #[test]
 fn strips_only_the_remote_prefix_for_slashed_branch_names() {
     let temp = TempDir::new().unwrap();

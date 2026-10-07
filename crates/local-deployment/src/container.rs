@@ -2814,9 +2814,34 @@ impl LocalContainerService {
             let Ok(Some(repo)) = Repo::find_by_id(pool, workspace_repo.repo_id).await else {
                 continue;
             };
+            // A remote-only target (`origin/develop`) is merged into its local
+            // counterpart (`develop`, see `vibe_perform_merge`), so that is the
+            // checkout whose leftovers matter.
+            let target_branch = match self
+                .git
+                .is_remote_branch(&repo.path, &workspace_repo.target_branch)
+                .and_then(|is_remote| {
+                    if is_remote {
+                        self.git
+                            .local_name_for_remote_branch(&repo.path, &workspace_repo.target_branch)
+                    } else {
+                        Ok(workspace_repo.target_branch.clone())
+                    }
+                }) {
+                Ok(branch) => branch,
+                Err(e) => {
+                    tracing::warn!(
+                        "vibe: target branch probe failed for {} ({}): {}",
+                        repo.name,
+                        workspace_repo.target_branch,
+                        e
+                    );
+                    continue;
+                }
+            };
             let (path, status_lines) = match self
                 .git
-                .dirty_checkout_of_branch(&repo.path, &workspace_repo.target_branch)
+                .dirty_checkout_of_branch(&repo.path, &target_branch)
             {
                 Ok(Some(dirty)) => dirty,
                 Ok(None) => continue,
@@ -2824,7 +2849,7 @@ impl LocalContainerService {
                     tracing::warn!(
                         "vibe: dirty-checkout probe failed for {} ({}): {}",
                         repo.name,
-                        workspace_repo.target_branch,
+                        target_branch,
                         e
                     );
                     continue;
@@ -2833,14 +2858,14 @@ impl LocalContainerService {
             if self.vibe_live_session_in_checkout(&path).await {
                 tracing::info!(
                     "vibe: '{}' checkout {} has uncommitted changes but hosts a running in-place session; not asking the review to settle them",
-                    workspace_repo.target_branch,
+                    target_branch,
                     path.display()
                 );
                 continue;
             }
             reports.push(DirtyBaseReport {
                 checkout_path: path.display().to_string(),
-                branch: workspace_repo.target_branch.clone(),
+                branch: target_branch,
                 status_lines,
             });
         }

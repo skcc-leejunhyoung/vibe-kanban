@@ -74,7 +74,8 @@ pub const PROMPT_CONFLICT: &str =
 /// fast-forward; ask the review session to settle them (see
 /// [`dirty_base_instruction`], appended by the shell), then we retry.
 pub const PROMPT_DIRTY_BASE_RETRY: &str = "머지 대상 base 브랜치 체크아웃에 커밋되지 않은 변경이 \
-있어서 머지가 막혔어. 아래 지침대로 정리한 뒤 다시 승인해줘.";
+있어서 머지가 막혔어. 아래 지침대로 정리한 뒤 다시 승인해줘. (아래에 정리 지침이 없으면 이미 \
+정리되었거나 그 체크아웃에서 다른 세션이 작업 중인 것이니 바로 다시 승인해줘.)";
 
 /// Rule 1a — paste the failed cleanup script log and ask the agent to fix it.
 pub fn cleanup_fix_prompt(log: &str) -> String {
@@ -136,6 +137,10 @@ pub struct DirtyBaseReport {
     pub status_lines: Vec<String>,
 }
 
+/// Cap on `git status` lines listed per checkout in [`dirty_base_instruction`]
+/// — an un-ignored build directory must not turn the prompt into a file dump.
+pub const DIRTY_BASE_MAX_LINES: usize = 50;
+
 /// Instruction block appended to review prompts (review start, follow-ups and
 /// the post-merge-failure retry) while a merge target checkout is dirty. Empty
 /// when there is nothing to report.
@@ -157,8 +162,18 @@ pub fn dirty_base_instruction(reports: &[DirtyBaseReport]) -> String {
             "\n- 경로: {} (브랜치 {})\n",
             report.checkout_path, report.branch
         ));
-        for line in &report.status_lines {
+        for line in report.status_lines.iter().take(DIRTY_BASE_MAX_LINES) {
             out.push_str(&format!("  {line}\n"));
+        }
+        let hidden = report
+            .status_lines
+            .len()
+            .saturating_sub(DIRTY_BASE_MAX_LINES);
+        if hidden > 0 {
+            out.push_str(&format!(
+                "  … 외 {hidden}개 (`git -C {} status --porcelain` 으로 전체 확인)\n",
+                report.checkout_path
+            ));
         }
     }
     out
@@ -1055,6 +1070,20 @@ mod tests {
         // Appended to a review prompt it must still end with the sentinel rules.
         let prompt = with_review_preamble(&format!("{PROMPT_REVIEW_A}{text}"));
         assert!(prompt.starts_with(PROMPT_REVIEW_A) && prompt.ends_with(PREAMBLE_REVIEW));
+    }
+
+    #[test]
+    fn dirty_base_instruction_caps_the_listing() {
+        let status_lines: Vec<String> = (0..DIRTY_BASE_MAX_LINES + 7)
+            .map(|i| format!("?? junk/{i}.tmp"))
+            .collect();
+        let text = dirty_base_instruction(&[DirtyBaseReport {
+            checkout_path: "/repo/main".into(),
+            branch: "jh".into(),
+            status_lines,
+        }]);
+        assert_eq!(text.matches("?? junk/").count(), DIRTY_BASE_MAX_LINES);
+        assert!(text.contains("외 7개"), "{text}");
     }
 
     // ---- decide_after_merge ------------------------------------------------
