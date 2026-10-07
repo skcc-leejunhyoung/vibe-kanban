@@ -2677,7 +2677,7 @@ impl LocalContainerService {
                 self.vibe_tag(client, task_id, vibe_orchestrator::TAG_APPROVE)
                     .await;
 
-                let outcome = self.vibe_perform_merge(ctx).await;
+                let (outcome, detail) = self.vibe_perform_merge(ctx).await;
                 match decide_after_merge(outcome, retry, &VibeBounds::default()) {
                     PostMergeAction::MarkInReview => {
                         if let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await {
@@ -2716,7 +2716,13 @@ impl LocalContainerService {
                             .await;
                         self.vibe_tag(client, task_id, vibe_orchestrator::TAG_BLOCK)
                             .await;
-                        self.vibe_notify_ready_for_review(ctx).await;
+                        tracing::warn!(
+                            "vibe: workspace {} auto-merge gave up (retry {}): {}",
+                            workspace_id,
+                            retry,
+                            detail
+                        );
+                        self.vibe_notify_merge_failed(ctx, &detail).await;
                     }
                 }
             }
@@ -2740,6 +2746,31 @@ impl LocalContainerService {
             .notify_local_only(
                 "Ready for review",
                 &format!("'{name}' is ready for review"),
+                Some(ctx.workspace.id),
+            )
+            .await;
+    }
+
+    /// Local-only push saying the auto-merge gave up and why. The issue still
+    /// moves to "In review" for a human, but reusing the "ready for review"
+    /// notice here hid the failure (e.g. a dirty base checkout) entirely.
+    async fn vibe_notify_merge_failed(&self, ctx: &ExecutionContext, detail: &str) {
+        let name = ctx
+            .workspace
+            .name
+            .as_deref()
+            .unwrap_or(&ctx.workspace.branch);
+        // Git stderr dumps are multi-line and long; flatten and cap for a push body.
+        let mut detail: String = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+        if detail.is_empty() {
+            detail = "see server log".to_string();
+        } else if detail.chars().count() > 300 {
+            detail = format!("{}…", detail.chars().take(300).collect::<String>());
+        }
+        self.notification_service
+            .notify_local_only(
+                "Auto-merge failed",
+                &format!("'{name}': {detail}"),
                 Some(ctx.workspace.id),
             )
             .await;
@@ -2929,17 +2960,23 @@ impl LocalContainerService {
     /// classifying the outcome for [`decide_after_merge`]. Remote-only targets
     /// are first materialized as local tracking branches, matching manual Merge.
     /// Skips repos with an open PR or an already-recorded direct merge.
-    async fn vibe_perform_merge(&self, ctx: &ExecutionContext) -> MergeOutcome {
+    /// Returns the outcome plus a short human-readable detail of what went
+    /// wrong (empty on success) for the escalation notification / log — the
+    /// outcome alone hid *why* an auto-merge gave up.
+    async fn vibe_perform_merge(&self, ctx: &ExecutionContext) -> (MergeOutcome, String) {
         let workspace = ctx.workspace.clone();
         let workspace_id = workspace.id;
 
         let workspace_repos =
             match WorkspaceRepo::find_by_workspace_id(&self.db.pool, workspace_id).await {
                 Ok(v) if !v.is_empty() => v,
-                Ok(_) => return MergeOutcome::Success,
+                Ok(_) => return (MergeOutcome::Success, String::new()),
                 Err(e) => {
                     tracing::error!("vibe merge: load workspace_repos failed: {}", e);
-                    return MergeOutcome::OtherFailure;
+                    return (
+                        MergeOutcome::OtherFailure,
+                        format!("load workspace repos failed: {e}"),
+                    );
                 }
             };
 
@@ -2947,13 +2984,17 @@ impl LocalContainerService {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("vibe merge: ensure container failed: {}", e);
-                return MergeOutcome::OtherFailure;
+                return (
+                    MergeOutcome::OtherFailure,
+                    format!("ensure container failed: {e}"),
+                );
             }
         };
         let workspace_path = Path::new(&container_ref);
 
         let mut any_conflict = false;
         let mut any_other_failure = false;
+        let mut failures: Vec<String> = Vec::new();
         // Whether at least one repo reached a review-ready state: freshly merged,
         // already merged, or carrying an open PR. Without this, a run where every
         // repo is skipped would fall through to `Success` and mark the issue In
@@ -2965,11 +3006,13 @@ impl LocalContainerService {
                 Ok(Some(r)) => r,
                 Ok(None) => {
                     tracing::warn!("vibe merge: repo {} not found", workspace_repo.repo_id);
+                    failures.push(format!("repo {} not found", workspace_repo.repo_id));
                     any_other_failure = true;
                     continue;
                 }
                 Err(e) => {
                     tracing::error!("vibe merge: load repo failed: {}", e);
+                    failures.push(format!("load repo failed: {e}"));
                     any_other_failure = true;
                     continue;
                 }
@@ -3013,6 +3056,7 @@ impl LocalContainerService {
                             repo.name,
                             e
                         );
+                        failures.push(format!("{}: branch status failed: {e}", repo.name));
                         any_other_failure = true;
                         continue;
                     }
@@ -3030,6 +3074,7 @@ impl LocalContainerService {
                         repo.name,
                         e
                     );
+                    failures.push(format!("{}: is_remote_branch failed: {e}", repo.name));
                     any_other_failure = true;
                     continue;
                 }
@@ -3051,6 +3096,10 @@ impl LocalContainerService {
                             repo.name,
                             e
                         );
+                        failures.push(format!(
+                            "{}: materialize remote target failed: {e}",
+                            repo.name
+                        ));
                         any_other_failure = true;
                         continue;
                     }
@@ -3125,6 +3174,10 @@ impl LocalContainerService {
                             repo.name,
                             e
                         );
+                        failures.push(format!(
+                            "{}: persist materialized target failed: {e}",
+                            repo.name
+                        ));
                         any_other_failure = true;
                         continue;
                     }
@@ -3138,6 +3191,7 @@ impl LocalContainerService {
                     .await
                     {
                         tracing::error!("vibe merge: record merge failed for {}: {}", repo.name, e);
+                        failures.push(format!("{}: record merge failed: {e}", repo.name));
                         any_other_failure = true;
                     } else {
                         any_review_ready = true;
@@ -3146,16 +3200,18 @@ impl LocalContainerService {
                 Err(GitServiceError::MergeConflicts { .. })
                 | Err(GitServiceError::BranchesDiverged(_)) => {
                     tracing::warn!("vibe merge: conflict merging {}", repo.name);
+                    failures.push(format!("{}: merge conflict", repo.name));
                     any_conflict = true;
                 }
                 Err(e) => {
                     tracing::warn!("vibe merge: merge_changes failed for {}: {}", repo.name, e);
+                    failures.push(format!("{}: {e}", repo.name));
                     any_other_failure = true;
                 }
             }
         }
 
-        if any_conflict {
+        let outcome = if any_conflict {
             MergeOutcome::Conflict
         } else if any_other_failure {
             MergeOutcome::OtherFailure
@@ -3164,8 +3220,10 @@ impl LocalContainerService {
         } else {
             // Nothing merged and no review artifact. Escalate to a human instead
             // of silently marking the issue as merged.
+            failures.push("nothing merged and no open PR".to_string());
             MergeOutcome::OtherFailure
-        }
+        };
+        (outcome, failures.join("; "))
     }
 }
 

@@ -990,6 +990,126 @@ fn merge_preserves_unstaged_changes_on_base() {
     assert_eq!(m, "merged content\n");
 }
 
+/// Base checkout (`main`) and `feature` both edit the tracked 10-line
+/// `shared.txt`: `feature` COMMITS an edit to line 10, while `main` carries an
+/// UNCOMMITTED, unstaged edit to `local_line` (1-based). `main` stays checked
+/// out at `repo_path`, so the merge takes the CLI fast-forward path.
+fn setup_overlapping_edit_repo(root: &TempDir, local_line: usize) -> (PathBuf, PathBuf) {
+    let repo_path = root.path().join("repo");
+    let worktree_path = root.path().join("wt-feature");
+    let service = GitService::new();
+    service
+        .initialize_repo_with_main_branch(&repo_path)
+        .expect("init repo");
+    let repo = Repository::open(&repo_path).unwrap();
+    configure_user(&repo);
+    checkout_branch(&repo, "main");
+
+    let lines: Vec<String> = (1..=10).map(|i| format!("line {i}")).collect();
+    let with_edit = |changed: usize, text: &str| -> String {
+        let mut l = lines.clone();
+        l[changed - 1] = text.to_string();
+        format!("{}\n", l.join("\n"))
+    };
+    write_file(&repo_path, "shared.txt", &format!("{}\n", lines.join("\n")));
+    commit_all(&repo, "initial");
+
+    create_branch_from_head(&repo, "feature");
+    service
+        .add_worktree(&repo_path, &worktree_path, "feature", false)
+        .expect("create worktree");
+    write_file(
+        &worktree_path,
+        "shared.txt",
+        &with_edit(10, "line 10 feature"),
+    );
+    let wt_repo = Repository::open(&worktree_path).unwrap();
+    commit_all(&wt_repo, "feature edits last line");
+
+    write_file(
+        &repo_path,
+        "shared.txt",
+        &with_edit(local_line, &format!("line {local_line} local")),
+    );
+    (repo_path, worktree_path)
+}
+
+// Regression: another session's uncommitted edit to a file the branch also
+// changes aborted the fast-forward ("Your local changes ... would be overwritten
+// by merge"). The merge must autostash it when the re-apply is conflict-free.
+#[test]
+fn merge_autostashes_non_conflicting_unstaged_edits_on_base() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let s = GitService::new();
+    let feature_oid = s.get_branch_oid(&repo_path, "feature").unwrap();
+
+    s.merge_changes(&repo_path, &worktree_path, "feature", "main")
+        .expect("compatible uncommitted edits must not block the merge");
+
+    assert_eq!(
+        s.get_branch_oid(&repo_path, "main").unwrap(),
+        feature_oid,
+        "main must fast-forward to the feature tip"
+    );
+    let merged = std::fs::read_to_string(repo_path.join("shared.txt")).unwrap();
+    assert!(
+        merged.starts_with("line 1 local\n"),
+        "local edit must survive: {merged}"
+    );
+    assert!(
+        merged.ends_with("line 10 feature\n"),
+        "feature edit must land: {merged}"
+    );
+    let git = GitCli::new();
+    assert_eq!(
+        git.git(&repo_path, ["status", "--porcelain"])
+            .unwrap()
+            .trim(),
+        "M shared.txt",
+        "re-applied edit must be the only change and stay unstaged"
+    );
+    assert_eq!(
+        git.git(&repo_path, ["stash", "list"]).unwrap().trim(),
+        "",
+        "autostash must not leave a stash entry behind"
+    );
+}
+
+// The autostash re-apply would conflict: refuse up front with a clear error and
+// leave the base checkout exactly as it was (no conflict markers, no stash).
+#[test]
+fn merge_refuses_unstaged_edits_on_base_that_conflict_with_branch() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 10);
+    let s = GitService::new();
+    let main_before = s.get_branch_oid(&repo_path, "main").unwrap();
+
+    match s.merge_changes(&repo_path, &worktree_path, "feature", "main") {
+        Err(git::GitServiceError::WorktreeDirty(branch, detail)) => {
+            assert_eq!(branch, "main");
+            assert!(
+                detail.contains("shared.txt") && detail.contains("feature"),
+                "detail should name the conflicting file and branch: {detail}"
+            );
+        }
+        other => panic!("expected WorktreeDirty, got {other:?}"),
+    }
+
+    assert_eq!(
+        s.get_branch_oid(&repo_path, "main").unwrap(),
+        main_before,
+        "main ref must not move"
+    );
+    let local = std::fs::read_to_string(repo_path.join("shared.txt")).unwrap();
+    assert!(
+        local.ends_with("line 10 local\n") && !local.contains("<<<<<<<"),
+        "local edit must be untouched: {local}"
+    );
+    let git = GitCli::new();
+    assert_eq!(git.git(&repo_path, ["stash", "list"]).unwrap().trim(), "");
+}
+
 #[test]
 fn update_ref_does_not_destroy_feature_worktree_dirty_state() {
     let td = TempDir::new().unwrap();

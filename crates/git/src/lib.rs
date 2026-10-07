@@ -850,8 +850,43 @@ impl GitService {
                 }
 
                 self.ensure_cli_commit_identity(&base_checkout_path)?;
+
+                // Uncommitted tracked edits in the base checkout (typically
+                // another session's in-progress work) used to abort the merge
+                // whenever they touched a file the task branch also changes.
+                // `merge --autostash` shelves and re-applies them around the
+                // fast-forward instead — but only after a dry-run proves the
+                // re-apply cannot conflict, since a conflicting autostash would
+                // leave conflict markers in someone else's working tree.
+                if let Some(local_changes) =
+                    git_cli.stash_create(&base_checkout_path).map_err(|e| {
+                        GitServiceError::InvalidRepository(format!("git stash create failed: {e}"))
+                    })?
+                {
+                    let conflicts = git_cli
+                        .merge_tree_conflicts(&base_checkout_path, &sha, &local_changes)
+                        .map_err(|e| {
+                            GitServiceError::InvalidRepository(format!(
+                                "git merge-tree failed: {e}"
+                            ))
+                        })?;
+                    if !conflicts.is_empty() {
+                        return Err(GitServiceError::WorktreeDirty(
+                            base_branch_name.to_string(),
+                            format!(
+                                "edits to {} conflict with '{task_branch_name}'",
+                                conflicts.join(", ")
+                            ),
+                        ));
+                    }
+                }
+
                 git_cli
-                    .merge_ff_only(&base_checkout_path, base_branch_name, task_branch_name)
+                    .merge_ff_only_autostash(
+                        &base_checkout_path,
+                        base_branch_name,
+                        task_branch_name,
+                    )
                     .map_err(|e| {
                         GitServiceError::InvalidRepository(format!(
                             "CLI fast-forward merge failed: {e}"
