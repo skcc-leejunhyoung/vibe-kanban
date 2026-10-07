@@ -804,7 +804,7 @@ pub trait ContainerService {
 
         // Only this session's processes: a restore/retry must not kill a sibling
         // session running concurrently in the same workspace.
-        self.try_stop(&workspace, false, Some(session_id)).await;
+        self.try_stop(&workspace, false, Some(session_id)).await?;
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
 
         Ok(())
@@ -819,42 +819,39 @@ pub trait ContainerService {
         workspace: &Workspace,
         include_dev_server: bool,
         only_session: Option<Uuid>,
-    ) {
+    ) -> Result<(), ContainerError> {
         // stop execution processes for this workspace's sessions
-        let sessions = match Session::find_by_workspace_id(&self.db().pool, workspace.id).await {
-            Ok(s) => s,
-            Err(_) => return,
-        };
+        let sessions = Session::find_by_workspace_id(&self.db().pool, workspace.id).await?;
+        let mut stop_error = None;
 
         for session in sessions {
             if only_session.is_some_and(|id| id != session.id) {
                 continue;
             }
-            if let Ok(processes) =
-                ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await
-            {
-                for process in processes {
-                    // Skip dev server processes unless explicitly included
-                    if !include_dev_server
-                        && process.run_reason == ExecutionProcessRunReason::DevServer
-                    {
-                        continue;
-                    }
-                    if process.status == ExecutionProcessStatus::Running {
-                        self.stop_execution(&process, ExecutionProcessStatus::Killed)
-                            .await
-                            .unwrap_or_else(|e| {
-                                tracing::debug!(
-                                    "Failed to stop execution process {} for workspace {}: {}",
-                                    process.id,
-                                    workspace.id,
-                                    e
-                                );
-                            });
-                    }
+            let processes =
+                ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await?;
+            for process in processes {
+                // Skip dev server processes unless explicitly included
+                if !include_dev_server && process.run_reason == ExecutionProcessRunReason::DevServer
+                {
+                    continue;
+                }
+                if process.status == ExecutionProcessStatus::Running
+                    && let Err(error) = self
+                        .stop_execution(&process, ExecutionProcessStatus::Killed)
+                        .await
+                {
+                    tracing::warn!(
+                        "Failed to stop execution process {} for workspace {}: {}",
+                        process.id,
+                        workspace.id,
+                        error
+                    );
+                    stop_error.get_or_insert(error);
                 }
             }
         }
+        stop_error.map_or(Ok(()), Err)
     }
 
     async fn ensure_container_exists(
@@ -1730,6 +1727,13 @@ pub trait ContainerService {
         execution_process: &ExecutionProcess,
         executor_action: &ExecutorAction,
     ) -> Result<(), ContainerError> {
+        if ExecutionProcess::find_by_id(&self.db().pool, execution_process.id)
+            .await?
+            .is_none_or(|process| process.status != ExecutionProcessStatus::Running)
+        {
+            return Ok(());
+        }
+
         // Ensure a msg_store exists for this process (it normally does because
         // create_execution_record set it up, but a deferred resume may have
         // happened after a server restart where the in-memory store is empty).
@@ -1775,6 +1779,19 @@ pub trait ContainerService {
             None
         };
 
+        // Stop may have arrived while artifact discovery was starting. Never
+        // spawn an agent for a row that was already marked killed.
+        if ExecutionProcess::find_by_id(&self.db().pool, execution_process.id)
+            .await?
+            .is_none_or(|process| process.status != ExecutionProcessStatus::Running)
+        {
+            self.msg_stores()
+                .write()
+                .await
+                .remove(&execution_process.id);
+            return Ok(());
+        }
+
         if let Err(start_error) = self
             .start_execution_inner(workspace, execution_process, executor_action)
             .await
@@ -1783,8 +1800,8 @@ pub trait ContainerService {
                 .write()
                 .await
                 .remove(&execution_process.id);
-            // Mark process as failed
-            match ExecutionProcess::update_completion(
+            // A concurrent stop owns the terminal status if it got here first.
+            match ExecutionProcess::update_completion_if_running(
                 &self.db().pool,
                 execution_process.id,
                 ExecutionProcessStatus::Failed,
@@ -1792,11 +1809,13 @@ pub trait ContainerService {
             )
             .await
             {
-                Ok(completed_process) => {
-                    if let Err(publish_error) = self
-                        .events()
-                        .publish_execution_process_update(&completed_process)
-                        .await
+                Ok(true) => {
+                    if let Ok(Some(completed_process)) =
+                        ExecutionProcess::find_by_id(&self.db().pool, execution_process.id).await
+                        && let Err(publish_error) = self
+                            .events()
+                            .publish_execution_process_update(&completed_process)
+                            .await
                     {
                         tracing::error!(
                             "Failed to publish execution process {} start failure: {}",
@@ -1805,6 +1824,7 @@ pub trait ContainerService {
                         );
                     }
                 }
+                Ok(false) => {}
                 Err(update_error) => {
                     tracing::error!(
                         "Failed to mark execution process {} as failed after start error: {}",
@@ -1861,6 +1881,18 @@ pub trait ContainerService {
                 let _ = observer.tick(true).await;
             }
             return Err(start_error);
+        }
+
+        // Stop may have won during spawn, before the child entered the store.
+        // The child is registered now, so terminate it before it runs further.
+        if ExecutionProcess::find_by_id(&self.db().pool, execution_process.id)
+            .await?
+            .is_some_and(|process| process.status == ExecutionProcessStatus::Killed)
+        {
+            self.mark_output_pipeline_ready(execution_process.id).await;
+            self.stop_execution(execution_process, ExecutionProcessStatus::Killed)
+                .await?;
+            return Ok(());
         }
 
         // Start processing normalised logs for executor requests and follow ups

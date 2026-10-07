@@ -242,7 +242,7 @@ pub async fn stop_workspace_execution(
     deployment
         .container()
         .try_stop(&workspace, false, only_session)
-        .await;
+        .await?;
 
     // Cascade: a workspace deferred behind this one (linked via a `blocking`
     // issue relationship) can never be unblocked by it once it is stopped, so
@@ -390,10 +390,18 @@ async fn cascade_stop_blocked_dependents(deployment: &DeploymentImpl, root_task_
                         dependent_ws.id,
                         target
                     );
-                    deployment
+                    if let Err(error) = deployment
                         .container()
                         .try_stop(&dependent_ws, false, Some(*session_id))
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(
+                            "cascade stop: failed to stop session {} of workspace {}: {}",
+                            session_id,
+                            dependent_ws.id,
+                            error
+                        );
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => tracing::warn!(

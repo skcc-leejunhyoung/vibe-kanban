@@ -368,14 +368,19 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     }
     try {
       await stopExecution();
-    } catch {
+    } catch (error) {
       patchedIds.forEach((id) => clearOptimisticProcess(id));
+      void ErrorDialog.show({
+        title: t('common:error'),
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }, [
     processes,
     patchOptimisticProcess,
     clearOptimisticProcess,
     stopExecution,
+    t,
   ]);
 
   // Extract user messages for turn navigation

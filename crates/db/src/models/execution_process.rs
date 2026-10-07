@@ -579,6 +579,27 @@ impl ExecutionProcess {
             .ok_or(sqlx::Error::RowNotFound)
     }
 
+    /// Claim a running execution's terminal status without overwriting a stop
+    /// or a concurrent exit monitor's completion.
+    pub async fn update_completion_if_running(
+        pool: &SqlitePool,
+        id: Uuid,
+        status: ExecutionProcessStatus,
+        exit_code: Option<i64>,
+    ) -> Result<bool, sqlx::Error> {
+        let updated = sqlx::query(
+            "UPDATE execution_processes SET status = ?, exit_code = ?, completed_at = ? \
+             WHERE id = ? AND status = 'running'",
+        )
+        .bind(status)
+        .bind(exit_code)
+        .bind(Utc::now())
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
     pub fn executor_action(&self) -> Result<&ExecutorAction, anyhow::Error> {
         match &self.executor_action.0 {
             ExecutorActionField::ExecutorAction(action) => Ok(action),
@@ -816,5 +837,63 @@ impl ExecutionProcess {
         .await?;
 
         Ok(rows.into_iter().collect())
+    }
+}
+
+#[cfg(test)]
+mod stop_transition_tests {
+    use sqlx::{Row, sqlite::SqlitePoolOptions};
+    use uuid::Uuid;
+
+    use super::{ExecutionProcess, ExecutionProcessStatus};
+
+    #[tokio::test]
+    async fn a_late_spawn_failure_cannot_overwrite_a_stop() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE execution_processes \
+             (id BLOB PRIMARY KEY, status TEXT, exit_code INTEGER, completed_at TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO execution_processes VALUES (?, 'running', NULL, NULL)")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(
+            ExecutionProcess::update_completion_if_running(
+                &pool,
+                id,
+                ExecutionProcessStatus::Killed,
+                None,
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !ExecutionProcess::update_completion_if_running(
+                &pool,
+                id,
+                ExecutionProcessStatus::Failed,
+                None,
+            )
+            .await
+            .unwrap()
+        );
+        let row = sqlx::query("SELECT status, completed_at FROM execution_processes WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<String, _>("status"), "killed");
+        assert!(row.get::<Option<String>, _>("completed_at").is_some());
     }
 }
