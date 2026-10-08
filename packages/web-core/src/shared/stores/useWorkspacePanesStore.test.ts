@@ -483,6 +483,52 @@ describe('reopenClosedPane', () => {
     expect(store.getState().activePaneId).toBe('pane-3');
   });
 
+  it('fills an empty pane on reopen instead of retargeting the board', () => {
+    const board = { kind: 'project', projectId: 'p1' } as const;
+    const issue: WorkspacePaneDestination = {
+      kind: 'project-issue',
+      projectId: 'p1',
+      issueId: 'i1',
+    };
+    store.getState().openPaneForDestination(board);
+    store.getState().openPaneForDestination(issue, { allowDuplicate: true });
+    store.getState().appendPane();
+    store.getState().closePane('pane-2');
+
+    expect(store.getState().reopenClosedPane()).toBe(true);
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      board,
+      issue,
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-3');
+  });
+
+  it('replaces the pane after the active one on reopen when the grid is full', () => {
+    const board = { kind: 'project', projectId: 'p1' } as const;
+    const issue: WorkspacePaneDestination = {
+      kind: 'project-issue',
+      projectId: 'p1',
+      issueId: 'i1',
+    };
+    store.getState().openPaneForDestination(board);
+    store.getState().openPaneForDestination(issue, { allowDuplicate: true });
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().openPaneForDestination(ws('ws-b'));
+    store.getState().closePane('pane-2');
+    store.getState().openPaneForDestination(ws('ws-c'));
+    store.getState().setActivePane('pane-1');
+
+    expect(store.getState().reopenClosedPane()).toBe(true);
+    // Full grid: the regular replace tier, never the same-project board.
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      board,
+      issue,
+      ws('ws-b'),
+      ws('ws-c'),
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-3');
+  });
+
   it('focuses the pane already showing the destination instead of duplicating', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().openPaneForDestination(ws('ws-b'));
