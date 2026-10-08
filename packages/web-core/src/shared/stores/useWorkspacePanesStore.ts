@@ -610,17 +610,19 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
         const shownExactly = state.panes.some((pane) =>
           sameDestination(pane.destination, closed.destination)
         );
+        const hasEmptyPane = state.panes.some(
+          (pane) => pane.destination === null
+        );
         const insertable =
-          state.panes.length < state.maxPanes &&
-          !shownExactly &&
-          state.panes.every((pane) => pane.destination !== null);
+          state.panes.length < state.maxPanes && !shownExactly && !hasEmptyPane;
         if (!insertable) {
-          // Shown exactly elsewhere → focus it. An empty pane is waiting or
-          // the grid is full → fill / replace, skipping the reuse tier: a
-          // sibling merely sharing the key (the board next to a closed issue
-          // pane) must not be retargeted.
+          // Shown exactly elsewhere → focus it. An empty pane is waiting →
+          // fill it, skipping the reuse tier so a sibling merely sharing the
+          // key (the board next to a closed issue pane) is not retargeted.
+          // Grid full → the regular path: that sibling is the least costly
+          // pane to navigate, better than evicting an unrelated neighbour.
           state.openPaneForDestination(closed.destination, {
-            allowDuplicate: !shownExactly,
+            allowDuplicate: !shownExactly && hasEmptyPane,
           });
           return true;
         }

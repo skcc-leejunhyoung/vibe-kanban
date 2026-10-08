@@ -5,13 +5,21 @@ import { installDomlessReact } from '@/shared/lib/electric/electricTestKit';
 import { KanbanIssueCard, type KanbanIssueCardProps } from './KanbanIssueCard';
 
 const contentRenders = vi.fn();
+let lastContentProps: {
+  displayId: string;
+  onOpenInNewTabClick?: () => void;
+} | null = null;
 
 vi.mock('@vibe/ui/components/KanbanBoard', () => ({
   KanbanCard: ({ children }: { children?: ReactNode }) => children ?? null,
 }));
 vi.mock('@vibe/ui/components/KanbanCardContent', () => ({
-  KanbanCardContent: (props: { displayId: string }) => {
+  KanbanCardContent: (props: {
+    displayId: string;
+    onOpenInNewTabClick?: () => void;
+  }) => {
     contentRenders(props.displayId);
+    lastContentProps = props;
     return null;
   },
 }));
@@ -115,6 +123,19 @@ describe('KanbanIssueCard', () => {
     await board.rerender({ issue: { ...issue, title: 'renamed' } });
 
     expect(contentRenders).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens the issue in a pane of its own from "Open in new tab"', async () => {
+    const onOpenInSplitPane = vi.fn();
+    const board = await renderBoard();
+    await board.rerender({ onOpenInSplitPane });
+
+    await act(async () => lastContentProps?.onOpenInNewTabClick?.());
+
+    // Without allowDuplicate the board pane itself would be navigated.
+    expect(onOpenInSplitPane).toHaveBeenCalledWith('/projects/p1/issues/i1', {
+      allowDuplicate: true,
+    });
   });
 
   it('re-renders for selection, cursor and open state', async () => {

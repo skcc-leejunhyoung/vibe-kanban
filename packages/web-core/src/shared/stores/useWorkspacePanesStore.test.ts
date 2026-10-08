@@ -503,7 +503,7 @@ describe('reopenClosedPane', () => {
     expect(store.getState().activePaneId).toBe('pane-3');
   });
 
-  it('replaces the pane after the active one on reopen when the grid is full', () => {
+  it('navigates the same-project pane on reopen when the grid is full', () => {
     const board = { kind: 'project', projectId: 'p1' } as const;
     const issue: WorkspacePaneDestination = {
       kind: 'project-issue',
@@ -519,14 +519,15 @@ describe('reopenClosedPane', () => {
     store.getState().setActivePane('pane-1');
 
     expect(store.getState().reopenClosedPane()).toBe(true);
-    // Full grid: the regular replace tier, never the same-project board.
+    // Full grid: the board (same project) shows the issue; no unrelated
+    // workspace pane is evicted.
     expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
-      board,
       issue,
+      ws('ws-a'),
       ws('ws-b'),
       ws('ws-c'),
     ]);
-    expect(store.getState().activePaneId).toBe('pane-3');
+    expect(store.getState().activePaneId).toBe('pane-1');
   });
 
   it('focuses the pane already showing the destination instead of duplicating', () => {
@@ -534,6 +535,8 @@ describe('reopenClosedPane', () => {
     store.getState().openPaneForDestination(ws('ws-b'));
     store.getState().closePane('pane-1');
     store.getState().openPaneForDestination(ws('ws-a'));
+    // The exact pane is not the active one: it must still be found.
+    store.getState().setActivePane('pane-2');
 
     store.getState().reopenClosedPane();
 
