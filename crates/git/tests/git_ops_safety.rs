@@ -1164,7 +1164,7 @@ fn merge_ignores_unrelated_untracked_file_in_base() {
         s.uncommitted_blocking_merge(&repo_path, "main", "feature", &status_lines)
             .unwrap()
             .is_empty(),
-        "git permits this merge, so Vibe must stop it before the merge"
+        "unrelated scratch must not require an automatic cleanup turn"
     );
 
     s.merge_changes(&repo_path, &worktree_path, "feature", "main")
@@ -1181,6 +1181,51 @@ fn merge_ignores_unrelated_untracked_file_in_base() {
             .1,
         vec!["?? notes.md"]
     );
+}
+
+// A review can finish before an in-place session starts editing the base.
+// There must be no stale cleanup command: the merge reads the current status
+// and refuses to overwrite the new edit, preserving unrelated sensitive data.
+#[test]
+fn merge_refuses_base_edits_arriving_after_a_clean_review_probe() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let service = GitService::new();
+    GitCli::new()
+        .git(&repo_path, ["restore", "--", "shared.txt"])
+        .unwrap();
+    assert!(
+        service
+            .dirty_checkout_of_branch(&repo_path, "main")
+            .unwrap()
+            .is_none()
+    );
+    let base_before = service.get_branch_oid(&repo_path, "main").unwrap();
+
+    // Synthetic data only; these writes model a newly started session.
+    let new_edit = "new session's unfinished work\n";
+    let private_data = "synthetic private notes, never commit or delete\n";
+    write_file(&repo_path, "shared.txt", new_edit);
+    write_file(&repo_path, "credentials.json", private_data);
+
+    assert!(matches!(
+        service.merge_changes(&repo_path, &worktree_path, "feature", "main"),
+        Err(git::GitServiceError::WorktreeDirty(branch, files))
+            if branch == "main" && files == "shared.txt"
+    ));
+    assert_eq!(
+        service.get_branch_oid(&repo_path, "main").unwrap(),
+        base_before
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("shared.txt")).unwrap(),
+        new_edit
+    );
+    assert_eq!(
+        fs::read_to_string(repo_path.join("credentials.json")).unwrap(),
+        private_data
+    );
+    assert!(!GitCli::new().has_staged_changes(&repo_path).unwrap());
 }
 
 // A file deleted only in the base worktree (` D`) never blocks a fast-forward:

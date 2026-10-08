@@ -279,25 +279,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// `container_ref` of every workspace that currently has a running
-    /// non-dev-server process — the checkouts where a session is live right
-    /// now (an in-place session's half-written edits live in such a checkout).
-    pub async fn container_refs_with_running_processes(
-        pool: &SqlitePool,
-    ) -> Result<Vec<String>, sqlx::Error> {
-        sqlx::query_scalar(
-            "SELECT DISTINCT w.container_ref
-               FROM workspaces w
-               JOIN sessions s ON s.workspace_id = w.id
-               JOIN execution_processes ep ON ep.session_id = s.id
-              WHERE w.container_ref IS NOT NULL
-                AND ep.status = 'running'
-                AND ep.run_reason != 'devserver'",
-        )
-        .fetch_all(pool)
-        .await
-    }
-
     pub async fn find_by_id(pool: &SqlitePool, id: Uuid) -> Result<Option<Self>, sqlx::Error> {
         sqlx::query_as!(
             Workspace,
@@ -1027,66 +1008,6 @@ mod tests {
     use uuid::Uuid;
 
     use super::Workspace;
-
-    #[tokio::test]
-    async fn container_refs_with_running_processes_lists_live_non_devserver_checkouts() {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        sqlx::raw_sql(
-            "CREATE TABLE workspaces (id BLOB PRIMARY KEY, container_ref TEXT);
-            CREATE TABLE sessions (id BLOB PRIMARY KEY, workspace_id BLOB);
-            CREATE TABLE execution_processes (
-                id BLOB PRIMARY KEY, session_id BLOB, status TEXT, run_reason TEXT
-            );",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        for (container_ref, status, run_reason) in [
-            (Some("/live"), "running", "codingagent"),
-            (Some("/live"), "running", "cleanupscript"),
-            (Some("/finished"), "completed", "codingagent"),
-            (Some("/devserver-only"), "running", "devserver"),
-            (None, "running", "codingagent"),
-        ] {
-            let workspace_id = Uuid::new_v4();
-            let session_id = Uuid::new_v4();
-            sqlx::query("INSERT INTO workspaces (id, container_ref) VALUES (?, ?)")
-                .bind(workspace_id)
-                .bind(container_ref)
-                .execute(&pool)
-                .await
-                .unwrap();
-            sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?, ?)")
-                .bind(session_id)
-                .bind(workspace_id)
-                .execute(&pool)
-                .await
-                .unwrap();
-            sqlx::query(
-                "INSERT INTO execution_processes (id, session_id, status, run_reason) \
-                 VALUES (?, ?, ?, ?)",
-            )
-            .bind(Uuid::new_v4())
-            .bind(session_id)
-            .bind(status)
-            .bind(run_reason)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
-
-        let live = Workspace::container_refs_with_running_processes(&pool)
-            .await
-            .unwrap();
-        // Two live processes in `/live` collapse to one entry; finished,
-        // dev-server-only and container-less workspaces are not live checkouts.
-        assert_eq!(live, vec!["/live".to_string()]);
-    }
 
     #[tokio::test]
     async fn cleanup_selects_expired_workspaces_and_keeps_recent_or_protected_ones() {
