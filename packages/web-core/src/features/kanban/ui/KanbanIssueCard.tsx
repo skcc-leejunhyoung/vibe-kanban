@@ -11,6 +11,7 @@ import {
 } from '@vibe/ui/components/IssueWorkspaceCard';
 import { SearchableTagDropdownContainer } from '@/shared/components/SearchableTagDropdownContainer';
 import type { ResolvedRelationship } from '@/shared/lib/resolveRelationships';
+import type { OpenPaneOptions } from '@/shared/stores/useWorkspacePanesStore';
 import type { OrganizationMemberWithProfile } from 'shared/types';
 import type {
   Issue,
@@ -42,7 +43,7 @@ export interface KanbanIssueCardProps {
   onPriorityClick: (issueId: string) => void;
   onAssigneeClick: (issueId: string) => void;
   onMoreActionsClick: (issueId: string) => void;
-  onOpenInSplitPane: (url: string) => void;
+  onOpenInSplitPane: (url: string, options?: OpenPaneOptions) => void;
   onTagToggle: (
     issueId: string,
     tagId: string,
@@ -165,7 +166,8 @@ export const KanbanIssueCard = memo(function KanbanIssueCard({
         }}
         onOpenInNewTabClick={() =>
           onOpenInSplitPane(
-            `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(issue.id)}`
+            `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(issue.id)}`,
+            { allowDuplicate: true }
           )
         }
         onMoreActionsClick={() => onMoreActionsClick(issue.id)}

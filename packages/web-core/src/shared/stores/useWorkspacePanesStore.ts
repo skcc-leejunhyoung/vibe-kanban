@@ -158,6 +158,39 @@ export interface WorkspacePane {
   destination: WorkspacePaneDestination | null;
 }
 
+export interface OpenPaneOptions {
+  /**
+   * Open another pane even when one already shows the destination — the
+   * "open in new pane" gestures (cmd-click, open in new tab). Default: go to
+   * the pane already showing it.
+   */
+  allowDuplicate?: boolean;
+}
+
+/**
+ * The pane to reuse for a destination, if any. Several panes can share a key
+ * (in-pane navigation and `allowDuplicate` never dedupe): a pane already
+ * showing it exactly, else one sharing the key — the active pane first within
+ * each tier, so a gesture never retargets a sibling while the active pane
+ * qualifies.
+ */
+function findPaneShowing(
+  state: Pick<WorkspacePanesState, 'panes' | 'activePaneId'>,
+  destination: WorkspacePaneDestination
+): WorkspacePane | undefined {
+  const key = paneDestinationKey(destination);
+  const matches = state.panes.filter(
+    (pane) =>
+      pane.destination !== null && paneDestinationKey(pane.destination) === key
+  );
+  const exact = matches.filter((pane) =>
+    sameDestination(pane.destination, destination)
+  );
+  const activeFirst = (panes: WorkspacePane[]) =>
+    panes.find((pane) => pane.id === state.activePaneId) ?? panes[0];
+  return activeFirst(exact) ?? activeFirst(matches);
+}
+
 /** A closed pane's content and former position, for "reopen closed pane". */
 export interface ClosedPane {
   destination: WorkspacePaneDestination;
@@ -200,9 +233,13 @@ interface WorkspacePanesState {
   focusActivePane: () => void;
   /**
    * Show a destination in some pane (dedupe → empty → split → replace).
-   * Terminals skip the dedupe: each pane runs its own shell.
+   * Terminals and `allowDuplicate` skip the dedupe: another pane even when
+   * one already shows it.
    */
-  openPaneForDestination: (destination: WorkspacePaneDestination) => void;
+  openPaneForDestination: (
+    destination: WorkspacePaneDestination,
+    options?: OpenPaneOptions
+  ) => void;
   /**
    * Adopt an externally navigated destination (deep link, notification):
    * activate the pane already showing it, else replace the active pane's
@@ -422,20 +459,16 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
       // Every branch bumps focusSerial: this runs only for deliberate "open it
       // in a pane" gestures, and picking the pane without moving the caret
       // there leaves the user typing into whatever held focus before.
-      openPaneForDestination: (destination) =>
+      openPaneForDestination: (destination, options) =>
         set((state) => {
           const focusSerial = state.focusSerial + 1;
-          const key = paneDestinationKey(destination);
           // Every terminal pane runs a shell of its own, so opening a terminal
-          // means another one — never the pane already showing one.
+          // means another one — never the pane already showing one. Explicit
+          // "open in new pane" gestures ask for the same.
           const existing =
-            destination.kind === 'terminal'
+            destination.kind === 'terminal' || options?.allowDuplicate
               ? undefined
-              : state.panes.find(
-                  (pane) =>
-                    pane.destination !== null &&
-                    paneDestinationKey(pane.destination) === key
-                );
+              : findPaneShowing(state, destination);
           if (existing) {
             // Same identity (e.g. the pane's project) — adopt the more
             // specific destination (issue/workspace sub-navigation) too.
@@ -490,21 +523,7 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
         }),
       adoptRouteDestination: (destination) =>
         set((state) => {
-          const key = paneDestinationKey(destination);
-          const matches = state.panes.filter(
-            (pane) =>
-              pane.destination !== null &&
-              paneDestinationKey(pane.destination) === key
-          );
-          // Several panes can share a key (in-pane navigation never dedupes):
-          // a pane already showing it exactly, then the active pane, then the
-          // first — never retarget a sibling while the active pane matches.
-          const existing =
-            matches.find((pane) =>
-              sameDestination(pane.destination, destination)
-            ) ??
-            matches.find((pane) => pane.id === state.activePaneId) ??
-            matches[0];
+          const existing = findPaneShowing(state, destination);
           if (existing) {
             if (sameDestination(existing.destination, destination)) {
               return state.activePaneId === existing.id

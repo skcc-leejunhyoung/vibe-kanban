@@ -244,6 +244,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
           `/projects/${encodeURIComponent(projectId)}`,
           appNavigation,
           appRuntime,
+          { allowDuplicate: true },
         );
         return;
       }

@@ -1280,7 +1280,8 @@ export function KanbanIssuePanelContainer({
   const handleOpenInNewTab = useCallback(() => {
     if (!selectedKanbanIssueId || !projectId) return;
     openInSplitPane(
-      `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(selectedKanbanIssueId)}`
+      `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(selectedKanbanIssueId)}`,
+      { allowDuplicate: true }
     );
   }, [openInSplitPane, projectId, selectedKanbanIssueId]);
 

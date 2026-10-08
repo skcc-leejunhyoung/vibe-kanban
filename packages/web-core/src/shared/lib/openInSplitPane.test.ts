@@ -20,8 +20,12 @@ vi.stubGlobal('window', {
   location: { pathname: '/workspaces' },
 });
 
-const { openDestinationInOwnPane, paneGridAvailable, revealDestinationInPane } =
-  await import('./openInSplitPane');
+const {
+  openDestinationInOwnPane,
+  openUrlInSplitPane,
+  paneGridAvailable,
+  revealDestinationInPane,
+} = await import('./openInSplitPane');
 const { useWorkspacePanesStore } = await import(
   '@/shared/stores/useWorkspacePanesStore'
 );
@@ -130,6 +134,31 @@ describe('openDestinationInOwnPane', () => {
 
     expect(navigateDocument).toHaveBeenCalled();
     expect(paneKinds()).toEqual(['workspace']);
+  });
+
+  describe('openUrlInSplitPane', () => {
+    const board = { kind: 'project', projectId: 'p1' } as const;
+    const projectNavigation = {
+      resolveFromPath: (path: string) =>
+        path === '/projects/p1' ? board : { kind: 'workspaces' },
+      goToWorkspaces: vi.fn(),
+    } as unknown as AppNavigation;
+
+    it('goes to the project pane by default, opens another when asked', () => {
+      seed([board, ws('ws1')], 4);
+      state().setActivePane('pane-1');
+
+      openUrlInSplitPane('/projects/p1', projectNavigation, 'local');
+      expect(paneKinds()).toEqual(['project', 'workspace']);
+      expect(state().activePaneId).toBe('pane-0');
+
+      // cmd-click on the sidebar project: another board, nothing retargeted.
+      openUrlInSplitPane('/projects/p1', projectNavigation, 'local', {
+        allowDuplicate: true,
+      });
+      expect(paneKinds()).toEqual(['project', 'workspace', 'project']);
+      expect(state().activePaneId).toBe('pane-2');
+    });
   });
 
   describe('revealDestinationInPane', () => {

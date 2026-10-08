@@ -16,6 +16,7 @@ import {
   isPaneGridDestination,
   isPaneRenderableDestination,
   useWorkspacePanesStore,
+  type OpenPaneOptions,
   type WorkspacePaneDestination,
 } from '@/shared/stores/useWorkspacePanesStore';
 
@@ -236,12 +237,14 @@ export function useChromeTargetWorkspace(): {
  * Open an app URL "to the side": pane-renderable URLs (workspace, kanban,
  * pull requests, notifications) go to an in-document split pane on the
  * workspaces page; anything else (or mobile) falls back to a new browser
- * tab/window.
+ * tab/window. By default a pane already showing the URL is focused instead;
+ * `allowDuplicate` opens another one (cmd-click, open in new tab).
  */
 export function openUrlInSplitPane(
   url: string,
   appNavigation: AppNavigation,
-  appRuntime: AppRuntime
+  appRuntime: AppRuntime,
+  options?: OpenPaneOptions
 ): void {
   const target: AppDestination | null = appNavigation.resolveFromPath(url);
   if (!paneGridAvailable(appRuntime) || !isPaneRenderableDestination(target)) {
@@ -249,16 +252,20 @@ export function openUrlInSplitPane(
     return;
   }
 
-  useWorkspacePanesStore.getState().openPaneForDestination(target);
+  useWorkspacePanesStore.getState().openPaneForDestination(target, options);
   ensurePaneGridVisible(appNavigation);
 }
 
-export function useOpenInSplitPane(): (url: string) => void {
+export function useOpenInSplitPane(): (
+  url: string,
+  options?: OpenPaneOptions
+) => void {
   const appRuntime = useAppRuntime();
   const appNavigation = useAppNavigation();
 
   return useCallback(
-    (url: string) => openUrlInSplitPane(url, appNavigation, appRuntime),
+    (url: string, options?: OpenPaneOptions) =>
+      openUrlInSplitPane(url, appNavigation, appRuntime, options),
     [appRuntime, appNavigation]
   );
 }

@@ -188,6 +188,51 @@ describe('openPaneForDestination', () => {
     });
   });
 
+  it('opens another pane for a project already on screen when asked', () => {
+    const board = { kind: 'project', projectId: 'p1' } as const;
+    store.getState().openPaneForDestination(board);
+    // cmd-click / open in new tab: a second board, the first one untouched.
+    store.getState().openPaneForDestination(board, { allowDuplicate: true });
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      board,
+      board,
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-2');
+  });
+
+  it('prefers the active pane when several panes show the project', () => {
+    const board = { kind: 'project', projectId: 'p1' } as const;
+    store.getState().openPaneForDestination(board);
+    store.getState().openPaneForDestination(board, { allowDuplicate: true });
+    store.getState().setActivePane('pane-2');
+
+    // Sub-navigation lands in the pane the gesture happened in, not in the
+    // first pane showing the project.
+    const issue: WorkspacePaneDestination = {
+      kind: 'project-issue',
+      projectId: 'p1',
+      issueId: 'i1',
+    };
+    store.getState().openPaneForDestination(issue);
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      board,
+      issue,
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-2');
+
+    // An exact match elsewhere is focused rather than retargeting a sibling.
+    store.getState().setActivePane('pane-1');
+    store.getState().openPaneForDestination(issue);
+    expect(store.getState().activePaneId).toBe('pane-2');
+    expect(store.getState().panes[0].destination).toEqual(board);
+
+    // Two exact matches: stay in the active one.
+    store.getState().setPaneDestination('pane-1', issue);
+    store.getState().setActivePane('pane-2');
+    store.getState().adoptRouteDestination(issue);
+    expect(store.getState().activePaneId).toBe('pane-2');
+  });
+
   it('replaces the pane after the active one when the grid is full', () => {
     for (const id of ['ws-a', 'ws-b', 'ws-c', 'ws-d']) {
       store.getState().openPaneForDestination(ws(id));

@@ -251,7 +251,8 @@ export function SharedAppLayout() {
         openUrlInSplitPane(
           `/projects/${encodeURIComponent(projectId)}`,
           appNavigation,
-          appRuntime
+          appRuntime,
+          { allowDuplicate: true }
         );
         return;
       }
