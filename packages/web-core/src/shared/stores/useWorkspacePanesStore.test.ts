@@ -573,6 +573,22 @@ describe('reopenClosedPane', () => {
     expect(store.getState().activePaneId).toBe('pane-2');
   });
 
+  it('focuses the pane showing the destination even when an empty pane waits', () => {
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().openPaneForDestination(ws('ws-b'));
+    store.getState().appendPane();
+    store.getState().closePane('pane-1');
+    store.getState().setPaneDestination('pane-2', ws('ws-a'));
+
+    expect(store.getState().reopenClosedPane()).toBe(true);
+    // Already on screen: go there; the empty pane is not filled with a copy.
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      ws('ws-a'),
+      null,
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-2');
+  });
+
   it('focuses the pane already showing the destination instead of duplicating', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().openPaneForDestination(ws('ws-b'));

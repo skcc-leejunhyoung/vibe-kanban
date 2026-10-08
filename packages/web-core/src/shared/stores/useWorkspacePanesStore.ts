@@ -89,9 +89,10 @@ export function paneDestinationKey(
     case 'project-issue-workspace':
     case 'project-issue-workspace-create':
     case 'project-workspace-create':
-      // One pane per project: issue/workspace sub-navigation (including
-      // workspace-create) swaps content within that pane instead of spawning
-      // siblings of the same board.
+      // The project is a pane's identity: issue/workspace sub-navigation
+      // (including workspace-create) swaps content within a project pane by
+      // default. Only explicit "open in new pane" gestures (allowDuplicate)
+      // and in-pane navigation put the same project in several panes.
       return `project:${destination.projectId}`;
     case 'pull-requests':
       return 'pull-requests';
