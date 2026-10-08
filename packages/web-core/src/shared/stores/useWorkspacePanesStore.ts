@@ -607,17 +607,18 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
         const closed = state.closedPanes[state.closedPanes.length - 1];
         if (!closed) return false;
         set({ closedPanes: state.closedPanes.slice(0, -1) });
-        const key = paneDestinationKey(closed.destination);
         const insertable =
           state.panes.length < state.maxPanes &&
           state.panes.every(
             (pane) =>
               pane.destination !== null &&
-              paneDestinationKey(pane.destination) !== key
+              !sameDestination(pane.destination, closed.destination)
           );
         if (!insertable) {
-          // Already on screen, an empty pane is waiting, or the grid is full:
-          // the regular open path (focus → fill → replace) covers all three.
+          // Shown exactly elsewhere, an empty pane is waiting, or the grid is
+          // full: the regular open path (focus → fill → replace) covers all
+          // three. A sibling merely sharing the key (the board next to a
+          // closed issue pane) must not be retargeted — put the pane back.
           state.openPaneForDestination(closed.destination);
           return true;
         }

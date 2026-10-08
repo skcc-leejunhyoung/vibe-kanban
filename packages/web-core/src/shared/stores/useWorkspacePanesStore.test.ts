@@ -462,6 +462,27 @@ describe('reopenClosedPane', () => {
     ]);
   });
 
+  it('puts a closed issue pane back next to its project board', () => {
+    const board = { kind: 'project', projectId: 'p1' } as const;
+    const issue: WorkspacePaneDestination = {
+      kind: 'project-issue',
+      projectId: 'p1',
+      issueId: 'i1',
+    };
+    store.getState().openPaneForDestination(board);
+    store.getState().openPaneForDestination(issue, { allowDuplicate: true });
+    store.getState().closePane('pane-2');
+
+    expect(store.getState().reopenClosedPane()).toBe(true);
+    // Same project key but a different destination: restored as it was, the
+    // board pane left alone instead of being navigated to the issue.
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      board,
+      issue,
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-3');
+  });
+
   it('focuses the pane already showing the destination instead of duplicating', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().openPaneForDestination(ws('ws-b'));
