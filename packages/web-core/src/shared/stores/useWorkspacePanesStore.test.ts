@@ -530,6 +530,49 @@ describe('reopenClosedPane', () => {
     expect(store.getState().activePaneId).toBe('pane-1');
   });
 
+  it('navigates the pull requests pane on reopen instead of adding a second one', () => {
+    const prX: WorkspacePaneDestination = {
+      kind: 'pull-requests',
+      prUrl: 'https://github.com/o/r/pull/1',
+    };
+    store.getState().openPaneForDestination(prX);
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().closePane('pane-1');
+    store.getState().setPaneDestination('pane-2', { kind: 'pull-requests' });
+
+    expect(store.getState().reopenClosedPane()).toBe(true);
+    // A selected PR is selection state of the one PR surface, not a place.
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      prX,
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-2');
+  });
+
+  it('prefers the active same-project pane on reopen when the grid is full', () => {
+    const board = { kind: 'project', projectId: 'p1' } as const;
+    const issue: WorkspacePaneDestination = {
+      kind: 'project-issue',
+      projectId: 'p1',
+      issueId: 'i1',
+    };
+    store.getState().openPaneForDestination(board);
+    store.getState().openPaneForDestination(board, { allowDuplicate: true });
+    store.getState().openPaneForDestination(issue, { allowDuplicate: true });
+    store.getState().openPaneForDestination(ws('ws-a'));
+    store.getState().closePane('pane-3');
+    store.getState().openPaneForDestination(ws('ws-b'));
+    store.getState().setActivePane('pane-2');
+
+    expect(store.getState().reopenClosedPane()).toBe(true);
+    expect(store.getState().panes.map((pane) => pane.destination)).toEqual([
+      board,
+      issue,
+      ws('ws-a'),
+      ws('ws-b'),
+    ]);
+    expect(store.getState().activePaneId).toBe('pane-2');
+  });
+
   it('focuses the pane already showing the destination instead of duplicating', () => {
     store.getState().openPaneForDestination(ws('ws-a'));
     store.getState().openPaneForDestination(ws('ws-b'));

@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AppDestination } from '@/shared/lib/routes/appNavigation';
+import {
+  isProjectDestination,
+  type AppDestination,
+} from '@/shared/lib/routes/appNavigation';
 
 export const MAX_WORKSPACE_PANES = 9;
 export const DEFAULT_MAX_WORKSPACE_PANES = 4;
@@ -607,22 +610,30 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
         const closed = state.closedPanes[state.closedPanes.length - 1];
         if (!closed) return false;
         set({ closedPanes: state.closedPanes.slice(0, -1) });
-        const shownExactly = state.panes.some((pane) =>
-          sameDestination(pane.destination, closed.destination)
+        // Project-family panes are distinct places (an issue pane next to its
+        // board comes back as a pane); every other kind is one surface per
+        // key (a PR pane's selected PR is selection state, not a place).
+        const key = paneDestinationKey(closed.destination);
+        const shown = state.panes.some(
+          (pane) =>
+            pane.destination !== null &&
+            (isProjectDestination(closed.destination)
+              ? sameDestination(pane.destination, closed.destination)
+              : paneDestinationKey(pane.destination) === key)
         );
         const hasEmptyPane = state.panes.some(
           (pane) => pane.destination === null
         );
         const insertable =
-          state.panes.length < state.maxPanes && !shownExactly && !hasEmptyPane;
+          state.panes.length < state.maxPanes && !shown && !hasEmptyPane;
         if (!insertable) {
-          // Shown exactly elsewhere → focus it. An empty pane is waiting →
-          // fill it, skipping the reuse tier so a sibling merely sharing the
-          // key (the board next to a closed issue pane) is not retargeted.
-          // Grid full → the regular path: that sibling is the least costly
-          // pane to navigate, better than evicting an unrelated neighbour.
+          // Shown elsewhere → go there. An empty pane is waiting → fill it,
+          // skipping the reuse tier so a sibling merely sharing the key (the
+          // board next to a closed issue pane) is not retargeted. Grid full →
+          // the regular path: that sibling is the least costly pane to
+          // navigate, better than evicting an unrelated neighbour.
           state.openPaneForDestination(closed.destination, {
-            allowDuplicate: !shownExactly && hasEmptyPane,
+            allowDuplicate: !shown && hasEmptyPane,
           });
           return true;
         }
