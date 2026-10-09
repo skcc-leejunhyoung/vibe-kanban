@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // zoom.ts caches the current level in module state, so each case loads a fresh
 // copy against stubbed storage/DOM globals.
-async function loadZoom(stored?: string, storedTextScale?: string) {
+async function loadZoom(
+  stored?: string,
+  storedTextScale?: string,
+  standalone = false
+) {
   const store = new Map<string, string>();
   if (stored) store.set('vk-zoom-level', stored);
   if (storedTextScale) store.set('vk-text-scale', storedTextScale);
@@ -12,6 +16,9 @@ async function loadZoom(stored?: string, storedTextScale?: string) {
     removeItem: (k: string) => void store.delete(k),
   });
   const style: Record<string, string> = {};
+  const viewport = {
+    content: 'width=device-width, initial-scale=1.0, viewport-fit=cover',
+  };
   vi.stubGlobal('document', {
     documentElement: {
       style: Object.assign(style, {
@@ -19,11 +26,22 @@ async function loadZoom(stored?: string, storedTextScale?: string) {
         removeProperty: (k: string) => void delete style[k],
       }),
     },
+    querySelector: () => ({
+      getAttribute: () => viewport.content,
+      setAttribute: (_: string, v: string) => void (viewport.content = v),
+    }),
+    addEventListener: () => {},
   });
-  vi.stubGlobal('window', new EventTarget());
+  vi.stubGlobal(
+    'window',
+    Object.assign(new EventTarget(), {
+      matchMedia: () => ({ matches: standalone }),
+    })
+  );
+  vi.stubGlobal('navigator', { standalone });
   vi.resetModules();
   const zoom = await import('./zoom');
-  return { zoom, store, style };
+  return { zoom, store, style, viewport };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -88,6 +106,20 @@ describe('app zoom', () => {
     expect(zoom.getTextPercent()).toBe(100);
     expect(style['--vk-text-scale']).toBe(undefined);
     expect(store.has('vk-text-scale')).toBe(false);
+  });
+});
+
+describe('installAppZoom', () => {
+  it('caps the viewport scale only when app zoom replaces native zoom', async () => {
+    const tab = await loadZoom();
+    tab.zoom.installAppZoom();
+    expect(tab.viewport.content).not.toContain('maximum-scale');
+
+    const pwa = await loadZoom(undefined, undefined, true);
+    pwa.zoom.installAppZoom();
+    expect(pwa.viewport.content).toBe(
+      'width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1'
+    );
   });
 });
 

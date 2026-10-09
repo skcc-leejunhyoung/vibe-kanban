@@ -198,6 +198,17 @@ export function installAppZoom(): void {
 
   if (!isAppZoomEnabled()) return;
 
+  // iOS auto-zooms the page when a form field under 16px gains focus, and with
+  // pinch blocked below there is no way back out. maximum-scale=1 turns that
+  // auto-zoom off; desktop WebViews ignore the viewport meta altogether.
+  const viewport = document.querySelector('meta[name="viewport"]');
+  if (viewport) {
+    viewport.setAttribute(
+      'content',
+      `${viewport.getAttribute('content')}, maximum-scale=1`
+    );
+  }
+
   document.addEventListener('keydown', (e) => {
     const mod = e.metaKey || e.ctrlKey;
     if (!mod) return;
