@@ -32,9 +32,16 @@ export function ChatCollapsedSteps({
       <div
         className="flex items-center gap-base text-sm text-low cursor-pointer group"
         onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onToggle();
+          }
+        }}
         onMouseEnter={() => onHoverChange(true)}
         onMouseLeave={() => onHoverChange(false)}
         role="button"
+        tabIndex={0}
         aria-expanded={expanded}
         data-scroll-anchor-target=""
       >

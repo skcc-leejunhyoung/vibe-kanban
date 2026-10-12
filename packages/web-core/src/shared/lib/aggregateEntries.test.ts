@@ -96,10 +96,63 @@ describe('collapseCompletedTurnSteps', () => {
       'error_message',
       'error_message',
     ]);
+    // Without an answer or error, the last step shows how the turn ended.
     expect(shape(collapse([user(), read(), thinking()]))).toEqual([
       'user_message',
-      'steps(NORMALIZED_ENTRY,NORMALIZED_ENTRY)',
+      'steps(NORMALIZED_ENTRY)',
+      'thinking',
     ]);
+    expect(shape(collapse([user(), read()]))).toEqual([
+      'user_message',
+      'tool_use',
+    ]);
+  });
+
+  it('keeps the user answers and feedback in view between collapsed steps', () => {
+    const answered = entry({ type: 'user_answered_questions', answers: [] });
+    const feedback = entry({ type: 'user_feedback', denied_tool: 'Bash' });
+    expect(
+      shape(
+        collapse([
+          user(),
+          thinking(),
+          read(),
+          answered,
+          read(),
+          read(),
+          feedback,
+          thinking(),
+          answer(),
+        ])
+      )
+    ).toEqual([
+      'user_message',
+      'steps(NORMALIZED_ENTRY)',
+      'tool_use',
+      'user_answered_questions',
+      'AGGREGATED_GROUP',
+      'user_feedback',
+      'steps(NORMALIZED_ENTRY)',
+      'assistant_message',
+    ]);
+  });
+
+  it('counts a streamed thinking group as one step', () => {
+    const result = collapse([
+      user(),
+      thinking(),
+      thinking(),
+      read(),
+      read(),
+      answer(),
+    ]);
+    const group = result[1];
+    if (group.type !== 'AGGREGATED_STEPS_GROUP') throw new Error('no group');
+    expect(group.entries.map((e) => e.type)).toEqual([
+      'AGGREGATED_THINKING_GROUP',
+      'AGGREGATED_GROUP',
+    ]);
+    expect(countCollapsedSteps(group)).toBe(3);
   });
 
   it('treats user prompts, setup scripts and handoffs as turn boundaries', () => {
@@ -148,6 +201,20 @@ describe('collapseCompletedTurnSteps', () => {
       'assistant_message',
       'user_message',
       'steps(NORMALIZED_ENTRY)',
+      'assistant_message',
+    ]);
+  });
+
+  it('does not treat a blank assistant message as the answer', () => {
+    const blank = entry({ type: 'assistant_message' });
+    blank.content.content = '  ';
+    expect(
+      shape(collapse([user(), read(), answer(), thinking(), blank]))
+    ).toEqual([
+      'user_message',
+      'steps(NORMALIZED_ENTRY)',
+      'assistant_message',
+      'thinking',
       'assistant_message',
     ]);
   });

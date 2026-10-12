@@ -397,6 +397,7 @@ mod tests {
         assert_eq!(config.diff_view["mode"], "unified");
         assert_eq!(config.kanban_project_views, serde_json::json!({}));
         assert_eq!(config.pull_request_default_filters, serde_json::json!({}));
+        assert!(config.collapse_completed_turn_steps);
         assert_eq!(
             config.quick_chat_favorites,
             serde_json::Value::Array(vec![])

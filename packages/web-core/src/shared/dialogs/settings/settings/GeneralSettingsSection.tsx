@@ -1345,25 +1345,30 @@ export function GeneralSettingsSection() {
         />
       </SettingsCard>
 
-      {/* Conversation */}
-      <SettingsCard
-        title={t('settings.general.conversation.title')}
-        description={t('settings.general.conversation.description')}
-      >
-        <SettingsCheckbox
-          id="collapse-completed-turn-steps"
-          label={t(
-            'settings.general.conversation.collapseCompletedSteps.label'
-          )}
-          description={t(
-            'settings.general.conversation.collapseCompletedSteps.helper'
-          )}
-          checked={draft?.collapse_completed_turn_steps ?? true}
-          onChange={(checked) =>
-            updateDraft({ collapse_completed_turn_steps: checked })
-          }
-        />
-      </SettingsCard>
+      {/* Conversation: shown for the config this app's chat actually reads,
+          the host config locally and the shared "Remote" config on remote-web. */}
+      {(runtime === 'remote'
+        ? machineClient === null
+        : machineClient !== null) && (
+        <SettingsCard
+          title={t('settings.general.conversation.title')}
+          description={t('settings.general.conversation.description')}
+        >
+          <SettingsCheckbox
+            id="collapse-completed-turn-steps"
+            label={t(
+              'settings.general.conversation.collapseCompletedSteps.label'
+            )}
+            description={t(
+              'settings.general.conversation.collapseCompletedSteps.helper'
+            )}
+            checked={draft?.collapse_completed_turn_steps ?? true}
+            onChange={(checked) =>
+              updateDraft({ collapse_completed_turn_steps: checked })
+            }
+          />
+        </SettingsCard>
+      )}
 
       {/* Message Input */}
       <SettingsCard

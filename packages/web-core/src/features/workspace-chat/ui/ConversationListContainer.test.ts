@@ -500,6 +500,64 @@ it('matches full derivation when groups grow, split, shrink or change inside a c
   }
 });
 
+it('matches full derivation with collapsing on while turns stream, finish, restart and block', () => {
+  const active = makeProcess('active', 3);
+  active.status = ExecutionProcessStatus.running;
+  let raw: PatchType[] = [entry(), read(), read(), entry({ type: 'thinking' })];
+  const source = sourceOf([
+    [makeProcess('first', 1), [entry({ type: 'thinking' }), read(), entry()]],
+    [makeProcess('no-prompt', 2, action('')), [read(), entry()]],
+    [active, raw],
+  ]);
+  const full = baseline(true);
+  const incremental = createConversationDerivation();
+  const kinds = [
+    read,
+    edit,
+    () => entry({ type: 'thinking' }),
+    () => entry(),
+    () => entry({ type: 'error_message', error_type: { type: 'other' } }),
+    pending,
+    token,
+  ];
+  const statuses = [
+    ExecutionProcessStatus.running,
+    ExecutionProcessStatus.completed,
+    ExecutionProcessStatus.failed,
+    ExecutionProcessStatus.running,
+  ];
+  for (let i = 0; i < 120; i++) {
+    const next = kinds[i % kinds.length]();
+    if (i % 3 === 0) raw = [...raw, next];
+    else if (i % 3 === 1)
+      raw = raw.map((e, index) => (index === (i * 7) % raw.length ? next : e));
+    else raw = raw.filter((_, index) => index !== (i * 11) % raw.length);
+    replaceRaw(source, 'active', raw);
+    if (i % 5 === 0) {
+      const status = statuses[(i / 5) % statuses.length];
+      source.liveExecutionProcesses = source.liveExecutionProcesses.map((p) =>
+        p.id === 'active' ? { ...p, status } : p
+      );
+    }
+    const actual = incremental(source, true);
+    expect(JSON.parse(JSON.stringify(actual))).toEqual(
+      JSON.parse(JSON.stringify(full(source)))
+    );
+    if (i === 0) {
+      expect(actual.rows.some((r) => r.rowFamily === 'aggregated_steps')).toBe(
+        true
+      );
+    }
+  }
+  // Flipping the setting off and on again yields the plain and folded forms.
+  expect(JSON.parse(JSON.stringify(incremental(source, false)))).toEqual(
+    JSON.parse(JSON.stringify(baseline(false)(source)))
+  );
+  expect(JSON.parse(JSON.stringify(incremental(source, true)))).toEqual(
+    JSON.parse(JSON.stringify(baseline(true)(source)))
+  );
+});
+
 // Repeatable CPU profile of one frame, including rekeying and latest-entry
 // lookup; transport/Immer application and React/DOM rendering are excluded.
 // Run alone: SKC_4776_PROFILE=1 pnpm --filter @vibe/web-core test ConversationListContainer.test.ts

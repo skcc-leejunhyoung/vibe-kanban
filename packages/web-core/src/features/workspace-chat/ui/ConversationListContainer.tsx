@@ -523,8 +523,9 @@ function CollapsedStepsRow({
   }, [group]);
   const sessionId = attempt.session?.id;
   // Message edits grey out everything after the edited prompt; the folded
-  // row stands in for its first step.
-  const isGreyed = isEntryGreyed(steps.raw[0]?.patchKey ?? group.patchKey);
+  // row stands in for its first step (expanded steps grey themselves).
+  const isGreyed =
+    !expanded && isEntryGreyed(steps.raw[0]?.patchKey ?? group.patchKey);
   return (
     <div
       className={cn(
@@ -959,6 +960,8 @@ export const ConversationList = forwardRef<
 
   // Re-derive the rows when the setting toggles, without waiting for new data.
   useEffect(() => {
+    // An update already waiting for its frame will read the new setting.
+    if (pendingUpdateRef.current) return;
     const last = lastUpdateRef.current;
     if (last)
       onTimelineUpdatedRef.current(last.source, 'running', last.loading);

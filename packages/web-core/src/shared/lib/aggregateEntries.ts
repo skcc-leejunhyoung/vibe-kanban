@@ -312,15 +312,19 @@ export function aggregateConsecutiveEntries(
 }
 
 /**
- * Turns are delimited by user prompts and by the synthetic setup-script and
- * handoff rows. The incremental renderer splits its blocks at exactly these
- * rows, so a per-block collapse equals a whole-conversation collapse.
+ * Turns are delimited by what the user wrote (prompts, answers to the agent's
+ * questions, denial feedback) and by the synthetic setup-script and handoff
+ * rows. The incremental renderer splits its blocks at the prompt/script/
+ * handoff rows, so a per-block collapse equals a whole-conversation collapse.
  */
 function isTurnBoundary(entry: DisplayEntry): boolean {
+  if (entry.type !== 'NORMALIZED_ENTRY') return false;
+  const type = entry.content.entry_type.type;
   return (
-    entry.type === 'NORMALIZED_ENTRY' &&
-    (entry.content.entry_type.type === 'user_message' ||
-      /:(script|handoff)$/.test(entry.patchKey))
+    type === 'user_message' ||
+    type === 'user_answered_questions' ||
+    type === 'user_feedback' ||
+    /:(script|handoff)$/.test(entry.patchKey)
   );
 }
 
@@ -347,17 +351,24 @@ function isUnfinishedEntry(entry: DisplayEntry): boolean {
 
 function collapseTurn(turn: TurnStepEntry[]): DisplayEntry[] {
   if (turn.length === 0 || turn.some(isUnfinishedEntry)) return turn;
-  let answerIndex = turn.findLastIndex((entry) =>
-    isEntryOfType(entry, 'assistant_message')
+  // A blank assistant message (a streaming placeholder that never filled)
+  // is not an answer.
+  let answerIndex = turn.findLastIndex(
+    (entry) =>
+      isEntryOfType(entry, 'assistant_message') &&
+      entry.type === 'NORMALIZED_ENTRY' &&
+      entry.content.content.trim() !== ''
   );
   if (answerIndex < 0) {
-    // No answer: keep the errors the turn ended with in view.
+    // No answer: keep the errors the turn ended with in view, or else the
+    // last step, so how the turn ended stays readable.
     answerIndex = turn.length;
     while (
       answerIndex > 0 &&
       isEntryOfType(turn[answerIndex - 1], 'error_message')
     )
       answerIndex--;
+    if (answerIndex === turn.length) answerIndex--;
   }
   if (answerIndex === 0) return turn;
   const steps = turn.slice(0, answerIndex);
@@ -401,10 +412,18 @@ export function collapseCompletedTurnSteps(
   return result;
 }
 
-/** Raw step count behind a collapsed group, counting grouped tools one by one. */
+/**
+ * Step count behind a collapsed group: grouped tools count one by one, while
+ * a streamed thinking group (many chunks of one thought) counts once.
+ */
 export function countCollapsedSteps(group: AggregatedStepsGroup): number {
   return group.entries.reduce(
-    (count, entry) => count + ('entries' in entry ? entry.entries.length : 1),
+    (count, entry) =>
+      count +
+      (entry.type === 'AGGREGATED_GROUP' ||
+      entry.type === 'AGGREGATED_DIFF_GROUP'
+        ? entry.entries.length
+        : 1),
     0
   );
 }
