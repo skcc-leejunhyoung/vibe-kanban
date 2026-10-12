@@ -517,6 +517,8 @@ it('matches full derivation with collapsing on while turns stream, finish, resta
     () => entry({ type: 'thinking' }),
     () => entry(),
     () => entry({ type: 'error_message', error_type: { type: 'other' } }),
+    () => entry({ type: 'user_feedback', denied_tool: 'Bash' }),
+    () => entry({ type: 'user_answered_questions', answers: [] }),
     pending,
     token,
   ];

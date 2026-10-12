@@ -10,6 +10,7 @@ interface ChatCollapsedStepsProps {
   onToggle: () => void;
   onHoverChange: (hovered: boolean) => void;
   className?: string;
+  headerClassName?: string;
   /** The steps themselves, rendered only while expanded. */
   children: ReactNode;
 }
@@ -25,12 +26,16 @@ export function ChatCollapsedSteps({
   onToggle,
   onHoverChange,
   className,
+  headerClassName,
   children,
 }: ChatCollapsedStepsProps) {
   return (
     <div className={cn('flex flex-col', className)}>
       <div
-        className="flex items-center gap-base text-sm text-low cursor-pointer group"
+        className={cn(
+          'flex items-center gap-base text-sm text-low cursor-pointer group',
+          headerClassName
+        )}
         onClick={onToggle}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
