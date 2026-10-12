@@ -372,8 +372,8 @@ function collapseTurn(turn: TurnStepEntry[]): DisplayEntry[] {
 
 /**
  * Folds every step a finished turn took before its final answer into one
- * collapsed group, the way Claude Code and Codex hide a finished turn's
- * reasoning and tool calls behind the answer.
+ * collapsed group, so a finished turn reads as its answer with the
+ * reasoning and tool calls tucked behind it.
  *
  * A turn is finished once it carries no loading row and no tool is waiting for
  * approval; a running turn keeps streaming inline. The final answer is the last

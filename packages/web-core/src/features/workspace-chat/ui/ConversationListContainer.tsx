@@ -30,8 +30,17 @@ import {
 } from '../model/conversation-scroll-anchor';
 import { isNearBottom } from '../model/conversation-scroll-commands';
 
-import DisplayConversationEntry from './DisplayConversationEntry';
-import { ExecutionArtifactResults } from './ArtifactCards';
+import DisplayConversationEntry, {
+  subagentControlTarget,
+} from './DisplayConversationEntry';
+import {
+  ArtifactCards,
+  ExecutionArtifactResults,
+  useExecutionArtifacts,
+} from './ArtifactCards';
+import { subagentScope } from './artifact-preview';
+import { useMessageEditContext } from '../model/contexts/MessageEditContext';
+import { cn } from '@/shared/lib/utils';
 import { ApprovalFormProvider } from '@/shared/hooks/ApprovalForm';
 import { useEntriesActions } from '../model/contexts/EntriesContext';
 import {
@@ -440,21 +449,89 @@ function reuseStepsGroups(
   });
 }
 
+// Artifacts attached to collapsed steps would otherwise vanish with them, so
+// the folded row keeps their cards in view until it is expanded.
+function CollapsedStepsArtifacts({
+  processId,
+  entryKeys,
+  scopes,
+  workspaceId,
+  sessionId,
+}: {
+  processId: string;
+  entryKeys: ReadonlySet<string>;
+  scopes: ReadonlySet<string>;
+  workspaceId: string;
+  sessionId: string;
+}) {
+  const artifacts = useExecutionArtifacts(processId, workspaceId, sessionId);
+  const owned = (artifacts.data?.artifacts ?? []).filter((artifact) =>
+    artifact.source_scope
+      ? scopes.has(artifact.source_scope)
+      : artifact.source_entry !== null &&
+        entryKeys.has(`${processId}:${artifact.source_entry}`)
+  );
+  if (!owned.length) return null;
+  return (
+    <div className="pt-half">
+      <ArtifactCards
+        artifacts={owned}
+        processId={processId}
+        workspaceId={workspaceId}
+        sessionId={sessionId}
+      />
+    </div>
+  );
+}
+
 function CollapsedStepsRow({
   group,
+  attempt,
   children,
 }: {
   group: AggregatedStepsGroup;
+  attempt: WorkspaceWithSession;
   children: ReactNode;
 }) {
   const { t } = useTranslation('common');
+  const { isEntryGreyed } = useMessageEditContext();
   const [expanded, toggle] = usePersistedExpanded(
     `entry:${group.patchKey}`,
     false
   );
   const [isHovered, setIsHovered] = useState(false);
+  const steps = useMemo(() => {
+    const raw = group.entries.flatMap((step) =>
+      'entries' in step ? step.entries : [step]
+    );
+    return {
+      raw,
+      processIds: [...new Set(raw.map((step) => step.executionProcessId))],
+      entryKeys: new Set(raw.map((step) => step.patchKey)),
+      scopes: new Set(
+        raw.flatMap((step) => {
+          if (step.type !== 'NORMALIZED_ENTRY') return [];
+          const type = step.content.entry_type;
+          return type.type === 'tool_use' &&
+            type.action_type.action === 'task_create' &&
+            type.action_type.control
+            ? [subagentScope(subagentControlTarget(type.action_type.control))]
+            : [];
+        })
+      ),
+    };
+  }, [group]);
+  const sessionId = attempt.session?.id;
+  // Message edits grey out everything after the edited prompt; the folded
+  // row stands in for its first step.
+  const isGreyed = isEntryGreyed(steps.raw[0]?.patchKey ?? group.patchKey);
   return (
-    <div className="py-base px-double">
+    <div
+      className={cn(
+        'py-base px-double',
+        isGreyed && 'opacity-50 pointer-events-none'
+      )}
+    >
       <ChatCollapsedSteps
         label={t('conversation.collapsedSteps', {
           count: countCollapsedSteps(group),
@@ -466,6 +543,18 @@ function CollapsedStepsRow({
       >
         {children}
       </ChatCollapsedSteps>
+      {!expanded &&
+        sessionId &&
+        steps.processIds.map((processId) => (
+          <CollapsedStepsArtifacts
+            key={processId}
+            processId={processId}
+            entryKeys={steps.entryKeys}
+            scopes={steps.scopes}
+            workspaceId={attempt.id}
+            sessionId={sessionId}
+          />
+        ))}
     </div>
   );
 }
@@ -494,7 +583,7 @@ function renderRowContent(
 ): React.ReactNode {
   if (isAggregatedStepsGroup(entry)) {
     return (
-      <CollapsedStepsRow group={entry}>
+      <CollapsedStepsRow group={entry} attempt={attempt}>
         {entry.entries.map((step) => (
           <Fragment key={step.patchKey}>
             {renderRowContent(step, attempt, resetAction, repos)}

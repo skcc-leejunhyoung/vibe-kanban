@@ -202,7 +202,7 @@ pub struct Config {
     #[serde(default)]
     pub terminal_open_in_new_pane: bool,
     /// Fold a finished turn's reasoning, tool calls and interim messages
-    /// behind its final answer in the chat, the way Claude Code and Codex do.
+    /// behind its final answer in the chat.
     #[serde(default = "default_collapse_completed_turn_steps")]
     pub collapse_completed_turn_steps: bool,
     /// Daily agent-owned reconciliation of memory snapshots across this user's hosts.

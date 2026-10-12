@@ -1068,7 +1068,7 @@ quick_chat_open_in_new_pane: boolean,
 terminal_open_in_new_pane: boolean,
 /**
  * Fold a finished turn's reasoning, tool calls and interim messages
- * behind its final answer in the chat, the way Claude Code and Codex do.
+ * behind its final answer in the chat.
  */
 collapse_completed_turn_steps: boolean,
 /**

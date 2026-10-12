@@ -1358,7 +1358,7 @@ function TodoManagementEntry({
 }
 
 /** Rebuild the plain control target from the flattened control blob. */
-function subagentControlTarget(
+export function subagentControlTarget(
   control: SubagentControl
 ): SubagentControlTarget {
   return control.executor === 'codex'
