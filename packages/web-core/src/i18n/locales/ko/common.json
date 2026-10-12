@@ -56,6 +56,8 @@
     "plan": "계획",
     "tool": "도구",
     "thinking": "생각 중",
+    "collapsedSteps": "작업 과정 {{count}}단계",
+    "collapsedSteps_other": "작업 과정 {{count}}단계",
     "toolSummary": {
       "read": "{{path}} 읽기",
       "viewedImage": "이미지 {{path}} 보기",

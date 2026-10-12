@@ -48,6 +48,8 @@
     "deniedByUser": "{{toolName}} denied by user",
     "tool": "Tool",
     "thinking": "Thinking",
+    "collapsedSteps": "{{count}} step",
+    "collapsedSteps_other": "{{count}} steps",
     "toolSummary": {
       "read": "Read {{path}}",
       "viewedImage": "Viewed image {{path}}",

@@ -65,11 +65,27 @@ export type AggregatedThinkingGroup = {
   executionProcessId: string;
 };
 
-export type DisplayEntry =
+/** Entries a finished turn's collapsed steps group can hold. */
+export type TurnStepEntry =
   | PatchTypeWithKey
   | AggregatedPatchGroup
   | AggregatedDiffGroup
   | AggregatedThinkingGroup;
+
+/**
+ * Everything a finished turn did before its final answer (reasoning, tool
+ * calls, interim messages), folded behind one collapsed row.
+ */
+export type AggregatedStepsGroup = {
+  type: 'AGGREGATED_STEPS_GROUP';
+  /** Already-aggregated inner entries, rendered as-is when expanded. */
+  entries: TurnStepEntry[];
+  /** Unique key for the group */
+  patchKey: string;
+  executionProcessId: string;
+};
+
+export type DisplayEntry = TurnStepEntry | AggregatedStepsGroup;
 
 export function isAggregatedGroup(
   entry: DisplayEntry
@@ -87,6 +103,12 @@ export function isAggregatedThinkingGroup(
   entry: DisplayEntry
 ): entry is AggregatedThinkingGroup {
   return entry.type === 'AGGREGATED_THINKING_GROUP';
+}
+
+export function isAggregatedStepsGroup(
+  entry: DisplayEntry
+): entry is AggregatedStepsGroup {
+  return entry.type === 'AGGREGATED_STEPS_GROUP';
 }
 
 export type AddEntryType = 'initial' | 'running' | 'historic' | 'plan';

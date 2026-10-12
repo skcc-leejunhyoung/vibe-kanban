@@ -4,7 +4,9 @@ import type {
   AggregatedPatchGroup,
   AggregatedDiffGroup,
   AggregatedThinkingGroup,
+  AggregatedStepsGroup,
   ToolAggregationType,
+  TurnStepEntry,
 } from '@/shared/hooks/useConversationHistory/types';
 
 /**
@@ -307,4 +309,102 @@ export function aggregateConsecutiveEntries(
   flushDiffGroup();
 
   return result;
+}
+
+/**
+ * Turns are delimited by user prompts and by the synthetic setup-script and
+ * handoff rows. The incremental renderer splits its blocks at exactly these
+ * rows, so a per-block collapse equals a whole-conversation collapse.
+ */
+function isTurnBoundary(entry: DisplayEntry): boolean {
+  return (
+    entry.type === 'NORMALIZED_ENTRY' &&
+    (entry.content.entry_type.type === 'user_message' ||
+      /:(script|handoff)$/.test(entry.patchKey))
+  );
+}
+
+function isEntryOfType(entry: DisplayEntry, type: string): boolean {
+  return (
+    entry.type === 'NORMALIZED_ENTRY' && entry.content.entry_type.type === type
+  );
+}
+
+function isUnfinishedEntry(entry: DisplayEntry): boolean {
+  if (
+    entry.type === 'AGGREGATED_GROUP' ||
+    entry.type === 'AGGREGATED_DIFF_GROUP'
+  )
+    return entry.entries.some(isUnfinishedEntry);
+  if (entry.type !== 'NORMALIZED_ENTRY') return false;
+  const entryType = entry.content.entry_type;
+  return (
+    entryType.type === 'loading' ||
+    (entryType.type === 'tool_use' &&
+      entryType.status.status === 'pending_approval')
+  );
+}
+
+function collapseTurn(turn: TurnStepEntry[]): DisplayEntry[] {
+  if (turn.length === 0 || turn.some(isUnfinishedEntry)) return turn;
+  let answerIndex = turn.findLastIndex((entry) =>
+    isEntryOfType(entry, 'assistant_message')
+  );
+  if (answerIndex < 0) {
+    // No answer: keep the errors the turn ended with in view.
+    answerIndex = turn.length;
+    while (
+      answerIndex > 0 &&
+      isEntryOfType(turn[answerIndex - 1], 'error_message')
+    )
+      answerIndex--;
+  }
+  if (answerIndex === 0) return turn;
+  const steps = turn.slice(0, answerIndex);
+  const group: AggregatedStepsGroup = {
+    type: 'AGGREGATED_STEPS_GROUP',
+    entries: steps,
+    patchKey: `agg-steps:${steps[0].patchKey}`,
+    executionProcessId: steps[0].executionProcessId,
+  };
+  return [group, ...turn.slice(answerIndex)];
+}
+
+/**
+ * Folds every step a finished turn took before its final answer into one
+ * collapsed group, the way Claude Code and Codex hide a finished turn's
+ * reasoning and tool calls behind the answer.
+ *
+ * A turn is finished once it carries no loading row and no tool is waiting for
+ * approval; a running turn keeps streaming inline. The final answer is the last
+ * assistant message: everything before it collapses, everything after it stays.
+ * Already-collapsed groups are passed through unchanged.
+ */
+export function collapseCompletedTurnSteps(
+  entries: DisplayEntry[]
+): DisplayEntry[] {
+  const result: DisplayEntry[] = [];
+  let turn: TurnStepEntry[] = [];
+  const flush = () => {
+    result.push(...collapseTurn(turn));
+    turn = [];
+  };
+  for (const entry of entries) {
+    if (entry.type === 'AGGREGATED_STEPS_GROUP' || isTurnBoundary(entry)) {
+      flush();
+      result.push(entry);
+    } else {
+      turn.push(entry);
+    }
+  }
+  flush();
+  return result;
+}
+
+/** Raw step count behind a collapsed group, counting grouped tools one by one. */
+export function countCollapsedSteps(group: AggregatedStepsGroup): number {
+  return group.entries.reduce(
+    (count, entry) => count + ('entries' in entry ? entry.entries.length : 1),
+    0
+  );
 }

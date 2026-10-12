@@ -1,4 +1,5 @@
 import {
+  Fragment,
   forwardRef,
   useCallback,
   useEffect,
@@ -8,8 +9,10 @@ import {
   useRef,
   useState,
   type MouseEvent,
+  type ReactNode,
 } from 'react';
 import { SpinnerIcon } from '@phosphor-icons/react';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -37,6 +40,7 @@ import {
 } from '../model/hooks/useResetProcess';
 import type {
   AddEntryType,
+  AggregatedStepsGroup,
   ConversationTimelineSource,
   DisplayEntry,
   ExecutionProcessState,
@@ -45,12 +49,25 @@ import type {
 import {
   isAggregatedGroup,
   isAggregatedDiffGroup,
+  isAggregatedStepsGroup,
   isAggregatedThinkingGroup,
 } from '@/shared/hooks/useConversationHistory/types';
+import {
+  collapseCompletedTurnSteps,
+  countCollapsedSteps,
+} from '@/shared/lib/aggregateEntries';
+import {
+  REMOTE_SHARED_USER_SYSTEM_QUERY_KEY,
+  loadRemoteSharedUserSystemInfo,
+} from '@/shared/lib/remoteSharedConfig';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { usePersistedExpanded } from '@/shared/stores/useUiPreferencesStore';
 import { useConversationHistory } from '../model/hooks/useConversationHistory';
 import { useSetTokenUsageInfo } from '../model/contexts/EntriesContext';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import type { RepoWithTargetBranch } from 'shared/types';
+import { ChatCollapsedSteps } from '@vibe/ui/components/ChatCollapsedSteps';
 import { ChatEmptyState } from '@vibe/ui/components/ChatEmptyState';
 import { ChatScriptPlaceholder } from '@vibe/ui/components/ChatScriptPlaceholder';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
@@ -162,12 +179,16 @@ export function createConversationDerivation() {
       input: PatchTypeWithKey[];
       multipleUsers: boolean;
       laterUser: boolean;
+      collapseSteps: boolean;
+      /** Aggregated entries before collapsing; barrier lookups need these. */
       displayEntries: DisplayEntry[];
+      /** What the renderer sees: finished turns' steps folded into groups. */
+      collapsed: DisplayEntry[];
       rows: ConversationRow[];
     }
   >();
 
-  return (source: ConversationTimelineSource) => {
+  return (source: ConversationTimelineSource, collapseSteps = false) => {
     const ordered = Object.values(source.executionProcessState).sort(
       (a, b) =>
         Date.parse(a.executionProcess.created_at) -
@@ -288,6 +309,7 @@ export function createConversationDerivation() {
         !block ||
         block.multipleUsers !== multipleUsers ||
         block.laterUser !== laterUser ||
+        block.collapseSteps !== collapseSteps ||
         block.parts.length !== parts.length ||
         parts.some((part, i) => part !== block!.parts[i])
       ) {
@@ -300,7 +322,8 @@ export function createConversationDerivation() {
         if (
           block &&
           block.multipleUsers === multipleUsers &&
-          block.laterUser === laterUser
+          block.laterUser === laterUser &&
+          block.collapseSteps === collapseSteps
         ) {
           let common = 0;
           while (common < input.length && input[common] === block.input[common])
@@ -308,7 +331,7 @@ export function createConversationDerivation() {
           if (common === input.length && common === block.input.length) {
             block = { ...block, parts, input };
             nextBlocks.set(key, block);
-            displayEntries.push(...block.displayEntries);
+            displayEntries.push(...block.collapsed);
             rows.push(...block.rows);
             continue;
           }
@@ -341,7 +364,6 @@ export function createConversationDerivation() {
         const timeline = deriveConversationTimeline(tail, [], []);
         const previousDisplayEntries =
           block?.displayEntries.slice(prefixLength) ?? [];
-        const previousRows = block?.rows.slice(prefixLength) ?? [];
         const previous = new Map(
           previousDisplayEntries.map((entry) => [entry.patchKey, entry])
         );
@@ -359,32 +381,109 @@ export function createConversationDerivation() {
               return old;
             return entry;
           });
+        const aggregated = [
+          ...(block?.displayEntries.slice(0, prefixLength) ?? []),
+          ...stable,
+        ];
+        // Collapse over the whole block, not just the resumed tail: a turn's
+        // steps can start before the barrier, and whether the turn has
+        // finished can change with the tail.
+        const collapsed = collapseSteps
+          ? reuseStepsGroups(
+              collapseCompletedTurnSteps(aggregated),
+              block?.collapsed ?? []
+            )
+          : aggregated;
         block = {
           parts,
           input,
           multipleUsers,
           laterUser,
-          displayEntries: [
-            ...(block?.displayEntries.slice(0, prefixLength) ?? []),
-            ...stable,
-          ],
-          rows: [
-            ...(block?.rows.slice(0, prefixLength) ?? []),
-            ...buildConversationRowsIncremental(
-              stable,
-              previousDisplayEntries,
-              previousRows
-            ),
-          ],
+          collapseSteps,
+          displayEntries: aggregated,
+          collapsed,
+          rows: buildConversationRowsIncremental(
+            collapsed,
+            block?.collapsed ?? [],
+            block?.rows ?? []
+          ),
         };
       }
       nextBlocks.set(key, block);
-      displayEntries.push(...block.displayEntries);
+      displayEntries.push(...block.collapsed);
       rows.push(...block.rows);
     }
     blocks = nextBlocks;
     return { ...derived, entries, displayEntries, rows };
   };
+}
+
+// Keep a finished turn's group (and so its row) when its steps are unchanged.
+function reuseStepsGroups(
+  entries: DisplayEntry[],
+  previous: DisplayEntry[]
+): DisplayEntry[] {
+  const groups = new Map(
+    previous
+      .filter(isAggregatedStepsGroup)
+      .map((group) => [group.patchKey, group])
+  );
+  if (!groups.size) return entries;
+  return entries.map((entry) => {
+    if (!isAggregatedStepsGroup(entry)) return entry;
+    const old = groups.get(entry.patchKey);
+    return old &&
+      old.entries.length === entry.entries.length &&
+      old.entries.every((step, i) => step === entry.entries[i])
+      ? old
+      : entry;
+  });
+}
+
+function CollapsedStepsRow({
+  group,
+  children,
+}: {
+  group: AggregatedStepsGroup;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation('common');
+  const [expanded, toggle] = usePersistedExpanded(
+    `entry:${group.patchKey}`,
+    false
+  );
+  const [isHovered, setIsHovered] = useState(false);
+  return (
+    <div className="py-base px-double">
+      <ChatCollapsedSteps
+        label={t('conversation.collapsedSteps', {
+          count: countCollapsedSteps(group),
+        })}
+        expanded={expanded}
+        isHovered={isHovered}
+        onToggle={() => toggle()}
+        onHoverChange={setIsHovered}
+      >
+        {children}
+      </ChatCollapsedSteps>
+    </div>
+  );
+}
+
+// Like Quick Chat's pane preference: the remote app is one surface across
+// hosts, so it reads the account-wide "Remote" config there and the host
+// config locally.
+function useCollapseCompletedTurnSteps(): boolean {
+  const runtime = useAppRuntime();
+  const { config } = useUserSystem();
+  const shared = useQuery({
+    queryKey: REMOTE_SHARED_USER_SYSTEM_QUERY_KEY,
+    queryFn: loadRemoteSharedUserSystemInfo,
+    enabled: runtime === 'remote',
+    staleTime: 5 * 60 * 1000,
+  });
+  const source = runtime === 'remote' ? shared.data?.config : config;
+  return source?.collapse_completed_turn_steps ?? true;
 }
 
 function renderRowContent(
@@ -393,6 +492,18 @@ function renderRowContent(
   resetAction: UseResetProcessResult,
   repos: RepoWithTargetBranch[]
 ): React.ReactNode {
+  if (isAggregatedStepsGroup(entry)) {
+    return (
+      <CollapsedStepsRow group={entry}>
+        {entry.entries.map((step) => (
+          <Fragment key={step.patchKey}>
+            {renderRowContent(step, attempt, resetAction, repos)}
+          </Fragment>
+        ))}
+      </CollapsedStepsRow>
+    );
+  }
+
   if (isAggregatedGroup(entry)) {
     return (
       <DisplayConversationEntry
@@ -477,6 +588,9 @@ export const ConversationList = forwardRef<
   const { t } = useTranslation('common');
   const repos = reposProp;
   const resetAction = useResetProcess(attempt.id, attempt.session?.id);
+  const collapseCompletedTurnSteps = useCollapseCompletedTurnSteps();
+  const collapseStepsRef = useRef(collapseCompletedTurnSteps);
+  collapseStepsRef.current = collapseCompletedTurnSteps;
   const conversationScopeKey = `${attempt.id}:${sessionScopeId ?? attempt.session?.id ?? 'new'}`;
   const [filteredEntries, setFilteredEntries] = useState<DisplayEntry[]>([]);
   const [dataVersion, setDataVersion] = useState(0);
@@ -496,6 +610,11 @@ export const ConversationList = forwardRef<
     addType: AddEntryType;
     loading: boolean;
     isInitialLoad: boolean;
+  } | null>(null);
+  // The last flushed update, replayed when the collapse setting changes.
+  const lastUpdateRef = useRef<{
+    source: ConversationTimelineSource;
+    loading: boolean;
   } | null>(null);
   // rAF throttle: at most one state update per animation frame.
   // Replaces the previous 100ms trailing debounce which never fired during
@@ -572,6 +691,7 @@ export const ConversationList = forwardRef<
       rafIdRef.current = null;
     }
     pendingUpdateRef.current = null;
+    lastUpdateRef.current = null;
     topGrowthHoldDeadlineRef.current = 0;
     lastScrollHeightRef.current = 0;
     navigationTokenRef.current += 1;
@@ -702,7 +822,14 @@ export const ConversationList = forwardRef<
       }
     }
 
-    const derivedEntries = deriveConversationRef.current(pending.source);
+    lastUpdateRef.current = {
+      source: pending.source,
+      loading: pending.loading,
+    };
+    const derivedEntries = deriveConversationRef.current(
+      pending.source,
+      collapseStepsRef.current
+    );
 
     setHasSetupScriptRun(derivedEntries.hasSetupScriptRun);
     setHasCleanupScriptRun(derivedEntries.hasCleanupScriptRun);
@@ -738,6 +865,15 @@ export const ConversationList = forwardRef<
       rafIdRef.current = requestAnimationFrame(flushPendingUpdate);
     }
   };
+  const onTimelineUpdatedRef = useRef(onTimelineUpdated);
+  onTimelineUpdatedRef.current = onTimelineUpdated;
+
+  // Re-derive the rows when the setting toggles, without waiting for new data.
+  useEffect(() => {
+    const last = lastUpdateRef.current;
+    if (last)
+      onTimelineUpdatedRef.current(last.source, 'running', last.loading);
+  }, [collapseCompletedTurnSteps]);
 
   const {
     isFirstTurn,

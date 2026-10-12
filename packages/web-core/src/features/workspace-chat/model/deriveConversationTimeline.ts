@@ -1,4 +1,7 @@
-import { aggregateConsecutiveEntries } from '@/shared/lib/aggregateEntries';
+import {
+  aggregateConsecutiveEntries,
+  collapseCompletedTurnSteps,
+} from '@/shared/lib/aggregateEntries';
 import type {
   DisplayEntry,
   PatchTypeWithKey,
@@ -34,7 +37,8 @@ function isRenderableConversationEntry(entry: DisplayEntry): boolean {
     entry.type === 'STDERR' ||
     entry.type === 'AGGREGATED_GROUP' ||
     entry.type === 'AGGREGATED_DIFF_GROUP' ||
-    entry.type === 'AGGREGATED_THINKING_GROUP'
+    entry.type === 'AGGREGATED_THINKING_GROUP' ||
+    entry.type === 'AGGREGATED_STEPS_GROUP'
   );
 }
 
@@ -44,11 +48,15 @@ function isRenderableConversationEntry(entry: DisplayEntry): boolean {
 export function deriveConversationTimeline(
   entries: PatchTypeWithKey[],
   previousDisplayEntries: DisplayEntry[],
-  previousRows: ConversationRow[]
+  previousRows: ConversationRow[],
+  collapseCompletedSteps = false
 ): DerivedConversationTimeline {
-  const displayEntries = aggregateConsecutiveEntries(entries).filter(
+  const aggregated = aggregateConsecutiveEntries(entries).filter(
     isRenderableConversationEntry
   );
+  const displayEntries = collapseCompletedSteps
+    ? collapseCompletedTurnSteps(aggregated)
+    : aggregated;
 
   const rows = buildConversationRowsIncremental(
     displayEntries,

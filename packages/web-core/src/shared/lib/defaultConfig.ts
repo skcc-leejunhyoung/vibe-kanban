@@ -75,6 +75,7 @@ export const DEFAULT_CONFIG: Config = {
   pull_request_default_filters: {},
   quick_chat_open_in_new_pane: false,
   terminal_open_in_new_pane: false,
+  collapse_completed_turn_steps: true,
   agent_memory_sync: {
     enabled: false,
     daily_local_time: '03:00',

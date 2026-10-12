@@ -123,7 +123,7 @@ function replaceRaw(
     entries: raw.map((e, i) => patchWithKey(e, id, i)),
   };
 }
-function baseline() {
+function baseline(collapseSteps = false) {
   const scriptOutputCache = new Map<
     string,
     { count: number; output: string }
@@ -138,7 +138,8 @@ function baseline() {
     const timeline = deriveConversationTimeline(
       derived.entries,
       previousEntries,
-      previousRows
+      previousRows,
+      collapseSteps
     );
     previousEntries = timeline.displayEntries;
     previousRows = timeline.rows;
@@ -301,6 +302,127 @@ it('matches full output snapshots across streaming, cross-process groups, approv
     [makeProcess('first', 1), [entry(undefined, 'new session')]],
   ]);
   expect(incremental(nextSession)).toEqual(full(nextSession));
+});
+
+it('collapses finished turns per block exactly like the full derivation and keeps their rows', () => {
+  const initialAction: ExecutorAction = {
+    typ: {
+      type: 'CodingAgentInitialRequest',
+      prompt: 'initial',
+      executor_config: { executor: BaseCodingAgent.CLAUDE_CODE },
+      working_dir: null,
+      handoff_from: null,
+      handoff_session_id: null,
+      handoff_user_prompt: null,
+    },
+    next_action: null,
+  };
+  const setupAction: ExecutorAction = {
+    typ: {
+      type: 'ScriptRequest',
+      script: 'setup',
+      language: 'Bash',
+      context: 'SetupScript',
+      working_dir: null,
+    },
+    next_action: initialAction,
+  };
+  const last = makeProcess('last', 4);
+  last.status = ExecutionProcessStatus.running;
+  const source = sourceOf([
+    [makeProcess('setup', 0, setupAction), [{ type: 'STDOUT', content: 'ok' }]],
+    [
+      makeProcess('first', 1, initialAction),
+      [entry({ type: 'thinking' }), read(), read(), entry(), token()],
+    ],
+    [
+      makeProcess('no-prompt', 2, action('')),
+      [read(), entry({ type: 'thinking' })],
+    ],
+    [
+      makeProcess('failed', 3),
+      [
+        read(),
+        entry({ type: 'error_message', error_type: { type: 'other' } }, 'boom'),
+      ],
+    ],
+    [last, [entry({ type: 'thinking' }), read(), edit(), entry(), token()]],
+  ]);
+  const full = baseline(true);
+  const incremental = createConversationDerivation();
+  const compare = () => {
+    const actual = incremental(source, true);
+    expect(JSON.parse(JSON.stringify(actual))).toEqual(
+      JSON.parse(JSON.stringify(full(source)))
+    );
+    return actual;
+  };
+  const before = compare();
+  const families = (rows: ConversationRow[], processId: string) =>
+    rows
+      .filter((row) => row.processId === processId)
+      .map((row) => row.rowFamily);
+  // The prompt echoed after the setup script opens the first turn; "first"
+  // and its promptless continuation share that turn, whose answer is the last
+  // assistant message. Everything before it folds into one row.
+  expect(families(before.rows, 'setup')).toEqual(['script', 'user_message']);
+  expect(families(before.rows, 'first')).toEqual([
+    'aggregated_steps',
+    'assistant_message',
+  ]);
+  // The continuation's rows follow that answer, so they stay in view.
+  expect(families(before.rows, 'no-prompt')).toEqual([
+    'tool_summary',
+    'aggregated_thinking',
+  ]);
+  // A turn that ended in an error keeps the error in view.
+  expect(families(before.rows, 'failed')).toEqual([
+    'user_message',
+    'aggregated_steps',
+    'error_message',
+  ]);
+  // The running turn streams inline.
+  expect(families(before.rows, 'last')).toContain('thinking');
+  expect(families(before.rows, 'last')).not.toContain('aggregated_steps');
+
+  replaceRaw(source, 'last', [
+    entry({ type: 'thinking' }),
+    read(),
+    edit(),
+    entry(undefined, 'streamed'),
+    token(),
+  ]);
+  const streamed = compare();
+  for (const row of before.rows.filter((r) => r.processId !== 'last')) {
+    expect(streamed.rows.find((r) => r.semanticKey === row.semanticKey)).toBe(
+      row
+    );
+  }
+
+  source.liveExecutionProcesses = source.liveExecutionProcesses.map((p) =>
+    p.id === 'last' ? { ...p, status: ExecutionProcessStatus.completed } : p
+  );
+  const finished = compare();
+  expect(families(finished.rows, 'last')).toEqual([
+    'user_message',
+    'aggregated_steps',
+    'assistant_message',
+  ]);
+
+  replaceRaw(source, 'last', [
+    entry({ type: 'thinking' }),
+    read(),
+    edit(),
+    entry(undefined, 'streamed'),
+    pending(),
+    token(),
+  ]);
+  expect(families(compare().rows, 'last')).not.toContain('aggregated_steps');
+
+  // Turning the setting off re-expands every turn.
+  expect(JSON.parse(JSON.stringify(incremental(source, false)))).toEqual(
+    JSON.parse(JSON.stringify(baseline(false)(source)))
+  );
 });
 
 it('does not rescan completed raw entries and reuses unchanged active groups', () => {

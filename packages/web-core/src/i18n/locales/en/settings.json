@@ -360,6 +360,14 @@
           "helper": "Show system notifications when workspaces finish running."
         }
       },
+      "conversation": {
+        "title": "Conversation",
+        "description": "Choose how finished agent turns are shown in the chat.",
+        "collapseCompletedSteps": {
+          "label": "Collapse the steps of finished turns",
+          "helper": "Once a turn has finished, fold its reasoning, tool calls and interim messages behind the final answer, like Claude Code and Codex do. Click the collapsed row to expand it."
+        }
+      },
       "messageInput": {
         "title": "Message Input",
         "description": "Configure how messages are sent in the chat input.",

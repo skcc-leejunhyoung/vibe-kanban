@@ -37,7 +37,8 @@ export type RowFamily =
   // Aggregated group types
   | 'aggregated_tool' // AGGREGATED_GROUP
   | 'aggregated_diff' // AGGREGATED_DIFF_GROUP
-  | 'aggregated_thinking'; // AGGREGATED_THINKING_GROUP
+  | 'aggregated_thinking' // AGGREGATED_THINKING_GROUP
+  | 'aggregated_steps'; // AGGREGATED_STEPS_GROUP
 
 // ---------------------------------------------------------------------------
 // Size Estimation Hint
@@ -110,6 +111,7 @@ export function classifyRowFamily(entry: DisplayEntry): RowFamily {
   if (entry.type === 'AGGREGATED_GROUP') return 'aggregated_tool';
   if (entry.type === 'AGGREGATED_DIFF_GROUP') return 'aggregated_diff';
   if (entry.type === 'AGGREGATED_THINKING_GROUP') return 'aggregated_thinking';
+  if (entry.type === 'AGGREGATED_STEPS_GROUP') return 'aggregated_steps';
 
   // Non-normalized entries (STDOUT/STDERR/DIFF) — treat as tool summary
   if (entry.type !== 'NORMALIZED_ENTRY') return 'tool_summary';
@@ -289,6 +291,7 @@ export function estimationHintForFamily(family: RowFamily): SizeEstimationHint {
     case 'aggregated_tool':
     case 'aggregated_diff':
     case 'aggregated_thinking':
+    case 'aggregated_steps':
       return 'compact';
 
     // Dynamic: height changes significantly based on state
