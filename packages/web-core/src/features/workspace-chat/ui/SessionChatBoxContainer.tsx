@@ -268,10 +268,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     mode === 'existing-session' ? props.onStartNewSession : undefined;
 
   const sessionId = session?.id;
+  // Session this composer is showing, or undefined once it unmounts (the
+  // kanban sidebar remounts per session), so a send settling later knows
+  // whether its own composer can still take the text back.
   const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
   useEffect(() => {
+    sessionIdRef.current = sessionId;
     setHandoffTarget(null);
+    return () => {
+      sessionIdRef.current = undefined;
+    };
   }, [sessionId]);
   // Re-render when the pending-send registry changes (it lives outside React).
   const pendingVersion = useSyncExternalStore(
@@ -866,10 +872,22 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // Any composer showing a session whose send is pending (switch, remount, a
   // second pane, or the send just started elsewhere): make sure its overlay
-  // shows the turn. Idempotent — adds are de-duplicated by id.
+  // shows the turn. Idempotent — adds are de-duplicated by id. Every provider
+  // showing the session holds its own copy of the placeholder, so each
+  // composer also drops its copy once the real process is known, the send has
+  // settled or it shows another session — not just the composer that sent.
+  const shownPlaceholderIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!sessionId) return;
-    const pending = pendingSends.get(sessionId);
+    const pending = sessionId ? pendingSends.get(sessionId) : undefined;
+    const placeholderId =
+      pending && !pending.process ? pending.placeholder.id : null;
+    if (
+      shownPlaceholderIdRef.current &&
+      shownPlaceholderIdRef.current !== placeholderId
+    ) {
+      clearOptimisticProcess(shownPlaceholderIdRef.current);
+    }
+    shownPlaceholderIdRef.current = placeholderId;
     if (!pending) return;
     const shown = pending.process ?? pending.placeholder;
     addOptimisticProcess(shown);
@@ -878,7 +896,13 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         status: ExecutionProcessStatus.killed,
       });
     }
-  }, [sessionId, pendingVersion, addOptimisticProcess, patchOptimisticProcess]);
+  }, [
+    sessionId,
+    pendingVersion,
+    addOptimisticProcess,
+    patchOptimisticProcess,
+    clearOptimisticProcess,
+  ]);
 
   // The stream publishes the new row on insert, the POST only returns after
   // the spawn: adopt our process as soon as it shows up so the placeholder
@@ -1085,6 +1109,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       clearOptimisticProcess(pending.id);
       addOptimisticProcess(process);
       pendingState.process = process;
+      pendingSendsChanged(); // other composers swap their copy too
       if (pendingState.stopRequested) stopReal(process.id);
     });
     await resetComposer();
