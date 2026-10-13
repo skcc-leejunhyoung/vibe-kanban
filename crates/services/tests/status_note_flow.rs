@@ -177,3 +177,88 @@ async fn stored_note_rides_the_workspace_stream_row() {
     assert!(value["status_updated_at"].is_string());
     assert_eq!(value["is_running"], false);
 }
+
+/// With the real SQLite update hook installed, `set_status_note` alone makes
+/// the workspace stream carry the new summary: no poll, no extra plumbing.
+#[tokio::test]
+async fn set_status_note_streams_the_row_through_the_update_hook() {
+    use std::str::FromStr;
+
+    use services::services::events::EventService;
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+
+    let temp = tempfile::tempdir().unwrap();
+    let options = SqliteConnectOptions::from_str(&format!(
+        "sqlite://{}",
+        temp.path().join("db.sqlite").display()
+    ))
+    .unwrap()
+    .create_if_missing(true)
+    .journal_mode(SqliteJournalMode::Wal);
+    // The hook re-reads rows through its own pool, exactly like the server.
+    let reader = SqlitePool::connect_with(options.clone()).await.unwrap();
+    sqlx::migrate!("../db/migrations")
+        .run(&reader)
+        .await
+        .unwrap();
+    let store = Arc::new(MsgStore::new());
+    let hook = Arc::new(EventService::create_hook(
+        store.clone(),
+        Arc::new(RwLock::new(0usize)),
+        db::DBService {
+            pool: reader.clone(),
+        },
+    ));
+    let hooked = SqlitePoolOptions::new()
+        .max_connections(1)
+        .after_connect(move |conn, _meta| {
+            let hook = hook.clone();
+            Box::pin(async move { hook(conn).await })
+        })
+        .connect_with(options)
+        .await
+        .unwrap();
+
+    let workspace = Workspace::create(
+        &hooked,
+        &CreateWorkspace {
+            branch: "vk/status".into(),
+            name: Some("Status".into()),
+        },
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
+    Workspace::set_status_note(&hooked, workspace.id, "스트림으로 가는 요약이에요.")
+        .await
+        .unwrap();
+
+    let path = format!("/workspaces/{}", workspace.id);
+    let streamed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let hit = store.get_history().iter().rev().find_map(|msg| match msg {
+                LogMsg::JsonPatch(patch) => {
+                    let ops = serde_json::to_value(patch).unwrap();
+                    ops.as_array()
+                        .and_then(|ops| {
+                            ops.iter().find(|op| {
+                                op["op"] == "replace"
+                                    && op["path"] == path
+                                    && op["value"]["status_note"] == "스트림으로 가는 요약이에요."
+                            })
+                        })
+                        .cloned()
+                }
+                _ => None,
+            });
+            if let Some(op) = hit {
+                break op;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the update hook must stream the replaced workspace row");
+    assert!(streamed["value"]["status_updated_at"].is_string());
+    assert_eq!(streamed["value"]["name"], "Status");
+}
