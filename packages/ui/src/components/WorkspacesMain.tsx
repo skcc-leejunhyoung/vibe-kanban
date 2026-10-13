@@ -13,6 +13,8 @@ interface WorkspacesMainProps {
   showLoadingOverlay?: boolean;
   containerRef: RefObject<HTMLElement>;
   conversationContent?: ReactNode;
+  /** Live summary strip, rendered above the conversation. */
+  statusContent?: ReactNode;
   chatBoxContent: ReactNode;
   contextBarContent?: ReactNode;
   isAtBottom?: boolean;
@@ -27,6 +29,7 @@ export function WorkspacesMain({
   showLoadingOverlay = false,
   containerRef,
   conversationContent,
+  statusContent,
   chatBoxContent,
   contextBarContent,
   isAtBottom = true,
@@ -60,6 +63,7 @@ export function WorkspacesMain({
               <SpinnerIcon className="size-6 animate-spin text-low" />
             </div>
           )}
+          {statusContent}
           {conversationContent}
         </>
       )}

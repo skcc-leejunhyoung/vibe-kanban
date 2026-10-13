@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useQuery, useQueries, keepPreviousData } from '@tanstack/react-query';
+import { statusFirstSentence } from '@/shared/lib/statusNote';
 import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
@@ -77,6 +78,11 @@ export interface SidebarWorkspace {
   }>;
   /** Most recent prompt sent in this workspace (what it's working on) */
   latestPrompt?: string;
+  /** The agent's live summary, stored on the workspace row. */
+  statusNote?: string;
+  statusUpdatedAt?: string;
+  /** First sentence of `statusNote`, for rows and cards. */
+  statusHeadline?: string;
   /** Host that owns the workspace. `null` is this machine. */
   hostId: string | null;
 }
@@ -181,6 +187,11 @@ export function toSidebarWorkspace(
       number: Number(pr.number),
     })),
     latestPrompt: summary?.latest_prompt ?? undefined,
+    statusNote: ws.status_note ?? undefined,
+    statusUpdatedAt: ws.status_updated_at ?? undefined,
+    statusHeadline: ws.status_note
+      ? statusFirstSentence(ws.status_note)
+      : undefined,
     hostId,
   };
   createdAtTimestamps.set(workspace, Date.parse(ws.created_at));

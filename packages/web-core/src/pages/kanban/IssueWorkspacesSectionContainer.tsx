@@ -124,6 +124,7 @@ export function IssueWorkspacesSectionContainer({
         hasUnseenActivity: localWorkspace?.hasUnseenActivity,
         todoTotal: localWorkspace?.todoTotal,
         todoCompleted: localWorkspace?.todoCompleted,
+        statusHeadline: localWorkspace?.statusHeadline,
         latestProcessCompletedAt: localWorkspace?.latestProcessCompletedAt,
         latestProcessStatus: localWorkspace?.latestProcessStatus,
       };

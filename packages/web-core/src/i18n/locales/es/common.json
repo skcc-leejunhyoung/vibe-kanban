@@ -586,5 +586,14 @@
     "submitting": "Enviando respuestas...",
     "answeredCount": "Respondió {{count}} pregunta",
     "answeredCount_other": "Respondió {{count}} preguntas"
+  },
+  "status": {
+    "writing": "Escribiendo el resumen de estado…",
+    "updated": "Resumen de estado actualizado",
+    "expand": "Expandir resumen",
+    "collapse": "Contraer resumen",
+    "prev": "Resumen anterior",
+    "next": "Resumen siguiente",
+    "past": "Resumen anterior"
   }
 }

@@ -12,6 +12,7 @@ use crate::logs::utils::{
 
 pub mod artifacts;
 pub mod plain_text_processor;
+pub mod status_note;
 pub mod stderr_processor;
 pub mod utils;
 

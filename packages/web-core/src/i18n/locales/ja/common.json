@@ -586,5 +586,14 @@
     "submitting": "回答を送信中...",
     "answeredCount": "{{count}}件の質問に回答済み",
     "answeredCount_other": "{{count}}件の質問に回答済み"
+  },
+  "status": {
+    "writing": "状況サマリーを作成中…",
+    "updated": "状況サマリーを更新",
+    "expand": "サマリーを開く",
+    "collapse": "サマリーを閉じる",
+    "prev": "前のサマリー",
+    "next": "次のサマリー",
+    "past": "以前のサマリー"
   }
 }

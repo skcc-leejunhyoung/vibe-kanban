@@ -16,6 +16,7 @@ import {
 } from '@/features/workspace-chat/ui/ConversationListContainer';
 import { SessionChatBoxContainer } from '@/features/workspace-chat/ui/SessionChatBoxContainer';
 import { ContextBarContainer } from './ContextBarContainer';
+import { WorkspaceStatusStripContainer } from '@/features/workspace-chat/ui/WorkspaceStatusStripContainer';
 import { EntriesProvider } from '@/features/workspace-chat/model/contexts/EntriesContext';
 import { MessageEditProvider } from '@/features/workspace-chat/model/contexts/MessageEditContext';
 import { RetryUiProvider } from '@/features/workspace-chat/model/contexts/RetryUiContext';
@@ -289,6 +290,14 @@ export const WorkspacesMainContainer = forwardRef<
             isLoading={isLoading}
             containerRef={containerRef}
             conversationContent={conversationContent}
+            statusContent={
+              workspaceWithSession ? (
+                <WorkspaceStatusStripContainer
+                  workspaceId={workspaceWithSession.id}
+                  sessionId={selectedSessionId}
+                />
+              ) : null
+            }
             chatBoxContent={chatBoxContent}
             contextBarContent={contextBarContent}
             isAtBottom={isAtBottom}

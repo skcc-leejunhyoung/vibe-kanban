@@ -784,5 +784,14 @@
       "error": "Snapshot unavailable"
     },
     "largeSource": "This file exceeds the 2 MiB preview limit. Download to view the complete source."
+  },
+  "status": {
+    "writing": "Writing the status summary…",
+    "updated": "Status summary updated",
+    "expand": "Expand summary",
+    "collapse": "Collapse summary",
+    "prev": "Previous summary",
+    "next": "Next summary",
+    "past": "Earlier summary"
   }
 }

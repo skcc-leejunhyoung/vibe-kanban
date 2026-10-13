@@ -35,7 +35,7 @@ async fn blocked_db_update_must_not_drop_raw_log_lines() {
     let stores = Arc::new(RwLock::new(HashMap::from([(execution, store.clone())])));
     let db = db::DBService { pool: pool.clone() };
     let held_connection = pool.acquire().await.unwrap();
-    let consumer = spawn_stream_raw_logs_to_storage(stores, db, execution, session, None);
+    let consumer = spawn_stream_raw_logs_to_storage(stores, db, execution, session, None, None);
 
     store.push_stdout("warmup\n");
     let path = process_log_file_path(session, execution);

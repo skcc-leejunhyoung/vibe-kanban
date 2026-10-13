@@ -359,6 +359,7 @@ pub fn spawn_stream_raw_logs_to_storage(
     execution_id: Uuid,
     session_id: Uuid,
     artifacts: Option<super::artifacts::ArtifactObserver>,
+    status: Option<super::status_note::StatusNoteObserver>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut log_writer =
@@ -388,7 +389,10 @@ pub fn spawn_stream_raw_logs_to_storage(
                 None::<String>,
             )));
             let (artifact_done, mut done) = tokio::sync::oneshot::channel::<()>();
-            let artifact_task = artifacts.map(|mut observer| {
+            // The status observer shares the batch, so an interrupted summary
+            // is stored in the same final pass as the artifact snapshot.
+            let artifact_task = (artifacts.is_some() || status.is_some()).then(|| {
+                let (mut artifacts, mut status) = (artifacts, status);
                 let updates = artifact_updates.clone();
                 tokio::spawn(async move {
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -399,16 +403,26 @@ pub fn spawn_stream_raw_logs_to_storage(
                             _ = interval.tick() => false,
                         };
                         let (entries, session_id) = std::mem::take(&mut *updates.lock().unwrap());
-                        if let Some(session_id) = session_id {
+                        if let (Some(observer), Some(session_id)) = (&mut artifacts, session_id) {
                             observer.set_agent_session_id(&session_id);
                         }
                         for (index, entry) in entries {
-                            observer.observe_entry(index, &entry).await;
+                            if let Some(observer) = &mut artifacts {
+                                observer.observe_entry(index, &entry).await;
+                            }
+                            if let Some(observer) = &mut status {
+                                observer.observe_entry(&entry).await;
+                            }
                         }
-                        if let Err(error) = observer.tick(complete).await {
+                        if let Some(observer) = &mut artifacts
+                            && let Err(error) = observer.tick(complete).await
+                        {
                             tracing::warn!(%execution_id, %error, complete, "Artifact snapshot failed");
                         }
                         if complete {
+                            if let Some(observer) = &mut status {
+                                observer.finish().await;
+                            }
                             break;
                         }
                     }

@@ -51,6 +51,8 @@ export interface WorkspaceWithStats {
   todoTotal?: number;
   /** Completed items in the agent's latest TODO list (running only). */
   todoCompleted?: number;
+  /** First sentence of the agent's live summary. */
+  statusHeadline?: string;
   latestProcessCompletedAt?: string;
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
 }
@@ -231,6 +233,28 @@ export function IssueWorkspaceCard({
         </div>
       </div>
 
+      {workspace.statusHeadline && (
+        <div
+          className="flex items-start gap-half text-xs text-normal"
+          title={workspace.statusHeadline}
+        >
+          <span
+            className={cn(
+              'mt-1.5 size-dot shrink-0 rounded-full',
+              isActuallyRunning
+                ? hasPendingApproval
+                  ? 'bg-warning'
+                  : 'bg-brand'
+                : isFailed
+                  ? 'bg-error'
+                  : 'bg-low'
+            )}
+          />
+          <span className="line-clamp-2 min-w-0">
+            {workspace.statusHeadline}
+          </span>
+        </div>
+      )}
       {/* Row 2: Live status + stats (left), PR buttons (right) */}
       <div className="flex items-center justify-between gap-half min-w-0">
         <div

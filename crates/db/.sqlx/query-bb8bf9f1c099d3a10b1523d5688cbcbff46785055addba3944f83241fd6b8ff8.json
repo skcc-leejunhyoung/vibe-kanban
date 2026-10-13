@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name)\n               VALUES ($1, $2, $3, $4, $5, $6)\n               RETURNING id as \"id!: Uuid\", task_id as \"task_id: Uuid\", container_ref, branch, setup_completed_at as \"setup_completed_at: DateTime<Utc>\", created_at as \"created_at!: DateTime<Utc>\", updated_at as \"updated_at!: DateTime<Utc>\", archived as \"archived!: bool\", pinned as \"pinned!: bool\", name, worktree_deleted as \"worktree_deleted!: bool\", ephemeral as \"ephemeral!: bool\", in_place as \"in_place!: bool\", cleanup_blocked_reason",
+  "query": "INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, ephemeral)\n               VALUES ($1, $2, $3, $4, $5, $6, TRUE)\n               RETURNING id as \"id!: Uuid\", task_id as \"task_id: Uuid\", container_ref, branch, setup_completed_at as \"setup_completed_at: DateTime<Utc>\", created_at as \"created_at!: DateTime<Utc>\", updated_at as \"updated_at!: DateTime<Utc>\", archived as \"archived!: bool\", pinned as \"pinned!: bool\", name, worktree_deleted as \"worktree_deleted!: bool\", ephemeral as \"ephemeral!: bool\", in_place as \"in_place!: bool\", cleanup_blocked_reason, status_note, status_updated_at as \"status_updated_at: DateTime<Utc>\"",
   "describe": {
     "columns": [
       {
@@ -72,6 +72,16 @@
         "name": "cleanup_blocked_reason",
         "ordinal": 13,
         "type_info": "Text"
+      },
+      {
+        "name": "status_note",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "status_updated_at: DateTime<Utc>",
+        "ordinal": 15,
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -91,8 +101,10 @@
       false,
       false,
       false,
+      true,
+      true,
       true
     ]
   },
-  "hash": "2ade94514cec24f7a287f724388c0ffb135c7cd57689a11ec31c9ad0065fcd22"
+  "hash": "bb8bf9f1c099d3a10b1523d5688cbcbff46785055addba3944f83241fd6b8ff8"
 }

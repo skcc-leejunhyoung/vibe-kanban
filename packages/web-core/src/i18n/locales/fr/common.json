@@ -586,5 +586,14 @@
     "submitting": "Envoi des réponses...",
     "answeredCount": "Répondu à {{count}} question",
     "answeredCount_other": "Répondu à {{count}} questions"
+  },
+  "status": {
+    "writing": "Rédaction du résumé d'état…",
+    "updated": "Résumé d'état mis à jour",
+    "expand": "Développer le résumé",
+    "collapse": "Réduire le résumé",
+    "prev": "Résumé précédent",
+    "next": "Résumé suivant",
+    "past": "Résumé antérieur"
   }
 }

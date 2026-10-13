@@ -50,6 +50,12 @@ import {
   splitArtifactSegments,
   subagentScope,
 } from './artifact-preview';
+import {
+  splitStatusSegments,
+  statusFirstSentence,
+  type StatusSegment,
+} from '@/shared/lib/statusNote';
+import { StatusNoteChip } from '@vibe/ui/components/WorkspaceStatusStrip';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
@@ -120,8 +126,10 @@ type Props = {
   artifactSegments?: PlacedSegment[];
 };
 
+type StatusBlockSegment = Extract<StatusSegment, { kind: 'status' }>;
+
 type PlacedSegment = {
-  segment: ArtifactSegment;
+  segment: ArtifactSegment | StatusBlockSegment;
   artifact?: ArtifactReference;
 };
 
@@ -1118,10 +1126,15 @@ function AssistantMessageEntry({
   sessionId: string | undefined;
   executionProcessId: string;
 }) {
-  const parts: (string | ArtifactReference)[] = [];
+  const parts: (string | ArtifactReference | StatusBlockSegment)[] = [];
   for (const { segment, artifact } of segments) {
     if (artifact && workspaceId && sessionId) {
       parts.push(artifact);
+      continue;
+    }
+    // The summary block is workspace state; the chat keeps only a marker.
+    if (segment.kind === 'status') {
+      parts.push(segment);
       continue;
     }
     const text = segment.kind === 'markdown' ? segment.text : segment.raw;
@@ -1144,6 +1157,12 @@ function AssistantMessageEntry({
               className={undefined}
               maxWidth={undefined}
               renderMermaidArtifacts
+            />
+          ) : 'kind' in part ? (
+            <StatusNoteChip
+              key={index}
+              headline={statusFirstSentence(part.text)}
+              writing={!part.closed}
             />
           ) : (
             // The same file may be attached on two lines of one message.
@@ -1943,12 +1962,22 @@ const DisplayConversationEntrySpaced = (props: Props) => {
       : undefined;
   const segments = useMemo(
     () =>
-      entryContent === undefined ? [] : splitArtifactSegments(entryContent),
+      entryContent === undefined
+        ? []
+        : splitStatusSegments(entryContent).flatMap(
+            (segment): (ArtifactSegment | StatusBlockSegment)[] =>
+              segment.kind === 'status'
+                ? [segment]
+                : splitArtifactSegments(segment.text)
+          ),
     [entryContent]
   );
   const placed = segments.map((segment) => ({
     segment,
-    artifact: findSegmentArtifact(segment, all, owned),
+    artifact:
+      segment.kind === 'status'
+        ? undefined
+        : findSegmentArtifact(segment, all, owned),
   }));
   // The message body renders these at their attachment line already.
   const consumed = new Set(placed.map(({ artifact }) => artifact?.id));

@@ -174,8 +174,11 @@ fn append_artifact_instructions(prompt: &mut String, suffix: &str) {
     prompt.push_str(suffix);
 }
 
+// Both constants also carry the live-summary rules: the status block rides the
+// same channel as the artifact rules, so one copy survives compaction.
 const ARTIFACT_REMINDER: &str = "[Artifacts] Attach each deliverable on its own line as \
-     [Title](relative/path \"vibe-artifact\"). The full artifact rules are in your instructions.";
+     [Title](relative/path \"vibe-artifact\"). The full artifact rules are in your instructions. \
+     [Status] Keep the vibe-status summary block current; the rules are in your instructions.";
 
 const ARTIFACT_INSTRUCTIONS: &str = "[Artifacts]\n\
              Only attach deliverables you intentionally want the user to preview or download. \
@@ -195,7 +198,20 @@ const ARTIFACT_INSTRUCTIONS: &str = "[Artifacts]\n\
              Prefer self-contained HTML; preview blocks external network requests and cannot run server code. \
              Ordinary file reads, edits, build outputs, links and unmarked code blocks are not attachments. \
              Do not attach source citations or intermediate files unless requested. \
-             When delegating deliverables, pass this attachment convention to the subagent.";
+             When delegating deliverables, pass this attachment convention to the subagent.\n\
+             \n\
+             [Status]\n\
+             Keep a live summary of this workspace for someone who has not seen the task. \
+             Write it as a fenced code block tagged vibe-status (```vibe-status) holding one plain \
+             paragraph in the user's language. The first sentence says what this work is and how far \
+             it has come; then the request or symptom, what you verified (with numbers), what remains, \
+             and any decision you need from the user. No labels, bullet points, headings, file names \
+             or function names. Stay under 1000 visible characters; markdown links such as \
+             [text](relative/path \"vibe-artifact\") are allowed and their markup is not counted. \
+             Rewrite the whole block whenever the situation changes: when you start a turn, after a \
+             meaningful result, and before you finish. Use a blank line only before something the \
+             reader must act on, such as a question. The block is stored as the workspace summary \
+             and hidden from the message, so do not repeat it in prose.";
 
 #[cfg(test)]
 mod tests {

@@ -27,6 +27,7 @@ pub mod remote_client;
 pub mod remote_sync;
 pub mod repo;
 pub mod session_message_indexer;
+pub mod status_note;
 pub mod subagent_transcript;
 pub mod vibe_orchestrator;
 pub mod vibe_tags;

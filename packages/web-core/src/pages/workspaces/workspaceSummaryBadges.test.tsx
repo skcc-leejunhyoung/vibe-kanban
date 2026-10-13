@@ -47,3 +47,20 @@ describe('WorkspaceSummary link badges', () => {
     expect(html).toContain('#78');
   });
 });
+
+describe('WorkspaceSummary status headline', () => {
+  it('shows the first sentence of the live summary under the name', () => {
+    const html = renderToStaticMarkup(
+      <WorkspaceSummary
+        name="Workspace"
+        isRunning
+        statusHeadline="로그인 직후 화면이 비는 문제를 고치고 있어요."
+      />
+    );
+    expect(html).toContain('로그인 직후 화면이 비는 문제를 고치고 있어요.');
+    expect(html).toContain('bg-brand');
+    expect(
+      renderToStaticMarkup(<WorkspaceSummary name="Workspace" />)
+    ).not.toContain('size-dot');
+  });
+});

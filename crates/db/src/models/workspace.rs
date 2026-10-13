@@ -67,6 +67,10 @@ pub struct Workspace {
     /// retry and fail on every cleanup pass forever. Explicit user deletion is
     /// unaffected.
     pub cleanup_blocked_reason: Option<String>,
+    /// Live summary written by the agent (the `vibe-status` block in its
+    /// latest assistant message). Plain text, at most 1000 visible characters.
+    pub status_note: Option<String>,
+    pub status_updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -106,6 +110,8 @@ struct WorkspaceStatusRow {
     ephemeral: bool,
     in_place: bool,
     cleanup_blocked_reason: Option<String>,
+    status_note: Option<String>,
+    status_updated_at: Option<DateTime<Utc>>,
     is_running: i64,
     is_errored: i64,
 }
@@ -153,7 +159,9 @@ impl Workspace {
                           worktree_deleted AS "worktree_deleted!: bool",
                           ephemeral AS "ephemeral!: bool",
                           in_place AS "in_place!: bool",
-                          cleanup_blocked_reason
+                          cleanup_blocked_reason,
+                          status_note,
+                          status_updated_at AS "status_updated_at: DateTime<Utc>"
                    FROM workspaces
                    ORDER BY created_at DESC"#
         )
@@ -295,7 +303,9 @@ impl Workspace {
                        worktree_deleted  AS "worktree_deleted!: bool",
                        ephemeral         AS "ephemeral!: bool",
                        in_place          AS "in_place!: bool",
-                       cleanup_blocked_reason
+                       cleanup_blocked_reason,
+                       status_note,
+                       status_updated_at AS "status_updated_at: DateTime<Utc>"
                FROM    workspaces
                WHERE   id = $1"#,
             id
@@ -320,7 +330,9 @@ impl Workspace {
                        worktree_deleted  AS "worktree_deleted!: bool",
                        ephemeral         AS "ephemeral!: bool",
                        in_place          AS "in_place!: bool",
-                       cleanup_blocked_reason
+                       cleanup_blocked_reason,
+                       status_note,
+                       status_updated_at AS "status_updated_at: DateTime<Utc>"
                FROM    workspaces
                WHERE   rowid = $1"#,
             rowid
@@ -509,7 +521,7 @@ impl Workspace {
             Workspace,
             r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name)
                VALUES ($1, $2, $3, $4, $5, $6)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason"#,
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason, status_note, status_updated_at as "status_updated_at: DateTime<Utc>""#,
             id,
             Option::<Uuid>::None,
             Option::<String>::None,
@@ -533,7 +545,7 @@ impl Workspace {
             Workspace,
             r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, ephemeral)
                VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason"#,
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason, status_note, status_updated_at as "status_updated_at: DateTime<Utc>""#,
             id,
             Option::<Uuid>::None,
             Option::<String>::None,
@@ -559,7 +571,7 @@ impl Workspace {
             Workspace,
             r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, in_place)
                VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason"#,
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason, status_note, status_updated_at as "status_updated_at: DateTime<Utc>""#,
             id,
             Option::<Uuid>::None,
             container_ref,
@@ -588,7 +600,9 @@ impl Workspace {
                       worktree_deleted AS "worktree_deleted!: bool",
                       ephemeral AS "ephemeral!: bool",
                       in_place AS "in_place!: bool",
-                      cleanup_blocked_reason
+                      cleanup_blocked_reason,
+                      status_note,
+                      status_updated_at AS "status_updated_at: DateTime<Utc>"
                FROM workspaces
                WHERE ephemeral = TRUE"#
         )
@@ -666,6 +680,24 @@ impl Workspace {
         sqlx::query!(
             "UPDATE workspaces SET archived = $1, updated_at = datetime('now', 'subsec') WHERE id = $2",
             archived,
+            workspace_id
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Replace the agent's live summary. `updated_at` stays untouched: the
+    /// summary changes several times per turn and must not reorder the list or
+    /// reset the expiry clock. The update hook streams the row to clients.
+    pub async fn set_status_note(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        note: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query!(
+            "UPDATE workspaces SET status_note = $1, status_updated_at = datetime('now', 'subsec') WHERE id = $2",
+            note,
             workspace_id
         )
         .execute(pool)
@@ -788,6 +820,8 @@ impl Workspace {
                 w.ephemeral AS "ephemeral!: bool",
                 w.in_place AS "in_place!: bool",
                 w.cleanup_blocked_reason,
+                w.status_note,
+                w.status_updated_at AS "status_updated_at: DateTime<Utc>",
 
                 CASE WHEN EXISTS (
                     SELECT 1
@@ -835,6 +869,8 @@ impl Workspace {
                 w.ephemeral AS "ephemeral!: bool",
                 w.in_place AS "in_place!: bool",
                 w.cleanup_blocked_reason,
+                w.status_note,
+                w.status_updated_at AS "status_updated_at: DateTime<Utc>",
 
                 CASE WHEN EXISTS (
                     SELECT 1
@@ -882,6 +918,8 @@ impl Workspace {
                     ephemeral: rec.ephemeral,
                     in_place: rec.in_place,
                     cleanup_blocked_reason: rec.cleanup_blocked_reason,
+                    status_note: rec.status_note,
+                    status_updated_at: rec.status_updated_at,
                 },
                 is_running: rec.is_running != 0,
                 is_errored: rec.is_errored != 0,
@@ -936,6 +974,8 @@ impl Workspace {
                 w.ephemeral AS "ephemeral!: bool",
                 w.in_place AS "in_place!: bool",
                 w.cleanup_blocked_reason,
+                w.status_note,
+                w.status_updated_at AS "status_updated_at: DateTime<Utc>",
 
                 CASE WHEN EXISTS (
                     SELECT 1
@@ -984,6 +1024,8 @@ impl Workspace {
                 ephemeral: rec.ephemeral,
                 in_place: rec.in_place,
                 cleanup_blocked_reason: rec.cleanup_blocked_reason,
+                status_note: rec.status_note,
+                status_updated_at: rec.status_updated_at,
             },
             is_running: rec.is_running != 0,
             is_errored: rec.is_errored != 0,
@@ -1024,7 +1066,7 @@ mod tests {
                 archived INTEGER NOT NULL, pinned INTEGER NOT NULL,
                 name TEXT, worktree_deleted INTEGER NOT NULL,
                 ephemeral INTEGER NOT NULL, in_place INTEGER NOT NULL,
-                cleanup_blocked_reason TEXT
+                cleanup_blocked_reason TEXT, status_note TEXT, status_updated_at TEXT
             );
             CREATE TABLE sessions (id BLOB PRIMARY KEY, workspace_id BLOB);
             CREATE TABLE execution_processes (id BLOB PRIMARY KEY, session_id BLOB, completed_at TEXT);",

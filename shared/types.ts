@@ -254,7 +254,12 @@ in_place: boolean,
  * retry and fail on every cleanup pass forever. Explicit user deletion is
  * unaffected.
  */
-cleanup_blocked_reason: string | null, };
+cleanup_blocked_reason: string | null,
+/**
+ * Live summary written by the agent (the `vibe-status` block in its
+ * latest assistant message). Plain text, at most 1000 visible characters.
+ */
+status_note: string | null, status_updated_at: string | null, };
 
 export type WorkspaceWithStatus = { is_running: boolean, is_errored: boolean, id: string, task_id: string | null, container_ref: string | null, branch: string, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean,
 /**
@@ -278,7 +283,12 @@ in_place: boolean,
  * retry and fail on every cleanup pass forever. Explicit user deletion is
  * unaffected.
  */
-cleanup_blocked_reason: string | null, };
+cleanup_blocked_reason: string | null,
+/**
+ * Live summary written by the agent (the `vibe-status` block in its
+ * latest assistant message). Plain text, at most 1000 visible characters.
+ */
+status_note: string | null, status_updated_at: string | null, };
 
 export type Session = { id: string, workspace_id: string, name: string | null, executor: string | null, agent_working_dir: string | null, created_at: string, updated_at: string,
 /**

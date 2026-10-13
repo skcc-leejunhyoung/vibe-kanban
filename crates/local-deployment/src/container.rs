@@ -1829,7 +1829,9 @@ impl LocalContainerService {
                 if let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
                     && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
                 {
-                    let content = entry.content.trim();
+                    // The live summary block is workspace state, not prose.
+                    let content = executors::logs::status_note::strip_blocks(&entry.content);
+                    let content = content.as_str();
                     if !content.is_empty() {
                         const MAX_SUMMARY_LENGTH: usize = 4096;
                         if content.len() > MAX_SUMMARY_LENGTH {
@@ -1856,9 +1858,9 @@ impl LocalContainerService {
                 && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
                 && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
             {
-                let content = entry.content.trim();
+                let content = executors::logs::status_note::strip_blocks(&entry.content);
                 if !content.is_empty() {
-                    return Some(content.to_string());
+                    return Some(content);
                 }
             }
         }

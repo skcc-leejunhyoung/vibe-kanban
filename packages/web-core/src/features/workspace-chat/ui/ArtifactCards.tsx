@@ -475,7 +475,7 @@ type PreviewDialogProps = {
 };
 // The existing global modal host keeps an open preview alive when its chat row
 // moves or unmounts during virtualization. All requests retain the opening scope.
-const ArtifactPreviewDialog = defineModal<PreviewDialogProps, void>(
+export const ArtifactPreviewDialog = defineModal<PreviewDialogProps, void>(
   create<PreviewDialogProps>(({ artifact, scope }) => {
     const modal = useModal();
     const close = () => {

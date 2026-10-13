@@ -1995,6 +1995,9 @@ pub trait ContainerService {
             }
             _ => None,
         };
+        let status_observer = artifact_working_dir.as_ref().map(|_| {
+            super::status_note::StatusNoteObserver::new(self.db().pool.clone(), workspace.id)
+        });
         let mut artifact_observer = if let Some(working_dir) = artifact_working_dir {
             match super::file::FileService::new(self.db().pool.clone()) {
                 Ok(files) => super::artifacts::ArtifactObserver::start(
@@ -2183,6 +2186,7 @@ pub trait ContainerService {
             execution_process.id,
             session.id,
             artifact_observer,
+            status_observer,
         );
         self.store_db_stream_handle(execution_process.id, db_stream_handle)
             .await;

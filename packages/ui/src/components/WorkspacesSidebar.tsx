@@ -67,6 +67,8 @@ export interface WorkspacesSidebarWorkspace {
   }>;
   /** Most recent prompt sent in this workspace (what it's working on) */
   latestPrompt?: string;
+  /** First sentence of the agent's live summary. */
+  statusHeadline?: string;
   /** Quick-chat ("in-place") workspace — runs in an existing checkout. */
   isInPlace?: boolean;
   /** Non-null when automatic cleanup quarantined this workspace. */
@@ -275,6 +277,7 @@ function WorkspaceList({
           githubIssues={workspace.githubIssues}
           isInPlace={workspace.isInPlace}
           cleanupBlockedReason={workspace.cleanupBlockedReason}
+          statusHeadline={workspace.statusHeadline}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
           onClick={(event) =>
             onSelectWorkspace(workspace.id, workspace.hostId, event)

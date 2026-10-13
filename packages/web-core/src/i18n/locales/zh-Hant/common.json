@@ -586,5 +586,14 @@
     "submitting": "正在提交回答...",
     "answeredCount": "已回答{{count}}個問題",
     "answeredCount_other": "已回答{{count}}個問題"
+  },
+  "status": {
+    "writing": "正在撰寫狀態摘要…",
+    "updated": "狀態摘要已更新",
+    "expand": "展開摘要",
+    "collapse": "收合摘要",
+    "prev": "上一則摘要",
+    "next": "下一則摘要",
+    "past": "較早的摘要"
   }
 }

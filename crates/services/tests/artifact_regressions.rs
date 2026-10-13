@@ -131,8 +131,9 @@ async fn slow_artifact_storage_must_not_drop_raw_logs() {
         observed_id,
         session,
         Some(observer),
+        None,
     );
-    let control = spawn_stream_raw_logs_to_storage(stores, db, control_id, session, None);
+    let control = spawn_stream_raw_logs_to_storage(stores, db, control_id, session, None, None);
     store.push_stdout("warmup\n");
     for id in [observed_id, control_id] {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {

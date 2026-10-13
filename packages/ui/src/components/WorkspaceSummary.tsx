@@ -26,7 +26,7 @@ import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import { RunningDots } from './RunningDots';
 import { GithubIssueBadge, PrBadge } from './PrBadge';
 
-const formatRelativeElapsed = (dateString: string): string => {
+export const formatRelativeElapsed = (dateString: string): string => {
   const date = new Date(dateString);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -102,6 +102,8 @@ export interface WorkspaceSummaryProps {
    * card already shows the issue title, which the name usually duplicates.
    */
   latestPrompt?: string;
+  /** First sentence of the agent's live summary, shown under the name. */
+  statusHeadline?: string;
   /** Primary color of the host that owns this workspace. */
   hostPrimaryColor?: string;
 }
@@ -178,6 +180,7 @@ const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
   isFocused = false,
   forwardedRef,
   latestPrompt,
+  statusHeadline,
   hostPrimaryColor,
   elapsed,
 }: WorkspaceSummaryProps & { elapsed: string }) {
@@ -279,6 +282,30 @@ const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
             {primaryText}
           </div>
         </div>
+        {statusHeadline && (
+          <div
+            className="flex w-full items-center gap-half overflow-hidden whitespace-nowrap pr-double text-xs"
+            style={{
+              maskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+              WebkitMaskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+            }}
+            title={statusHeadline}
+          >
+            <span
+              className={cn(
+                'size-dot shrink-0 rounded-full',
+                isActuallyRunning
+                  ? hasPendingApproval
+                    ? 'bg-warning'
+                    : 'bg-brand'
+                  : isFailed
+                    ? 'bg-error'
+                    : 'bg-low'
+              )}
+            />
+            <span className="min-w-0">{statusHeadline}</span>
+          </div>
+        )}
         {(!summary || isActive || hasLinkBadges) && (
           <div className="flex w-full items-center gap-base text-sm h-5">
             {/* Dev server running - leftmost */}

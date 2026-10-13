@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!: Uuid\",\n                          task_id AS \"task_id: Uuid\",\n                          container_ref,\n                          branch,\n                          setup_completed_at AS \"setup_completed_at: DateTime<Utc>\",\n                          created_at AS \"created_at!: DateTime<Utc>\",\n                          updated_at AS \"updated_at!: DateTime<Utc>\",\n                          archived AS \"archived!: bool\",\n                          pinned AS \"pinned!: bool\",\n                          name,\n                          worktree_deleted AS \"worktree_deleted!: bool\",\n                          ephemeral AS \"ephemeral!: bool\",\n                          in_place AS \"in_place!: bool\",\n                          cleanup_blocked_reason\n                   FROM workspaces\n                   ORDER BY created_at DESC",
+  "query": "SELECT id AS \"id!: Uuid\",\n                      task_id AS \"task_id: Uuid\",\n                      container_ref,\n                      branch,\n                      setup_completed_at AS \"setup_completed_at: DateTime<Utc>\",\n                      created_at AS \"created_at!: DateTime<Utc>\",\n                      updated_at AS \"updated_at!: DateTime<Utc>\",\n                      archived AS \"archived!: bool\",\n                      pinned AS \"pinned!: bool\",\n                      name,\n                      worktree_deleted AS \"worktree_deleted!: bool\",\n                      ephemeral AS \"ephemeral!: bool\",\n                      in_place AS \"in_place!: bool\",\n                      cleanup_blocked_reason,\n                      status_note,\n                      status_updated_at AS \"status_updated_at: DateTime<Utc>\"\n               FROM workspaces\n               WHERE ephemeral = TRUE",
   "describe": {
     "columns": [
       {
@@ -72,6 +72,16 @@
         "name": "cleanup_blocked_reason",
         "ordinal": 13,
         "type_info": "Text"
+      },
+      {
+        "name": "status_note",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "status_updated_at: DateTime<Utc>",
+        "ordinal": 15,
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -91,8 +101,10 @@
       false,
       false,
       false,
+      true,
+      true,
       true
     ]
   },
-  "hash": "06db8f4c2b607df704c53b3869661ce8c3e6e63984404f00b489f035b3b1c9bd"
+  "hash": "e0213aa8524ef4b7dc869c8c03bccee5a811fd61edf3627cfc77755b1175c3f0"
 }
