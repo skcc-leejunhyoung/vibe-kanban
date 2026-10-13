@@ -22,6 +22,10 @@ vi.mock('@tanstack/electric-db-collection', async () => {
   const kit = await import('@/shared/lib/electric/electricTestKit');
   return { electricCollectionOptions: kit.fakeElectricCollectionOptions };
 });
+vi.mock('@/shared/hooks/useSelfCloudHostId', () => ({
+  useSelfCloudHostId: () => ({ hostId: null, isPending: false }),
+  getSelfCloudHostId: () => null,
+}));
 vi.mock('@/shared/lib/remoteApi', () => ({
   makeRequest: vi.fn(),
   getRemoteApiUrl: () => 'http://api.test',

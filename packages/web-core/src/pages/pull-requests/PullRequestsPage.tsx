@@ -38,7 +38,6 @@ import { useHasAppDestinationOverride } from '@/shared/hooks/useCurrentAppDestin
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
-import { useSelfCloudHostId } from '@/shared/hooks/useSelfCloudHostId';
 import {
   PERSIST_KEYS,
   usePaneSize,
@@ -228,7 +227,6 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
   const { isLoaded: isAuthLoaded, isSignedIn, userId } = useAuth();
   const { workspaces } = useUserContext();
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
-  const { hostId: selfHostId } = useSelfCloudHostId();
   const defaultFilters = useUiPreferencesStore(
     (state) => state.pullRequestDefaultFilters
   );
@@ -548,8 +546,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         const mappedAndLocalWorkspaces = mergeMappedPullRequestWorkspaces(
           pullRequest.url,
           mappedWorkspaces,
-          workspaceSummaries,
-          selfHostId
+          workspaceSummaries
         );
         if (mappedAndLocalWorkspaces.length === 0) {
           await showEmptyMapping('This pull request has no mapped workspaces.');
@@ -582,13 +579,7 @@ export function PullRequestsPage({ initialPrUrl }: PullRequestsPageProps) {
         });
       }
     },
-    [
-      appNavigation,
-      loadMappedIssues,
-      selfHostId,
-      workspaces,
-      workspaceSummaries,
-    ]
+    [appNavigation, loadMappedIssues, workspaces, workspaceSummaries]
   );
 
   useEffect(() => {

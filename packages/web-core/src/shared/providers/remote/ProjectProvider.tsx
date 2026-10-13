@@ -36,6 +36,8 @@ import {
   type ProjectMilestone,
   type Workspace,
 } from 'shared/remote-types';
+import { useSelfCloudHostId } from '@/shared/hooks/useSelfCloudHostId';
+import { foldSelfHostWorkspaces } from '@/shared/lib/workspaceHostIdentity';
 import {
   ProjectContext,
   type ProjectContextValue,
@@ -113,6 +115,11 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
   const workspacesResult = useShape(PROJECT_WORKSPACES_SHAPE, params, {
     enabled,
   });
+  const { hostId: selfHostId } = useSelfCloudHostId();
+  const workspaces = useMemo(
+    () => foldSelfHostWorkspaces(workspacesResult.data, selfHostId),
+    [workspacesResult.data, selfHostId]
+  );
 
   // Board readiness depends on core kanban data only.
   // Other project-scoped shapes hydrate opportunistically after render.
@@ -207,7 +214,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     issueRelationshipsResult.data,
     byRelatedIssueIds
   );
-  const workspacesByIssueId = useGroupedBy(workspacesResult.data, byIssueId);
+  const workspacesByIssueId = useGroupedBy(workspaces, byIssueId);
 
   const tagObjectsByIssueId = useStableGroups(
     useMemo(() => {
@@ -340,7 +347,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       pullRequests: pullRequestsResult.data,
       pullRequestIssues: pullRequestIssuesResult.data,
       githubIssueLinks: githubIssueLinksResult.data,
-      workspaces: workspacesResult.data,
+      workspaces,
 
       // Loading/error
       isLoading,
@@ -423,6 +430,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       pullRequestIssuesResult,
       githubIssueLinksResult,
       workspacesResult,
+      workspaces,
       isLoading,
       error,
       retry,

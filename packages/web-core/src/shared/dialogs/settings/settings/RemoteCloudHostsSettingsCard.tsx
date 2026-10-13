@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate, useParams } from '@tanstack/react-router';
+import { useNavigate } from '@tanstack/react-router';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import {
@@ -38,7 +39,7 @@ export function RemoteCloudHostsSettingsCardContent({
 }) {
   const { t } = useTranslation(['settings', 'common']);
   const navigate = useNavigate();
-  const { hostId: routeHostId } = useParams({ strict: false });
+  const routeHostId = useHostId();
   const [hostName, setHostName] = useState('');
   const [selectedHostId, setSelectedHostId] = useState<string | undefined>();
   const [pairingCode, setPairingCode] = useState('');

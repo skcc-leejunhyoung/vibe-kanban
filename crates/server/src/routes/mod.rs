@@ -90,7 +90,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .layer(axum::middleware::from_fn(middleware::log_server_errors))
         .with_state(deployment.clone());
 
-    Router::new()
+    let app = Router::new()
         .route("/", get(frontend::serve_frontend_root))
         .route("/{*path}", get(frontend::serve_frontend))
         .nest("/api", api_routes)
@@ -99,7 +99,16 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
             preview_host_dispatch,
         ))
         .layer(CompressionLayer::new())
-        .with_state(deployment)
+        .with_state(deployment.clone());
+
+    // `Router::layer` runs after routing, so a URI rewrite has to wrap the
+    // whole app: the aliased request is then routed afresh by the inner router.
+    Router::new()
+        .fallback_service(app)
+        .layer(axum::middleware::map_request_with_state(
+            deployment,
+            host_relay::alias_self_host,
+        ))
         .into_make_service()
 }
 
@@ -157,4 +166,50 @@ fn request_has_preview_host(request: &Request) -> bool {
     // label is numeric. Real preview hostnames always contain a domain part.
 
     labels.any(|label| label.chars().any(|c| c.is_ascii_alphabetic()))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{Router, extract::Request, routing::get};
+
+    /// The self-host alias relies on a URI rewrite applied *outside* the app
+    /// router (`fallback_service` + `layer`): `Router::layer` alone runs after
+    /// routing and would leave the request on the relay proxy route.
+    #[tokio::test]
+    async fn uri_rewrite_outside_the_router_is_routed_afresh() {
+        let app = Router::new()
+            .route("/api/local", get(|| async { "local" }))
+            .route("/api/host/{host_id}/{*tail}", get(|| async { "proxied" }));
+        let app = Router::new()
+            .fallback_service(app)
+            .layer(axum::middleware::map_request(
+                |mut request: Request| async {
+                    if request.uri().path() == "/api/host/self/local" {
+                        *request.uri_mut() = "/api/local".parse().unwrap();
+                    }
+                    request
+                },
+            ));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let body = |path: &'static str| {
+            let client = client.clone();
+            async move {
+                client
+                    .get(format!("http://{addr}{path}"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap()
+            }
+        };
+
+        assert_eq!(body("/api/host/self/local").await, "local");
+        assert_eq!(body("/api/host/other/local").await, "proxied");
+    }
 }

@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useParams } from '@tanstack/react-router';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useQueryClient } from '@tanstack/react-query';
 import { useHotkeys } from 'react-hotkeys-hook';
 import { useTranslation } from 'react-i18next';
@@ -172,9 +173,10 @@ export function WorkspacesSidebarContainer({
     [activeWorkspaces, archivedWorkspaces]
   );
   const hostPrimaryColors = useHostPrimaryColors(workspaceHostIds);
-  const { hostId: routeHostId, projectId: routeProjectId } = useParams({
-    strict: false,
-  });
+  const { projectId: routeProjectId } = useParams({ strict: false });
+  // Routed host via HostIdProvider rather than the raw route param: the
+  // parser folds this machine's own cloud host id to the local host (`null`).
+  const routeHostId = useHostId();
   const queryClient = useQueryClient();
   // While the pane grid is on screen, the list mirrors and targets the
   // active pane's workspace instead of the routed one.

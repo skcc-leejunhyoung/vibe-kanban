@@ -2,6 +2,7 @@ import { createElement, useContext, useMemo, type ReactNode } from 'react';
 import { useLocation } from '@tanstack/react-router';
 import { createHmrContext } from '@/shared/lib/hmrContext';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { useSelfCloudHostId } from '@/shared/hooks/useSelfCloudHostId';
 import type { AppDestination } from '@/shared/lib/routes/appNavigation';
 
 // Split panes render workspace views whose "current destination" is the pane's
@@ -30,10 +31,13 @@ export function useCurrentAppDestination(): AppDestination | null {
   const appNavigation = useAppNavigation();
   const location = useLocation();
   const override = useContext(AppDestinationOverrideContext);
+  // The parser folds this machine's own cloud host id to the local host, so
+  // the document route is parsed again once that id is known.
+  const { hostId: selfHostId } = useSelfCloudHostId();
 
   return useMemo(
     () => override ?? appNavigation.resolveFromPath(location.href),
-    [override, appNavigation, location.href]
+    [override, appNavigation, location.href, selfHostId]
   );
 }
 

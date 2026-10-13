@@ -1,6 +1,5 @@
 import type { LinkedWorkspace } from '@/shared/dialogs/command-bar/selectLinkedWorkspace';
 import type { SidebarWorkspace } from '@/shared/hooks/useWorkspaces';
-import { collapseSelfHostId } from '@/shared/lib/routes/appNavigation';
 import { normalizeGitHubPullRequestUrl } from './pullRequestUrl';
 
 function normalizePullRequestUrl(url: string): string {
@@ -24,18 +23,16 @@ export function findLocalPullRequestWorkspaces(
 
 /**
  * Merge issue-mapped cloud workspace rows with PR-linked local summaries,
- * deduped per workspace. Cloud rows carry this machine's real cloud host id
- * while local summaries use `null` for it (HostIdProvider collapses self), so
- * both sides collapse through `selfHostId` before keying.
+ * deduped per workspace. Both sides address this machine as `null` (cloud
+ * rows are folded where they enter the app), so keys compare directly.
  */
 export function mergeMappedPullRequestWorkspaces(
   pullRequestUrl: string,
   mappedWorkspaces: LinkedWorkspace[],
-  localWorkspaces: SidebarWorkspace[],
-  selfHostId: string | null
+  localWorkspaces: SidebarWorkspace[]
 ): LinkedWorkspace[] {
   const keyOf = (hostId: string | null, workspaceId: string) =>
-    `${collapseSelfHostId(hostId, selfHostId)}:${workspaceId}`;
+    `${hostId}:${workspaceId}`;
   const merged = new Map<string, LinkedWorkspace>();
   for (const workspace of mappedWorkspaces) {
     merged.set(

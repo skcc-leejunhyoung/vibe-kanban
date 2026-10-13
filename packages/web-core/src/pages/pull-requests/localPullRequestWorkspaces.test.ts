@@ -74,10 +74,10 @@ describe('findLocalPullRequestWorkspaces', () => {
 });
 
 describe('mergeMappedPullRequestWorkspaces', () => {
-  it('dedups a cloud row keyed by the self host id against its local summary', () => {
+  it('dedups a cloud row for this machine against its local summary', () => {
     const cloudRow: LinkedWorkspace = {
       id: 'cloud-row',
-      host_id: 'self-host',
+      host_id: null,
       local_workspace_id: 'quick-chat',
       name: 'quick-chat',
       archived: false,
@@ -87,8 +87,7 @@ describe('mergeMappedPullRequestWorkspaces', () => {
     const merged = mergeMappedPullRequestWorkspaces(
       'https://github.com/acme/repo/pull/42',
       [cloudRow],
-      [makeWorkspace('quick-chat', 'https://github.com/acme/repo/pull/42')],
-      'self-host'
+      [makeWorkspace('quick-chat', 'https://github.com/acme/repo/pull/42')]
     );
 
     expect(merged).toEqual([cloudRow]);
@@ -107,8 +106,7 @@ describe('mergeMappedPullRequestWorkspaces', () => {
     const merged = mergeMappedPullRequestWorkspaces(
       'https://github.com/acme/repo/pull/42',
       [cloudRow],
-      [makeWorkspace('quick-chat', 'https://github.com/acme/repo/pull/42')],
-      'self-host'
+      [makeWorkspace('quick-chat', 'https://github.com/acme/repo/pull/42')]
     );
 
     expect(merged.map(({ host_id }) => host_id)).toEqual(['host-b', null]);

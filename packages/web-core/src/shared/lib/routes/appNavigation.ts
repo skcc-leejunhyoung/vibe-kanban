@@ -188,13 +188,25 @@ export function collapseSelfHostId(
   return routeHostId;
 }
 
-export function resolveLocalHostId(
-  routeHostId: string | null,
-  selfHostId: string | null,
-  isSelfHostPending: boolean
-): string | null | undefined {
-  if (routeHostId !== null && isSelfHostPending) return undefined;
-  return collapseSelfHostId(routeHostId, selfHostId);
+/**
+ * Fold a destination addressed to this machine's own cloud host id onto the
+ * local host (`null`): `/hosts/{self}/…` links (notification deep links,
+ * bookmarks) address this machine, never a relay target. The route parser
+ * applies this once, so nothing downstream needs to know the self id.
+ */
+export function foldSelfHostDestination<T extends AppDestination | null>(
+  destination: T,
+  selfHostId: string | null
+): T {
+  if (
+    destination !== null &&
+    'hostId' in destination &&
+    collapseSelfHostId(destination.hostId ?? null, selfHostId) !==
+      (destination.hostId ?? null)
+  ) {
+    return { ...destination, hostId: null };
+  }
+  return destination;
 }
 
 export function resolveDestinationHostId(

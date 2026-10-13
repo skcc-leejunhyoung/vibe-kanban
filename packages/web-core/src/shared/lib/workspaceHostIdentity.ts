@@ -33,3 +33,21 @@ export function findRemoteWorkspaceByLocalIdentity<
     matchesRemoteWorkspaceIdentity(workspace, localWorkspaceId, routeHostId)
   );
 }
+
+/**
+ * Cloud workspace rows carry the owner's cloud host id even for this machine,
+ * while the app addresses this machine as `null`. Fold the self id once where
+ * rows enter the app so every consumer (navigation, host→workspace keys,
+ * dedupe) sees one identity. Returns the same array when nothing changes.
+ */
+export function foldSelfHostWorkspaces<T extends { host_id: string | null }>(
+  workspaces: T[],
+  selfHostId: string | null
+): T[] {
+  if (!selfHostId || !workspaces.some((w) => w.host_id === selfHostId)) {
+    return workspaces;
+  }
+  return workspaces.map((w) =>
+    w.host_id === selfHostId ? { ...w, host_id: null } : w
+  );
+}

@@ -6,6 +6,7 @@ mod open_remote_editor;
 mod proxy;
 
 pub use open_remote_editor::OpenRemoteWorkspaceInEditorRequest;
+pub(crate) use proxy::alias_self_host;
 
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     Router::new().merge(proxy::router()).merge(

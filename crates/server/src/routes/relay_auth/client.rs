@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -9,6 +11,7 @@ use relay_types::{
     ListRelayPairedHostsResponse, PairRelayHostRequest, PairRelayHostResponse,
     RemoveRelayPairedHostResponse, SelfRelayHostResponse,
 };
+use tokio::sync::Mutex;
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
@@ -67,8 +70,36 @@ pub async fn list_relay_paired_hosts(
 pub async fn get_self_relay_host(
     State(deployment): State<DeploymentImpl>,
 ) -> ResponseJson<ApiResponse<SelfRelayHostResponse>> {
-    let host_id = resolve_self_relay_host_id(&deployment).await;
+    let host_id = self_relay_host_id(&deployment).await;
     ResponseJson(ApiResponse::success(SelfRelayHostResponse { host_id }))
+}
+
+/// Process-wide cache of this machine's own relay host id: hits live for the
+/// web app's own polling interval, misses briefly so an unreachable relay is
+/// not re-queried per request. Holding the lock across the lookup makes
+/// concurrent callers share one relay request.
+static SELF_RELAY_HOST: Mutex<Option<(Instant, Option<Uuid>)>> = Mutex::const_new(None);
+const SELF_RELAY_HOST_TTL: Duration = Duration::from_secs(5 * 60);
+const SELF_RELAY_HOST_MISS_TTL: Duration = Duration::from_secs(30);
+
+pub(crate) async fn self_relay_host_id(deployment: &DeploymentImpl) -> Option<Uuid> {
+    let mut cache = SELF_RELAY_HOST.lock().await;
+    let last_known = cache.and_then(|(_, host_id)| host_id);
+    if let Some((refreshed_at, host_id)) = *cache {
+        let ttl = if host_id.is_some() {
+            SELF_RELAY_HOST_TTL
+        } else {
+            SELF_RELAY_HOST_MISS_TTL
+        };
+        if refreshed_at.elapsed() < ttl {
+            return host_id;
+        }
+    }
+    // A machine's own host id does not change while it runs, so keep the last
+    // known one when the relay cannot be reached.
+    let host_id = resolve_self_relay_host_id(deployment).await.or(last_known);
+    *cache = Some((Instant::now(), host_id));
+    host_id
 }
 
 async fn resolve_self_relay_host_id(deployment: &DeploymentImpl) -> Option<Uuid> {

@@ -255,6 +255,11 @@ interface WorkspacePanesState {
     destination: WorkspacePaneDestination
   ) => void;
   clearPaneDestination: (paneId: string) => void;
+  /**
+   * Fold destinations still addressed to `hostId` — this machine's own cloud
+   * host id, persisted before it was known — to the local host (`null`).
+   */
+  collapseHostId: (hostId: string) => void;
   /** Close a pane; the last pane is cleared instead of removed. */
   closePane: (paneId: string) => void;
   /** Reopen the most recently closed pane; false when there is none. */
@@ -566,6 +571,25 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             pane.id === paneId ? { ...pane, destination: null } : pane
           ),
         })),
+      collapseHostId: (hostId) =>
+        set((state) => {
+          const targetsHost = (destination: WorkspacePaneDestination | null) =>
+            destination !== null &&
+            'hostId' in destination &&
+            destination.hostId === hostId;
+          if (!state.panes.some((pane) => targetsHost(pane.destination)))
+            return state;
+          return {
+            panes: state.panes.map((pane) =>
+              targetsHost(pane.destination)
+                ? {
+                    ...pane,
+                    destination: { ...pane.destination!, hostId: null },
+                  }
+                : pane
+            ),
+          };
+        }),
       closePane: (paneId) =>
         set((state) => {
           const closedIndex = state.panes.findIndex(

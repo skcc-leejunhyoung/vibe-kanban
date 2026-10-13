@@ -14,12 +14,56 @@ use relay_hosts::ProxiedResponse;
 use utils::http_headers::is_hop_by_hop_header;
 use uuid::Uuid;
 
-use crate::{DeploymentImpl, error::ApiError};
+use crate::{DeploymentImpl, error::ApiError, routes::relay_auth::client::self_relay_host_id};
 
 type MaybeWsUpgrade = Result<WebSocketUpgrade, WebSocketUpgradeRejection>;
 
 pub(super) fn router() -> Router<DeploymentImpl> {
     Router::new().route("/host/{host_id}/{*tail}", any(proxy_host_request))
+}
+
+/// Serve `/api/host/{id}/…` directly when `{id}` is this machine's own cloud
+/// host id. Self is never in the pairing store (a machine cannot pair with
+/// itself), so proxying it always fails with `NotPaired`; treating the self id
+/// as an alias of the local API keeps host-scoped URLs valid for every client
+/// (notification deep links, bookmarks, split-pane state, older web builds)
+/// without each having to know which host it runs on. Must run before routing
+/// so the rewritten request lands on the regular handlers, WebSocket upgrades
+/// included.
+pub(crate) async fn alias_self_host(
+    State(deployment): State<DeploymentImpl>,
+    mut request: Request,
+) -> Request {
+    let Some((host_id, tail)) = split_host_path(request.uri().path()) else {
+        return request;
+    };
+    // Paired hosts proxy as usual; only a would-be `NotPaired` id is checked
+    // against the relay, so that lookup never delays remote traffic.
+    let Ok(relay_hosts) = deployment.relay_hosts() else {
+        return request;
+    };
+    if relay_hosts
+        .list_hosts()
+        .await
+        .iter()
+        .any(|host| host.host_id == host_id)
+    {
+        return request;
+    }
+    if self_relay_host_id(&deployment).await != Some(host_id) {
+        return request;
+    }
+    let query = request.uri().query().map(str::to_owned);
+    if let Ok(uri) = upstream_api_uri(&tail, query.as_deref()) {
+        *request.uri_mut() = uri;
+    }
+    request
+}
+
+/// `/api/host/{uuid}/{tail}` → `(uuid, tail)`; anything else is `None`.
+fn split_host_path(path: &str) -> Option<(Uuid, String)> {
+    let (host_id, tail) = path.strip_prefix("/api/host/")?.split_once('/')?;
+    Some((host_id.parse().ok()?, tail.to_owned()))
 }
 
 async fn proxy_host_request(
@@ -134,4 +178,30 @@ fn relay_http_response(response: ProxiedResponse) -> Response {
             )
                 .into_response()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_host_path_only_matches_host_scoped_api_paths() {
+        let id = Uuid::nil();
+        assert_eq!(
+            split_host_path(&format!("/api/host/{id}/workspaces/x/git/diff/ws")),
+            Some((id, "workspaces/x/git/diff/ws".to_owned()))
+        );
+        assert_eq!(split_host_path(&format!("/api/host/{id}")), None);
+        assert_eq!(split_host_path("/api/host/not-a-uuid/workspaces"), None);
+        assert_eq!(split_host_path("/api/workspaces"), None);
+    }
+
+    #[test]
+    fn aliased_uri_keeps_tail_and_query() {
+        let uri = upstream_api_uri("workspaces/x/git/diff/ws", Some("stats_only=true")).unwrap();
+        assert_eq!(
+            uri.to_string(),
+            "/api/workspaces/x/git/diff/ws?stats_only=true"
+        );
+    }
 }

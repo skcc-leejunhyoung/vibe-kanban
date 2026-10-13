@@ -1,9 +1,12 @@
 import { router } from '@web/app/router';
 import type { FileRouteTypes } from '@web/routeTree.gen';
+import { getSelfCloudHostId } from '@/shared/hooks/useSelfCloudHostId';
 import {
   applyNavigationTransition,
   type AppDestination,
   type AppNavigation,
+  collapseSelfHostId,
+  foldSelfHostDestination,
   type NavigationTransition,
   resolveDestinationHostId,
 } from '@/shared/lib/routes/appNavigation';
@@ -24,7 +27,10 @@ function parseLocalHostIdFromPathname(pathname: string): string | null {
   if (hostsIndex === -1) {
     return null;
   }
-  return segments[hostsIndex + 1] ?? null;
+  return collapseSelfHostId(
+    segments[hostsIndex + 1] ?? null,
+    getSelfCloudHostId()
+  );
 }
 
 function resolveLocalDestinationFromPath(path: string): AppDestination | null {
@@ -348,7 +354,14 @@ export function createLocalAppNavigation(): AppNavigation {
   };
 
   const navigation: AppNavigation = {
-    resolveFromPath: (path) => resolveLocalDestinationFromPath(path),
+    // Self-host routes address this machine: fold them to the local host
+    // here, the one place every destination is parsed. Until the self id is
+    // known the raw id passes through and HostIdProvider holds host routes.
+    resolveFromPath: (path) =>
+      foldSelfHostDestination(
+        resolveLocalDestinationFromPath(path),
+        getSelfCloudHostId()
+      ),
     goToRoot: (transition) => navigateTo({ kind: 'root' }, transition),
     goToOnboarding: (transition) =>
       navigateTo({ kind: 'onboarding' }, transition),

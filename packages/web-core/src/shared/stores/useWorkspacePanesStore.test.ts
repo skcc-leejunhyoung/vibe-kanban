@@ -771,3 +771,25 @@ describe('helpers', () => {
     ).toBe(false);
   });
 });
+
+describe('collapseHostId', () => {
+  it('folds panes addressed to the given host to the local host, untouched otherwise', () => {
+    reset();
+    store.setState({
+      panes: [
+        { id: 'a', destination: ws('w1', 'self') },
+        { id: 'b', destination: ws('w2', 'other') },
+        { id: 'c', destination: null },
+      ],
+    });
+    const before = store.getState().panes;
+    store.getState().collapseHostId('nobody');
+    expect(store.getState().panes).toBe(before);
+    store.getState().collapseHostId('self');
+    expect(store.getState().panes.map((p) => p.destination)).toEqual([
+      ws('w1', null),
+      ws('w2', 'other'),
+      null,
+    ]);
+  });
+});

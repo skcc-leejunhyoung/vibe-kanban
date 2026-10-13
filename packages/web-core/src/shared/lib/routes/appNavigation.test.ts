@@ -3,8 +3,8 @@ import {
   applyNavigationTransition,
   buildWorkspacePath,
   collapseSelfHostId,
+  foldSelfHostDestination,
   resolveDestinationHostId,
-  resolveLocalHostId,
 } from './appNavigation';
 
 describe('buildWorkspacePath', () => {
@@ -117,12 +117,31 @@ describe('collapseSelfHostId', () => {
   });
 });
 
-describe('resolveLocalHostId', () => {
-  it('waits before routing a host-scoped request while self is unknown', () => {
-    expect(resolveLocalHostId('route-host', null, true)).toBeUndefined();
+describe('foldSelfHostDestination', () => {
+  it('keeps the destination, host folded to local, when it targets self', () => {
+    expect(
+      foldSelfHostDestination(
+        { kind: 'workspace', workspaceId: 'ws', hostId: 'self-host' },
+        'self-host'
+      )
+    ).toEqual({ kind: 'workspace', workspaceId: 'ws', hostId: null });
   });
 
-  it('does not delay direct local requests', () => {
-    expect(resolveLocalHostId(null, null, true)).toBeNull();
+  it('leaves other hosts, host-less destinations and null alone', () => {
+    const remote = {
+      kind: 'workspace',
+      workspaceId: 'ws',
+      hostId: 'remote-host',
+    } as const;
+    expect(foldSelfHostDestination(remote, 'self-host')).toBe(remote);
+    const project = { kind: 'project', projectId: 'p' } as const;
+    expect(foldSelfHostDestination(project, 'self-host')).toBe(project);
+    expect(foldSelfHostDestination(null, 'self-host')).toBeNull();
+    expect(
+      foldSelfHostDestination(
+        { kind: 'workspace', workspaceId: 'ws', hostId: 'self-host' },
+        null
+      ).hostId
+    ).toBe('self-host');
   });
 });

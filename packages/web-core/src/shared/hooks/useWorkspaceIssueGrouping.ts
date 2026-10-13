@@ -19,8 +19,6 @@ import { useUserContext } from '@/shared/hooks/useUserContext';
 import { useAllOrganizationProjects } from '@/shared/hooks/useAllOrganizationProjects';
 import type { WorkspaceIssueMeta } from '@/shared/lib/workspaceIssueGrouping';
 import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
-import { useSelfCloudHostId } from '@/shared/hooks/useSelfCloudHostId';
-import { collapseSelfHostId } from '@/shared/lib/routes/appNavigation';
 
 /**
  * Aggregate a project-scoped Electric shape across many projects. Mirrors
@@ -92,7 +90,6 @@ export function useWorkspaceIssueGrouping(
 ): Map<string, WorkspaceIssueMeta | null> {
   const { isSignedIn } = useAuth();
   const { workspaces: remoteWorkspaces } = useUserContext();
-  const { hostId: selfCloudHostId } = useSelfCloudHostId();
   const active = enabled && isSignedIn;
 
   const { data: allProjects } = useAllOrganizationProjects({ enabled: active });
@@ -189,7 +186,7 @@ export function useWorkspaceIssueGrouping(
 
       const workspaceKey = getHostWorkspaceKey(
         rw.local_workspace_id,
-        collapseSelfHostId(rw.host_id, selfCloudHostId)
+        rw.host_id
       );
 
       const issue = rw.issue_id ? issuesById.get(rw.issue_id) : undefined;
@@ -225,7 +222,6 @@ export function useWorkspaceIssueGrouping(
   }, [
     active,
     remoteWorkspaces,
-    selfCloudHostId,
     issuesById,
     statusesById,
     tagsByIssueId,

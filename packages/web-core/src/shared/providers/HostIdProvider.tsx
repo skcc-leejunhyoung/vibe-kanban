@@ -7,10 +7,7 @@ import {
 } from 'react';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { useSelfCloudHostId } from '@/shared/hooks/useSelfCloudHostId';
-import {
-  getDestinationHostId,
-  resolveLocalHostId,
-} from '@/shared/lib/routes/appNavigation';
+import { getDestinationHostId } from '@/shared/lib/routes/appNavigation';
 
 // Module-level getter so the API transport can read the hostId outside React
 let _hostId: string | null = null;
@@ -42,18 +39,12 @@ export function HostIdProvider({
     () => getDestinationHostId(destination),
     [destination]
   );
-  const { hostId: selfHostId, isPending: isSelfHostPending } =
-    useSelfCloudHostId();
-  // A route that targets this machine's own cloud host id must be served
-  // directly (`/api`, host `null`), never relay-proxied to ourselves: self is
-  // never in the pairing store, so proxying to it 400s with "No paired relay
-  // credentials". Collapsing here — the single choke point every host-scoped
-  // request reads via useHostId()/getCurrentHostId() — fixes it regardless of
-  // where the self-host link came from (notification deep-link, bookmark, …).
-  const resolvedHostId = useMemo(
-    () => resolveLocalHostId(routeHostId, selfHostId, isSelfHostPending),
-    [routeHostId, selfHostId, isSelfHostPending]
-  );
+  const { isPending: isSelfHostPending } = useSelfCloudHostId();
+  // The route parser folds this machine's own cloud host id to the local host
+  // (`null`). Until that id is known a host route may still be self, so hold
+  // rendering rather than relay-proxy to ourselves.
+  const resolvedHostId =
+    routeHostId !== null && isSelfHostPending ? undefined : routeHostId;
   const hostId = resolvedHostId ?? null;
 
   useLayoutEffect(() => {
