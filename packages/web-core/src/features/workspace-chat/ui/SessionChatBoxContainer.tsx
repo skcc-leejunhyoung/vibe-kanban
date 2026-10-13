@@ -51,7 +51,10 @@ import {
 } from '../model/hooks/useSessionQueueInteraction';
 import { useSessionSend } from '../model/hooks/useSessionSend';
 import { useSessionAttachments } from '../model/hooks/useSessionAttachments';
-import { useMessageEditRetry } from '../model/hooks/useMessageEditRetry';
+import {
+  RestoreLogsDialog,
+  type RestoreLogsDialogResult,
+} from '@/shared/dialogs/tasks/RestoreLogsDialog';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { useAfterAgentTurnRefetch } from '@/shared/hooks/useAfterAgentTurnRefetch';
 import { useWorkspaceBranch } from '../model/hooks/useWorkspaceBranch';
@@ -247,7 +250,6 @@ function reviewErrorKey(error: unknown): string {
 }
 
 export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
-  const [isHandoffPending, setIsHandoffPending] = useState(false);
   // New-session mode: creating the session row (fast) before the first
   // message goes out as a pending follow-up.
   const [isCreatingSession, setIsCreatingSession] = useState(false);
@@ -897,7 +899,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     sessionId,
     workspaceId,
     executorConfig,
-    onOptimisticProcess: addOptimisticProcess,
   });
 
   // Any composer showing a session whose send is pending (switch, remount, a
@@ -1004,58 +1005,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     }
   }, [mode, activeExecutor, effectiveExecutor]);
 
-  const sendHandoff = useCallback(
-    async (prompt: string): Promise<boolean> => {
-      if (!sessionId || !handoffTarget) {
-        return false;
-      }
-      setIsHandoffPending(true);
-      try {
-        const process = await sessionsApi.handoff(
-          sessionId,
-          {
-            prompt,
-            executor_config:
-              executorConfig?.executor === handoffTarget
-                ? executorConfig
-                : getInitialExecutorConfig(handoffTarget, profiles),
-          },
-          hostId
-        );
-        setHandoffTarget(null);
-        addOptimisticProcess(process);
-        await queryClient.invalidateQueries({
-          queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
-        });
-        onScrollToBottom('auto');
-        return true;
-      } catch (error) {
-        void ErrorDialog.show({
-          title: t('conversation.handoff.failedTitle'),
-          message:
-            error instanceof Error
-              ? error.message
-              : t('conversation.handoff.failedDescription'),
-        });
-        return false;
-      } finally {
-        setIsHandoffPending(false);
-      }
-    },
-    [
-      sessionId,
-      handoffTarget,
-      executorConfig,
-      profiles,
-      addOptimisticProcess,
-      queryClient,
-      workspaceId,
-      hostId,
-      onScrollToBottom,
-      t,
-    ]
-  );
-
   // Stop pressed while a send is pending: kill the real process as soon as it
   // is known, once. Ids are captured, not read from hooks, so a session switch
   // in the meantime can't redirect the stop.
@@ -1096,6 +1045,83 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     [setLocalMessage, saveToScratch]
   );
 
+  // Send `prompt` into `target` with `placeholder` shown as its turn right
+  // away; `request` makes the server call and resolves with the created
+  // process. Shared by follow-ups, handoffs and edit/retry: the entry in the
+  // registry gives stop-while-pending, adoption from the stream and the
+  // re-show on remount; a refusal takes the turn down and puts the text back.
+  const runPendingSend = useCallback(
+    async ({
+      target,
+      workspaceIdForStop,
+      prompt,
+      placeholder,
+      request,
+      onFailure,
+    }: {
+      target: string;
+      workspaceIdForStop: string;
+      prompt: string;
+      placeholder: ExecutionProcess;
+      request: () => Promise<ExecutionProcess>;
+      onFailure?: (error: unknown) => void;
+    }): Promise<boolean> => {
+      const { deferred, stopReal } = createStopReal(workspaceIdForStop, target);
+      const pendingState: PendingSend = {
+        placeholder,
+        knownIds: new Set(processes.map((p) => p.id)),
+        prompt: prompt.trim(),
+        stopRequested: false,
+        process: null,
+        stopReal,
+      };
+      pendingSends.set(target, pendingState);
+      pendingSendsChanged();
+      addOptimisticProcess(placeholder);
+      let success = false;
+      try {
+        const process = await request();
+        // Unless the stream already delivered it (adopted), swap the
+        // placeholder for the real row in one render. Adds are
+        // session-guarded, so this is safe after a switch.
+        if (!pendingState.process) {
+          clearOptimisticProcess(placeholder.id);
+          addOptimisticProcess(process);
+          pendingState.process = process;
+          pendingSendsChanged(); // other composers swap their copy too
+          if (pendingState.stopRequested) stopReal(process.id);
+        }
+        success = true;
+      } catch (error) {
+        onFailure?.(error);
+      }
+      await deferred.stop;
+      if (pendingSends.get(target) === pendingState) {
+        pendingSends.delete(target);
+      }
+      if (!success) {
+        clearOptimisticProcess(placeholder.id);
+        // Put the text back in front of whatever was typed meanwhile; if the
+        // user has left this session, the restore runs when it is shown again.
+        if (sessionIdRef.current === target && executorConfig) {
+          restorePrompt(prompt, executorConfig);
+        } else {
+          unsentPrompts.set(target, prompt);
+        }
+      }
+      pendingSendsChanged();
+      return success;
+    },
+    [
+      processes,
+      executorConfig,
+      createStopReal,
+      addOptimisticProcess,
+      clearOptimisticProcess,
+      restorePrompt,
+    ]
+  );
+
   const handleSend = useCallback(async () => {
     const { prompt, isSlashCommand } = buildAgentPrompt(localMessage, [
       reviewMarkdown,
@@ -1120,14 +1146,61 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       });
     };
 
-    // Handoff keeps the composer locked until the server answers.
-    if (handoffTarget) {
-      if (await sendHandoff(prompt)) await resetComposer();
-      return;
-    }
     if (!workspaceId || !executorConfig) {
       // Nothing to send into; the hook reports why.
-      if (await send(prompt)) await resetComposer();
+      try {
+        await send(prompt);
+        await resetComposer();
+      } catch {
+        // Shown by the chat box.
+      }
+      return;
+    }
+
+    // Handoff: the turn (with its "from → to" line) shows at once under the
+    // new agent; the server bootstraps the new native session meanwhile.
+    if (handoffTarget && sessionId) {
+      const to = handoffTarget;
+      const targetConfig =
+        executorConfig.executor === to
+          ? executorConfig
+          : getInitialExecutorConfig(to, profiles);
+      const placeholder = createPendingProcess(
+        sessionId,
+        prompt,
+        targetConfig,
+        latestCreatedAtMs(processes),
+        { handoffFrom: activeExecutor ?? executorConfig.executor }
+      );
+      setHandoffTarget(null);
+      const sending = runPendingSend({
+        target: sessionId,
+        workspaceIdForStop: workspaceId,
+        prompt,
+        placeholder,
+        request: async () => {
+          const process = await sessionsApi.handoff(
+            sessionId,
+            { prompt, executor_config: targetConfig },
+            hostId
+          );
+          void queryClient.invalidateQueries({
+            queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+          });
+          return process;
+        },
+        onFailure: (error) => {
+          void ErrorDialog.show({
+            title: t('conversation.handoff.failedTitle'),
+            message:
+              error instanceof Error
+                ? error.message
+                : t('conversation.handoff.failedDescription'),
+          });
+        },
+      });
+      await resetComposer();
+      await sending;
       return;
     }
 
@@ -1168,71 +1241,37 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
     // Follow-up: show the turn and free the composer right away. The POST can
     // take a while (container check, previous turn drain, agent spawn).
-    const pending = createPendingProcess(
+    const sending = runPendingSend({
       target,
+      workspaceIdForStop: workspaceId,
       prompt,
-      executorConfig,
-      latestCreatedAtMs(processes)
-    );
-    const { deferred, stopReal } = createStopReal(workspaceId, target);
-    const pendingState: PendingSend = {
-      placeholder: pending,
-      knownIds: new Set(processes.map((p) => p.id)),
-      prompt: prompt.trim(),
-      stopRequested: false,
-      process: null,
-      stopReal,
-    };
-    pendingSends.set(target, pendingState);
-    pendingSendsChanged();
-    addOptimisticProcess(pending);
-    const sending = send(prompt, {
-      sessionId: target,
-      // The composer that sent is gone (new session: the page remounts it on
-      // switch; or the user left): the hook's error has nowhere to show.
-      onError: (message) => {
+      placeholder: createPendingProcess(
+        target,
+        prompt,
+        executorConfig,
+        latestCreatedAtMs(processes)
+      ),
+      request: () => send(prompt, { sessionId: target }),
+      // The hook shows the error in this composer; one that has been
+      // remounted (new session: the page remounts it on switch) or left has
+      // nowhere to show it.
+      onFailure: (error) => {
         if (sessionIdRef.current !== target) {
-          void ErrorDialog.show({ title: t('common:error'), message });
+          void ErrorDialog.show({
+            title: t('common:error'),
+            message: error instanceof Error ? error.message : String(error),
+          });
         }
-      },
-      onProcess: (process) => {
-        // Already adopted from the stream — nothing left to swap.
-        if (pendingState.process) return;
-        // Swap the placeholder for the real row in one render (no duplicate
-        // turn). Adds are session-guarded, so this is safe after a switch.
-        clearOptimisticProcess(pending.id);
-        addOptimisticProcess(process);
-        pendingState.process = process;
-        pendingSendsChanged(); // other composers swap their copy too
-        if (pendingState.stopRequested) stopReal(process.id);
       },
     });
     await resetComposer();
-    const success = await sending;
-    await deferred.stop;
-    if (pendingSends.get(target) === pendingState) {
-      pendingSends.delete(target);
-    }
-    if (success) {
-      pendingSendsChanged();
-      return;
-    }
-    clearOptimisticProcess(pending.id);
-    // Put the text back (review comments were folded into the prompt and
-    // already cleared, so restore the composed prompt) in front of whatever
-    // was typed meanwhile; the send error is shown by the chat box. If the
-    // user has left this session, the restore runs when it is shown again.
-    if (sessionIdRef.current === target) {
-      restorePrompt(prompt, executorConfig);
-    } else {
-      unsentPrompts.set(target, prompt);
-    }
-    pendingSendsChanged();
+    await sending;
   }, [
     onScrollToBottom,
     send,
-    sendHandoff,
     handoffTarget,
+    activeExecutor,
+    profiles,
     sessionId,
     workspaceId,
     hostId,
@@ -1243,15 +1282,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     reviewMarkdown,
     cancelDebouncedSave,
     setLocalMessage,
-    saveToScratch,
     clearUploadedAttachments,
     clearDraft,
     reviewContext,
     processes,
-    addOptimisticProcess,
-    clearOptimisticProcess,
-    createStopReal,
-    restorePrompt,
+    runPendingSend,
     t,
   ]);
 
@@ -1561,20 +1596,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     await cancelQueue();
   }, [cancelQueue]);
 
-  // Message edit retry mutation
-  const editRetryMutation = useMessageEditRetry(sessionId ?? '', () => {
-    // On success, clear edit mode and reset editor
-    editContext.cancelEdit();
-    cancelDebouncedSave();
-    setLocalMessage('');
-  });
-
   const areAttachmentInputsDisabled =
     mode === 'placeholder' ||
     isCreatingSession ||
     isStopping ||
     !!feedbackContext?.isSubmitting ||
-    editRetryMutation.isPending ||
     isApproving ||
     isDenying ||
     isAnswering;
@@ -1599,46 +1625,90 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const handleSubmitEdit = useCallback(async () => {
     if (!editContext.activeEdit || !localMessage.trim() || !executorConfig)
       return;
-    // Retry drops the edited turn and everything created at/after it, then runs
-    // a new turn — reflect both immediately (reset + send). Backend drops
-    // `created_at >= target`; the new process is returned by the mutation.
+    if (!sessionId || !workspaceId) return;
+    // Retry drops the edited turn and everything created at/after it, then
+    // runs a new turn. Backend drops `created_at >= target`.
     const targetId = editContext.activeEdit.processId;
-    const target = processes.find((p) => p.id === targetId);
+    const targetProcess = processes.find((p) => p.id === targetId);
     const idsToRemove =
-      target != null
+      targetProcess != null
         ? processes
             .filter(
               (p) =>
                 !p.dropped &&
                 new Date(p.created_at as unknown as string).getTime() >=
-                  new Date(target.created_at as unknown as string).getTime()
+                  new Date(
+                    targetProcess.created_at as unknown as string
+                  ).getTime()
             )
             .map((p) => p.id)
         : [targetId];
-    editRetryMutation.mutate(
-      {
-        message: localMessage,
-        executorConfig,
+    // Ask for confirmation — the dialog fetches its own preflight data.
+    let confirmation: RestoreLogsDialogResult | undefined;
+    try {
+      confirmation = await RestoreLogsDialog.show({
         executionProcessId: targetId,
         branchStatus,
         processes,
+      });
+    } catch {
+      return;
+    }
+    if (!confirmation || confirmation.action !== 'confirmed') return;
+    const prompt = localMessage;
+    // Confirmed: reflect the drop and the new turn at once and leave edit
+    // mode now; the server's reset + spawn follow. A refusal brings the
+    // dropped turns back and puts the text in the composer.
+    editContext.cancelEdit();
+    cancelDebouncedSave();
+    setLocalMessage('');
+    idsToRemove.forEach((id) => removeOptimisticProcess(id));
+    const { forceWhenDirty, performGitReset } = confirmation;
+    await runPendingSend({
+      target: sessionId,
+      workspaceIdForStop: workspaceId,
+      prompt,
+      placeholder: createPendingProcess(
+        sessionId,
+        prompt,
+        executorConfig,
+        latestCreatedAtMs(processes)
+      ),
+      request: () =>
+        sessionsApi.followUp(
+          sessionId,
+          {
+            prompt,
+            executor_config: executorConfig,
+            retry_process_id: targetId,
+            force_when_dirty: forceWhenDirty ?? false,
+            perform_git_reset: performGitReset ?? true,
+          },
+          hostId
+        ),
+      onFailure: (error) => {
+        idsToRemove.forEach((id) => clearOptimisticProcess(id));
+        void ErrorDialog.show({
+          title: t('common:error'),
+          message: error instanceof Error ? error.message : String(error),
+        });
       },
-      {
-        onSuccess: (process) => {
-          idsToRemove.forEach((id) => removeOptimisticProcess(id));
-          addOptimisticProcess(process);
-        },
-      }
-    );
+    });
   }, [
-    editContext.activeEdit,
+    editContext,
     localMessage,
     executorConfig,
+    sessionId,
+    workspaceId,
+    hostId,
     branchStatus,
     processes,
-    editRetryMutation,
+    cancelDebouncedSave,
+    setLocalMessage,
     removeOptimisticProcess,
-    addOptimisticProcess,
+    clearOptimisticProcess,
+    runPendingSend,
+    t,
   ]);
 
   // Handle cancel edit mode
@@ -1822,7 +1892,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isInFeedbackMode,
     isInEditMode: isInEditMode || editingQueuedId !== null,
     isStopping: isStopping || !!pendingSend?.stopRequested,
-    isCreating: isCreatingSession || isHandoffPending,
+    isCreating: isCreatingSession,
     isSendingFollowUp: !!pendingSend && !pendingSend.process,
     isAttemptRunning,
   });
@@ -2027,7 +2097,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
               selected: handoffTarget,
               options: executorOptions,
               onChange: handleHandoff,
-              disabled: isAttemptRunning || isHandoffPending,
+              disabled: isAttemptRunning || !!pendingSend,
             }
           : undefined
       }
@@ -2101,7 +2171,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
               isActive: isInEditMode,
               onSubmitEdit: handleSubmitEdit,
               onCancel: handleCancelEdit,
-              isSubmitting: editRetryMutation.isPending,
+              isSubmitting: false,
             }
       }
       reviewComments={

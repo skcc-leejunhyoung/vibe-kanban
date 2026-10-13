@@ -12,25 +12,20 @@ interface UseSessionSendOptions {
   workspaceId: string | undefined;
   /** Unified executor config (executor + variant + overrides) */
   executorConfig?: ExecutorConfig | null;
-  /**
-   * Called with the process the follow-up POST created, so the caller can
-   * render its turn optimistically instead of waiting for the WS stream.
-   */
-  onOptimisticProcess?: (process: ExecutionProcess) => void;
 }
 
 export interface SendOptions {
-  /** Replaces `onOptimisticProcess` for this call (correlate with a placeholder). */
-  onProcess?: (process: ExecutionProcess) => void;
   /** Send into this session instead of the composer's (a just-created one). */
   sessionId?: string;
-  /** Also told about a failure (the composer that sent may be gone by then). */
-  onError?: (message: string) => void;
 }
 
 interface UseSessionSendResult {
-  /** Send a follow-up. Returns true on success, false on failure. */
-  send: (message: string, options?: SendOptions) => Promise<boolean>;
+  /**
+   * Send a follow-up; resolves with the created process and rejects on
+   * failure (the message is also kept in `error` for the target session's
+   * composer).
+   */
+  send: (message: string, options?: SendOptions) => Promise<ExecutionProcess>;
   /** Whether a send operation is in progress */
   isSending: boolean;
   /** Error message if the send for the *current* session failed */
@@ -40,15 +35,14 @@ interface UseSessionSendResult {
 }
 
 /**
- * Hook for sending follow-up messages from SessionChatBoxContainer. Session
- * creation is the container's job (it creates the row, switches to it, then
- * sends the first message through here as a pending follow-up).
+ * Follow-up transport for SessionChatBoxContainer. Showing the turn, stop
+ * handling and session creation live in the container; this only validates,
+ * posts, refreshes the sessions list and remembers the failure.
  */
 export function useSessionSend({
   sessionId,
   workspaceId,
   executorConfig,
-  onOptimisticProcess,
 }: UseSessionSendOptions): UseSessionSendResult {
   const queryClient = useQueryClient();
   const hostId = useHostId();
@@ -65,28 +59,23 @@ export function useSessionSend({
       : null;
 
   const send = useCallback(
-    async (message: string, options?: SendOptions): Promise<boolean> => {
+    async (
+      message: string,
+      options?: SendOptions
+    ): Promise<ExecutionProcess> => {
       const target = options?.sessionId ?? sessionId;
-      const setError = (text: string | null) =>
-        setErrorState(
-          text === null ? null : { sessionId: target, message: text }
-        );
+      const failure = (text: string): Error => {
+        setErrorState({ sessionId: target, message: text });
+        return new Error(text);
+      };
       const trimmed = message.trim();
-      if (!trimmed) return false;
-      if (!executorConfig) {
-        setError('No executor selected');
-        return false;
-      }
-      if (!target) {
-        setError('No session selected');
-        return false;
-      }
+      if (!trimmed) throw failure('Nothing to send');
+      if (!executorConfig) throw failure('No executor selected');
+      if (!target) throw failure('No session selected');
 
-      setError(null);
+      setErrorState(null);
       setIsSending(true);
       try {
-        // The POST returns the created process; hand it to the caller so the
-        // turn renders immediately instead of waiting for the WS stream.
         const process = await sessionsApi.followUp(
           target,
           {
@@ -98,29 +87,18 @@ export function useSessionSend({
           },
           hostId
         );
-        (options?.onProcess ?? onOptimisticProcess)?.(process);
-        await queryClient.invalidateQueries({
+        void queryClient.invalidateQueries({
           queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
         });
-        return true;
+        return process;
       } catch (e: unknown) {
         const err = e as { message?: string };
-        const message = `Failed to send: ${err.message ?? 'Unknown error'}`;
-        setError(message);
-        options?.onError?.(message);
-        return false;
+        throw failure(`Failed to send: ${err.message ?? 'Unknown error'}`);
       } finally {
         setIsSending(false);
       }
     },
-    [
-      sessionId,
-      workspaceId,
-      executorConfig,
-      onOptimisticProcess,
-      queryClient,
-      hostId,
-    ]
+    [sessionId, workspaceId, executorConfig, queryClient, hostId]
   );
 
   const clearError = useCallback(() => setErrorState(null), []);

@@ -1,4 +1,5 @@
 import {
+  type BaseCodingAgent,
   type ExecutionProcess,
   ExecutionProcessStatus,
   type ExecutorConfig,
@@ -129,11 +130,14 @@ export function matchArrivedProcess(
     if (p.session_id !== pending.sessionId || p.run_reason !== 'codingagent')
       return false;
     const typ = p.executor_action.typ;
-    return (
-      (typ.type === 'CodingAgentFollowUpRequest' ||
-        typ.type === 'CodingAgentInitialRequest') &&
-      typ.prompt.trim() === pending.prompt
-    );
+    if (typ.type === 'CodingAgentFollowUpRequest') {
+      return typ.prompt.trim() === pending.prompt;
+    }
+    if (typ.type === 'CodingAgentInitialRequest') {
+      // A handoff carries the user's text separately from its bootstrap prompt.
+      return (typ.handoff_user_prompt ?? typ.prompt).trim() === pending.prompt;
+    }
+    return false;
   });
 }
 
@@ -176,7 +180,10 @@ export function createPendingProcess(
   /** Timeline ordering is by created_at, and the client clock can lag the
    * server's: never let the placeholder sort before an existing process
    * (pass the newest existing created_at, in epoch ms). */
-  notBeforeMs = 0
+  notBeforeMs = 0,
+  /** A handoff turn: renders the "from → to" line and the user's text, like
+   * the real process (whose own prompt is the bootstrap text). */
+  options?: { handoffFrom?: BaseCodingAgent }
 ): ExecutionProcess {
   const now = new Date(Math.max(Date.now(), notBeforeMs + 1)).toISOString();
   return {
@@ -184,14 +191,24 @@ export function createPendingProcess(
     session_id: sessionId,
     run_reason: 'codingagent',
     executor_action: {
-      typ: {
-        type: 'CodingAgentFollowUpRequest',
-        prompt,
-        session_id: '',
-        reset_to_message_id: null,
-        executor_config: executorConfig,
-        working_dir: null,
-      },
+      typ: options?.handoffFrom
+        ? {
+            type: 'CodingAgentInitialRequest',
+            prompt: '',
+            executor_config: executorConfig,
+            working_dir: null,
+            handoff_from: options.handoffFrom,
+            handoff_session_id: null,
+            handoff_user_prompt: prompt,
+          }
+        : {
+            type: 'CodingAgentFollowUpRequest',
+            prompt,
+            session_id: '',
+            reset_to_message_id: null,
+            executor_config: executorConfig,
+            working_dir: null,
+          },
       next_action: null,
     },
     status: ExecutionProcessStatus.running,

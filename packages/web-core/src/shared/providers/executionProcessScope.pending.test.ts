@@ -119,6 +119,25 @@ describe('matchArrivedProcess', () => {
     expect(matchArrivedProcess([old, sent, real], pending)).toBe(real);
   });
 
+  it('matches a handoff by the user text, not its bootstrap prompt', () => {
+    const handoff = createPendingProcess('s', 'do the thing', config, 0, {
+      handoffFrom: 'CLAUDE_CODE' as never,
+    });
+    expect(handoff.executor_action.typ).toMatchObject({
+      type: 'CodingAgentInitialRequest',
+      handoff_user_prompt: 'do the thing',
+    });
+    const arrived = {
+      ...handoff,
+      id: 'real-h',
+      executor_action: {
+        typ: { ...handoff.executor_action.typ, prompt: 'bootstrap text' },
+        next_action: null,
+      },
+    };
+    expect(matchArrivedProcess([arrived], pending)).toBe(arrived);
+  });
+
   it('ignores rows known at send time, placeholders, other sessions, other prompts', () => {
     const other = {
       ...real,
