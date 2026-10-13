@@ -16,6 +16,7 @@ import {
   type BaseCodingAgent,
   type ExecutionProcess,
   ExecutionProcessStatus,
+  type ExecutorConfig,
   type ReviewError,
 } from 'shared/types';
 import { AgentIcon } from '@/shared/components/AgentIcon';
@@ -44,7 +45,10 @@ import {
 } from '@/shared/lib/executor';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { useSessionMessageEditor } from '../model/hooks/useSessionMessageEditor';
-import { useSessionQueueInteraction } from '../model/hooks/useSessionQueueInteraction';
+import {
+  isOptimisticQueuedId,
+  useSessionQueueInteraction,
+} from '../model/hooks/useSessionQueueInteraction';
 import { useSessionSend } from '../model/hooks/useSessionSend';
 import { useSessionAttachments } from '../model/hooks/useSessionAttachments';
 import { useMessageEditRetry } from '../model/hooks/useMessageEditRetry';
@@ -97,7 +101,6 @@ function computeExecutionStatus(params: {
   isInFeedbackMode: boolean;
   isInEditMode: boolean;
   isStopping: boolean;
-  isQueueLoading: boolean;
   /** New-session creation or handoff in flight: the composer locks. */
   isCreating: boolean;
   /** Follow-up POST in flight: its placeholder turn is already on screen. */
@@ -107,7 +110,6 @@ function computeExecutionStatus(params: {
   if (params.isInFeedbackMode) return 'feedback';
   if (params.isInEditMode) return 'edit';
   if (params.isStopping) return 'stopping';
-  if (params.isQueueLoading) return 'queue-loading';
   if (params.isCreating) return 'creating';
   if (params.isSendingFollowUp) return 'sending';
   // A non-empty queue no longer locks the composer: while the agent runs the
@@ -135,8 +137,19 @@ interface PendingSend {
   process: ExecutionProcess | null;
   /** Kill the real process: optimistic status + session-scoped stop. */
   stopReal: (processId: string) => void;
+  /** "Send now": nothing to await after the steer answers, so the entry is
+   * done as soon as the turn it became is adopted from the stream. */
+  settleOnAdopt?: boolean;
+  /** "Send now": the queue row the server shows for the same message. */
+  hideQueuedId?: string | null;
 }
 const pendingSends = new Map<string, PendingSend>();
+
+const latestCreatedAtMs = (processes: ExecutionProcess[]) =>
+  processes.reduce(
+    (latest, p) => Math.max(latest, Date.parse(p.created_at) || 0),
+    0
+  );
 /**
  * Prompt of a send that failed after the user had left its session, to be put
  * back into that session's composer on return. Drafts are per runtime (server
@@ -774,15 +787,14 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Queue interaction
   const {
     queuedMessages,
-    isQueueLoading,
     queueMessage,
     steer,
     steerQueued,
     updateQueued,
-    isUpdatingQueued,
     reorderQueue,
     cancelQueue,
     cancelOne,
+    dropQueuedLocally,
     refreshQueueStatus,
   } = useSessionQueueInteraction({
     sessionId,
@@ -809,6 +821,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   const handleEditQueued = useCallback(
     (messageId: string) => {
+      if (isOptimisticQueuedId(messageId)) return;
       const target = queuedMessages.find((m) => m.id === messageId);
       if (!target) return;
       // Queued edit and sent-message edit are mutually exclusive.
@@ -832,18 +845,26 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   const handleSubmitQueuedEdit = useCallback(async () => {
     if (!editingQueuedId || !localMessage.trim() || !executorConfig) return;
-    try {
-      await updateQueued(editingQueuedId, localMessage, executorConfig);
-    } catch {
-      return; // stay in edit mode so the user can retry or cancel
-    }
+    const messageId = editingQueuedId;
+    const message = localMessage;
+    // The list already shows the edit; leave edit mode now and only report a
+    // refusal (the list is rolled back by the hook).
     exitQueuedEdit();
+    try {
+      await updateQueued(messageId, message, executorConfig);
+    } catch (error) {
+      void ErrorDialog.show({
+        title: t('common:error'),
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }, [
     editingQueuedId,
     localMessage,
     executorConfig,
     updateQueued,
     exitQueuedEdit,
+    t,
   ]);
 
   // The edited message can be consumed (turn finished) or removed while the
@@ -915,9 +936,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!arrived) return;
     clearOptimisticProcess(pending.placeholder.id);
     pending.process = arrived;
-    pendingSendsChanged();
     if (pending.stopRequested) pending.stopReal(arrived.id);
-  }, [sessionId, processes, clearOptimisticProcess]);
+    if (pending.hideQueuedId) dropQueuedLocally(pending.hideQueuedId);
+    if (pending.settleOnAdopt) pendingSends.delete(sessionId);
+    pendingSendsChanged();
+  }, [sessionId, processes, clearOptimisticProcess, dropQueuedLocally]);
 
   // A send that failed after the user had left: put its text back in front of
   // whatever this session's draft holds, once that draft (not an approval's,
@@ -1024,6 +1047,46 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     ]
   );
 
+  // Stop pressed while a send is pending: kill the real process as soon as it
+  // is known, once. Ids are captured, not read from hooks, so a session switch
+  // in the meantime can't redirect the stop.
+  const createStopReal = useCallback(
+    (workspaceIdForStop: string, target: string) => {
+      const deferred: { stop?: Promise<void> } = {};
+      const stopReal = (processId: string) => {
+        if (deferred.stop) return;
+        patchOptimisticProcess(processId, {
+          status: ExecutionProcessStatus.killed,
+        });
+        deferred.stop = workspacesApi
+          .stop(workspaceIdForStop, hostId, target)
+          .catch((error) => {
+            patchOptimisticProcess(processId, {
+              status: ExecutionProcessStatus.running,
+            });
+            void ErrorDialog.show({
+              title: t('common:error'),
+              message: error instanceof Error ? error.message : String(error),
+            });
+          });
+      };
+      return { deferred, stopReal };
+    },
+    [patchOptimisticProcess, hostId, t]
+  );
+
+  // Put a prompt the server refused back in front of whatever has been typed
+  // since, and keep it as the draft.
+  const restorePrompt = useCallback(
+    (prompt: string, executorConfigForDraft: ExecutorConfig) => {
+      const draft = localMessageRef.current;
+      const restored = draft.trim() ? `${prompt}\n\n${draft}` : prompt;
+      setLocalMessage(restored);
+      void saveToScratch(restored, executorConfigForDraft);
+    },
+    [setLocalMessage, saveToScratch]
+  );
+
   const handleSend = useCallback(async () => {
     const { prompt, isSlashCommand } = buildAgentPrompt(localMessage, [
       reviewMarkdown,
@@ -1100,32 +1163,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       target,
       prompt,
       executorConfig,
-      processes.reduce(
-        (latest, p) => Math.max(latest, Date.parse(p.created_at) || 0),
-        0
-      )
+      latestCreatedAtMs(processes)
     );
-    // Stop pressed while the send is pending: kill the real process as soon as
-    // it is known. Ids are captured here, not read from hooks, so a session
-    // switch in the meantime can't redirect the stop.
-    const deferred: { stop?: Promise<void> } = {};
-    const stopReal = (processId: string) => {
-      if (deferred.stop) return; // kill once
-      patchOptimisticProcess(processId, {
-        status: ExecutionProcessStatus.killed,
-      });
-      deferred.stop = workspacesApi
-        .stop(workspaceId, hostId, target)
-        .catch((error) => {
-          patchOptimisticProcess(processId, {
-            status: ExecutionProcessStatus.running,
-          });
-          void ErrorDialog.show({
-            title: t('common:error'),
-            message: error instanceof Error ? error.message : String(error),
-          });
-        });
-    };
+    const { deferred, stopReal } = createStopReal(workspaceId, target);
     const pendingState: PendingSend = {
       placeholder: pending,
       knownIds: new Set(processes.map((p) => p.id)),
@@ -1174,10 +1214,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     // was typed meanwhile; the send error is shown by the chat box. If the
     // user has left this session, the restore runs when it is shown again.
     if (sessionIdRef.current === target) {
-      const draft = localMessageRef.current;
-      const restored = draft.trim() ? `${prompt}\n\n${draft}` : prompt;
-      setLocalMessage(restored);
-      void saveToScratch(restored, executorConfig);
+      restorePrompt(prompt, executorConfig);
     } else {
       unsentPrompts.set(target, prompt);
     }
@@ -1204,7 +1241,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     processes,
     addOptimisticProcess,
     clearOptimisticProcess,
-    patchOptimisticProcess,
+    createStopReal,
+    restorePrompt,
     t,
   ]);
 
@@ -1310,15 +1348,22 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
     const { prompt } = buildAgentPrompt(localMessage, [reviewMarkdown]);
 
+    // The row is on the list at once (optimistic); free the composer now and
+    // put the text back only if the server refuses it.
     cancelDebouncedSave();
-    await queueMessage(prompt, executorConfig);
-
-    // Clear local state after queueing (same as handleSend). The message now
-    // lives in the server-side queue, so drop the local draft too.
     setLocalMessage('');
     clearUploadedAttachments();
     reviewContext?.clearComments();
-    await clearDraft();
+    void clearDraft();
+    try {
+      await queueMessage(prompt, executorConfig);
+    } catch (error) {
+      restorePrompt(prompt, executorConfig);
+      void ErrorDialog.show({
+        title: t('common:error'),
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }, [
     localMessage,
     reviewMarkdown,
@@ -1329,6 +1374,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     clearUploadedAttachments,
     reviewContext,
     clearDraft,
+    restorePrompt,
+    t,
   ]);
 
   // Steer / "send now" handler — interrupt the running turn (or, when idle,
@@ -1339,23 +1386,81 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       return;
     }
     if ((!localMessage.trim() && !reviewMarkdown) || !executorConfig) return;
+    if (!sessionId || !workspaceId) return;
 
     const { prompt } = buildAgentPrompt(localMessage, [reviewMarkdown]);
 
     cancelDebouncedSave();
     onScrollToBottom('auto');
-    await steer(prompt, executorConfig);
 
+    // Show the message as the next turn right away. The server pins it at the
+    // front of the queue and kills the running turn; the turn it then starts
+    // is adopted from the stream like a pending send, and the queue row the
+    // server shows for it meanwhile is hidden.
+    const pending = createPendingProcess(
+      sessionId,
+      prompt,
+      executorConfig,
+      latestCreatedAtMs(processes)
+    );
+    const { stopReal } = createStopReal(workspaceId, sessionId);
+    const pendingState: PendingSend = {
+      placeholder: pending,
+      knownIds: new Set(processes.map((p) => p.id)),
+      prompt: prompt.trim(),
+      stopRequested: false,
+      process: null,
+      stopReal,
+      settleOnAdopt: true,
+      hideQueuedId: null,
+    };
+    pendingSends.set(sessionId, pendingState);
+    pendingSendsChanged();
+    addOptimisticProcess(pending);
     setLocalMessage('');
     clearUploadedAttachments();
     reviewContext?.clearComments();
-    await clearDraft();
+    void clearDraft();
+    try {
+      const status = await steer(prompt, executorConfig);
+      const row =
+        status.status === 'queued'
+          ? status.messages.find((m) => m.data.message === prompt)
+          : undefined;
+      if (row && pendingSends.get(sessionId) === pendingState) {
+        pendingState.hideQueuedId = row.id;
+        pendingSendsChanged();
+      }
+      // If the turn never shows up (the kill or the drain failed server-side),
+      // don't leave a phantom turn behind; the queue list tells the truth.
+      window.setTimeout(() => {
+        if (pendingSends.get(sessionId) !== pendingState) return;
+        if (pendingState.process) return;
+        pendingSends.delete(sessionId);
+        pendingSendsChanged();
+        clearOptimisticProcess(pending.id);
+      }, 60_000);
+    } catch (error) {
+      if (pendingSends.get(sessionId) === pendingState) {
+        pendingSends.delete(sessionId);
+      }
+      pendingSendsChanged();
+      clearOptimisticProcess(pending.id);
+      restorePrompt(prompt, executorConfig);
+      void ErrorDialog.show({
+        title: t('common:error'),
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }, [
     isAttemptRunning,
     handleSend,
+    sessionId,
+    workspaceId,
     localMessage,
     reviewMarkdown,
     executorConfig,
+    processes,
     steer,
     cancelDebouncedSave,
     onScrollToBottom,
@@ -1363,11 +1468,17 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     clearUploadedAttachments,
     reviewContext,
     clearDraft,
+    createStopReal,
+    addOptimisticProcess,
+    clearOptimisticProcess,
+    restorePrompt,
+    t,
   ]);
 
   // Remove a single queued message by id
   const handleRemoveQueued = useCallback(
     (messageId: string) => {
+      if (isOptimisticQueuedId(messageId)) return;
       void cancelOne(messageId);
     },
     [cancelOne]
@@ -1378,6 +1489,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // interrupt yet the backend would start a second, concurrent turn.
   const handleSteerQueued = useCallback(
     (messageId: string) => {
+      if (isOptimisticQueuedId(messageId)) return;
       if (sessionId && pendingSends.has(sessionId)) return;
       void steerQueued(messageId);
     },
@@ -1689,7 +1801,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isInFeedbackMode,
     isInEditMode: isInEditMode || editingQueuedId !== null,
     isStopping: isStopping || !!pendingSend?.stopRequested,
-    isQueueLoading,
     isCreating: isCreatingSession || isHandoffPending,
     isSendingFollowUp: !!pendingSend && !pendingSend.process,
     isAttemptRunning,
@@ -1865,10 +1976,12 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           sessionId && hasLinkedIssue ? handleVibeReviewAndCreatePr : undefined,
         isReviewing,
       }}
-      queuedMessages={queuedMessages.map((m) => ({
-        id: m.id,
-        message: m.data.message,
-      }))}
+      queuedMessages={queuedMessages
+        .filter((m) => m.id !== pendingSend?.hideQueuedId)
+        .map((m) => ({
+          id: m.id,
+          message: m.data.message,
+        }))}
       onRemoveQueued={handleRemoveQueued}
       onSteerQueued={pendingSend ? undefined : handleSteerQueued}
       onEditQueued={handleEditQueued}
@@ -1960,7 +2073,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
               isActive: true,
               onSubmitEdit: () => void handleSubmitQueuedEdit(),
               onCancel: exitQueuedEdit,
-              isSubmitting: isUpdatingQueued,
+              isSubmitting: false,
               submitLabel: t('conversation.actions.confirmEdit'),
             }
           : {

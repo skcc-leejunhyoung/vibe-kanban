@@ -79,7 +79,6 @@ export type ExecutionStatus =
   | 'sending'
   | 'running'
   | 'stopping'
-  | 'queue-loading'
   | 'feedback'
   | 'edit';
 
@@ -394,8 +393,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   );
   const hasContent =
     editor.value.trim().length > 0 || (reviewComments?.count ?? 0) > 0;
-  const canSend =
-    hasContent && !['creating', 'stopping', 'queue-loading'].includes(status);
+  const canSend = hasContent && !['creating', 'stopping'].includes(status);
   const isRunning = status === 'running';
   const areContentInsertActionsDisabled = isDisabled;
   const showRunningAnimation =
@@ -776,14 +774,6 @@ export function SessionChatBox<TExecutor extends string = string>({
           <ChatActionButton
             icon="spinner"
             label={t('conversation.actions.stopping')}
-            disabled
-          />
-        );
-      case 'queue-loading':
-        return (
-          <ChatActionButton
-            icon="spinner"
-            label={t('conversation.actions.loading')}
             disabled
           />
         );

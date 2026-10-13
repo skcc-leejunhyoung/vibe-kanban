@@ -31,21 +31,23 @@ export function useCreateWorkspace() {
   const queryClient = useQueryClient();
   const hostId = useHostId();
 
-  const finishWorkspaceCreation = async (
+  const finishWorkspaceCreation = (
     workspace: Workspace,
     linkToIssue?: LinkToIssueParams
   ) => {
+    // Best-effort cloud link (failures are only logged): don't hold the jump
+    // into the new workspace on that round trip.
     if (linkToIssue) {
-      try {
-        await workspacesApi.linkToIssue(
+      void workspacesApi
+        .linkToIssue(
           workspace.id,
           linkToIssue.remoteProjectId,
           linkToIssue.issueId,
           hostId
-        );
-      } catch (linkError) {
-        console.error('Failed to link workspace to issue:', linkError);
-      }
+        )
+        .catch((linkError) => {
+          console.error('Failed to link workspace to issue:', linkError);
+        });
     }
 
     return { workspace };

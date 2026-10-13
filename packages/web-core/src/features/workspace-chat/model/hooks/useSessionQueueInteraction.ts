@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  useIsMutating,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { queueApi } from '@/shared/lib/api';
 import type { ExecutorConfig, QueuedMessage, QueueStatus } from 'shared/types';
 import { useHostId } from '@/shared/providers/HostIdProvider';
@@ -21,15 +26,19 @@ interface UseSessionQueueInteractionResult {
   queuedMessages: QueuedMessage[];
   /** Whether at least one message is currently queued */
   isQueued: boolean;
-  /** Whether a queue operation is in progress */
-  isQueueLoading: boolean;
   /** Append a message to the back of the queue */
   queueMessage: (
     message: string,
     executorConfig: ExecutorConfig
   ) => Promise<void>;
-  /** Interrupt the running turn and run this message immediately */
-  steer: (message: string, executorConfig: ExecutorConfig) => Promise<void>;
+  /**
+   * Interrupt the running turn and run this message immediately. Resolves
+   * with the queue as the server left it (the message pinned at the front).
+   */
+  steer: (
+    message: string,
+    executorConfig: ExecutorConfig
+  ) => Promise<QueueStatus>;
   /** Interrupt the running turn and run an already-queued message immediately */
   steerQueued: (messageId: string) => Promise<void>;
   /** Edit an already-queued message in place, preserving its position */
@@ -38,23 +47,36 @@ interface UseSessionQueueInteractionResult {
     message: string,
     executorConfig: ExecutorConfig
   ) => Promise<void>;
-  /** Whether an updateQueued request is in flight */
-  isUpdatingQueued: boolean;
   /** Reorder the queue to the given message id order (front first) */
   reorderQueue: (messageIds: string[]) => Promise<void>;
   /** Cancel all queued messages */
   cancelQueue: () => Promise<void>;
   /** Cancel a single queued message by id */
   cancelOne: (messageId: string) => Promise<void>;
+  /** Drop a row from the local list only (e.g. once its turn is on screen). */
+  dropQueuedLocally: (messageId: string) => void;
   /** Refresh queue status from server */
   refreshQueueStatus: () => Promise<void>;
 }
 
 const QUEUE_STATUS_KEY = 'queue-status';
+const OPTIMISTIC_QUEUED_PREFIX = 'pending-queue-';
+
+/** A row the server hasn't acknowledged yet: there is no id to act on. */
+export const isOptimisticQueuedId = (id: string): boolean =>
+  id.startsWith(OPTIMISTIC_QUEUED_PREFIX);
+
+const messagesOf = (status: QueueStatus | undefined): QueuedMessage[] =>
+  status?.status === 'queued' ? status.messages : [];
+
+const statusOf = (messages: QueuedMessage[]): QueueStatus =>
+  messages.length > 0 ? { status: 'queued', messages } : { status: 'empty' };
 
 /**
  * Hook to manage queue interaction for session messages.
- * Uses TanStack Query for caching and mutation handling.
+ * Uses TanStack Query for caching and mutation handling. Every edit is applied
+ * to the list first and corrected from the server's answer (or rolled back),
+ * so the queue never shows a spinner for a round trip.
  */
 export function useSessionQueueInteraction({
   sessionId,
@@ -67,6 +89,10 @@ export function useSessionQueueInteraction({
     sessionId,
     getHostRequestScopeQueryKey(hostId),
   ];
+  const mutationKey = [QUEUE_STATUS_KEY, 'mutate', sessionId];
+  // A poll landing mid-mutation would overwrite the optimistic list with the
+  // pre-mutation server state, so polling pauses while one is in flight.
+  const isMutating = useIsMutating({ mutationKey }) > 0;
 
   // Query for queue status
   const { data: queueStatus = { status: 'empty' as const }, refetch } =
@@ -77,11 +103,11 @@ export function useSessionQueueInteraction({
       // Queue state is in-memory and has no push stream of its own. Poll only
       // while work is waiting; in-document split panes share this tab's
       // visibility, so the default (pause while hidden) is enough.
-      refetchInterval: (query) => queueStatusRefetchInterval(query.state.data),
+      refetchInterval: (query) =>
+        isMutating ? false : queueStatusRefetchInterval(query.state.data),
     });
 
-  const queuedMessages =
-    queueStatus.status === 'queued' ? queueStatus.messages : [];
+  const queuedMessages = messagesOf(queueStatus);
   const isQueued = queuedMessages.length > 0;
   const queueTrackingRef = useRef({ sessionId, wasQueued: false });
 
@@ -107,8 +133,27 @@ export function useSessionQueueInteraction({
     [queryClient, queueKey]
   );
 
+  // Snapshot the list and apply an edit to it; the mutation's error handler
+  // restores the snapshot, its success handler installs the server's answer.
+  const editLocally = useCallback(
+    async (edit: (messages: QueuedMessage[]) => QueuedMessage[]) => {
+      await queryClient.cancelQueries({ queryKey: queueKey });
+      const previous = queryClient.getQueryData<QueueStatus>(queueKey);
+      applyStatus(statusOf(edit(messagesOf(previous))));
+      return { previous };
+    },
+    [queryClient, queueKey, applyStatus]
+  );
+  const rollback = useCallback(
+    (_error: unknown, _vars: unknown, context?: { previous?: QueueStatus }) => {
+      applyStatus(context?.previous ?? { status: 'empty' });
+    },
+    [applyStatus]
+  );
+
   // Mutation for appending a message to the queue
   const queueMutation = useMutation({
+    mutationKey,
     mutationFn: ({
       message,
       executorConfig,
@@ -121,11 +166,24 @@ export function useSessionQueueInteraction({
         { message, executor_config: executorConfig },
         hostId
       ),
+    onMutate: ({ message, executorConfig }) =>
+      editLocally((messages) => [
+        ...messages,
+        {
+          id: `${OPTIMISTIC_QUEUED_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+          session_id: sessionId ?? '',
+          data: { message, executor_config: executorConfig },
+          queued_at: new Date().toISOString(),
+        },
+      ]),
+    onError: rollback,
     onSuccess: applyStatus,
   });
 
-  // Mutation for steering ("send now")
+  // Mutation for steering ("send now"): the composer shows the message as the
+  // next turn itself, so the list is left to the server's answer.
   const steerMutation = useMutation({
+    mutationKey,
     mutationFn: ({
       message,
       executorConfig,
@@ -143,13 +201,23 @@ export function useSessionQueueInteraction({
 
   // Mutation for steering an already-queued message ("send now" on a queued row)
   const steerQueuedMutation = useMutation({
+    mutationKey,
     mutationFn: (messageId: string) =>
       queueApi.steerQueued(sessionId!, messageId, hostId),
+    onMutate: (messageId) =>
+      editLocally((messages) => {
+        const target = messages.find((m) => m.id === messageId);
+        return target
+          ? [target, ...messages.filter((m) => m.id !== messageId)]
+          : messages;
+      }),
+    onError: rollback,
     onSuccess: applyStatus,
   });
 
   // Mutation for editing a queued message in place
   const updateQueuedMutation = useMutation({
+    mutationKey,
     mutationFn: ({
       messageId,
       message,
@@ -165,49 +233,57 @@ export function useSessionQueueInteraction({
         { message, executor_config: executorConfig },
         hostId
       ),
+    onMutate: ({ messageId, message, executorConfig }) =>
+      editLocally((messages) =>
+        messages.map((m) =>
+          m.id === messageId
+            ? { ...m, data: { message, executor_config: executorConfig } }
+            : m
+        )
+      ),
+    onError: rollback,
     onSuccess: applyStatus,
   });
 
-  // Mutation for reordering the queue. Optimistic so the up/down arrows feel
-  // instant; the server response replaces the optimistic order on success.
+  // Mutation for reordering the queue
   const reorderMutation = useMutation({
+    mutationKey,
     mutationFn: (messageIds: string[]) =>
       queueApi.reorder(sessionId!, messageIds, hostId),
-    onMutate: async (messageIds: string[]) => {
-      await queryClient.cancelQueries({
-        queryKey: queueKey,
-      });
-      const previous = queryClient.getQueryData<QueueStatus>(queueKey);
-      if (previous && previous.status === 'queued') {
-        const byId = new Map(previous.messages.map((m) => [m.id, m]));
+    onMutate: (messageIds) =>
+      editLocally((messages) => {
+        const byId = new Map(messages.map((m) => [m.id, m]));
         const ordered = messageIds
           .map((id) => byId.get(id))
           .filter((m): m is QueuedMessage => m !== undefined);
         // Keep any messages not named in the new order (guards against a stale
         // client list silently dropping a message).
-        for (const m of previous.messages) {
+        for (const m of messages) {
           if (!messageIds.includes(m.id)) ordered.push(m);
         }
-        applyStatus({ status: 'queued', messages: ordered });
-      }
-      return { previous };
-    },
-    onError: (_err, _vars, context) => {
-      if (context?.previous) applyStatus(context.previous);
-    },
+        return ordered;
+      }),
+    onError: rollback,
     onSuccess: applyStatus,
   });
 
   // Mutation for cancelling the whole queue
   const cancelMutation = useMutation({
+    mutationKey,
     mutationFn: () => queueApi.cancel(sessionId!, hostId),
+    onMutate: () => editLocally(() => []),
+    onError: rollback,
     onSuccess: applyStatus,
   });
 
   // Mutation for cancelling a single message
   const cancelOneMutation = useMutation({
+    mutationKey,
     mutationFn: (messageId: string) =>
       queueApi.cancelOne(sessionId!, messageId, hostId),
+    onMutate: (messageId) =>
+      editLocally((messages) => messages.filter((m) => m.id !== messageId)),
+    onError: rollback,
     onSuccess: applyStatus,
   });
 
@@ -221,8 +297,8 @@ export function useSessionQueueInteraction({
 
   const steer = useCallback(
     async (message: string, executorConfig: ExecutorConfig) => {
-      if (!sessionId) return;
-      await steerMutation.mutateAsync({ message, executorConfig });
+      if (!sessionId) return { status: 'empty' as const };
+      return steerMutation.mutateAsync({ message, executorConfig });
     },
     [sessionId, steerMutation]
   );
@@ -261,7 +337,7 @@ export function useSessionQueueInteraction({
 
   const cancelQueue = useCallback(async () => {
     if (!sessionId) return;
-    await cancelMutation.mutateAsync();
+    await cancelMutation.mutateAsync(undefined);
   }, [sessionId, cancelMutation]);
 
   const cancelOne = useCallback(
@@ -272,6 +348,15 @@ export function useSessionQueueInteraction({
     [sessionId, cancelOneMutation]
   );
 
+  const dropQueuedLocally = useCallback(
+    (messageId: string) => {
+      queryClient.setQueryData<QueueStatus>(queueKey, (current) =>
+        statusOf(messagesOf(current).filter((m) => m.id !== messageId))
+      );
+    },
+    [queryClient, queueKey]
+  );
+
   const refreshQueueStatus = useCallback(async () => {
     if (!sessionId) return;
     await refetch();
@@ -280,19 +365,14 @@ export function useSessionQueueInteraction({
   return {
     queuedMessages,
     isQueued,
-    isQueueLoading:
-      queueMutation.isPending ||
-      steerMutation.isPending ||
-      cancelMutation.isPending ||
-      cancelOneMutation.isPending,
     queueMessage,
     steer,
     steerQueued,
     updateQueued,
-    isUpdatingQueued: updateQueuedMutation.isPending,
     reorderQueue,
     cancelQueue,
     cancelOne,
+    dropQueuedLocally,
     refreshQueueStatus,
   };
 }
