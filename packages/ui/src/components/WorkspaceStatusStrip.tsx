@@ -79,13 +79,17 @@ export function WorkspaceStatusStrip({
   // noticed; streaming tokens and browsing earlier summaries do not.
   const [flash, setFlash] = useState(false);
   const settled = useRef(headline);
+  const flashTimer = useRef<number>();
   useEffect(() => {
     if (isPast || streaming || settled.current === headline) return;
     settled.current = headline;
     setFlash(true);
-    const timer = window.setTimeout(() => setFlash(false), 900);
-    return () => window.clearTimeout(timer);
+    // The timer outlives this effect run: a dependency change inside the
+    // 900 ms must not cancel it and leave the tint on.
+    window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlash(false), 900);
   }, [headline, isPast, streaming]);
+  useEffect(() => () => window.clearTimeout(flashTimer.current), []);
   return (
     <div
       className={cn(

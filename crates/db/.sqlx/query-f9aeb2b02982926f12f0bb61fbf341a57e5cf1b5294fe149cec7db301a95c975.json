@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE workspaces SET status_note = $1, status_updated_at = datetime('now', 'subsec') WHERE id = $2 AND status_note IS NOT $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f9aeb2b02982926f12f0bb61fbf341a57e5cf1b5294fe149cec7db301a95c975"
+}

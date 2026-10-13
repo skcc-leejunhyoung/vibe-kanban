@@ -5,6 +5,7 @@ import {
   statusFirstSentence,
   statusParagraphs,
   statusPlainText,
+  statusTruncate,
 } from './statusNote';
 
 describe('splitStatusSegments', () => {
@@ -40,6 +41,24 @@ describe('splitStatusSegments', () => {
       { kind: 'markdown', text: nested },
     ]);
     expect(extractLastStatusBlock(nested)).toBeUndefined();
+  });
+
+  it('closes on a fence followed by trailing whitespace, like CommonMark', () => {
+    const spaced = '```vibe-status\nsummary here.\n```  \nVIBE_RESULT: done';
+    expect(splitStatusSegments(spaced)).toEqual([
+      { kind: 'status', text: 'summary here.', closed: true },
+      { kind: 'markdown', text: 'VIBE_RESULT: done' },
+    ]);
+  });
+
+  it('cuts to the visible limit exactly like the server', () => {
+    const text = 'abc [link](x.html "vibe-artifact") def';
+    expect(statusTruncate(text, 100)).toBe(text);
+    expect(statusTruncate(text, 8)).toBe('abc [link](x.html "vibe-artifact")…');
+    expect(statusTruncate(text, 6)).toBe('abc li…');
+    expect(statusTruncate('가나다라마', 3)).toBe('가나다…');
+    expect(statusTruncate('abc   ', 2)).toBe('ab…');
+    expect(statusTruncate('가'.repeat(1001)).length).toBe(1001);
   });
 
   it('returns the last block of a message', () => {

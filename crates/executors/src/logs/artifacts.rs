@@ -98,9 +98,9 @@ pub fn markdown_candidates(text: &str) -> Vec<ArtifactCandidate> {
             line.trim_start_matches(' ')
         };
         if let Some((marker, count, language, content)) = fence.as_mut() {
-            if delimiter.chars().take_while(|ch| ch == marker).count() >= *count
-                && delimiter.trim_end_matches(*marker).trim().is_empty()
-            {
+            let run = delimiter.chars().take_while(|ch| ch == marker).count();
+            // CommonMark: a closing fence may carry trailing whitespace.
+            if run >= *count && delimiter[run..].trim().is_empty() {
                 let source = content.trim();
                 let lower = source.to_ascii_lowercase();
                 let extension = match language.as_str() {

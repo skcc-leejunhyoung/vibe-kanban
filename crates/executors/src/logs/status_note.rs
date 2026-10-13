@@ -54,7 +54,8 @@ fn scan(text: &str, mut on_block: impl FnMut(usize, usize, String, bool)) {
                 .chars()
                 .take_while(|ch| *ch == open.marker)
                 .count();
-            if run >= open.count && delimiter.trim_end_matches(open.marker).trim().is_empty() {
+            // CommonMark: a closing fence may carry trailing whitespace.
+            if run >= open.count && delimiter[run..].trim().is_empty() {
                 if open.status {
                     on_block(open.start, index + 1, content.join("\n"), true);
                 }
@@ -178,6 +179,17 @@ mod tests {
                 closed: true
             })
         );
+        // Trailing whitespace after the closing fence still closes it; an
+        // open block would otherwise swallow the rest of the message.
+        let spaced = "```vibe-status\nsummary here.\n```  \nVIBE_RESULT: done";
+        assert_eq!(
+            extract_last_block(spaced),
+            Some(StatusBlock {
+                text: "summary here.".into(),
+                closed: true
+            })
+        );
+        assert_eq!(strip_blocks(spaced), "VIBE_RESULT: done");
         let streaming = "text\n  ```VIBE-STATUS\nstill typ";
         assert_eq!(
             extract_last_block(streaming),

@@ -13,19 +13,15 @@ use uuid::Uuid;
 pub struct StatusNoteObserver {
     pool: SqlitePool,
     workspace_id: Uuid,
-    saved: Option<String>,
     /// Text of a block whose closing fence has not arrived; stored at completion.
     open: Option<String>,
 }
 
 impl StatusNoteObserver {
-    /// `saved` seeds the dedupe with the note already on the row, so a turn
-    /// that opens by restating it neither rewrites nor rebroadcasts it.
-    pub fn new(pool: SqlitePool, workspace_id: Uuid, saved: Option<String>) -> Self {
+    pub fn new(pool: SqlitePool, workspace_id: Uuid) -> Self {
         Self {
             pool,
             workspace_id,
-            saved,
             open: None,
         }
     }
@@ -54,13 +50,16 @@ impl StatusNoteObserver {
         }
     }
 
+    /// The row itself is the dedupe: `set_status_note` is a no-op for an
+    /// unchanged note, so two sessions writing the same workspace never drop
+    /// each other's restatements.
     async fn store(&mut self, text: String) {
         let text = status_note::truncate_visible(text.trim(), MAX_VISIBLE_CHARS);
-        if text.is_empty() || self.saved.as_deref() == Some(text.as_str()) {
+        if text.is_empty() {
             return;
         }
         match Workspace::set_status_note(&self.pool, self.workspace_id, &text).await {
-            Ok(()) => self.saved = Some(text),
+            Ok(()) => {}
             Err(error) => tracing::warn!(
                 %error,
                 workspace_id = %self.workspace_id,
@@ -112,7 +111,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let mut observer = StatusNoteObserver::new(pool.clone(), id, None);
+        let mut observer = StatusNoteObserver::new(pool.clone(), id);
 
         // Streaming: the fence is still open, nothing is stored yet.
         observer
@@ -170,8 +169,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let mut observer =
-            StatusNoteObserver::new(pool.clone(), id, Some("이미 저장된 요약이에요.".into()));
+        let mut observer = StatusNoteObserver::new(pool.clone(), id);
 
         // A new turn that restates the stored note must not touch the row.
         observer
@@ -203,5 +201,34 @@ mod tests {
             note(&pool, id).await.as_deref(),
             Some("이미 저장된 요약이에요.")
         );
+    }
+
+    #[tokio::test]
+    async fn stored_note_is_cut_to_the_visible_limit() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE workspaces (id BLOB PRIMARY KEY, status_note TEXT, status_updated_at TEXT);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id) VALUES (?)")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut observer = StatusNoteObserver::new(pool.clone(), id);
+        let long = "가".repeat(MAX_VISIBLE_CHARS + 50);
+        observer
+            .observe_entry(&message(&format!("```vibe-status\n{long}\n```")))
+            .await;
+        let stored = note(&pool, id).await.unwrap();
+        assert_eq!(stored.chars().count(), MAX_VISIBLE_CHARS + 1);
+        assert!(stored.ends_with('…'));
     }
 }

@@ -2038,14 +2038,10 @@ pub trait ContainerService {
         };
         // Throwaway runs (spec intake's ephemeral workspace, PR text helpers)
         // never own the workspace summary.
-        let status_observer =
-            (status_note && !workspace.ephemeral && artifact_working_dir.is_some()).then(|| {
-                super::status_note::StatusNoteObserver::new(
-                    self.db().pool.clone(),
-                    workspace.id,
-                    workspace.status_note.clone(),
-                )
-            });
+        let status_observer = (status_note
+            && !workspace.ephemeral
+            && artifact_working_dir.is_some())
+        .then(|| super::status_note::StatusNoteObserver::new(self.db().pool.clone(), workspace.id));
         let mut artifact_observer = if let Some(working_dir) = artifact_working_dir {
             match super::file::FileService::new(self.db().pool.clone()) {
                 Ok(files) => super::artifacts::ArtifactObserver::start(

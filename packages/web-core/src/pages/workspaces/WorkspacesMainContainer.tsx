@@ -180,23 +180,34 @@ export const WorkspacesMainContainer = forwardRef<
     const container = containerRef.current;
     if (!container || typeof ResizeObserver === 'undefined') return;
 
-    const chatBoxContainer = container.querySelector<HTMLElement>(
-      '[data-chatbox-container="true"]'
-    );
-    if (!chatBoxContainer) return;
+    // The chat box below and the status strip above both squeeze the
+    // conversation; either growing must keep the bottom in view.
+    const targets = [
+      container.querySelector<HTMLElement>('[data-chatbox-container="true"]'),
+      container.querySelector<HTMLElement>(
+        '[data-workspace-status-slot="true"]'
+      ),
+    ].filter((element): element is HTMLElement => element !== null);
+    if (targets.length === 0) return;
 
-    let previousHeight = chatBoxContainer.getBoundingClientRect().height;
+    const previousHeights = new Map(
+      targets.map((element) => [
+        element,
+        element.getBoundingClientRect().height,
+      ])
+    );
 
     const observer = new ResizeObserver((entries) => {
-      const nextHeight =
-        entries[0]?.contentRect.height ??
-        chatBoxContainer.getBoundingClientRect().height;
-
-      if (Math.abs(nextHeight - previousHeight) < 0.5) return;
-      const heightDelta = nextHeight - previousHeight;
-      previousHeight = nextHeight;
-
-      if (!isAtBottomRef.current) return;
+      let heightDelta = 0;
+      for (const entry of entries) {
+        const element = entry.target as HTMLElement;
+        const nextHeight = entry.contentRect.height;
+        const previousHeight = previousHeights.get(element) ?? nextHeight;
+        if (Math.abs(nextHeight - previousHeight) < 0.5) continue;
+        heightDelta += nextHeight - previousHeight;
+        previousHeights.set(element, nextHeight);
+      }
+      if (heightDelta === 0 || !isAtBottomRef.current) return;
 
       requestAnimationFrame(() => {
         if (!isAtBottomRef.current) return;
@@ -204,7 +215,7 @@ export const WorkspacesMainContainer = forwardRef<
       });
     });
 
-    observer.observe(chatBoxContainer);
+    for (const element of targets) observer.observe(element);
 
     return () => {
       observer.disconnect();

@@ -285,9 +285,8 @@ export function splitArtifactSegments(content: string): ArtifactSegment[] {
       const { marker } = fence;
       let run = 0;
       while (delimiter[run] === marker) run++;
-      const closing =
-        run >= fence.count &&
-        delimiter.replace(new RegExp(`\\${marker}+$`), '').trim() === '';
+      // CommonMark: a closing fence may carry trailing whitespace.
+      const closing = run >= fence.count && delimiter.slice(run).trim() === '';
       if (!closing) {
         fence.lines.push(line);
         continue;

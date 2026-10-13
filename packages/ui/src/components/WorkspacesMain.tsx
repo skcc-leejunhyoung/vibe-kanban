@@ -63,7 +63,9 @@ export function WorkspacesMain({
               <SpinnerIcon className="size-6 animate-spin text-low" />
             </div>
           )}
-          {statusContent}
+          <div data-workspace-status-slot="true" className="shrink-0">
+            {statusContent}
+          </div>
           {conversationContent}
         </>
       )}

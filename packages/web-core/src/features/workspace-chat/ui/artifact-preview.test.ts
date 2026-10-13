@@ -218,12 +218,13 @@ describe('artifact segments', () => {
       kind: 'markdown',
       text: '```html vibe-artifact\n<html>unfinished',
     });
-    // A trailing space keeps the fence open, exactly like the backend.
+    // Trailing whitespace after the closing fence still closes it (CommonMark),
+    // on both sides.
     expect(
       splitArtifactSegments(
         '```html vibe-artifact\n<html><body>x</body></html>\n``` '
-      )
-    ).toHaveLength(1);
+      ).map((segment) => segment.kind)
+    ).toEqual(['inline']);
   });
 
   it('reports summary fences as segments without shifting backend ordinals', () => {

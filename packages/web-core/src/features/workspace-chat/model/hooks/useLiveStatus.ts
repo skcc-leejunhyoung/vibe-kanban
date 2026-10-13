@@ -1,10 +1,11 @@
 import { useMemo } from 'react';
 import { useEntries } from '../contexts/EntriesContext';
-import { splitStatusSegments } from '@/shared/lib/statusNote';
+import { splitStatusSegments, statusTruncate } from '@/shared/lib/statusNote';
 
 export interface LiveStatusDraft {
   text: string;
-  /** False while the closing fence has not streamed in. */
+  /** False only while the block can still grow: it is the last block of the
+   * session's last assistant message and its fence has not closed. */
   closed: boolean;
   executionProcessId: string;
 }
@@ -17,8 +18,9 @@ export interface StatusHistoryItem {
 
 /**
  * The latest summary block of the session (it streams in while its fence is
- * open; a later message without a block keeps it) plus every closed block the
- * session produced, newest first.
+ * open; a later message without a block keeps it) plus every settled block the
+ * session produced, newest first, each text at most once (newest copy wins).
+ * Texts are cut like the server cuts them, so they compare equal to the row.
  */
 export function useLiveStatus(): {
   draft?: LiveStatusDraft;
@@ -28,37 +30,39 @@ export function useLiveStatus(): {
   return useMemo(() => {
     // ponytail: rescans every assistant message per streaming patch; cache per
     // patchKey if long sessions make this show up in profiles.
-    const history: StatusHistoryItem[] = [];
+    const assistant = entries.filter(
+      (entry) =>
+        entry.type === 'NORMALIZED_ENTRY' &&
+        entry.content.entry_type.type === 'assistant_message'
+    );
+    const settled: StatusHistoryItem[] = [];
     let draft: LiveStatusDraft | undefined;
-    for (const entry of entries) {
-      if (
-        entry.type !== 'NORMALIZED_ENTRY' ||
-        entry.content.entry_type.type !== 'assistant_message'
-      )
-        continue;
+    assistant.forEach((entry, index) => {
+      if (entry.type !== 'NORMALIZED_ENTRY') return;
       const blocks = splitStatusSegments(entry.content.content).filter(
         (segment) => segment.kind === 'status' && segment.text
       );
-      const last = blocks[blocks.length - 1];
-      if (!last || last.kind !== 'status') continue;
-      draft = {
-        text: last.text,
-        closed: last.closed,
-        executionProcessId: entry.executionProcessId,
-      };
-      for (const block of blocks) {
-        if (
-          block.kind === 'status' &&
-          block.closed &&
-          history[history.length - 1]?.text !== block.text
-        )
-          history.push({
-            text: block.text,
-            executionProcessId: entry.executionProcessId,
-          });
-      }
+      blocks.forEach((block, blockIndex) => {
+        if (block.kind !== 'status') return;
+        const text = statusTruncate(block.text);
+        // An unclosed block followed by anything else can no longer grow.
+        const closed =
+          block.closed ||
+          index < assistant.length - 1 ||
+          blockIndex < blocks.length - 1;
+        draft = { text, closed, executionProcessId: entry.executionProcessId };
+        if (closed)
+          settled.push({ text, executionProcessId: entry.executionProcessId });
+      });
+    });
+    const seen = new Set<string>();
+    const history: StatusHistoryItem[] = [];
+    for (let index = settled.length - 1; index >= 0; index--) {
+      const item = settled[index];
+      if (seen.has(item.text)) continue;
+      seen.add(item.text);
+      history.push(item);
     }
-    history.reverse();
     return { draft, history };
   }, [entries]);
 }

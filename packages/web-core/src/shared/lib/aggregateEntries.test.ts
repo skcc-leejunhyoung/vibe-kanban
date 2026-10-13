@@ -219,6 +219,20 @@ describe('collapseCompletedTurnSteps', () => {
     ]);
   });
 
+  it('does not treat a message holding only the summary block as the answer', () => {
+    const status = entry({ type: 'assistant_message' });
+    status.content.content = '```vibe-status\n요약이에요.\n```';
+    expect(
+      shape(collapse([user(), read(), answer(), thinking(), status]))
+    ).toEqual([
+      'user_message',
+      'steps(NORMALIZED_ENTRY)',
+      'assistant_message',
+      'thinking',
+      'assistant_message',
+    ]);
+  });
+
   it('is idempotent', () => {
     const once = collapse([user(), read(), answer()]);
     expect(collapseCompletedTurnSteps(once)).toEqual(once);

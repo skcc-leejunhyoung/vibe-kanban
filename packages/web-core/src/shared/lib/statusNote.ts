@@ -41,9 +41,8 @@ export function splitStatusSegments(content: string): StatusSegment[] {
     if (fence) {
       let run = 0;
       while (delimiter[run] === fence.marker) run++;
-      const closing =
-        run >= fence.count &&
-        delimiter.replace(new RegExp(`\\${fence.marker}+$`), '').trim() === '';
+      // CommonMark: a closing fence may carry trailing whitespace.
+      const closing = run >= fence.count && delimiter.slice(run).trim() === '';
       if (fence.status) {
         if (closing) {
           flush();
@@ -83,6 +82,52 @@ export function splitStatusSegments(content: string): StatusSegment[] {
     });
   } else flush();
   return segments;
+}
+
+/** Upper bound on visible characters the server keeps. */
+export const STATUS_MAX_VISIBLE_CHARS = 1000;
+
+/**
+ * Mirrors the server's cut: the first `max` visible characters, a link kept
+ * whole or reduced to its (shortened) label, and an ellipsis when cut. The
+ * client applies it so a streamed block equals the note the row will hold.
+ */
+export function statusTruncate(
+  text: string,
+  max = STATUS_MAX_VISIBLE_CHARS
+): string {
+  let out = '';
+  let count = 0;
+  let last = 0;
+  let cut = false;
+  const push = (slice: string) => {
+    for (const ch of slice) {
+      if (count === max) {
+        cut = true;
+        return false;
+      }
+      out += ch;
+      count += 1;
+    }
+    return true;
+  };
+  for (const match of text.matchAll(LINK)) {
+    const [whole, label] = match;
+    const index = match.index ?? 0;
+    if (!push(text.slice(last, index))) break;
+    const labelLength = [...label].length;
+    if (count + labelLength <= max) {
+      out += whole;
+      count += labelLength;
+    } else {
+      push(label);
+      cut = true;
+      break;
+    }
+    last = index + whole.length;
+  }
+  if (!cut) push(text.slice(last));
+  return cut ? `${out.trimEnd()}…` : out;
 }
 
 /** The summary a message currently ends with; a later block replaces an earlier one. */

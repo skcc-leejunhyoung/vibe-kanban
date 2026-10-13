@@ -79,7 +79,7 @@ async fn streamed_status_blocks_reach_the_workspace_row() {
         execution,
         session,
         None,
-        Some(StatusNoteObserver::new(pool.clone(), workspace.id, None)),
+        Some(StatusNoteObserver::new(pool.clone(), workspace.id)),
     );
 
     // Streaming: the fence is still open, so nothing is stored yet.
@@ -261,4 +261,31 @@ async fn set_status_note_streams_the_row_through_the_update_hook() {
     .expect("the update hook must stream the replaced workspace row");
     assert!(streamed["value"]["status_updated_at"].is_string());
     assert_eq!(streamed["value"]["name"], "Status");
+}
+
+/// Readers of the final message skip a block-only message and fall through
+/// to the agent's last real prose.
+#[tokio::test]
+async fn final_message_readers_skip_block_only_messages() {
+    use services::services::container::assistant_message_in_store;
+
+    let store = MsgStore::new();
+    store.push_patch(ConversationPatch::add_normalized_entry(
+        0,
+        message(
+            NormalizedEntryType::AssistantMessage,
+            "Done. VIBE_RESULT: done",
+        ),
+    ));
+    store.push_patch(ConversationPatch::add_normalized_entry(
+        1,
+        message(
+            NormalizedEntryType::AssistantMessage,
+            "```vibe-status\n마무리 요약이에요.\n``` ",
+        ),
+    ));
+    assert_eq!(
+        assistant_message_in_store(&store).as_deref(),
+        Some("Done. VIBE_RESULT: done")
+    );
 }

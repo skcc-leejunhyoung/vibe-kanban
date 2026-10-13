@@ -689,14 +689,15 @@ impl Workspace {
 
     /// Replace the agent's live summary. `updated_at` stays untouched: the
     /// summary changes several times per turn and must not reorder the list or
-    /// reset the expiry clock. The update hook streams the row to clients.
+    /// reset the expiry clock. An unchanged note is a no-op, so the update hook
+    /// streams the row to clients only when the summary really changed.
     pub async fn set_status_note(
         pool: &SqlitePool,
         workspace_id: Uuid,
         note: &str,
     ) -> Result<(), sqlx::Error> {
         sqlx::query!(
-            "UPDATE workspaces SET status_note = $1, status_updated_at = datetime('now', 'subsec') WHERE id = $2",
+            "UPDATE workspaces SET status_note = $1, status_updated_at = datetime('now', 'subsec') WHERE id = $2 AND status_note IS NOT $1",
             note,
             workspace_id
         )

@@ -202,17 +202,19 @@ const ARTIFACT_INSTRUCTIONS: &str = "[Artifacts]\n\
              \n\
              [Status]\n\
              Keep a live summary of this workspace for someone who has not seen the task. \
-             Write it as a fenced code block tagged vibe-status (```vibe-status) holding one plain \
-             paragraph in the user's language. The first sentence says what this work is and how far \
-             it has come; then the request or symptom, what you verified (with numbers), what remains, \
-             and any decision you need from the user. No labels, bullet points, headings, file names \
-             or function names. Stay under 1000 visible characters; markdown links such as \
+             Write it as a fenced code block whose opening line is exactly ```vibe-status and whose \
+             closing line is exactly ```, written in one piece in a single message, in the user's \
+             language. It is plain prose: one paragraph, or two when the reader must act on something \
+             such as a question. The first sentence says what this work is and how far it has come; \
+             then the request or symptom, what you verified (with numbers), what remains, and any \
+             decision you need from the user. No labels, bullet points, headings, file names or \
+             function names. Stay under 1000 visible characters; markdown links such as \
              [text](relative/path \"vibe-artifact\") are allowed and their markup is not counted. \
              Rewrite the whole block whenever the situation changes: when you start a turn, after a \
-             meaningful result, and before you finish. Use a blank line only before something the \
-             reader must act on, such as a question. The block is stored as the workspace summary \
-             and hidden from the message, so do not repeat it in prose. Skip the block entirely when \
-             the task prescribes a different final output format, such as a JSON answer.";
+             meaningful result, and before you finish. The app stores the block as the workspace \
+             summary and shows a small marker in its place, so do not repeat it in prose. Skip the \
+             block only when the entire reply must be machine-readable, such as a JSON-only answer; \
+             a required final line such as VIBE_RESULT: still follows the block.";
 
 #[cfg(test)]
 mod tests {
