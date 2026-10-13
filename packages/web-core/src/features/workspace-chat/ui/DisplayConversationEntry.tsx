@@ -50,11 +50,7 @@ import {
   splitArtifactSegments,
   subagentScope,
 } from './artifact-preview';
-import {
-  splitStatusSegments,
-  statusFirstSentence,
-  type StatusSegment,
-} from '@/shared/lib/statusNote';
+import { statusFirstSentence } from '@/shared/lib/statusNote';
 import { StatusNoteChip } from '@vibe/ui/components/WorkspaceStatusStrip';
 import { formatClock } from '@/shared/lib/date';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
@@ -127,10 +123,10 @@ type Props = {
   artifactSegments?: PlacedSegment[];
 };
 
-type StatusBlockSegment = Extract<StatusSegment, { kind: 'status' }>;
+type StatusBlockSegment = Extract<ArtifactSegment, { kind: 'status' }>;
 
 type PlacedSegment = {
-  segment: ArtifactSegment | StatusBlockSegment;
+  segment: ArtifactSegment;
   artifact?: ArtifactReference;
 };
 
@@ -468,7 +464,6 @@ function DisplayConversationEntry(props: Props) {
       return (
         <AssistantMessageEntry
           content={entry.content}
-          timestamp={entry.timestamp}
           segments={
             props.artifactSegments ?? [
               { segment: { kind: 'markdown', text: entry.content } },
@@ -1117,24 +1112,24 @@ const EMPTY_ARTIFACTS: ArtifactReference[] = [];
  */
 function AssistantMessageEntry({
   content,
-  timestamp,
   segments,
   workspaceId,
   sessionId,
   executionProcessId,
 }: {
   content: string;
-  timestamp: string | null;
   segments: PlacedSegment[];
   workspaceId: string | undefined;
   sessionId: string | undefined;
   executionProcessId: string;
 }) {
   // A block left open by a killed or finished process is not being written.
+  // Entries carry no timestamp, so the chip is dated like the strip's history:
+  // by the turn that produced it.
   const process = useContext(ExecutionProcessesContext)
     ?.executionProcessesByIdAll[executionProcessId];
   const processRunning = process?.status === ExecutionProcessStatus.running;
-  const chipTime = timestamp ?? (process ? String(process.started_at) : null);
+  const chipTime = process?.completed_at ?? process?.started_at ?? null;
   const parts: (string | ArtifactReference | StatusBlockSegment)[] = [];
   for (const { segment, artifact } of segments) {
     if (artifact && workspaceId && sessionId) {
@@ -1972,22 +1967,12 @@ const DisplayConversationEntrySpaced = (props: Props) => {
       : undefined;
   const segments = useMemo(
     () =>
-      entryContent === undefined
-        ? []
-        : splitStatusSegments(entryContent).flatMap(
-            (segment): (ArtifactSegment | StatusBlockSegment)[] =>
-              segment.kind === 'status'
-                ? [segment]
-                : splitArtifactSegments(segment.text)
-          ),
+      entryContent === undefined ? [] : splitArtifactSegments(entryContent),
     [entryContent]
   );
   const placed = segments.map((segment) => ({
     segment,
-    artifact:
-      segment.kind === 'status'
-        ? undefined
-        : findSegmentArtifact(segment, all, owned),
+    artifact: findSegmentArtifact(segment, all, owned),
   }));
   // The message body renders these at their attachment line already.
   const consumed = new Set(placed.map(({ artifact }) => artifact?.id));

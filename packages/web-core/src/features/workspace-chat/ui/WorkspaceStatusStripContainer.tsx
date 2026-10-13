@@ -9,18 +9,15 @@ import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { useHostId } from '@/shared/providers/HostIdProvider';
-import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
+import {
+  PERSIST_KEYS,
+  usePersistedExpanded,
+} from '@/shared/stores/useUiPreferencesStore';
 import { formatClock, formatRelativeTime } from '@/shared/lib/date';
 import { statusFirstSentence, statusParagraphs } from '@/shared/lib/statusNote';
 import { useLiveStatus } from '../model/hooks/useLiveStatus';
 import { ArtifactPreviewDialog, useExecutionArtifacts } from './ArtifactCards';
 import { findSegmentArtifact } from './artifact-preview';
-
-const OPEN_KEY = 'workspace-status-strip';
-
-// ts-rs types these as Date; the wire carries ISO strings.
-const iso = (value: unknown) =>
-  value ? new Date(value as string).toISOString() : null;
 
 /**
  * Feeds the strip from two sources: the block streaming in the running
@@ -36,12 +33,14 @@ export function WorkspaceStatusStripContainer({
 }) {
   const hostId = useHostId();
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
-  const row = useMemo(
-    () =>
-      activeWorkspaces.find((workspace) => workspace.id === workspaceId) ??
-      archivedWorkspaces.find((workspace) => workspace.id === workspaceId),
-    [activeWorkspaces, archivedWorkspaces, workspaceId]
-  );
+  const row = useMemo(() => {
+    const rows = [...activeWorkspaces, ...archivedWorkspaces].filter(
+      (workspace) => workspace.id === workspaceId
+    );
+    return (
+      rows.find((workspace) => (workspace.hostId ?? null) === hostId) ?? rows[0]
+    );
+  }, [activeWorkspaces, archivedWorkspaces, workspaceId, hostId]);
   const { draft, history } = useLiveStatus();
   // Optional: pages outside a pane scope fall back to the row's running flag.
   const processes = useContext(ExecutionProcessesContext);
@@ -59,7 +58,7 @@ export function WorkspaceStatusStripContainer({
   const processTime = useCallback(
     (id: string) => {
       const process = processById?.[id];
-      return iso(process?.completed_at ?? process?.started_at);
+      return process?.completed_at ?? process?.started_at ?? null;
     },
     [processById]
   );
@@ -78,13 +77,21 @@ export function WorkspaceStatusStripContainer({
     return current ? [{ text: current, at: currentAt }, ...past] : past;
   }, [current, currentAt, history, processTime]);
 
-  const [view, setView] = useState(0);
+  // The reader's position is the summary text, not an index, so a new block
+  // arriving in front does not change what they are looking at.
+  const [viewedText, setViewedText] = useState<string | null>(null);
+  const viewIndex = viewedText
+    ? Math.max(
+        0,
+        items.findIndex((item) => item.text === viewedText)
+      )
+    : 0;
   // A newly stored summary returns the reader to the latest one; tokens of a
-  // streaming block do not yank them away from an earlier summary.
+  // streaming block do not.
   useEffect(() => {
-    if (!streaming) setView(0);
+    if (!streaming) setViewedText(null);
   }, [current, streaming]);
-  const viewed = items[Math.min(view, items.length - 1)];
+  const viewed = items[viewIndex];
   const paragraphs = useMemo(
     () => (viewed ? statusParagraphs(viewed.text) : []),
     [viewed]
@@ -96,12 +103,14 @@ export function WorkspaceStatusStripContainer({
     return () => window.clearInterval(timer);
   }, []);
 
-  const open = useUiPreferencesStore((s) => s.expanded[OPEN_KEY] ?? false);
-  const toggleExpanded = useUiPreferencesStore((s) => s.toggleExpanded);
-  const onToggle = useCallback(
-    () => toggleExpanded(OPEN_KEY, false),
-    [toggleExpanded]
+  const [open, toggle] = usePersistedExpanded(
+    PERSIST_KEYS.workspaceStatusStrip,
+    false
   );
+  const onToggle = useCallback(() => {
+    setViewedText(null);
+    toggle();
+  }, [toggle]);
 
   // Attachments are looked up on the process that wrote the block, else the
   // session's latest process; a stored note from an older session falls
@@ -158,7 +167,7 @@ export function WorkspaceStatusStripContainer({
             row?.latestProcessStatus === 'killed'
           ? 'failed'
           : 'idle';
-  const isPast = view > 0 && view < items.length;
+  const isPast = viewIndex > 0;
   const timeLabel = isPast
     ? viewed.at
       ? formatClock(viewed.at)
@@ -179,10 +188,16 @@ export function WorkspaceStatusStripContainer({
       timeLabel={timeLabel}
       open={open}
       onToggle={onToggle}
-      canPrev={view < items.length - 1}
-      canNext={view > 0}
-      onPrev={() => setView((v) => Math.min(v + 1, items.length - 1))}
-      onNext={() => setView((v) => Math.max(v - 1, 0))}
+      canPrev={viewIndex < items.length - 1}
+      canNext={viewIndex > 0}
+      onPrev={() => {
+        const older = items[viewIndex + 1];
+        if (older) setViewedText(older.text);
+      }}
+      onNext={() => {
+        const newer = items[viewIndex - 1];
+        setViewedText(viewIndex - 1 > 0 && newer ? newer.text : null);
+      }}
       onOpenLink={onOpenLink}
     />
   );

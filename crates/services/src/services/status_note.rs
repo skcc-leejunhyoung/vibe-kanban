@@ -19,11 +19,13 @@ pub struct StatusNoteObserver {
 }
 
 impl StatusNoteObserver {
-    pub fn new(pool: SqlitePool, workspace_id: Uuid) -> Self {
+    /// `saved` seeds the dedupe with the note already on the row, so a turn
+    /// that opens by restating it neither rewrites nor rebroadcasts it.
+    pub fn new(pool: SqlitePool, workspace_id: Uuid, saved: Option<String>) -> Self {
         Self {
             pool,
             workspace_id,
-            saved: None,
+            saved,
             open: None,
         }
     }
@@ -34,14 +36,14 @@ impl StatusNoteObserver {
         if !matches!(entry.entry_type, NormalizedEntryType::AssistantMessage) {
             return;
         }
-        let Some(block) = status_note::extract_last_block(&entry.content) else {
-            return;
-        };
-        if block.closed {
-            self.open = None;
-            self.store(block.text).await;
-        } else {
-            self.open = Some(block.text);
+        match status_note::extract_last_block(&entry.content) {
+            Some(block) if block.closed => {
+                self.open = None;
+                self.store(block.text).await;
+            }
+            Some(block) => self.open = Some(block.text),
+            // The agent moved on without closing its block: nothing to keep.
+            None => self.open = None,
         }
     }
 
@@ -110,7 +112,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let mut observer = StatusNoteObserver::new(pool.clone(), id);
+        let mut observer = StatusNoteObserver::new(pool.clone(), id, None);
 
         // Streaming: the fence is still open, nothing is stored yet.
         observer
@@ -145,6 +147,61 @@ mod tests {
         assert_eq!(
             note(&pool, id).await.as_deref(),
             Some("테스트를 돌리는 중이에요")
+        );
+    }
+
+    #[tokio::test]
+    async fn abandoned_open_block_and_restated_note_leave_the_row_alone() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE workspaces (id BLOB PRIMARY KEY, status_note TEXT, status_updated_at TEXT);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, status_note) VALUES (?, ?)")
+            .bind(id)
+            .bind("이미 저장된 요약이에요.")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut observer =
+            StatusNoteObserver::new(pool.clone(), id, Some("이미 저장된 요약이에요.".into()));
+
+        // A new turn that restates the stored note must not touch the row.
+        observer
+            .observe_entry(&message(
+                "```vibe-status
+이미 저장된 요약이에요.
+```",
+            ))
+            .await;
+        let stamped: Option<String> =
+            sqlx::query_scalar("SELECT status_updated_at FROM workspaces WHERE id = ?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stamped, None);
+
+        // A block left open, then a later message without one: the agent
+        // abandoned it, so completion keeps the stored note.
+        observer
+            .observe_entry(&message(
+                "```vibe-status
+중간에 끊긴",
+            ))
+            .await;
+        observer.observe_entry(&message("Done.")).await;
+        observer.finish().await;
+        assert_eq!(
+            note(&pool, id).await.as_deref(),
+            Some("이미 저장된 요약이에요.")
         );
     }
 }

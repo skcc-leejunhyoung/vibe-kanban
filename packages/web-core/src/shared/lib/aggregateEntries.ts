@@ -8,6 +8,7 @@ import type {
   ToolAggregationType,
   TurnStepEntry,
 } from '@/shared/hooks/useConversationHistory/types';
+import { splitStatusSegments } from '@/shared/lib/statusNote';
 
 /**
  * Checks if a patch entry is a user_message entry.
@@ -352,12 +353,14 @@ function isUnfinishedEntry(entry: DisplayEntry): boolean {
 function collapseTurn(turn: TurnStepEntry[]): DisplayEntry[] {
   if (turn.length === 0 || turn.some(isUnfinishedEntry)) return turn;
   // A blank assistant message (a streaming placeholder that never filled)
-  // is not an answer.
+  // or one holding only the live summary block is not an answer.
   let answerIndex = turn.findLastIndex(
     (entry) =>
       isEntryOfType(entry, 'assistant_message') &&
       entry.type === 'NORMALIZED_ENTRY' &&
-      entry.content.content.trim() !== ''
+      splitStatusSegments(entry.content.content).some(
+        (segment) => segment.kind === 'markdown'
+      )
   );
   if (answerIndex < 0) {
     // No answer: keep the errors the turn ended with in view, or else the

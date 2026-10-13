@@ -43,7 +43,12 @@ describe('WorkspaceStatusStrip', () => {
     expect(html).toContain('animate-running-dot-1');
     expect(html).toContain('border-l-brand');
     expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-live="polite"');
     expect(html).not.toContain('이대로 진행할지');
+    const streaming = renderToStaticMarkup(
+      <WorkspaceStatusStrip {...base} streaming />
+    );
+    expect(streaming).toContain('aria-busy="true"');
   });
 
   it('expanded: hides the headline, renders paragraphs and link buttons', () => {

@@ -79,7 +79,7 @@ async fn streamed_status_blocks_reach_the_workspace_row() {
         execution,
         session,
         None,
-        Some(StatusNoteObserver::new(pool.clone(), workspace.id)),
+        Some(StatusNoteObserver::new(pool.clone(), workspace.id, None)),
     );
 
     // Streaming: the fence is still open, so nothing is stored yet.

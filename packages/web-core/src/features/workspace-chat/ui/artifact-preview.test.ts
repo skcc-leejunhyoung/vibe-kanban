@@ -226,6 +226,36 @@ describe('artifact segments', () => {
     ).toHaveLength(1);
   });
 
+  it('reports summary fences as segments without shifting backend ordinals', () => {
+    const text = [
+      'Intro',
+      '```vibe-status',
+      '로그인 문제를 고치고 있어요.',
+      '```',
+      '```html vibe-artifact',
+      '<html><body>hi</body></html>',
+      '```',
+      '  ~~~VIBE-STATUS',
+      '아직 쓰는 중',
+    ].join('\n');
+    expect(splitArtifactSegments(text)).toEqual([
+      { kind: 'markdown', text: 'Intro' },
+      { kind: 'status', text: '로그인 문제를 고치고 있어요.', closed: true },
+      {
+        kind: 'inline',
+        raw: '```html vibe-artifact\n<html><body>hi</body></html>\n```',
+        name: 'block-1.html',
+      },
+      { kind: 'status', text: '아직 쓰는 중', closed: false },
+    ]);
+    // A quoted example inside another fence stays ordinary markdown.
+    expect(
+      splitArtifactSegments('````md\n```vibe-status\nquoted\n```\n````')
+    ).toEqual([
+      { kind: 'markdown', text: '````md\n```vibe-status\nquoted\n```\n````' },
+    ]);
+  });
+
   it('matches segments to registered artifacts by workspace path', () => {
     const base: ArtifactReference = {
       id: 'base',

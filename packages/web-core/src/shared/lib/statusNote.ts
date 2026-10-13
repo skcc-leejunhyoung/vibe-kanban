@@ -103,12 +103,13 @@ export function statusPlainText(text: string): string {
 
 /**
  * The sentence the collapsed strip, sidebar row and issue card show. Ends at
- * the first terminal punctuation followed by whitespace, so "0.8초" never
- * cuts a sentence; a summary without one is clipped to 80 characters.
+ * the first terminal punctuation followed by whitespace (so "0.8초" never
+ * cuts a sentence) or at a full-width stop; a summary without one is clipped
+ * to 80 characters.
  */
 export function statusFirstSentence(text: string): string {
   const plain = statusPlainText(text).replace(/\s+/g, ' ').trim();
-  const match = plain.match(/^(.+?[.!?])(?=\s|$)/);
+  const match = plain.match(/^(.+?(?:[.!?](?=\s|$)|[。！？]))/);
   if (match) return match[1];
   return plain.length > 80 ? `${plain.slice(0, 80)}…` : plain;
 }

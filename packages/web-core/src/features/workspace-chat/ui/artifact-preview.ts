@@ -203,7 +203,9 @@ export type ArtifactSegment =
   | { kind: 'markdown'; text: string }
   | { kind: 'file'; raw: string; path: string }
   | { kind: 'url'; raw: string; url: string }
-  | { kind: 'inline'; raw: string; name: string };
+  | { kind: 'inline'; raw: string; name: string }
+  /** A `vibe-status` summary fence; `closed` is false while it streams. */
+  | { kind: 'status'; text: string; closed: boolean };
 
 // Same standalone-line rule as executors::logs::artifacts::LINK.
 const ARTIFACT_LINK =
@@ -263,9 +265,18 @@ export function splitArtifactSegments(content: string): ArtifactSegment[] {
     marker: string;
     count: number;
     language: string;
+    status: boolean;
     lines: string[];
   } | null = null;
   let ordinal = 0;
+  const statusSegment = (lines: string[], closed: boolean) => {
+    flush();
+    segments.push({
+      kind: 'status',
+      text: lines.slice(1).join('\n').trim(),
+      closed,
+    });
+  };
   for (const rawLine of content.split('\n')) {
     const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
     // Markdown allows up to three leading spaces on fence delimiters.
@@ -279,6 +290,13 @@ export function splitArtifactSegments(content: string): ArtifactSegment[] {
         delimiter.replace(new RegExp(`\\${marker}+$`), '').trim() === '';
       if (!closing) {
         fence.lines.push(line);
+        continue;
+      }
+      // The summary fence counts towards the backend's inline ordinals too.
+      if (fence.status) {
+        statusSegment(fence.lines, true);
+        ordinal += 1;
+        fence = null;
         continue;
       }
       const source = fence.lines.slice(1).join('\n').trim();
@@ -307,6 +325,7 @@ export function splitArtifactSegments(content: string): ArtifactSegment[] {
           language: info.endsWith(' vibe-artifact')
             ? info.slice(0, -' vibe-artifact'.length).toLowerCase()
             : '',
+          status: info.toLowerCase() === 'vibe-status',
           lines: [line],
         };
         continue;
@@ -348,7 +367,8 @@ export function splitArtifactSegments(content: string): ArtifactSegment[] {
     }
     markdown.push(line);
   }
-  if (fence) markdown.push(...fence.lines);
+  if (fence?.status) statusSegment(fence.lines, false);
+  else if (fence) markdown.push(...fence.lines);
   flush();
   return segments;
 }
@@ -363,7 +383,8 @@ export function findSegmentArtifact(
   artifacts: ArtifactReference[],
   owned: ArtifactReference[]
 ): ArtifactReference | undefined {
-  if (segment.kind === 'markdown') return undefined;
+  if (segment.kind === 'markdown' || segment.kind === 'status')
+    return undefined;
   if (segment.kind === 'url')
     return artifacts.find((artifact) => artifact.url === segment.url);
   if (segment.kind === 'inline')

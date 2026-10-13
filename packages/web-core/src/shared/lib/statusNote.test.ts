@@ -64,6 +64,17 @@ describe('statusFirstSentence', () => {
     );
   });
 
+  it('ends at full-width stops without needing a space after them', () => {
+    expect(
+      statusFirstSentence(
+        'ログイン直後の画面が空になる問題を直しています。次にテストを流します。'
+      )
+    ).toBe('ログイン直後の画面が空になる問題を直しています。');
+    expect(statusFirstSentence('修复登录后白屏的问题！正在跑测试。')).toBe(
+      '修复登录后白屏的问题！'
+    );
+  });
+
   it('clips a summary without sentence punctuation', () => {
     expect(statusFirstSentence('가'.repeat(100))).toBe(`${'가'.repeat(80)}…`);
     expect(statusFirstSentence('short')).toBe('short');

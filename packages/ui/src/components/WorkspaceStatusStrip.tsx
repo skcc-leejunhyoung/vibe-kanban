@@ -99,7 +99,7 @@ export function WorkspaceStatusStrip({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        aria-label={open ? t('status.collapse') : t('status.expand')}
+        title={open ? t('status.collapse') : t('status.expand')}
         className="flex w-full items-center gap-base px-base py-half text-left"
       >
         <span className="flex w-4 shrink-0 items-center justify-center">
@@ -108,7 +108,8 @@ export function WorkspaceStatusStrip({
         {!open && (
           <span
             className="min-w-0 flex-1 truncate text-sm text-high"
-            aria-live={streaming ? 'off' : 'polite'}
+            aria-live="polite"
+            aria-busy={streaming}
           >
             {headline}
           </span>
