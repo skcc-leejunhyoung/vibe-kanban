@@ -139,9 +139,10 @@ pub fn assistant_message_in_store(msg_store: &MsgStore) -> Option<String> {
             && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
             && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
         {
-            let content = entry.content.trim();
+            // The live summary block is workspace state, not part of the answer.
+            let content = executors::logs::status_note::strip_blocks(&entry.content);
             if !content.is_empty() {
-                return Some(content.to_string());
+                return Some(content);
             }
         }
     }
@@ -1347,11 +1348,12 @@ pub trait ContainerService {
         );
 
         let execution_process = self
-            .start_execution(
+            .start_execution_with_status_note(
                 &workspace,
                 &session,
                 &coding_action,
                 &ExecutionProcessRunReason::CodingAgent,
+                false,
             )
             .await?;
 
@@ -1607,11 +1609,32 @@ pub trait ContainerService {
         executor_action: &ExecutorAction,
         run_reason: &ExecutionProcessRunReason,
     ) -> Result<ExecutionProcess, ContainerError> {
+        self.start_execution_with_status_note(workspace, session, executor_action, run_reason, true)
+            .await
+    }
+
+    /// [`Self::start_execution`] with a switch for the live summary. One-shot
+    /// helpers (PR text, spec intake) pass `false` so their own `vibe-status`
+    /// block never lands on the user's workspace.
+    async fn start_execution_with_status_note(
+        &self,
+        workspace: &Workspace,
+        session: &Session,
+        executor_action: &ExecutorAction,
+        run_reason: &ExecutionProcessRunReason,
+        status_note: bool,
+    ) -> Result<ExecutionProcess, ContainerError> {
         let execution_process = self
             .create_execution_record(workspace, session, executor_action, run_reason)
             .await?;
-        self.finish_execution_spawn(workspace, session, &execution_process, executor_action)
-            .await?;
+        self.finish_execution_spawn_with_status_note(
+            workspace,
+            session,
+            &execution_process,
+            executor_action,
+            status_note,
+        )
+        .await?;
         Ok(execution_process)
     }
 
@@ -1965,6 +1988,24 @@ pub trait ContainerService {
         execution_process: &ExecutionProcess,
         executor_action: &ExecutorAction,
     ) -> Result<(), ContainerError> {
+        self.finish_execution_spawn_with_status_note(
+            workspace,
+            session,
+            execution_process,
+            executor_action,
+            true,
+        )
+        .await
+    }
+
+    async fn finish_execution_spawn_with_status_note(
+        &self,
+        workspace: &Workspace,
+        session: &Session,
+        execution_process: &ExecutionProcess,
+        executor_action: &ExecutorAction,
+        status_note: bool,
+    ) -> Result<(), ContainerError> {
         if ExecutionProcess::find_by_id(&self.db().pool, execution_process.id)
             .await?
             .is_none_or(|process| process.status != ExecutionProcessStatus::Running)
@@ -1995,9 +2036,12 @@ pub trait ContainerService {
             }
             _ => None,
         };
-        let status_observer = artifact_working_dir.as_ref().map(|_| {
-            super::status_note::StatusNoteObserver::new(self.db().pool.clone(), workspace.id)
-        });
+        // Throwaway runs (spec intake's ephemeral workspace, PR text helpers)
+        // never own the workspace summary.
+        let status_observer = (status_note
+            && !workspace.ephemeral
+            && artifact_working_dir.is_some())
+        .then(|| super::status_note::StatusNoteObserver::new(self.db().pool.clone(), workspace.id));
         let mut artifact_observer = if let Some(working_dir) = artifact_working_dir {
             match super::file::FileService::new(self.db().pool.clone()) {
                 Ok(files) => super::artifacts::ArtifactObserver::start(

@@ -11,7 +11,8 @@ export interface LiveStatusDraft {
 
 export interface StatusHistoryItem {
   text: string;
-  at: string | null;
+  /** Entries carry no timestamp; the process that produced it dates it. */
+  executionProcessId: string;
 }
 
 /**
@@ -43,7 +44,10 @@ export function useLiveStatus(): {
         block.text &&
         history[history.length - 1]?.text !== block.text
       )
-        history.push({ text: block.text, at: entry.content.timestamp });
+        history.push({
+          text: block.text,
+          executionProcessId: entry.executionProcessId,
+        });
     }
     history.reverse();
     return { draft, history };

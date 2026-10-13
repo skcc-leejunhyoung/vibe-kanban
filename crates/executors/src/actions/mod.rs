@@ -211,7 +211,8 @@ const ARTIFACT_INSTRUCTIONS: &str = "[Artifacts]\n\
              Rewrite the whole block whenever the situation changes: when you start a turn, after a \
              meaningful result, and before you finish. Use a blank line only before something the \
              reader must act on, such as a question. The block is stored as the workspace summary \
-             and hidden from the message, so do not repeat it in prose.";
+             and hidden from the message, so do not repeat it in prose. Skip the block entirely when \
+             the task prescribes a different final output format, such as a JSON answer.";
 
 #[cfg(test)]
 mod tests {

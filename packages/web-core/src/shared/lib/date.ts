@@ -34,7 +34,8 @@ export function formatRelativeTime(dateString: string): string {
   return `${diffDays}d ago`;
 }
 
-function formatClock(dateString: string): string {
+/** Clock time only, e.g. "15:28" (KST). */
+export function formatClock(dateString: string): string {
   return new Date(dateString).toLocaleTimeString(
     undefined,
     withDisplayTimeZone({

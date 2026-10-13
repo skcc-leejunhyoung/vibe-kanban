@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   CaretDownIcon,
@@ -75,14 +75,17 @@ export function WorkspaceStatusStrip({
   onOpenLink,
 }: WorkspaceStatusStripProps) {
   const { t } = useTranslation('common');
-  // A new summary tints the strip for a moment so the change is noticed.
+  // A newly settled summary tints the strip for a moment so the change is
+  // noticed; streaming tokens and browsing earlier summaries do not.
   const [flash, setFlash] = useState(false);
+  const settled = useRef(headline);
   useEffect(() => {
-    if (isPast) return;
+    if (isPast || streaming || settled.current === headline) return;
+    settled.current = headline;
     setFlash(true);
     const timer = window.setTimeout(() => setFlash(false), 900);
     return () => window.clearTimeout(timer);
-  }, [headline, isPast]);
+  }, [headline, isPast, streaming]);
   return (
     <div
       className={cn(
@@ -105,14 +108,18 @@ export function WorkspaceStatusStrip({
         {!open && (
           <span
             className="min-w-0 flex-1 truncate text-sm text-high"
-            aria-live="polite"
+            aria-live={streaming ? 'off' : 'polite'}
           >
             {headline}
           </span>
         )}
         {open && <span className="flex-1" />}
         <span className="shrink-0 text-xs text-low tabular-nums">
-          {isPast ? `${t('status.past')} · ${timeLabel}` : timeLabel}
+          {isPast
+            ? timeLabel
+              ? `${t('status.past')} · ${timeLabel}`
+              : t('status.past')
+            : timeLabel}
         </span>
         <CaretDownIcon
           className={cn(
@@ -189,9 +196,12 @@ export function WorkspaceStatusStrip({
 export function StatusNoteChip({
   headline,
   writing,
+  time,
 }: {
   headline: string;
   writing: boolean;
+  /** Clock time of the message that carried the block. */
+  time?: string;
 }) {
   const { t } = useTranslation('common');
   return (
@@ -207,6 +217,9 @@ export function StatusNoteChip({
       </span>
       {headline && (
         <span className="min-w-0 truncate text-normal">{headline}</span>
+      )}
+      {time && !writing && (
+        <span className="shrink-0 text-low tabular-nums">{time}</span>
       )}
     </div>
   );

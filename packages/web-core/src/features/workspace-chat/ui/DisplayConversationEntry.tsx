@@ -56,6 +56,7 @@ import {
   type StatusSegment,
 } from '@/shared/lib/statusNote';
 import { StatusNoteChip } from '@vibe/ui/components/WorkspaceStatusStrip';
+import { formatClock } from '@/shared/lib/date';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
@@ -467,6 +468,7 @@ function DisplayConversationEntry(props: Props) {
       return (
         <AssistantMessageEntry
           content={entry.content}
+          timestamp={entry.timestamp}
           segments={
             props.artifactSegments ?? [
               { segment: { kind: 'markdown', text: entry.content } },
@@ -1115,17 +1117,24 @@ const EMPTY_ARTIFACTS: ArtifactReference[] = [];
  */
 function AssistantMessageEntry({
   content,
+  timestamp,
   segments,
   workspaceId,
   sessionId,
   executionProcessId,
 }: {
   content: string;
+  timestamp: string | null;
   segments: PlacedSegment[];
   workspaceId: string | undefined;
   sessionId: string | undefined;
   executionProcessId: string;
 }) {
+  // A block left open by a killed or finished process is not being written.
+  const process = useContext(ExecutionProcessesContext)
+    ?.executionProcessesByIdAll[executionProcessId];
+  const processRunning = process?.status === ExecutionProcessStatus.running;
+  const chipTime = timestamp ?? (process ? String(process.started_at) : null);
   const parts: (string | ArtifactReference | StatusBlockSegment)[] = [];
   for (const { segment, artifact } of segments) {
     if (artifact && workspaceId && sessionId) {
@@ -1162,7 +1171,8 @@ function AssistantMessageEntry({
             <StatusNoteChip
               key={index}
               headline={statusFirstSentence(part.text)}
-              writing={!part.closed}
+              writing={!part.closed && processRunning}
+              time={chipTime ? formatClock(chipTime) : undefined}
             />
           ) : (
             // The same file may be attached on two lines of one message.

@@ -26,7 +26,7 @@ import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import { RunningDots } from './RunningDots';
 import { GithubIssueBadge, PrBadge } from './PrBadge';
 
-export const formatRelativeElapsed = (dateString: string): string => {
+const formatRelativeElapsed = (dateString: string): string => {
   const date = new Date(dateString);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();

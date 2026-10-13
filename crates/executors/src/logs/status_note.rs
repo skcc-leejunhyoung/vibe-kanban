@@ -117,11 +117,6 @@ pub fn strip_blocks(text: &str) -> String {
         .to_string()
 }
 
-/// Characters the reader sees: link markup is not counted, its label is.
-pub fn visible_len(text: &str) -> usize {
-    LINK.replace_all(text, "$1").chars().count()
-}
-
 /// Keeps the first `max` visible characters. A link cut by the limit is kept
 /// as its (shortened) label only, and a cut summary ends with an ellipsis.
 pub fn truncate_visible(text: &str, max: usize) -> String {
@@ -212,16 +207,6 @@ mod tests {
         assert_eq!(strip_blocks(text), "Done.\n\n\nNext steps.");
         assert_eq!(strip_blocks("```vibe-status\nonly\n```"), "");
         assert_eq!(strip_blocks("  plain  "), "plain");
-    }
-
-    #[test]
-    fn visible_length_ignores_link_markup() {
-        let text = "원인은 [응답 지연](notes/root-cause.html \"vibe-artifact\")이고 [이슈](https://x.y/1)로 분리.";
-        assert_eq!(
-            visible_len(text),
-            "원인은 응답 지연이고 이슈로 분리.".chars().count()
-        );
-        assert_eq!(visible_len("plain"), 5);
     }
 
     #[test]
