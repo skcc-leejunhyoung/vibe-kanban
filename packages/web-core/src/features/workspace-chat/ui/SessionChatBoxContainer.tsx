@@ -224,6 +224,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const pendingSendRef = useRef<{
     id: string;
     stopRequested: boolean;
+    /** Real process id once the POST has returned (send may still be
+     * finishing up); until then only the placeholder exists. */
+    processId: string | null;
+    /** Kill the real process: optimistic status + session-scoped stop. */
+    stopReal: (processId: string) => void;
   } | null>(null);
   const [isStopRequested, setIsStopRequested] = useState(false);
   useEffect(() => {
@@ -379,13 +384,20 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const handleStop = useCallback(async () => {
     const pending = pendingSendRef.current;
     if (pending) {
-      // Nothing to kill on the server yet: mark the placeholder and defer the
-      // real stop to the send's completion callback (see handleSend).
+      if (pending.stopRequested) return;
       pending.stopRequested = true;
       setIsStopRequested(true);
-      patchOptimisticProcess(pending.id, {
-        status: ExecutionProcessStatus.killed,
-      });
+      if (pending.processId) {
+        // The POST has returned and the send is only finishing up: the
+        // process exists, so kill it right away.
+        pending.stopReal(pending.processId);
+      } else {
+        // Nothing to kill on the server yet: mark the placeholder; the send's
+        // completion callback kills the real process on arrival.
+        patchOptimisticProcess(pending.id, {
+          status: ExecutionProcessStatus.killed,
+        });
+      }
       return;
     }
     const patchedIds: string[] = [];
@@ -932,26 +944,18 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         0
       )
     );
-    const pendingState = { id: pending.id, stopRequested: false };
-    pendingSendRef.current = pendingState;
-    addOptimisticProcess(pending);
+    // Stop pressed while the send is pending: kill the real process as soon as
+    // it is known. Ids are captured here, not read from hooks, so a session
+    // switch in the meantime can't redirect the stop.
     const deferred: { stop?: Promise<void> } = {};
-    const sending = send(prompt, (process) => {
-      // Swap the placeholder for the real row in one render (no duplicate
-      // turn). The provider drops the add if the user has switched sessions.
-      clearOptimisticProcess(pending.id);
-      addOptimisticProcess(process);
-      if (!pendingState.stopRequested) return;
-      // Stop pressed while the POST was in flight: kill the process now that
-      // it exists. Ids are captured here, not read from hooks, so a session
-      // switch in the meantime can't redirect the stop.
-      patchOptimisticProcess(process.id, {
+    const stopReal = (processId: string) => {
+      patchOptimisticProcess(processId, {
         status: ExecutionProcessStatus.killed,
       });
       deferred.stop = workspacesApi
         .stop(workspaceId, hostId, sessionId)
         .catch((error) => {
-          patchOptimisticProcess(process.id, {
+          patchOptimisticProcess(processId, {
             status: ExecutionProcessStatus.running,
           });
           void ErrorDialog.show({
@@ -959,6 +963,22 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
             message: error instanceof Error ? error.message : String(error),
           });
         });
+    };
+    const pendingState: NonNullable<typeof pendingSendRef.current> = {
+      id: pending.id,
+      stopRequested: false,
+      processId: null,
+      stopReal,
+    };
+    pendingSendRef.current = pendingState;
+    addOptimisticProcess(pending);
+    const sending = send(prompt, (process) => {
+      // Swap the placeholder for the real row in one render (no duplicate
+      // turn). The provider drops the add if the user has switched sessions.
+      clearOptimisticProcess(pending.id);
+      addOptimisticProcess(process);
+      pendingState.processId = process.id;
+      if (pendingState.stopRequested) stopReal(process.id);
     });
     await resetComposer();
     const success = await sending;
