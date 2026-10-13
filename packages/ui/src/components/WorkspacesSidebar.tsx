@@ -243,6 +243,7 @@ function WorkspaceList({
           filesChanged={workspace.filesChanged}
           linesAdded={workspace.linesAdded}
           linesRemoved={workspace.linesRemoved}
+          statusHeadline={workspace.statusHeadline}
           isActive={
             selectedWorkspaceId === workspace.id &&
             selectedWorkspaceOwnerHostId === (workspace.hostId ?? null)
@@ -277,7 +278,6 @@ function WorkspaceList({
           githubIssues={workspace.githubIssues}
           isInPlace={workspace.isInPlace}
           cleanupBlockedReason={workspace.cleanupBlockedReason}
-          statusHeadline={workspace.statusHeadline}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
           onClick={(event) =>
             onSelectWorkspace(workspace.id, workspace.hostId, event)
@@ -516,6 +516,7 @@ export function WorkspacesSidebar({
                   filesChanged={workspace.filesChanged}
                   linesAdded={workspace.linesAdded}
                   linesRemoved={workspace.linesRemoved}
+                  statusHeadline={workspace.statusHeadline}
                   isActive={
                     selectedWorkspaceId === workspace.id &&
                     selectedWorkspaceOwnerHostId === (workspace.hostId ?? null)
@@ -685,6 +686,7 @@ export function WorkspacesSidebar({
                 filesChanged={workspace.filesChanged}
                 linesAdded={workspace.linesAdded}
                 linesRemoved={workspace.linesRemoved}
+                statusHeadline={workspace.statusHeadline}
                 isActive={
                   selectedWorkspaceId === workspace.id &&
                   selectedWorkspaceOwnerHostId === (workspace.hostId ?? null)

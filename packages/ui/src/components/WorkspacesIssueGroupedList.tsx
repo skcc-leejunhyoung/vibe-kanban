@@ -105,6 +105,7 @@ function WorkspaceRows({
           filesChanged={workspace.filesChanged}
           linesAdded={workspace.linesAdded}
           linesRemoved={workspace.linesRemoved}
+          statusHeadline={workspace.statusHeadline}
           isActive={
             selectedWorkspaceId === workspace.id &&
             selectedWorkspaceHostId === (workspace.hostId ?? null)

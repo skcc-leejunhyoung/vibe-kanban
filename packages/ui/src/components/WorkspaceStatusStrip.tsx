@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   CaretDownIcon,
@@ -74,10 +75,19 @@ export function WorkspaceStatusStrip({
   onOpenLink,
 }: WorkspaceStatusStripProps) {
   const { t } = useTranslation('common');
+  // A new summary tints the strip for a moment so the change is noticed.
+  const [flash, setFlash] = useState(false);
+  useEffect(() => {
+    if (isPast) return;
+    setFlash(true);
+    const timer = window.setTimeout(() => setFlash(false), 900);
+    return () => window.clearTimeout(timer);
+  }, [headline, isPast]);
   return (
     <div
       className={cn(
-        'shrink-0 border-b border-l-2 bg-secondary',
+        'shrink-0 border-b border-l-2 transition-colors duration-700',
+        flash ? 'bg-brand/10' : 'bg-secondary',
         STATE_BORDER[state]
       )}
       data-workspace-status-strip

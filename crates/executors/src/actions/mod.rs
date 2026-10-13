@@ -231,6 +231,11 @@ mod tests {
         assert!(prompt.contains("[Title](relative/path \"vibe-artifact\")"));
         assert!(prompt.contains("```mermaid vibe-artifact"));
         assert!(prompt.contains("create or render HTML, SVG or Mermaid"));
+        // The live-summary rules ride along in both the full text and the reminder.
+        assert!(prompt.contains("\n\n[Status]\n"));
+        assert!(prompt.contains("```vibe-status"));
+        assert!(prompt.contains("under 1000 visible characters"));
+        assert!(ARTIFACT_REMINDER.contains("[Status] Keep the vibe-status summary block current"));
     }
 
     #[test]
