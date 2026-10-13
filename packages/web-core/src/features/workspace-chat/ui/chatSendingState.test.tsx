@@ -26,7 +26,6 @@ function render(status: ExecutionStatus, queued = false) {
         onPasteFiles: () => {},
       }}
       queuedMessages={queued ? [{ id: 'q1', message: 'queued one' }] : []}
-      onSteerQueued={() => {}}
       session={{ sessions: [], onSelectSession: () => {} }}
     />
   );
@@ -58,17 +57,12 @@ describe('SessionChatBox while a follow-up send is pending', () => {
     expect(button(html, 'conversation.actions.send')).toBeNull();
   });
 
-  it('withholds "send now" on queued rows too', () => {
-    const sending = render('sending', true);
-    expect(sending).toContain('queued one');
-    expect(button(sending, 'conversation.actions.sendNow')).toEqual({
-      disabled: true,
-    });
-    const running = render('running', true);
-    // Row button (first match) is live once a real process is running.
-    expect(button(running, 'conversation.actions.sendNow')).toEqual({
-      disabled: false,
-    });
+  it('still lists queued rows (the container withholds their "send now")', () => {
+    const html = render('sending', true);
+    expect(html).toContain('queued one');
+    expect(
+      html.match(/aria-label="conversation.actions.sendNow"/g)
+    ).toHaveLength(1);
   });
 
   it('still locks the editor while a session is being created', () => {

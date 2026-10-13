@@ -7,7 +7,9 @@ import {
 } from '@/shared/hooks/useExecutionProcessesContext';
 import {
   belongsToSession,
+  keepOptimisticAdds,
   mergeOptimisticProcesses,
+  reconcileOptimisticOps,
   type OptimisticOp,
 } from './executionProcessScope';
 
@@ -93,35 +95,19 @@ export const ExecutionProcessesProvider: React.FC<{
     });
   }, []);
 
-  // Clear the overlay when the session changes (the provider isn't remounted
-  // per session — only its sessionId prop changes).
+  // On a session change (the provider isn't remounted per session — only its
+  // sessionId prop changes) drop patches/removes; adds are session-guarded in
+  // the merge and survive, so a send still pending for the previous session
+  // shows its turn again when the user returns.
   useEffect(() => {
-    setOptimistic({});
+    setOptimistic(keepOptimisticAdds);
   }, [sessionId]);
 
-  // Drop each op once the stream confirms it.
+  // Drop each op once the stream confirms it (see reconcileOptimisticOps).
   useEffect(() => {
-    setOptimistic((current) => {
-      const ids = Object.keys(current);
-      if (ids.length === 0) return current;
-      let changed = false;
-      const next = { ...current };
-      for (const id of ids) {
-        const op = current[id];
-        const streamed = executionProcessesById[id];
-        let drop = false;
-        if (op.kind === 'add') drop = !!streamed;
-        else if (op.kind === 'remove') drop = !streamed || !!streamed.dropped;
-        else if (op.kind === 'patch')
-          drop =
-            !!streamed && streamed.status !== ExecutionProcessStatus.running;
-        if (drop) {
-          delete next[id];
-          changed = true;
-        }
-      }
-      return changed ? next : current;
-    });
+    setOptimistic((current) =>
+      reconcileOptimisticOps(current, executionProcessesById)
+    );
   }, [executionProcessesById]);
 
   // Apply removes/patches to streamed rows, then append adds not yet streamed

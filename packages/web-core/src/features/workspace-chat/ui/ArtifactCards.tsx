@@ -24,6 +24,7 @@ import { canEmbedPdf } from '@/shared/lib/pdf-embed';
 import { shareFile } from '@/shared/lib/share-file';
 import { formatFileSize } from '@/shared/lib/utils';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { isPendingProcessId } from '@/shared/providers/executionProcessScope';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import { MermaidDiagram } from '@/shared/components/MermaidDiagram';
@@ -67,7 +68,9 @@ export function useExecutionArtifacts(
     ],
     queryFn: ({ signal }) =>
       artifactsApi.list(processId, workspaceId, sessionId!, hostId, signal),
-    enabled: enabled && !!sessionId && !!processId,
+    // A pending-send placeholder has no server row to list artifacts for.
+    enabled:
+      enabled && !!sessionId && !!processId && !isPendingProcessId(processId),
     staleTime: 1000,
     refetchInterval: (state) => (state.state.data?.complete ? false : 2000),
   });

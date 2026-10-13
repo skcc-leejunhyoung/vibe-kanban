@@ -232,7 +232,9 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   queuedMessages?: QueuedMessageItem[];
   /** Remove a single queued message by id */
   onRemoveQueued?: (id: string) => void;
-  /** "Send now" on a queued message: run it next, interrupting the current turn */
+  /** "Send now" on a queued message: run it next, interrupting the current
+   * turn. Omit while a follow-up send is pending (no server process exists
+   * yet to interrupt, so it would start a second turn). */
   onSteerQueued?: (id: string) => void;
   /** Load a queued message into the input for in-place editing */
   onEditQueued?: (id: string) => void;
@@ -926,10 +928,7 @@ export function SessionChatBox<TExecutor extends string = string>({
                             <button
                               type="button"
                               onClick={() => onSteerQueued(queued.id)}
-                              // Same reason as the composer's lightning: no
-                              // server process exists yet to interrupt.
-                              disabled={status === 'sending'}
-                              className="text-low hover:text-brand transition-colors p-1 -m-1 flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-low"
+                              className="text-low hover:text-brand transition-colors p-1 -m-1 flex-shrink-0"
                               title={t('conversation.actions.sendNow')}
                               aria-label={t('conversation.actions.sendNow')}
                             >

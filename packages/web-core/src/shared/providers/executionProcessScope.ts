@@ -53,6 +53,66 @@ export function mergeOptimisticProcesses(
   );
 }
 
+/**
+ * Drop overlay ops the stream has caught up with. An `add` whose row has
+ * arrived is normally done — unless a stop was folded into it (status no
+ * longer running) while the streamed row still says running: then it becomes
+ * a `patch` so the optimistic kill stays visible until the server reports the
+ * terminal status, exactly like a stop on an already-streamed row.
+ */
+export function reconcileOptimisticOps(
+  current: Record<string, OptimisticOp>,
+  streamedById: Record<string, ExecutionProcess>
+): Record<string, OptimisticOp> {
+  const ids = Object.keys(current);
+  if (ids.length === 0) return current;
+  let changed = false;
+  const next = { ...current };
+  for (const id of ids) {
+    const op = current[id];
+    const streamed = streamedById[id];
+    if (op.kind === 'add') {
+      if (!streamed) continue;
+      if (
+        streamed.status === ExecutionProcessStatus.running &&
+        op.process.status !== ExecutionProcessStatus.running
+      ) {
+        next[id] = { kind: 'patch', changes: { status: op.process.status } };
+      } else {
+        delete next[id];
+      }
+      changed = true;
+    } else if (op.kind === 'remove') {
+      if (!streamed || streamed.dropped) {
+        delete next[id];
+        changed = true;
+      }
+    } else if (streamed && streamed.status !== ExecutionProcessStatus.running) {
+      delete next[id];
+      changed = true;
+    }
+  }
+  return changed ? next : current;
+}
+
+/**
+ * On a session switch keep only `add` ops: they are session-guarded by
+ * `mergeOptimisticProcesses`, so a pending send's placeholder (or its real
+ * process) is still there when the user comes back, while patches/removes —
+ * which would apply to any streamed row with the same id — are dropped.
+ */
+export function keepOptimisticAdds(
+  current: Record<string, OptimisticOp>
+): Record<string, OptimisticOp> {
+  const next: Record<string, OptimisticOp> = {};
+  for (const [id, op] of Object.entries(current)) {
+    if (op.kind === 'add') next[id] = op;
+  }
+  return Object.keys(next).length === Object.keys(current).length
+    ? current
+    : next;
+}
+
 const PENDING_PROCESS_ID_PREFIX = 'pending-';
 
 /** True for a placeholder from `createPendingProcess` (no server row behind it). */

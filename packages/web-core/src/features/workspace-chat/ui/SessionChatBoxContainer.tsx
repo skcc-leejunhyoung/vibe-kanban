@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
@@ -7,18 +14,17 @@ import {
   BaseAgentCapability,
   type Session,
   type BaseCodingAgent,
+  type ExecutionProcess,
   ExecutionProcessStatus,
   type ReviewError,
+  ScratchType,
 } from 'shared/types';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceExecution } from '@/shared/hooks/useWorkspaceExecution';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
-import {
-  createPendingProcess,
-  isPendingProcessId,
-} from '@/shared/providers/executionProcessScope';
+import { createPendingProcess } from '@/shared/providers/executionProcessScope';
 import { isCodingAgent } from '@/shared/constants/processes';
 import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
@@ -72,7 +78,12 @@ import {
 } from '@/shared/types/actions';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
-import { sessionsApi, workspacesApi, ApiError } from '@/shared/lib/api';
+import {
+  sessionsApi,
+  scratchApi,
+  workspacesApi,
+  ApiError,
+} from '@/shared/lib/api';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
@@ -108,6 +119,23 @@ function computeExecutionStatus(params: {
   if (params.isAttemptRunning) return 'running';
   return 'idle';
 }
+
+/**
+ * A follow-up send whose POST hasn't returned (or is still finishing up).
+ * Kept per session at module level: a conversation switch or a composer
+ * remount (the kanban sidebar keys its provider per session) must neither
+ * lose the deferred stop / double-send guard nor forget to show the turn
+ * again on return.
+ */
+interface PendingSend {
+  placeholder: ExecutionProcess;
+  stopRequested: boolean;
+  /** The real process once the POST has returned. */
+  process: ExecutionProcess | null;
+  /** Kill the real process: optimistic status + session-scoped stop. */
+  stopReal: (processId: string) => void;
+}
+const pendingSends = new Map<string, PendingSend>();
 
 /** Shared props across all modes */
 interface SharedProps {
@@ -216,26 +244,14 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     mode === 'existing-session' ? props.onStartNewSession : undefined;
 
   const sessionId = session?.id;
-  // A follow-up send whose POST hasn't returned. Its placeholder process is
-  // already in the optimistic overlay; `stopRequested` records a stop pressed
-  // before the server process exists so it can be killed on arrival. Scoped
-  // to the session on screen: switching conversations drops the reference (the
-  // send's own closure still swaps in / stops its process for the old one).
-  const pendingSendRef = useRef<{
-    id: string;
-    stopRequested: boolean;
-    /** Real process id once the POST has returned (send may still be
-     * finishing up); until then only the placeholder exists. */
-    processId: string | null;
-    /** Kill the real process: optimistic status + session-scoped stop. */
-    stopReal: (processId: string) => void;
-  } | null>(null);
-  const [isStopRequested, setIsStopRequested] = useState(false);
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   useEffect(() => {
     setHandoffTarget(null);
-    pendingSendRef.current = null;
-    setIsStopRequested(false);
   }, [sessionId]);
+  // Re-render when the pending-send registry changes (it lives outside React).
+  const [, bumpPending] = useReducer((n: number) => n + 1, 0);
+  const pendingSend = sessionId ? pendingSends.get(sessionId) : undefined;
   const queryClient = useQueryClient();
   const hostId = useHostId();
   const { t } = useTranslation('tasks');
@@ -382,19 +398,19 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // delivers the terminal status. Superseded by the stream; reverted if the stop
   // request fails.
   const handleStop = useCallback(async () => {
-    const pending = pendingSendRef.current;
+    const pending = sessionId ? pendingSends.get(sessionId) : undefined;
     if (pending) {
       if (pending.stopRequested) return;
       pending.stopRequested = true;
-      setIsStopRequested(true);
-      if (pending.processId) {
+      bumpPending();
+      if (pending.process) {
         // The POST has returned and the send is only finishing up: the
         // process exists, so kill it right away.
-        pending.stopReal(pending.processId);
+        pending.stopReal(pending.process.id);
       } else {
         // Nothing to kill on the server yet: mark the placeholder; the send's
         // completion callback kills the real process on arrival.
-        patchOptimisticProcess(pending.id, {
+        patchOptimisticProcess(pending.placeholder.id, {
           status: ExecutionProcessStatus.killed,
         });
       }
@@ -419,6 +435,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       });
     }
   }, [
+    sessionId,
     processes,
     patchOptimisticProcess,
     clearOptimisticProcess,
@@ -819,6 +836,23 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     onOptimisticProcess: addOptimisticProcess,
   });
 
+  // Showing a session (switch or remount) whose send is still pending: the
+  // overlay may be fresh, so put its turn back — and don't carry another
+  // session's send error into this composer.
+  useEffect(() => {
+    clearError();
+    if (!sessionId) return;
+    const pending = pendingSends.get(sessionId);
+    if (!pending) return;
+    const shown = pending.process ?? pending.placeholder;
+    addOptimisticProcess(shown);
+    if (pending.stopRequested) {
+      patchOptimisticProcess(shown.id, {
+        status: ExecutionProcessStatus.killed,
+      });
+    }
+  }, [sessionId, clearError, addOptimisticProcess, patchOptimisticProcess]);
+
   const handleHandoff = useCallback(
     (target: BaseCodingAgent) => {
       if (handoffTarget === target) {
@@ -964,38 +998,55 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           });
         });
     };
-    const pendingState: NonNullable<typeof pendingSendRef.current> = {
-      id: pending.id,
+    const pendingState: PendingSend = {
+      placeholder: pending,
       stopRequested: false,
-      processId: null,
+      process: null,
       stopReal,
     };
-    pendingSendRef.current = pendingState;
+    pendingSends.set(sessionId, pendingState);
+    bumpPending();
     addOptimisticProcess(pending);
     const sending = send(prompt, (process) => {
       // Swap the placeholder for the real row in one render (no duplicate
-      // turn). The provider drops the add if the user has switched sessions.
+      // turn). Adds are session-guarded, so this is safe after a switch.
       clearOptimisticProcess(pending.id);
       addOptimisticProcess(process);
-      pendingState.processId = process.id;
+      pendingState.process = process;
       if (pendingState.stopRequested) stopReal(process.id);
     });
     await resetComposer();
     const success = await sending;
     await deferred.stop;
-    if (!success) clearOptimisticProcess(pending.id);
-    // Switched sessions meanwhile: this send's UI state is no longer on screen.
-    if (pendingSendRef.current !== pendingState) return;
-    pendingSendRef.current = null;
-    setIsStopRequested(false);
-    if (!success) {
-      // Put the text back (review comments were folded into the prompt and
-      // already cleared, so restore the composed prompt) in front of whatever
-      // was typed meanwhile; the send error is shown by the chat box.
+    if (pendingSends.get(sessionId) === pendingState) {
+      pendingSends.delete(sessionId);
+    }
+    bumpPending();
+    if (success) return;
+    clearOptimisticProcess(pending.id);
+    // Put the text back (review comments were folded into the prompt and
+    // already cleared, so restore the composed prompt); the send error is
+    // shown by the chat box. If this session is on screen, in front of whatever
+    // was typed meanwhile; otherwise into its draft so it is there on return.
+    if (sessionIdRef.current === sessionId) {
       const draft = localMessageRef.current;
       const restored = draft.trim() ? `${prompt}\n\n${draft}` : prompt;
       setLocalMessage(restored);
       void saveToScratch(restored, executorConfig);
+    } else {
+      scratchApi
+        .update(
+          ScratchType.DRAFT_FOLLOW_UP,
+          sessionId,
+          {
+            payload: {
+              type: 'DRAFT_FOLLOW_UP',
+              data: { message: prompt, executor_config: executorConfig },
+            },
+          },
+          hostId
+        )
+        .catch((e) => console.error('Failed to keep unsent follow-up', e));
     }
   }, [
     onScrollToBottom,
@@ -1186,12 +1237,15 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     [cancelOne]
   );
 
-  // "Send now" on an already-queued message: run it next, interrupting the turn
+  // "Send now" on an already-queued message: run it next, interrupting the
+  // turn. Withheld while a follow-up send is pending: with no server process to
+  // interrupt yet the backend would start a second, concurrent turn.
   const handleSteerQueued = useCallback(
     (messageId: string) => {
+      if (sessionId && pendingSends.has(sessionId)) return;
       void steerQueued(messageId);
     },
-    [steerQueued]
+    [sessionId, steerQueued]
   );
 
   // Reorder the queue to a new id order (driven by the up/down arrows)
@@ -1492,16 +1546,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     ? new Date() > new Date(pendingApproval.timeoutAt)
     : false;
 
-  // The follow-up send is "pending" exactly while its placeholder is in the
-  // session-scoped overlay (dropped on session switch, swapped on arrival,
-  // cleared on failure), so another conversation never inherits the state.
+  // The pending-send registry is per session, so another conversation never
+  // inherits this state; once the POST has returned the real (running) process
+  // drives the status like any other turn.
   const status = computeExecutionStatus({
     isInFeedbackMode,
     isInEditMode: isInEditMode || editingQueuedId !== null,
-    isStopping: isStopping || isStopRequested,
+    isStopping: isStopping || !!pendingSend?.stopRequested,
     isQueueLoading,
     isCreating: (isNewSessionMode && isSending) || isHandoffPending,
-    isSendingFollowUp: processes.some((p) => isPendingProcessId(p.id)),
+    isSendingFollowUp: !!pendingSend && !pendingSend.process,
     isAttemptRunning,
   });
 
@@ -1680,7 +1734,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         message: m.data.message,
       }))}
       onRemoveQueued={handleRemoveQueued}
-      onSteerQueued={handleSteerQueued}
+      onSteerQueued={pendingSend ? undefined : handleSteerQueued}
       onEditQueued={handleEditQueued}
       editingQueuedId={editingQueuedId}
       onReorderQueued={handleReorderQueued}

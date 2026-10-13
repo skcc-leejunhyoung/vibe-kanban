@@ -3,7 +3,10 @@ import type { ExecutorConfig } from 'shared/types';
 import {
   createPendingProcess,
   isPendingProcessId,
+  keepOptimisticAdds,
   mergeOptimisticProcesses,
+  reconcileOptimisticOps,
+  type OptimisticOp,
 } from './executionProcessScope';
 
 const config = { executor: 'CLAUDE_CODE' } as ExecutorConfig;
@@ -28,12 +31,61 @@ describe('createPendingProcess', () => {
     expect(a.id).not.toBe(b.id);
   });
 
-  it('is excluded once the real process is streamed and the add is cleared', () => {
+  it('is kept across a session switch but hidden from the other session', () => {
     const pending = createPendingProcess('session-a', 'hello', config);
-    const streamed = [{ ...pending, id: 'real-1' }];
+    const ops: Record<string, OptimisticOp> = {
+      [pending.id]: { kind: 'add', process: pending },
+      other: { kind: 'patch', changes: { status: 'killed' as const } },
+      gone: { kind: 'remove' },
+    };
+    const kept = keepOptimisticAdds(ops);
+    expect(Object.keys(kept)).toEqual([pending.id]);
+    expect(mergeOptimisticProcesses([], kept, 'session-b')).toEqual([]);
     expect(
-      mergeOptimisticProcesses(streamed, {}, 'session-a').map((p) => p.id)
-    ).toEqual(['real-1']);
+      mergeOptimisticProcesses([], kept, 'session-a').map((p) => p.id)
+    ).toEqual([pending.id]);
+    // Nothing to drop → same object (keeps memoization downstream intact).
+    expect(keepOptimisticAdds(kept)).toBe(kept);
+  });
+});
+
+describe('reconcileOptimisticOps', () => {
+  const real = createPendingProcess('s', 'hi', config);
+  const streamedRunning = { ...real, id: 'real-1' };
+  const streamedKilled = { ...streamedRunning, status: 'killed' as const };
+
+  it('drops a confirmed add and leaves an unconfirmed one', () => {
+    const ops: Record<string, OptimisticOp> = {
+      'real-1': { kind: 'add', process: streamedRunning },
+      [real.id]: { kind: 'add', process: real },
+    };
+    const next = reconcileOptimisticOps(ops, { 'real-1': streamedRunning });
+    expect(Object.keys(next)).toEqual([real.id]);
+  });
+
+  it('keeps an optimistic kill folded into an add until the stream agrees', () => {
+    const ops: Record<string, OptimisticOp> = {
+      'real-1': { kind: 'add', process: streamedKilled },
+    };
+    const next = reconcileOptimisticOps(ops, { 'real-1': streamedRunning });
+    expect(next['real-1']).toEqual({
+      kind: 'patch',
+      changes: { status: 'killed' },
+    });
+    // Stream reports the terminal status → nothing left to overlay.
+    expect(reconcileOptimisticOps(next, { 'real-1': streamedKilled })).toEqual(
+      {}
+    );
+  });
+
+  it('returns the same object when nothing changed', () => {
+    const ops: Record<string, OptimisticOp> = {
+      'real-1': { kind: 'patch', changes: { status: 'killed' as const } },
+    };
+    expect(reconcileOptimisticOps(ops, { 'real-1': streamedRunning })).toBe(
+      ops
+    );
+    expect(reconcileOptimisticOps({}, {})).toEqual({});
   });
 
   it('never sorts before an existing process when the client clock lags', () => {
