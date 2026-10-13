@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
+import { isPendingProcessId } from '@/shared/providers/executionProcessScope';
 import { useLogsPanel } from '@/shared/hooks/useLogsPanel';
 import { ProcessListItem } from '@vibe/ui/components/ProcessListItem';
 import { InputField } from '@vibe/ui/components/InputField';
@@ -33,13 +34,16 @@ export function ProcessListContainer() {
   const { t } = useTranslation('common');
   const { executionProcessesVisible } = useExecutionProcessesContext();
 
-  // Sort processes by created_at descending (newest first)
+  // Sort processes by created_at descending (newest first). A pending-send
+  // placeholder has no server row (no logs to open), so it is left out.
   const sortedProcesses = useMemo(() => {
-    return [...executionProcessesVisible].sort((a, b) => {
-      return (
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      );
-    });
+    return executionProcessesVisible
+      .filter((p) => !isPendingProcessId(p.id))
+      .sort((a, b) => {
+        return (
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+      });
   }, [executionProcessesVisible]);
 
   // Auto-select latest process if none selected (unless disabled)

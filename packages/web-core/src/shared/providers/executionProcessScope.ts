@@ -69,9 +69,13 @@ export const isPendingProcessId = (id: string): boolean =>
 export function createPendingProcess(
   sessionId: string,
   prompt: string,
-  executorConfig: ExecutorConfig
+  executorConfig: ExecutorConfig,
+  /** Timeline ordering is by created_at, and the client clock can lag the
+   * server's: never let the placeholder sort before an existing process
+   * (pass the newest existing created_at, in epoch ms). */
+  notBeforeMs = 0
 ): ExecutionProcess {
-  const now = new Date().toISOString();
+  const now = new Date(Math.max(Date.now(), notBeforeMs + 1)).toISOString();
   return {
     id: `${PENDING_PROCESS_ID_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
     session_id: sessionId,

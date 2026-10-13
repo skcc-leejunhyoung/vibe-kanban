@@ -41,6 +41,7 @@ import {
 } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
+import { isPendingProcessId } from '@/shared/providers/executionProcessScope';
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
 import { ArtifactCards, useExecutionArtifacts } from './ArtifactCards';
 import {
@@ -859,9 +860,14 @@ function UserMessageEntry({
     }
   };
 
-  // Only show actions when we have a process ID and not already in edit mode
+  // Only show actions when we have a process ID and not already in edit mode.
+  // A pending-send placeholder has no server row to retry/reset against.
   const canShowActions =
-    !readOnly && !!executionProcessId && !isInEditMode && !isResetPending;
+    !readOnly &&
+    !!executionProcessId &&
+    !isPendingProcessId(executionProcessId) &&
+    !isInEditMode &&
+    !isResetPending;
   // Edit/retry/reset is not supported when the executor doesn't have the fork capability
   const canEdit = canShowActions && executorCanFork;
   // Only show reset if we have a process ID, not in edit mode, and not pending

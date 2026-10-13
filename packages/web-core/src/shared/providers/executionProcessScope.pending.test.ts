@@ -36,6 +36,15 @@ describe('createPendingProcess', () => {
     ).toEqual(['real-1']);
   });
 
+  it('never sorts before an existing process when the client clock lags', () => {
+    const serverAhead = Date.now() + 60_000;
+    const pending = createPendingProcess('s', 'hi', config, serverAhead);
+    expect(Date.parse(pending.created_at)).toBeGreaterThan(serverAhead);
+    // Without a floor it is simply "now".
+    const plain = createPendingProcess('s', 'hi', config);
+    expect(Date.parse(plain.created_at)).toBeLessThanOrEqual(Date.now());
+  });
+
   it('does not flag server ids as pending', () => {
     expect(isPendingProcessId('4b1d1f5e-0000-4000-8000-000000000000')).toBe(
       false

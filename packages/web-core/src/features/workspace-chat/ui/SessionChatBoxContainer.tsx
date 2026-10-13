@@ -15,7 +15,10 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceExecution } from '@/shared/hooks/useWorkspaceExecution';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
-import { createPendingProcess } from '@/shared/providers/executionProcessScope';
+import {
+  createPendingProcess,
+  isPendingProcessId,
+} from '@/shared/providers/executionProcessScope';
 import { isCodingAgent } from '@/shared/constants/processes';
 import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
@@ -920,7 +923,15 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
     // Follow-up: show the turn and free the composer right away. The POST can
     // take a while (container check, previous turn drain, agent spawn).
-    const pending = createPendingProcess(sessionId, prompt, executorConfig);
+    const pending = createPendingProcess(
+      sessionId,
+      prompt,
+      executorConfig,
+      processes.reduce(
+        (latest, p) => Math.max(latest, Date.parse(p.created_at) || 0),
+        0
+      )
+    );
     const pendingState = { id: pending.id, stopRequested: false };
     pendingSendRef.current = pendingState;
     addOptimisticProcess(pending);
@@ -940,7 +951,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       deferred.stop = workspacesApi
         .stop(workspaceId, hostId, sessionId)
         .catch((error) => {
-          clearOptimisticProcess(process.id);
+          patchOptimisticProcess(process.id, {
+            status: ExecutionProcessStatus.running,
+          });
           void ErrorDialog.show({
             title: t('common:error'),
             message: error instanceof Error ? error.message : String(error),
@@ -956,12 +969,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     pendingSendRef.current = null;
     setIsStopRequested(false);
     if (!success) {
-      // Put the text back in front of whatever was typed meanwhile; the send
-      // error is shown by the chat box.
+      // Put the text back (review comments were folded into the prompt and
+      // already cleared, so restore the composed prompt) in front of whatever
+      // was typed meanwhile; the send error is shown by the chat box.
       const draft = localMessageRef.current;
-      const restored = draft.trim()
-        ? `${localMessage}\n\n${draft}`
-        : localMessage;
+      const restored = draft.trim() ? `${prompt}\n\n${draft}` : prompt;
       setLocalMessage(restored);
       void saveToScratch(restored, executorConfig);
     }
@@ -982,6 +994,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     clearUploadedAttachments,
     clearDraft,
     reviewContext,
+    processes,
     addOptimisticProcess,
     clearOptimisticProcess,
     patchOptimisticProcess,
@@ -1459,13 +1472,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     ? new Date() > new Date(pendingApproval.timeoutAt)
     : false;
 
+  // The follow-up send is "pending" exactly while its placeholder is in the
+  // session-scoped overlay (dropped on session switch, swapped on arrival,
+  // cleared on failure), so another conversation never inherits the state.
   const status = computeExecutionStatus({
     isInFeedbackMode,
     isInEditMode: isInEditMode || editingQueuedId !== null,
     isStopping: isStopping || isStopRequested,
     isQueueLoading,
     isCreating: (isNewSessionMode && isSending) || isHandoffPending,
-    isSendingFollowUp: !isNewSessionMode && isSending,
+    isSendingFollowUp: processes.some((p) => isPendingProcessId(p.id)),
     isAttemptRunning,
   });
 

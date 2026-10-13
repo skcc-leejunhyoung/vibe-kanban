@@ -729,6 +729,13 @@ export function SessionChatBox<TExecutor extends string = string>({
               onClick={actions.onStop}
             />
             <ChatActionButton
+              variant="secondary"
+              icon={LightningIcon}
+              label={t('conversation.actions.sendNow')}
+              onClick={actions.onSteer}
+              disabled
+            />
+            <ChatActionButton
               icon={ArrowUpIcon}
               label={t('conversation.actions.queue')}
               onClick={actions.onQueue}
@@ -919,7 +926,10 @@ export function SessionChatBox<TExecutor extends string = string>({
                             <button
                               type="button"
                               onClick={() => onSteerQueued(queued.id)}
-                              className="text-low hover:text-brand transition-colors p-1 -m-1 flex-shrink-0"
+                              // Same reason as the composer's lightning: no
+                              // server process exists yet to interrupt.
+                              disabled={status === 'sending'}
+                              className="text-low hover:text-brand transition-colors p-1 -m-1 flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-low"
                               title={t('conversation.actions.sendNow')}
                               aria-label={t('conversation.actions.sendNow')}
                             >
