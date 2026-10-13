@@ -143,15 +143,34 @@ pub async fn start_review(
         None,
     );
 
+    // Answer with the row so the review turn is on screen at once; the agent
+    // spawn finishes in the background (a failure is written to the row).
     let execution_process = deployment
         .container()
-        .start_execution(
+        .create_execution_record(
             &workspace,
             &session,
             &action,
             &ExecutionProcessRunReason::CodingAgent,
         )
         .await?;
+    {
+        let deployment = deployment.clone();
+        let record = execution_process.clone();
+        tokio::spawn(async move {
+            if let Err(e) = deployment
+                .container()
+                .finish_execution_spawn(&workspace, &session, &record, &action)
+                .await
+            {
+                tracing::error!(
+                    "Background review start for session {} failed: {}",
+                    session.id,
+                    e
+                );
+            }
+        });
+    }
 
     Ok(ResponseJson(ApiResponse::success(execution_process)))
 }

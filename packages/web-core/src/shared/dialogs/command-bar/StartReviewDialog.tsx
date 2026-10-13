@@ -20,6 +20,7 @@ import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { sessionsApi } from '@/shared/lib/api';
+import { seedOptimisticProcess } from '@/shared/providers/executionProcessScope';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/shared/lib/modals';
@@ -138,7 +139,7 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
         const promptParts = [reviewMarkdown, additionalPrompt].filter(Boolean);
         const combinedPrompt = promptParts.join('\n\n');
 
-        await sessionsApi.startReview(
+        const reviewProcess = await sessionsApi.startReview(
           targetSessionId,
           {
             executor_config: {
@@ -150,6 +151,8 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
           },
           hostId
         );
+        // The server answers with the row before the spawn: show the turn now.
+        seedOptimisticProcess(reviewProcess);
 
         queryClient.invalidateQueries({
           queryKey: ['processes', workspaceId],

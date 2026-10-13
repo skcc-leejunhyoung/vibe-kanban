@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { useExecutionProcesses } from '@/shared/hooks/useExecutionProcesses';
 import { type ExecutionProcess, ExecutionProcessStatus } from 'shared/types';
 import {
@@ -7,9 +13,11 @@ import {
 } from '@/shared/hooks/useExecutionProcessesContext';
 import {
   belongsToSession,
+  getSeededProcessesVersion,
   keepOptimisticAdds,
   mergeOptimisticProcesses,
   reconcileOptimisticOps,
+  subscribeSeededProcesses,
   takeSeededProcesses,
   type OptimisticOp,
 } from './executionProcessScope';
@@ -100,12 +108,20 @@ export const ExecutionProcessesProvider: React.FC<{
   // sessionId prop changes) drop patches/removes; adds are session-guarded in
   // the merge and survive, so a send still pending for the previous session
   // shows its turn again when the user returns.
-  // Also pick up a process created for this session before it was shown (a
-  // just-created workspace or session), so its turn is there on first paint.
   useEffect(() => {
     setOptimistic(keepOptimisticAdds);
+  }, [sessionId]);
+
+  // Pick up a process handed over for this session (a just-created workspace
+  // or session, or a review started into the one on screen), so its turn is
+  // there before the stream's replay.
+  const seedVersion = useSyncExternalStore(
+    subscribeSeededProcesses,
+    getSeededProcessesVersion
+  );
+  useEffect(() => {
     takeSeededProcesses(sessionId).forEach(addOptimisticProcess);
-  }, [sessionId, addOptimisticProcess]);
+  }, [sessionId, seedVersion, addOptimisticProcess]);
 
   // Drop each op once the stream confirms it (see reconcileOptimisticOps).
   useEffect(() => {

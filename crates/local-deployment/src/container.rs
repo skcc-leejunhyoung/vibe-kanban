@@ -4050,10 +4050,17 @@ impl ContainerService for LocalContainerService {
 
         // Best-effort issue tags mirroring the organic coding→review transition:
         // `vibe` opts the issue into the workflow, `vibe-done` marks coding done.
-        self.vibe_tag(&client, task_id, vibe_orchestrator::TAG_VIBE)
-            .await;
-        self.vibe_tag(&client, task_id, vibe_orchestrator::TAG_DONE)
-            .await;
+        // Two cloud round trips the review session doesn't depend on, so they
+        // run off the request path.
+        {
+            let this = self.clone();
+            tokio::spawn(async move {
+                this.vibe_tag(&client, task_id, vibe_orchestrator::TAG_VIBE)
+                    .await;
+                this.vibe_tag(&client, task_id, vibe_orchestrator::TAG_DONE)
+                    .await;
+            });
+        }
 
         let prompt = vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_A);
         self.vibe_start_review_session(workspace, session, &prompt, executor_config)

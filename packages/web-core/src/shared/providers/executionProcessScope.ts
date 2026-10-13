@@ -145,11 +145,25 @@ export function matchArrivedProcess(
 // workspace-create / quick-chat / new-session responses): consumed once by
 // that provider so the first turn renders before the stream's first replay.
 const seededProcesses = new Map<string, ExecutionProcess[]>();
+let seededProcessesVersion = 0;
+const seededProcessesListeners = new Set<() => void>();
 
 export function seedOptimisticProcess(process: ExecutionProcess): void {
   const list = seededProcesses.get(process.session_id) ?? [];
   seededProcesses.set(process.session_id, [...list, process]);
+  seededProcessesVersion += 1;
+  seededProcessesListeners.forEach((listener) => listener());
 }
+
+/** `useSyncExternalStore` pair so a provider already showing the session
+ * picks a seed up too (a review started into the current session). */
+export function subscribeSeededProcesses(listener: () => void): () => void {
+  seededProcessesListeners.add(listener);
+  return () => {
+    seededProcessesListeners.delete(listener);
+  };
+}
+export const getSeededProcessesVersion = (): number => seededProcessesVersion;
 
 export function takeSeededProcesses(
   sessionId: string | undefined
