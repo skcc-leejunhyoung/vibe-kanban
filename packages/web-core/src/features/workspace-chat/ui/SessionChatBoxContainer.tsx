@@ -516,6 +516,15 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       return next;
     });
   }, []);
+  // The server refused the response: bring the approval UI back.
+  const unresolveApproval = useCallback((approvalId: string) => {
+    setResolvedApprovalIds((cur) => {
+      if (!cur.has(approvalId)) return cur;
+      const next = new Set(cur);
+      next.delete(approvalId);
+      return next;
+    });
+  }, []);
   useEffect(() => {
     setResolvedApprovalIds((cur) => {
       if (cur.size === 0) return cur;
@@ -1703,57 +1712,66 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     // Exit feedback mode if active
     feedbackContext?.exitFeedbackMode();
 
+    // Drop the approval UI at once; it comes back if the server refuses.
+    resolveApprovalOptimistically(approvalId);
     try {
       await approveAsync({
         approvalId,
         executionProcessId: pendingApproval.executionProcessId,
       });
-      resolveApprovalOptimistically(approvalId);
 
       // Invalidate workspace summary cache to update sidebar
       queryClient.invalidateQueries({ queryKey: workspaceSummaryKeys.all });
       onScrollToBottom();
-    } catch {
-      // Error is handled by mutation
+    } catch (error) {
+      unresolveApproval(approvalId);
+      void ErrorDialog.show({
+        title: t('common:error'),
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }, [
     pendingApproval,
     feedbackContext,
     approveAsync,
     resolveApprovalOptimistically,
+    unresolveApproval,
     queryClient,
     onScrollToBottom,
+    t,
   ]);
 
   // Handle request changes (deny with feedback)
   const handleRequestChanges = useCallback(async () => {
     if (!pendingApproval || !localMessage.trim()) return;
     const approvalId = pendingApproval.approvalId;
+    const reason = localMessage.trim();
 
+    // Drop the approval UI at once: the composer switches back to the session
+    // draft (the reason stays in the approval's own draft until the server
+    // took it, so a refusal brings both the UI and the text back).
+    resolveApprovalOptimistically(approvalId);
     try {
       await denyAsync({
         approvalId,
         executionProcessId: pendingApproval.executionProcessId,
-        reason: localMessage.trim(),
+        reason,
       });
-      resolveApprovalOptimistically(approvalId);
-      cancelDebouncedSave();
-      setLocalMessage('');
       await clearDraft();
 
       // Invalidate workspace summary cache to update sidebar
       queryClient.invalidateQueries({ queryKey: workspaceSummaryKeys.all });
       onScrollToBottom();
     } catch {
-      // Error is handled by mutation
+      // The approval UI shows the mutation's error.
+      unresolveApproval(approvalId);
     }
   }, [
     pendingApproval,
     localMessage,
     denyAsync,
     resolveApprovalOptimistically,
-    cancelDebouncedSave,
-    setLocalMessage,
+    unresolveApproval,
     clearDraft,
     queryClient,
     onScrollToBottom,
@@ -1765,25 +1783,28 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       if (!pendingApproval) return;
       const approvalId = pendingApproval.approvalId;
 
+      // Drop the question banner at once; it comes back with the mutation's
+      // error if the server refuses.
+      resolveApprovalOptimistically(approvalId);
       try {
         await answerAsync({
           approvalId,
           executionProcessId: pendingApproval.executionProcessId,
           answers,
         });
-        resolveApprovalOptimistically(approvalId);
         queryClient.invalidateQueries({
           queryKey: workspaceSummaryKeys.all,
         });
         onScrollToBottom();
       } catch {
-        // Error is handled by mutation
+        unresolveApproval(approvalId);
       }
     },
     [
       pendingApproval,
       answerAsync,
       resolveApprovalOptimistically,
+      unresolveApproval,
       queryClient,
       onScrollToBottom,
     ]
