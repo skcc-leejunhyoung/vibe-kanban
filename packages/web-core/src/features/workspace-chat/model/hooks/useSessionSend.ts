@@ -25,8 +25,15 @@ interface UseSessionSendOptions {
 }
 
 interface UseSessionSendResult {
-  /** Send a message. Returns true on success, false on failure. */
-  send: (message: string) => Promise<boolean>;
+  /**
+   * Send a message. Returns true on success, false on failure. `onProcess`
+   * replaces `onOptimisticProcess` for this call, so a caller can correlate the
+   * created process with its own placeholder.
+   */
+  send: (
+    message: string,
+    onProcess?: (process: ExecutionProcess) => void
+  ) => Promise<boolean>;
   /** Whether a send operation is in progress */
   isSending: boolean;
   /** Error message if send failed */
@@ -60,7 +67,10 @@ export function useSessionSend({
   const [error, setError] = useState<string | null>(null);
 
   const send = useCallback(
-    async (message: string): Promise<boolean> => {
+    async (
+      message: string,
+      onProcess?: (process: ExecutionProcess) => void
+    ): Promise<boolean> => {
       const trimmed = message.trim();
       if (!trimmed) return false;
       if (!executorConfig) {
@@ -109,7 +119,7 @@ export function useSessionSend({
             },
             hostId
           );
-          onOptimisticProcess?.(process);
+          (onProcess ?? onOptimisticProcess)?.(process);
           await queryClient.invalidateQueries({
             queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
           });

@@ -4,6 +4,7 @@ import {
   PatchType,
 } from 'shared/types';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
+import { isPendingProcessId } from '@/shared/providers/executionProcessScope';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { streamJsonPatchEntries } from '@/shared/lib/streamJsonPatchEntries';
 import { useHostId } from '@/shared/providers/HostIdProvider';
@@ -184,6 +185,8 @@ export const useConversationHistory = ({
   const loadEntriesForHistoricExecutionProcess = (
     executionProcess: ExecutionProcess
   ) => {
+    // A pending-send placeholder has no server row (and no logs) to fetch.
+    if (isPendingProcessId(executionProcess.id)) return Promise.resolve([]);
     const streamHostId = hostIdRef.current;
     // Finished-process logs are immutable: entries resolved once are reused
     // across navigations instead of re-streaming the whole history.
@@ -289,6 +292,9 @@ export const useConversationHistory = ({
   // This emits its own events as they are streamed
   const loadRunningAndEmit = useCallback(
     (executionProcess: ExecutionProcess): Promise<void> => {
+      // A pending-send placeholder is shown via ensureProcessVisible only; the
+      // real process (streamed once the POST returns) owns the log stream.
+      if (isPendingProcessId(executionProcess.id)) return Promise.resolve();
       return new Promise((resolve, reject) => {
         let url = '';
         if (executionProcess.executor_action.typ.type === 'ScriptRequest') {

@@ -15,6 +15,7 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceExecution } from '@/shared/hooks/useWorkspaceExecution';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
+import { createPendingProcess } from '@/shared/providers/executionProcessScope';
 import { isCodingAgent } from '@/shared/constants/processes';
 import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
@@ -68,7 +69,7 @@ import {
 } from '@/shared/types/actions';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
-import { sessionsApi, ApiError } from '@/shared/lib/api';
+import { sessionsApi, workspacesApi, ApiError } from '@/shared/lib/api';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
@@ -86,6 +87,9 @@ function computeExecutionStatus(params: {
   isInEditMode: boolean;
   isStopping: boolean;
   isQueueLoading: boolean;
+  /** New-session creation or handoff in flight: the composer locks. */
+  isCreating: boolean;
+  /** Follow-up POST in flight: its placeholder turn is already on screen. */
   isSendingFollowUp: boolean;
   isAttemptRunning: boolean;
 }): ExecutionStatus {
@@ -93,6 +97,7 @@ function computeExecutionStatus(params: {
   if (params.isInEditMode) return 'edit';
   if (params.isStopping) return 'stopping';
   if (params.isQueueLoading) return 'queue-loading';
+  if (params.isCreating) return 'creating';
   if (params.isSendingFollowUp) return 'sending';
   // A non-empty queue no longer locks the composer: while the agent runs the
   // box stays in 'running' so more messages can be queued or steered. Queued
@@ -208,8 +213,20 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     mode === 'existing-session' ? props.onStartNewSession : undefined;
 
   const sessionId = session?.id;
+  // A follow-up send whose POST hasn't returned. Its placeholder process is
+  // already in the optimistic overlay; `stopRequested` records a stop pressed
+  // before the server process exists so it can be killed on arrival. Scoped
+  // to the session on screen: switching conversations drops the reference (the
+  // send's own closure still swaps in / stops its process for the old one).
+  const pendingSendRef = useRef<{
+    id: string;
+    stopRequested: boolean;
+  } | null>(null);
+  const [isStopRequested, setIsStopRequested] = useState(false);
   useEffect(() => {
     setHandoffTarget(null);
+    pendingSendRef.current = null;
+    setIsStopRequested(false);
   }, [sessionId]);
   const queryClient = useQueryClient();
   const hostId = useHostId();
@@ -357,6 +374,17 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // delivers the terminal status. Superseded by the stream; reverted if the stop
   // request fails.
   const handleStop = useCallback(async () => {
+    const pending = pendingSendRef.current;
+    if (pending) {
+      // Nothing to kill on the server yet: mark the placeholder and defer the
+      // real stop to the send's completion callback (see handleSend).
+      pending.stopRequested = true;
+      setIsStopRequested(true);
+      patchOptimisticProcess(pending.id, {
+        status: ExecutionProcessStatus.killed,
+      });
+      return;
+    }
     const patchedIds: string[] = [];
     for (const p of processes) {
       if (isCodingAgent(p.run_reason) && p.status === 'running') {
@@ -863,10 +891,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
     onScrollToBottom('auto');
 
-    const success = handoffTarget
-      ? await sendHandoff(prompt)
-      : await send(prompt);
-    if (success) {
+    const resetComposer = async () => {
       cancelDebouncedSave();
       setLocalMessage('');
       clearUploadedAttachments();
@@ -881,19 +906,86 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           onScrollToBottom('auto');
         });
       });
+    };
+
+    // New session and handoff keep the composer locked until the server
+    // answers: there is no session (or process) to show a placeholder in.
+    if (handoffTarget || !sessionId || !workspaceId || !executorConfig) {
+      const success = handoffTarget
+        ? await sendHandoff(prompt)
+        : await send(prompt);
+      if (success) await resetComposer();
+      return;
+    }
+
+    // Follow-up: show the turn and free the composer right away. The POST can
+    // take a while (container check, previous turn drain, agent spawn).
+    const pending = createPendingProcess(sessionId, prompt, executorConfig);
+    const pendingState = { id: pending.id, stopRequested: false };
+    pendingSendRef.current = pendingState;
+    addOptimisticProcess(pending);
+    const deferred: { stop?: Promise<void> } = {};
+    const sending = send(prompt, (process) => {
+      // Swap the placeholder for the real row in one render (no duplicate
+      // turn). The provider drops the add if the user has switched sessions.
+      clearOptimisticProcess(pending.id);
+      addOptimisticProcess(process);
+      if (!pendingState.stopRequested) return;
+      // Stop pressed while the POST was in flight: kill the process now that
+      // it exists. Ids are captured here, not read from hooks, so a session
+      // switch in the meantime can't redirect the stop.
+      patchOptimisticProcess(process.id, {
+        status: ExecutionProcessStatus.killed,
+      });
+      deferred.stop = workspacesApi
+        .stop(workspaceId, hostId, sessionId)
+        .catch((error) => {
+          clearOptimisticProcess(process.id);
+          void ErrorDialog.show({
+            title: t('common:error'),
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
+    });
+    await resetComposer();
+    const success = await sending;
+    await deferred.stop;
+    if (!success) clearOptimisticProcess(pending.id);
+    // Switched sessions meanwhile: this send's UI state is no longer on screen.
+    if (pendingSendRef.current !== pendingState) return;
+    pendingSendRef.current = null;
+    setIsStopRequested(false);
+    if (!success) {
+      // Put the text back in front of whatever was typed meanwhile; the send
+      // error is shown by the chat box.
+      const draft = localMessageRef.current;
+      const restored = draft.trim()
+        ? `${localMessage}\n\n${draft}`
+        : localMessage;
+      setLocalMessage(restored);
+      void saveToScratch(restored, executorConfig);
     }
   }, [
     onScrollToBottom,
     send,
     sendHandoff,
     handoffTarget,
+    sessionId,
+    workspaceId,
+    hostId,
+    executorConfig,
     localMessage,
     reviewMarkdown,
     cancelDebouncedSave,
     setLocalMessage,
+    saveToScratch,
     clearUploadedAttachments,
     clearDraft,
     reviewContext,
+    addOptimisticProcess,
+    clearOptimisticProcess,
+    patchOptimisticProcess,
+    t,
   ]);
 
   // Start an automated `vibe` review (as if the coding agent had reported
@@ -1135,7 +1227,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   const areAttachmentInputsDisabled =
     mode === 'placeholder' ||
-    isSending ||
+    (isNewSessionMode && isSending) ||
     isStopping ||
     !!feedbackContext?.isSubmitting ||
     editRetryMutation.isPending ||
@@ -1370,9 +1462,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const status = computeExecutionStatus({
     isInFeedbackMode,
     isInEditMode: isInEditMode || editingQueuedId !== null,
-    isStopping,
+    isStopping: isStopping || isStopRequested,
     isQueueLoading,
-    isSendingFollowUp: isSending || isHandoffPending,
+    isCreating: (isNewSessionMode && isSending) || isHandoffPending,
+    isSendingFollowUp: !isNewSessionMode && isSending,
     isAttemptRunning,
   });
 

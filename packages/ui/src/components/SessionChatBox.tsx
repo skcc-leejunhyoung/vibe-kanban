@@ -68,6 +68,14 @@ import { withDisplayTimeZone } from '../lib/datetime';
 // Status enum - single source of truth for execution state
 export type ExecutionStatus =
   | 'idle'
+  /** New session / handoff request in flight: composer locked. */
+  | 'creating'
+  /**
+   * Follow-up request in flight. The turn is already shown as a placeholder,
+   * so the composer stays open for queueing and stop is honoured once the real
+   * process arrives. "Send now" is withheld: with no server-side process to
+   * interrupt yet it would start a second, concurrent turn.
+   */
   | 'sending'
   | 'running'
   | 'stopping'
@@ -375,7 +383,7 @@ export function SessionChatBox<TExecutor extends string = string>({
 
   // Derived state from status
   const isDisabled = Boolean(
-    status === 'sending' ||
+    status === 'creating' ||
       status === 'stopping' ||
       feedbackMode?.isSubmitting ||
       editMode?.isSubmitting ||
@@ -385,11 +393,11 @@ export function SessionChatBox<TExecutor extends string = string>({
   const hasContent =
     editor.value.trim().length > 0 || (reviewComments?.count ?? 0) > 0;
   const canSend =
-    hasContent && !['sending', 'stopping', 'queue-loading'].includes(status);
+    hasContent && !['creating', 'stopping', 'queue-loading'].includes(status);
   const isRunning = status === 'running';
   const areContentInsertActionsDisabled = isDisabled;
   const showRunningAnimation =
-    (status === 'running' || status === 'sending') &&
+    (status === 'running' || status === 'sending' || status === 'creating') &&
     !isInApprovalMode &&
     !isInAskQuestionMode &&
     editor.value.trim().length === 0;
@@ -432,7 +440,7 @@ export function SessionChatBox<TExecutor extends string = string>({
       feedbackMode?.onSubmitFeedback();
     } else if (isInEditMode && canSend) {
       editMode?.onSubmitEdit();
-    } else if (status === 'running' && canSend) {
+    } else if ((status === 'running' || status === 'sending') && canSend) {
       actions.onQueue();
     } else if (status === 'idle' && canSend) {
       actions.onSend();
@@ -702,13 +710,31 @@ export function SessionChatBox<TExecutor extends string = string>({
           </>
         );
 
-      case 'sending':
+      case 'creating':
         return (
           <ChatActionButton
             icon="spinner"
             label={t('conversation.actions.sending')}
             onClick={actions.onStop}
           />
+        );
+
+      case 'sending':
+        return (
+          <>
+            <ChatActionButton
+              variant="secondary"
+              icon={StopIcon}
+              label={t('conversation.actions.stop')}
+              onClick={actions.onStop}
+            />
+            <ChatActionButton
+              icon={ArrowUpIcon}
+              label={t('conversation.actions.queue')}
+              onClick={actions.onQueue}
+              disabled={!canSend}
+            />
+          </>
         );
 
       case 'running':

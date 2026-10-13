@@ -1,4 +1,8 @@
-import type { ExecutionProcess } from 'shared/types';
+import {
+  type ExecutionProcess,
+  ExecutionProcessStatus,
+  type ExecutorConfig,
+} from 'shared/types';
 
 export const belongsToSession = (
   process: ExecutionProcess,
@@ -47,4 +51,48 @@ export function mergeOptimisticProcesses(
       new Date(a.created_at as unknown as string).getTime() -
       new Date(b.created_at as unknown as string).getTime()
   );
+}
+
+const PENDING_PROCESS_ID_PREFIX = 'pending-';
+
+/** True for a placeholder from `createPendingProcess` (no server row behind it). */
+export const isPendingProcessId = (id: string): boolean =>
+  id.startsWith(PENDING_PROCESS_ID_PREFIX);
+
+/**
+ * Placeholder for a follow-up whose POST hasn't returned yet. Added to the
+ * optimistic overlay it renders the user's turn (and the running indicator)
+ * the moment send is pressed, so the composer can be cleared and reused for
+ * queueing instead of locking until the server acknowledges. Never fetch or
+ * stream it by id — guard with `isPendingProcessId`.
+ */
+export function createPendingProcess(
+  sessionId: string,
+  prompt: string,
+  executorConfig: ExecutorConfig
+): ExecutionProcess {
+  const now = new Date().toISOString();
+  return {
+    id: `${PENDING_PROCESS_ID_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+    session_id: sessionId,
+    run_reason: 'codingagent',
+    executor_action: {
+      typ: {
+        type: 'CodingAgentFollowUpRequest',
+        prompt,
+        session_id: '',
+        reset_to_message_id: null,
+        executor_config: executorConfig,
+        working_dir: null,
+      },
+      next_action: null,
+    },
+    status: ExecutionProcessStatus.running,
+    exit_code: null,
+    dropped: false,
+    started_at: now,
+    completed_at: null,
+    created_at: now,
+    updated_at: now,
+  };
 }
