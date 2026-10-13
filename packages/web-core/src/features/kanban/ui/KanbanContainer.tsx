@@ -834,7 +834,13 @@ export function KanbanContainer() {
     ) => {
       const { workspaceHostMap, localWorkspacesById } =
         workspaceLookupsRef.current;
-      const hostId = ownerHostId ?? workspaceHostMap.get(workspaceAttemptId);
+      // `null` is a real owner (this machine — self ids are folded to null),
+      // only `undefined` means unknown; `??` would let the route's current
+      // host take over and open a local workspace on a paired host.
+      const hostId =
+        ownerHostId !== undefined
+          ? ownerHostId
+          : workspaceHostMap.get(workspaceAttemptId);
       if (!localWorkspacesById.has(workspaceAttemptId) && !hostId) {
         // The workspace lives on a paired host that is offline, or whose host
         // map hasn't finished its first poll — tell the user instead of the

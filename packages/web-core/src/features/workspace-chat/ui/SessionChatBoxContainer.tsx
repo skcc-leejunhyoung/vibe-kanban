@@ -133,6 +133,12 @@ interface PendingSend {
   stopRequested: boolean;
   /** The real process once known (POST returned or streamed earlier). */
   process: ExecutionProcess | null;
+  /**
+   * The POST returned: the agent is registered and a stop can reach it. The
+   * stream shows the row before that, and a stop in between only marks the
+   * row killed while the agent keeps running.
+   */
+  spawned: boolean;
   /** Kill the real process: optimistic status + session-scoped stop. */
   stopReal: (processId: string) => void;
 }
@@ -436,14 +442,17 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       if (pending.stopRequested) return;
       pending.stopRequested = true;
       pendingSendsChanged();
-      if (pending.process) {
+      if (pending.spawned && pending.process) {
         // The POST has returned and the send is only finishing up: the
         // process exists, so kill it right away.
         pending.stopReal(pending.process.id);
-      } else if (processes.some((p) => p.id === pending.placeholder.id)) {
-        // Nothing to kill on the server yet: mark the placeholder (only where
-        // this overlay shows it); the real process is killed on arrival.
-        patchOptimisticProcess(pending.placeholder.id, {
+        return;
+      }
+      // Nothing the server can kill yet: mark the turn shown (only where this
+      // overlay shows it); the real process is killed once the POST returns.
+      const shownId = pending.process?.id ?? pending.placeholder.id;
+      if (processes.some((p) => p.id === shownId)) {
+        patchOptimisticProcess(shownId, {
           status: ExecutionProcessStatus.killed,
         });
       }
@@ -906,7 +915,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // The stream publishes the new row on insert, the POST only returns after
   // the spawn: adopt our process as soon as it shows up so the placeholder
-  // never sits next to it (two user bubbles) and a deferred stop fires early.
+  // never sits next to it (two user bubbles). A deferred stop still waits for
+  // the POST (see `PendingSend.spawned`).
   useEffect(() => {
     if (!sessionId) return;
     const pending = pendingSends.get(sessionId);
@@ -916,8 +926,19 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     clearOptimisticProcess(pending.placeholder.id);
     pending.process = arrived;
     pendingSendsChanged();
-    if (pending.stopRequested) pending.stopReal(arrived.id);
   }, [sessionId, processes, clearOptimisticProcess]);
+
+  // An unmounted composer can't drop its provider's copy of the placeholder
+  // any more (the provider may outlive it), so drop it now; a composer showing
+  // the session again re-adds it while the send is still pending.
+  useEffect(() => {
+    const shownPlaceholder = shownPlaceholderIdRef;
+    return () => {
+      if (shownPlaceholder.current) {
+        clearOptimisticProcess(shownPlaceholder.current);
+      }
+    };
+  }, [clearOptimisticProcess]);
 
   // A send that failed after the user had left: put its text back in front of
   // whatever this session's draft holds, once that draft (not an approval's,
@@ -1096,20 +1117,24 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       prompt: prompt.trim(),
       stopRequested: false,
       process: null,
+      spawned: false,
       stopReal,
     };
     pendingSends.set(sessionId, pendingState);
     pendingSendsChanged();
     addOptimisticProcess(pending);
     const sending = send(prompt, (process) => {
-      // Already adopted from the stream — nothing left to swap.
-      if (pendingState.process) return;
+      pendingState.spawned = true;
       // Swap the placeholder for the real row in one render (no duplicate
-      // turn). Adds are session-guarded, so this is safe after a switch.
+      // turn). Adds are session-guarded, so this is safe after a switch. Drop
+      // our copy even when the row was adopted from the stream: another pane
+      // may have adopted it, leaving ours unswapped.
       clearOptimisticProcess(pending.id);
-      addOptimisticProcess(process);
-      pendingState.process = process;
-      pendingSendsChanged(); // other composers swap their copy too
+      if (!pendingState.process) {
+        addOptimisticProcess(process);
+        pendingState.process = process;
+        pendingSendsChanged(); // other composers swap their copy too
+      }
       if (pendingState.stopRequested) stopReal(process.id);
     });
     await resetComposer();
@@ -1130,6 +1155,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (sessionIdRef.current === sessionId) {
       const draft = localMessageRef.current;
       const restored = draft.trim() ? `${prompt}\n\n${draft}` : prompt;
+      // A debounced save of what was typed meanwhile would overwrite this.
+      cancelDebouncedSave();
       setLocalMessage(restored);
       void saveToScratch(restored, executorConfig);
     } else {
