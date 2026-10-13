@@ -137,6 +137,25 @@ export function matchArrivedProcess(
   });
 }
 
+// Processes handed over before their session's provider is on screen (the
+// workspace-create / quick-chat / new-session responses): consumed once by
+// that provider so the first turn renders before the stream's first replay.
+const seededProcesses = new Map<string, ExecutionProcess[]>();
+
+export function seedOptimisticProcess(process: ExecutionProcess): void {
+  const list = seededProcesses.get(process.session_id) ?? [];
+  seededProcesses.set(process.session_id, [...list, process]);
+}
+
+export function takeSeededProcesses(
+  sessionId: string | undefined
+): ExecutionProcess[] {
+  if (!sessionId) return [];
+  const list = seededProcesses.get(sessionId) ?? [];
+  seededProcesses.delete(sessionId);
+  return list;
+}
+
 const PENDING_PROCESS_ID_PREFIX = 'pending-';
 
 /** True for a placeholder from `createPendingProcess` (no server row behind it). */

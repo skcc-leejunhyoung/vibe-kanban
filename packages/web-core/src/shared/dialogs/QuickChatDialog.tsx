@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { useDropzone } from 'react-dropzone';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ComputerTowerIcon,
   DesktopIcon,
@@ -16,7 +16,15 @@ import {
   DialogTitle,
 } from '@vibe/ui/components/KeyboardDialog';
 import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
-import type { BaseCodingAgent, ExecutorConfig, Repo } from 'shared/types';
+import type {
+  BaseCodingAgent,
+  ExecutorConfig,
+  Repo,
+  Session,
+} from 'shared/types';
+import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
+import { selectWorkspaceSession } from '@/shared/hooks/useWorkspaceSessions';
+import { seedOptimisticProcess } from '@/shared/providers/executionProcessScope';
 import {
   defineModal,
   getErrorMessage,
@@ -105,6 +113,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     null
   );
   const [submitting, setSubmitting] = useState(false);
+  const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
   const favorites = useFolderFavoritesStore((s) => s.favorites);
@@ -308,16 +317,25 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     setSubmitting(true);
     setError(null);
     try {
-      const { workspace } = await workspacesApi.quickChat(
-        {
-          repo_id: repo.id,
-          executor_config: executorConfig,
-          prompt: prompt.trim(),
-          name: null,
-          attachment_ids: getAttachmentIds(),
-        },
-        selectedHostId
+      const { workspace, session, execution_process } =
+        await workspacesApi.quickChat(
+          {
+            repo_id: repo.id,
+            executor_config: executorConfig,
+            prompt: prompt.trim(),
+            name: null,
+            attachment_ids: getAttachmentIds(),
+          },
+          selectedHostId
+        );
+      // Open straight into the new session with its first turn on screen (the
+      // agent spawn continues server-side) — see useCreateWorkspace.
+      queryClient.setQueryData<Session[]>(
+        workspaceSessionKeys.byWorkspace(workspace.id, selectedHostId),
+        [session]
       );
+      selectWorkspaceSession(workspace.id, selectedHostId, session.id);
+      seedOptimisticProcess(execution_process);
       // Sent: the draft is now the workspace's first message, so drop it.
       setPrompt('');
       clearAttachments();
@@ -355,6 +373,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     getAttachmentIds,
     clearAttachments,
     modal,
+    queryClient,
     openInNewPane,
     appNavigation,
     runtime,

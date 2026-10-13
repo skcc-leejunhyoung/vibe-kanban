@@ -10,6 +10,7 @@ import {
   keepOptimisticAdds,
   mergeOptimisticProcesses,
   reconcileOptimisticOps,
+  takeSeededProcesses,
   type OptimisticOp,
 } from './executionProcessScope';
 
@@ -99,9 +100,12 @@ export const ExecutionProcessesProvider: React.FC<{
   // sessionId prop changes) drop patches/removes; adds are session-guarded in
   // the merge and survive, so a send still pending for the previous session
   // shows its turn again when the user returns.
+  // Also pick up a process created for this session before it was shown (a
+  // just-created workspace or session), so its turn is there on first paint.
   useEffect(() => {
     setOptimistic(keepOptimisticAdds);
-  }, [sessionId]);
+    takeSeededProcesses(sessionId).forEach(addOptimisticProcess);
+  }, [sessionId, addOptimisticProcess]);
 
   // Drop each op once the stream confirms it (see reconcileOptimisticOps).
   useEffect(() => {

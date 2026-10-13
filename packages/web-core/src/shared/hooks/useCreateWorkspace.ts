@@ -3,9 +3,13 @@ import { workspacesApi } from '@/shared/lib/api';
 import type {
   CreateAndStartWorkspaceRequest,
   CreateWorkspaceWithoutStartingRequest,
+  Session,
   Workspace,
 } from 'shared/types';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
+import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
+import { selectWorkspaceSession } from '@/shared/hooks/useWorkspaceSessions';
+import { seedOptimisticProcess } from '@/shared/providers/executionProcessScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface LinkToIssueParams {
@@ -52,7 +56,18 @@ export function useCreateWorkspace() {
       data,
       linkToIssue,
     }: CreateAndStartWorkspaceParams) => {
-      const { workspace } = await workspacesApi.createAndStart(data, hostId);
+      const { workspace, session, execution_process } =
+        await workspacesApi.createAndStart(data, hostId);
+      // The server answers as soon as the session and its first process exist
+      // (worktree and agent spawn continue in the background). Open straight
+      // into that session with the turn already on screen instead of waiting
+      // for the sessions fetch and the first stream replay.
+      queryClient.setQueryData<Session[]>(
+        workspaceSessionKeys.byWorkspace(workspace.id, hostId),
+        [session]
+      );
+      selectWorkspaceSession(workspace.id, hostId, session.id);
+      seedOptimisticProcess(execution_process);
       return finishWorkspaceCreation(workspace, linkToIssue);
     },
     onSuccess: () => {

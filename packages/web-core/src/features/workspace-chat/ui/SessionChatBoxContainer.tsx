@@ -235,6 +235,9 @@ function reviewErrorKey(error: unknown): string {
 
 export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const [isHandoffPending, setIsHandoffPending] = useState(false);
+  // New-session mode: creating the session row (fast) before the first
+  // message goes out as a pending follow-up.
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [handoffTarget, setHandoffTarget] = useState<BaseCodingAgent | null>(
     null
   );
@@ -858,14 +861,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Send actions
   const {
     send,
-    isSending,
     error: sendError,
     clearError,
   } = useSessionSend({
     sessionId,
     workspaceId,
-    isNewSessionMode,
-    onSelectSession,
     executorConfig,
     onOptimisticProcess: addOptimisticProcess,
   });
@@ -1048,20 +1048,56 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       });
     };
 
-    // New session and handoff keep the composer locked until the server
-    // answers: there is no session (or process) to show a placeholder in.
-    if (handoffTarget || !sessionId || !workspaceId || !executorConfig) {
-      const success = handoffTarget
-        ? await sendHandoff(prompt)
-        : await send(prompt);
-      if (success) await resetComposer();
+    // Handoff keeps the composer locked until the server answers.
+    if (handoffTarget) {
+      if (await sendHandoff(prompt)) await resetComposer();
       return;
     }
+    if (!workspaceId || !executorConfig) {
+      // Nothing to send into; the hook reports why.
+      if (await send(prompt)) await resetComposer();
+      return;
+    }
+
+    let targetSessionId = sessionId;
+    if (!targetSessionId) {
+      // New session: create the row first (fast) and switch to it, so the
+      // first message can go out as a pending follow-up and show up at once.
+      setIsCreatingSession(true);
+      try {
+        const created = await sessionsApi.create(
+          {
+            workspace_id: workspaceId,
+            executor: executorConfig.executor,
+            variant: executorConfig.variant ?? null,
+          },
+          hostId
+        );
+        queryClient.setQueryData<Session[]>(
+          workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+          (current) => [
+            created,
+            ...(current ?? []).filter((s) => s.id !== created.id),
+          ]
+        );
+        onSelectSession?.(created.id);
+        targetSessionId = created.id;
+      } catch (error) {
+        void ErrorDialog.show({
+          title: t('common:error'),
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      } finally {
+        setIsCreatingSession(false);
+      }
+    }
+    const target = targetSessionId;
 
     // Follow-up: show the turn and free the composer right away. The POST can
     // take a while (container check, previous turn drain, agent spawn).
     const pending = createPendingProcess(
-      sessionId,
+      target,
       prompt,
       executorConfig,
       processes.reduce(
@@ -1079,7 +1115,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         status: ExecutionProcessStatus.killed,
       });
       deferred.stop = workspacesApi
-        .stop(workspaceId, hostId, sessionId)
+        .stop(workspaceId, hostId, target)
         .catch((error) => {
           patchOptimisticProcess(processId, {
             status: ExecutionProcessStatus.running,
@@ -1098,25 +1134,35 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       process: null,
       stopReal,
     };
-    pendingSends.set(sessionId, pendingState);
+    pendingSends.set(target, pendingState);
     pendingSendsChanged();
     addOptimisticProcess(pending);
-    const sending = send(prompt, (process) => {
-      // Already adopted from the stream — nothing left to swap.
-      if (pendingState.process) return;
-      // Swap the placeholder for the real row in one render (no duplicate
-      // turn). Adds are session-guarded, so this is safe after a switch.
-      clearOptimisticProcess(pending.id);
-      addOptimisticProcess(process);
-      pendingState.process = process;
-      pendingSendsChanged(); // other composers swap their copy too
-      if (pendingState.stopRequested) stopReal(process.id);
+    const sending = send(prompt, {
+      sessionId: target,
+      // The composer that sent is gone (new session: the page remounts it on
+      // switch; or the user left): the hook's error has nowhere to show.
+      onError: (message) => {
+        if (sessionIdRef.current !== target) {
+          void ErrorDialog.show({ title: t('common:error'), message });
+        }
+      },
+      onProcess: (process) => {
+        // Already adopted from the stream — nothing left to swap.
+        if (pendingState.process) return;
+        // Swap the placeholder for the real row in one render (no duplicate
+        // turn). Adds are session-guarded, so this is safe after a switch.
+        clearOptimisticProcess(pending.id);
+        addOptimisticProcess(process);
+        pendingState.process = process;
+        pendingSendsChanged(); // other composers swap their copy too
+        if (pendingState.stopRequested) stopReal(process.id);
+      },
     });
     await resetComposer();
     const success = await sending;
     await deferred.stop;
-    if (pendingSends.get(sessionId) === pendingState) {
-      pendingSends.delete(sessionId);
+    if (pendingSends.get(target) === pendingState) {
+      pendingSends.delete(target);
     }
     if (success) {
       pendingSendsChanged();
@@ -1127,13 +1173,13 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     // already cleared, so restore the composed prompt) in front of whatever
     // was typed meanwhile; the send error is shown by the chat box. If the
     // user has left this session, the restore runs when it is shown again.
-    if (sessionIdRef.current === sessionId) {
+    if (sessionIdRef.current === target) {
       const draft = localMessageRef.current;
       const restored = draft.trim() ? `${prompt}\n\n${draft}` : prompt;
       setLocalMessage(restored);
       void saveToScratch(restored, executorConfig);
     } else {
-      unsentPrompts.set(sessionId, prompt);
+      unsentPrompts.set(target, prompt);
     }
     pendingSendsChanged();
   }, [
@@ -1144,6 +1190,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     sessionId,
     workspaceId,
     hostId,
+    queryClient,
+    onSelectSession,
     executorConfig,
     localMessage,
     reviewMarkdown,
@@ -1402,7 +1450,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   const areAttachmentInputsDisabled =
     mode === 'placeholder' ||
-    (isNewSessionMode && isSending) ||
+    isCreatingSession ||
     isStopping ||
     !!feedbackContext?.isSubmitting ||
     editRetryMutation.isPending ||
@@ -1642,7 +1690,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isInEditMode: isInEditMode || editingQueuedId !== null,
     isStopping: isStopping || !!pendingSend?.stopRequested,
     isQueueLoading,
-    isCreating: (isNewSessionMode && isSending) || isHandoffPending,
+    isCreating: isCreatingSession || isHandoffPending,
     isSendingFollowUp: !!pendingSend && !pendingSend.process,
     isAttemptRunning,
   });

@@ -748,7 +748,7 @@ pr_review: PrReviewInput | null,
  */
 working_branch: WorkingBranchInput, };
 
-export type CreateAndStartWorkspaceResponse = { workspace: Workspace, execution_process: ExecutionProcess, };
+export type CreateAndStartWorkspaceResponse = { workspace: Workspace, session: Session, execution_process: ExecutionProcess, };
 
 export type CreateQuickChatRequest = {
 /**

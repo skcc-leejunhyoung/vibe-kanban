@@ -16,7 +16,10 @@ use deployment::Deployment;
 use executors::model_selector::PermissionPolicy;
 use git::GitService;
 use git_host::github::GitHubProvider;
-use services::services::{container::ContainerService, issue_gating, vibe_orchestrator, vibe_tags};
+use services::services::{
+    container::{ContainerService, PreparedWorkspaceStart},
+    issue_gating, vibe_orchestrator, vibe_tags,
+};
 use utils::response::ApiResponse;
 use uuid::Uuid;
 use workspace_manager::ManagedWorkspace;
@@ -866,7 +869,7 @@ async fn create_and_start_workspace_inner(
         None => None,
     };
 
-    let execution_process = if let Some((task_id, blocker_count)) = gated_blocker {
+    let (session, execution_process) = if let Some((task_id, blocker_count)) = gated_blocker {
         let (session, record, main_action) = deployment
             .container()
             .start_workspace_deferred(
@@ -907,25 +910,56 @@ async fn create_and_start_workspace_inner(
             }
         }
 
-        record
+        (session, record)
     } else {
-        deployment
+        // Answer as soon as the rows exist: the worktree and the agent spawn
+        // run in the background and stream in, so the UI opens the session
+        // with the first turn on screen instead of waiting on the checkout.
+        let prepared = deployment
             .container()
-            .start_workspace_with_origin(
+            .prepare_workspace_start(
                 &workspace,
                 executor_config.clone(),
                 workspace_prompt,
                 automation_origin,
             )
-            .await?
+            .await?;
+        let session = prepared.session.clone();
+        let execution_process = prepared.execution_process.clone();
+        spawn_workspace_start(deployment.clone(), workspace.clone(), prepared);
+        (session, execution_process)
     };
 
     Ok(ResponseJson(ApiResponse::success(
         CreateAndStartWorkspaceResponse {
             workspace,
+            session,
             execution_process,
         },
     )))
+}
+
+/// Finish a prepared workspace start off the request path: materialise the
+/// worktree and spawn. Failures are written to the execution rows by
+/// `complete_workspace_start`, so the turn already on screen shows them.
+fn spawn_workspace_start(
+    deployment: DeploymentImpl,
+    workspace: Workspace,
+    prepared: PreparedWorkspaceStart,
+) {
+    tokio::spawn(async move {
+        if let Err(e) = deployment
+            .container()
+            .complete_workspace_start(&workspace, prepared)
+            .await
+        {
+            tracing::error!(
+                "Background start of workspace {} failed: {}",
+                workspace.id,
+                e
+            );
+        }
+    });
 }
 
 /// "Quick chat": create a lightweight in-place workspace and immediately run a
@@ -1008,14 +1042,20 @@ pub async fn create_and_start_quick_chat(
         container_ref
     );
 
-    let execution_process = deployment
+    // Same early answer as create-and-start: the agent spawn finishes in the
+    // background while the UI opens the chat with the first turn on screen.
+    let prepared = deployment
         .container()
-        .start_workspace(&workspace, executor_config.clone(), prompt)
+        .prepare_workspace_start(&workspace, executor_config.clone(), prompt, None)
         .await?;
+    let session = prepared.session.clone();
+    let execution_process = prepared.execution_process.clone();
+    spawn_workspace_start(deployment.clone(), workspace.clone(), prepared);
 
     Ok(ResponseJson(ApiResponse::success(
         CreateAndStartWorkspaceResponse {
             workspace,
+            session,
             execution_process,
         },
     )))

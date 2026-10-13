@@ -148,6 +148,18 @@ pub fn assistant_message_in_store(msg_store: &MsgStore) -> Option<String> {
     None
 }
 
+/// First half of a workspace start: the session and execution-process row(s),
+/// created without touching the container so a create request can answer right
+/// away with ids the UI can open. The slow part — materialising the worktree
+/// and spawning — is [`ContainerService::complete_workspace_start`].
+pub struct PreparedWorkspaceStart {
+    pub session: Session,
+    pub execution_process: ExecutionProcess,
+    pub main_action: ExecutorAction,
+    /// All-parallel setup mode: setup-script rows to spawn alongside the agent.
+    pub parallel_setups: Vec<(ExecutionProcess, ExecutorAction)>,
+}
+
 #[async_trait]
 pub trait ContainerService {
     fn msg_stores(&self) -> &Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>;
@@ -1310,21 +1322,27 @@ pub trait ContainerService {
         prompt: String,
         automation_origin: Option<AutomationOrigin>,
     ) -> Result<ExecutionProcess, ContainerError> {
-        // Ensure the container/worktree exists (idempotent): reuse an existing
-        // worktree when present, otherwise create one. Review-mode workspaces
-        // arrive with the worktree already materialized and checked out on the
-        // PR head branch, so recreating it (the old `create` path, which always
-        // calls `create_branch`) would fail with "branch already exists";
-        // ensure_container_exists reuses the existing worktree instead.
-        self.ensure_container_exists(workspace).await?;
+        let prepared = self
+            .prepare_workspace_start(workspace, executor_config, prompt, automation_origin)
+            .await?;
+        let execution_process = prepared.execution_process.clone();
+        self.complete_workspace_start(workspace, prepared).await?;
+        Ok(execution_process)
+    }
 
+    /// First half of [`Self::start_workspace_with_origin`]: the session and the
+    /// execution-process row(s), without touching the container. Cheap, so a
+    /// create request can answer with ids the UI opens immediately; the
+    /// worktree and the spawns follow in [`Self::complete_workspace_start`].
+    async fn prepare_workspace_start(
+        &self,
+        workspace: &Workspace,
+        executor_config: ExecutorConfig,
+        prompt: String,
+        automation_origin: Option<AutomationOrigin>,
+    ) -> Result<PreparedWorkspaceStart, ContainerError> {
         let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
 
-        let workspace = Workspace::find_by_id(&self.db().pool, workspace.id)
-            .await?
-            .ok_or(SqlxError::RowNotFound)?;
-
-        // Create a session for this workspace
         let session = Session::create(
             &self.db().pool,
             &CreateSession {
@@ -1338,7 +1356,6 @@ pub trait ContainerService {
         .await?;
 
         let repos_with_setup: Vec<_> = repos.iter().filter(|r| r.setup_script.is_some()).collect();
-
         let all_parallel = repos_with_setup.iter().all(|r| r.parallel_setup_script);
 
         // In-place ("quick chat") is a pure single coding-agent run: no setup or
@@ -1368,52 +1385,103 @@ pub trait ContainerService {
         )
         .with_automation_origin(automation_origin.clone());
 
-        let execution_process = if workspace.in_place {
+        let mut parallel_setups = Vec::new();
+        let (main_action, run_reason) = if workspace.in_place {
             // Skip all setup-script orchestration; run the coding agent directly.
-            self.start_execution(
-                &workspace,
-                &session,
-                &coding_action,
-                &ExecutionProcessRunReason::CodingAgent,
-            )
-            .await?
+            (coding_action, ExecutionProcessRunReason::CodingAgent)
         } else if all_parallel {
-            // All parallel: start each setup independently, then start coding agent
+            // All parallel: a row per setup script (recorded before the agent's,
+            // as when they were started here), spawned alongside the agent.
             for repo in &repos_with_setup {
-                if let Some(action) = Self::setup_action_for_repo(repo)
-                    && let Err(e) = self
-                        .start_execution(
-                            &workspace,
+                if let Some(action) = Self::setup_action_for_repo(repo) {
+                    let action = action.with_automation_origin(automation_origin.clone());
+                    match self
+                        .create_execution_record(
+                            workspace,
                             &session,
-                            &action.with_automation_origin(automation_origin.clone()),
+                            &action,
                             &ExecutionProcessRunReason::SetupScript,
                         )
                         .await
-                {
-                    tracing::warn!(?e, "Failed to start setup script in parallel mode");
+                    {
+                        Ok(record) => parallel_setups.push((record, action)),
+                        Err(e) => {
+                            tracing::warn!(?e, "Failed to record setup script in parallel mode")
+                        }
+                    }
                 }
             }
-            self.start_execution(
-                &workspace,
-                &session,
-                &coding_action,
-                &ExecutionProcessRunReason::CodingAgent,
-            )
-            .await?
+            (coding_action, ExecutionProcessRunReason::CodingAgent)
         } else {
             // Any sequential: chain ALL setups → coding agent via next_action
-            let main_action = Self::build_sequential_setup_chain(&repos_with_setup, coding_action)
-                .with_automation_origin(automation_origin);
-            self.start_execution(
-                &workspace,
-                &session,
-                &main_action,
-                &ExecutionProcessRunReason::SetupScript,
+            (
+                Self::build_sequential_setup_chain(&repos_with_setup, coding_action)
+                    .with_automation_origin(automation_origin),
+                ExecutionProcessRunReason::SetupScript,
             )
-            .await?
         };
 
-        Ok(execution_process)
+        let execution_process = self
+            .create_execution_record(workspace, &session, &main_action, &run_reason)
+            .await?;
+
+        Ok(PreparedWorkspaceStart {
+            session,
+            execution_process,
+            main_action,
+            parallel_setups,
+        })
+    }
+
+    /// Second half: materialise the container (idempotent — a review-mode
+    /// worktree already on the PR head branch is reused), fill in the HEADs the
+    /// rows could not capture yet, and spawn. A failure before the spawn is
+    /// written to the rows so the turn shows it instead of waiting forever.
+    async fn complete_workspace_start(
+        &self,
+        workspace: &Workspace,
+        prepared: PreparedWorkspaceStart,
+    ) -> Result<(), ContainerError> {
+        let PreparedWorkspaceStart {
+            session,
+            execution_process,
+            main_action,
+            parallel_setups,
+        } = prepared;
+
+        if let Err(e) = self.ensure_container_exists(workspace).await {
+            let message = format!("Failed to prepare the workspace: {e}");
+            for (record, _) in &parallel_setups {
+                self.fail_execution_start(&session, record, &message).await;
+            }
+            self.fail_execution_start(&session, &execution_process, &message)
+                .await;
+            return Err(e);
+        }
+
+        let workspace = Workspace::find_by_id(&self.db().pool, workspace.id)
+            .await?
+            .ok_or(SqlxError::RowNotFound)?;
+
+        for record in parallel_setups
+            .iter()
+            .map(|(record, _)| record)
+            .chain(std::iter::once(&execution_process))
+        {
+            self.backfill_before_head_commit(&workspace, record).await;
+        }
+
+        for (record, action) in &parallel_setups {
+            if let Err(e) = self
+                .finish_execution_spawn(&workspace, &session, record, action)
+                .await
+            {
+                tracing::warn!(?e, "Failed to start setup script in parallel mode");
+            }
+        }
+
+        self.finish_execution_spawn(&workspace, &session, &execution_process, &main_action)
+            .await
     }
 
     /// Same end-state as [`Self::start_workspace`] up through "execution_process
@@ -1715,6 +1783,133 @@ pub trait ContainerService {
         Ok(execution_process)
     }
 
+    /// A row that never got to run: mark it failed and leave the reason in its
+    /// log, so its turn shows the failure instead of a spinner. Shared by the
+    /// spawn-failure path and a failed background workspace start.
+    async fn fail_execution_start(
+        &self,
+        session: &Session,
+        execution_process: &ExecutionProcess,
+        message: &str,
+    ) {
+        self.msg_stores()
+            .write()
+            .await
+            .remove(&execution_process.id);
+        // A concurrent stop owns the terminal status if it got here first.
+        match ExecutionProcess::update_completion_if_running(
+            &self.db().pool,
+            execution_process.id,
+            ExecutionProcessStatus::Failed,
+            None,
+        )
+        .await
+        {
+            Ok(true) => {
+                if let Ok(Some(completed_process)) =
+                    ExecutionProcess::find_by_id(&self.db().pool, execution_process.id).await
+                    && let Err(publish_error) = self
+                        .events()
+                        .publish_execution_process_update(&completed_process)
+                        .await
+                {
+                    tracing::error!(
+                        "Failed to publish execution process {} start failure: {}",
+                        execution_process.id,
+                        publish_error
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(update_error) => {
+                tracing::error!(
+                    "Failed to mark execution process {} as failed after start error: {}",
+                    execution_process.id,
+                    update_error
+                );
+            }
+        }
+        let log_message = LogMsg::Stderr(message.to_string());
+        if let Err(e) =
+            execution_process::append_log_message(session.id, execution_process.id, &log_message)
+                .await
+        {
+            tracing::error!(
+                "Failed to write error log for execution {}: {}",
+                execution_process.id,
+                e
+            );
+        }
+    }
+
+    /// Rows created before the worktree existed (see
+    /// [`Self::prepare_workspace_start`]) have no `before_head_commit`; record
+    /// the HEAD now that it is there. Best-effort, like the legacy backfill.
+    async fn backfill_before_head_commit(
+        &self,
+        workspace: &Workspace,
+        execution_process: &ExecutionProcess,
+    ) {
+        let Some(root) = workspace.container_ref.as_ref().map(PathBuf::from) else {
+            return;
+        };
+        let repos =
+            match WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await {
+                Ok(repos) => repos,
+                Err(e) => {
+                    tracing::warn!("Could not load repos to backfill HEAD: {}", e);
+                    return;
+                }
+            };
+        let states = match ExecutionProcessRepoState::find_by_execution_process_id(
+            &self.db().pool,
+            execution_process.id,
+        )
+        .await
+        {
+            Ok(states) => states,
+            Err(e) => {
+                tracing::warn!(
+                    "Could not load repo states of process {} to backfill HEAD: {}",
+                    execution_process.id,
+                    e
+                );
+                return;
+            }
+        };
+        for repo in &repos {
+            let missing = states
+                .iter()
+                .find(|s| s.repo_id == repo.id)
+                .is_some_and(|s| s.before_head_commit.is_none());
+            if !missing {
+                continue;
+            }
+            let Some(oid) = self
+                .git()
+                .get_head_info(&root.join(&repo.name))
+                .ok()
+                .map(|h| h.oid)
+            else {
+                continue;
+            };
+            if let Err(e) = ExecutionProcessRepoState::update_before_head_commit(
+                &self.db().pool,
+                execution_process.id,
+                repo.id,
+                &oid,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "Failed to backfill before_head_commit for process {}: {}",
+                    execution_process.id,
+                    e
+                );
+            }
+        }
+    }
+
     /// Performs the actual agent spawn for an already-created execution
     /// process row, plus normalised-log wiring. On spawn failure the row is
     /// marked as Failed and a stderr log entry is appended. Used both by the
@@ -1796,58 +1991,12 @@ pub trait ContainerService {
             .start_execution_inner(workspace, execution_process, executor_action)
             .await
         {
-            self.msg_stores()
-                .write()
-                .await
-                .remove(&execution_process.id);
-            // A concurrent stop owns the terminal status if it got here first.
-            match ExecutionProcess::update_completion_if_running(
-                &self.db().pool,
-                execution_process.id,
-                ExecutionProcessStatus::Failed,
-                None,
+            self.fail_execution_start(
+                session,
+                execution_process,
+                &format!("Failed to start execution: {start_error}"),
             )
-            .await
-            {
-                Ok(true) => {
-                    if let Ok(Some(completed_process)) =
-                        ExecutionProcess::find_by_id(&self.db().pool, execution_process.id).await
-                        && let Err(publish_error) = self
-                            .events()
-                            .publish_execution_process_update(&completed_process)
-                            .await
-                    {
-                        tracing::error!(
-                            "Failed to publish execution process {} start failure: {}",
-                            execution_process.id,
-                            publish_error
-                        );
-                    }
-                }
-                Ok(false) => {}
-                Err(update_error) => {
-                    tracing::error!(
-                        "Failed to mark execution process {} as failed after start error: {}",
-                        execution_process.id,
-                        update_error
-                    );
-                }
-            }
-            // Emit stderr error message
-            let log_message = LogMsg::Stderr(format!("Failed to start execution: {start_error}"));
-            if let Err(e) = execution_process::append_log_message(
-                session.id,
-                execution_process.id,
-                &log_message,
-            )
-            .await
-            {
-                tracing::error!(
-                    "Failed to write error log for execution {}: {}",
-                    execution_process.id,
-                    e
-                );
-            }
+            .await;
 
             // Emit NextAction with failure context for coding agent requests
             if let ContainerError::ExecutorError(ExecutorError::ExecutableNotFound { program }) =
