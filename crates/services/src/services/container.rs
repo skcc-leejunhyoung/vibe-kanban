@@ -148,6 +148,10 @@ pub fn assistant_message_in_store(msg_store: &MsgStore) -> Option<String> {
     None
 }
 
+/// Per-workspace locks around container materialisation; see
+/// [`ContainerService::lock_container`].
+pub type ContainerLocks = Arc<RwLock<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>;
+
 /// First half of a workspace start: the session and execution-process row(s),
 /// created without touching the container so a create request can answer right
 /// away with ids the UI can open. The slow part — materialising the worktree
@@ -866,7 +870,41 @@ pub trait ContainerService {
         stop_error.map_or(Ok(()), Err)
     }
 
+    fn container_locks(&self) -> &ContainerLocks;
+
+    /// Hold this while materialising a workspace's checkout in several steps
+    /// (worktree, then a PR checkout): every [`Self::ensure_container_exists`]
+    /// for the workspace waits for the guard, so nothing runs in a half-made
+    /// tree.
+    async fn lock_container(&self, workspace_id: Uuid) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.container_locks().write().await;
+            locks
+                .entry(workspace_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+
+    /// Materialise the container (idempotent), serialised per workspace: the
+    /// page that opens right after a create request (branch status, diffs)
+    /// and a background start both land here, and two concurrent
+    /// `git worktree add`s on the same path fail. The row is re-read under the
+    /// lock so a branch or path the holder updated is honoured.
     async fn ensure_container_exists(
+        &self,
+        workspace: &Workspace,
+    ) -> Result<ContainerRef, ContainerError> {
+        let _materialising = self.lock_container(workspace.id).await;
+        let fresh = Workspace::find_by_id(&self.db().pool, workspace.id).await?;
+        self.ensure_container_exists_unlocked(fresh.as_ref().unwrap_or(workspace))
+            .await
+    }
+
+    /// [`Self::ensure_container_exists`] for a caller that already holds the
+    /// workspace's lock from [`Self::lock_container`].
+    async fn ensure_container_exists_unlocked(
         &self,
         workspace: &Workspace,
     ) -> Result<ContainerRef, ContainerError>;

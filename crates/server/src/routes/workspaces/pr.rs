@@ -21,7 +21,7 @@ use db::models::{
     repo::{Repo, RepoError},
     requests::PrReviewInput,
     session::{CreateSession, Session},
-    workspace::{CreateWorkspace, Workspace, WorkspaceError},
+    workspace::{CreateWorkspace, Workspace},
     workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo},
 };
 use deployment::Deployment;
@@ -1736,27 +1736,23 @@ async fn cleanup_failed_pr_workspace(pool: &sqlx::SqlitePool, workspace: &Worksp
     }
 }
 
-/// A failure to fetch or check out the PR's head branch (gh repo-info lookup or
-/// `gh pr checkout`). Surfaced separately from infra errors so callers can
-/// present it as a typed outcome instead of a 500.
-pub(crate) struct BranchFetchFailure {
-    pub message: String,
-}
-
 /// Shared workspace setup for the "work on an existing PR branch" flows:
-/// create-from-PR (command bar) and review-mode create-and-start.
+/// create-from-PR (command bar) and review-mode create-and-start. Keeping the
+/// repo `target_branch` at the base ref means later merges / new PRs target
+/// the base.
 ///
-/// Creates the workspace + single repo on the PR base ref, materializes the
-/// worktree, then `gh pr checkout`s the PR head branch and links the PR. Keeping
-/// the repo `target_branch` at the base ref means later merges / new PRs target
-/// the base. On a branch-fetch failure the partially-created workspace is
-/// cleaned up and `Ok(Err(BranchFetchFailure))` is returned; infra failures
-/// propagate as `Err(ApiError)`.
+/// Create the review workspace's rows (workspace, repo, PR link) and answer
+/// at once; the worktree and the PR checkout follow in the background under
+/// the workspace's container lock, so anything that needs the checkout
+/// (the first message, branch status, a setup script) waits for it rather
+/// than running in a half-made tree. A failed checkout removes the workspace
+/// again and notifies locally, as the synchronous version used to report.
 pub(crate) async fn setup_pr_review_workspace(
     deployment: &DeploymentImpl,
     workspace_name: Option<String>,
     pr: &PrReviewInput,
-) -> Result<Result<Workspace, BranchFetchFailure>, ApiError> {
+    run_setup: bool,
+) -> Result<Workspace, ApiError> {
     let pool = &deployment.db().pool;
 
     let repo = Repo::find_by_id(pool, pr.repo_id)
@@ -1772,11 +1768,11 @@ pub(crate) async fn setup_pr_review_workspace(
     };
 
     // Start the worktree on the PR base ref; gh pr checkout switches it to the
-    // head branch below.
+    // head branch in the background.
     let target_branch_ref = review_target_branch_ref(&remote.name, &pr.base_branch);
 
     let workspace_id = Uuid::new_v4();
-    let mut workspace = Workspace::create(
+    let workspace = Workspace::create(
         pool,
         &CreateWorkspace {
             branch: target_branch_ref.clone(),
@@ -1796,44 +1792,6 @@ pub(crate) async fn setup_pr_review_workspace(
     )
     .await?;
 
-    let container_ref = deployment
-        .container()
-        .ensure_container_exists(&workspace)
-        .await?;
-
-    // Needed so cleanup_failed_pr_workspace can locate the worktree dir on error.
-    workspace.container_ref = Some(container_ref.clone());
-
-    // gh pr checkout handles SSH/HTTPS auth correctly regardless of fork URL.
-    let worktree_path = PathBuf::from(&container_ref).join(&repo.name);
-    match GhCli::new().get_repo_info(&remote.url, &worktree_path) {
-        Ok(repo_info) => {
-            if let Err(e) = GhCli::new().pr_checkout(
-                &worktree_path,
-                &repo_info.owner,
-                &repo_info.repo_name,
-                pr.pr_number,
-            ) {
-                tracing::error!("Failed to checkout PR branch: {e}");
-                cleanup_failed_pr_workspace(pool, &workspace).await;
-                return Ok(Err(BranchFetchFailure {
-                    message: e.to_string(),
-                }));
-            }
-            Workspace::update_branch_name(pool, workspace.id, &pr.head_branch).await?;
-            workspace.branch = pr.head_branch.clone();
-        }
-        Err(e) => {
-            tracing::error!(
-                "Failed to get repo info for PR checkout (gh CLI may not be installed): {e}"
-            );
-            cleanup_failed_pr_workspace(pool, &workspace).await;
-            return Ok(Err(BranchFetchFailure {
-                message: format!("Failed to get repository info: {e}"),
-            }));
-        }
-    }
-
     PullRequest::create_for_workspace(
         pool,
         workspace.id,
@@ -1845,11 +1803,143 @@ pub(crate) async fn setup_pr_review_workspace(
     )
     .await?;
 
-    let workspace = Workspace::find_by_id(pool, workspace.id)
-        .await?
-        .ok_or(WorkspaceError::WorkspaceNotFound)?;
+    spawn_pr_checkout(
+        deployment.clone(),
+        workspace.clone(),
+        repo,
+        remote,
+        pr.clone(),
+        run_setup,
+    );
 
-    Ok(Ok(workspace))
+    Ok(workspace)
+}
+
+/// Materialise a review workspace off the request path: worktree on the base
+/// ref, then `gh pr checkout` onto the head branch, both under the container
+/// lock. Then the optional setup script.
+fn spawn_pr_checkout(
+    deployment: DeploymentImpl,
+    workspace: Workspace,
+    repo: Repo,
+    remote: GitRemote,
+    pr: PrReviewInput,
+    run_setup: bool,
+) {
+    tokio::spawn(async move {
+        let pool = deployment.db().pool.clone();
+        let checked_out: Result<Workspace, String> = async {
+            let container = deployment.container();
+            let _materialising = container.lock_container(workspace.id).await;
+            let container_ref = container
+                .ensure_container_exists_unlocked(&workspace)
+                .await
+                .map_err(|e| e.to_string())?;
+            // gh pr checkout handles SSH/HTTPS auth correctly regardless of fork URL.
+            let worktree_path = PathBuf::from(&container_ref).join(&repo.name);
+            let repo_info = GhCli::new()
+                .get_repo_info(&remote.url, &worktree_path)
+                .map_err(|e| format!("Failed to get repository info: {e}"))?;
+            GhCli::new()
+                .pr_checkout(
+                    &worktree_path,
+                    &repo_info.owner,
+                    &repo_info.repo_name,
+                    pr.pr_number,
+                )
+                .map_err(|e| e.to_string())?;
+            Workspace::update_branch_name(&pool, workspace.id, &pr.head_branch)
+                .await
+                .map_err(|e| e.to_string())?;
+            Workspace::find_by_id(&pool, workspace.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "workspace was deleted meanwhile".to_string())
+        }
+        .await;
+
+        match checked_out {
+            Ok(workspace) => {
+                tracing::info!(
+                    "Checked out PR #{} into workspace {}",
+                    pr.pr_number,
+                    workspace.id
+                );
+                if run_setup {
+                    run_pr_setup_script(&deployment, &workspace).await;
+                }
+            }
+            Err(message) => {
+                tracing::error!(
+                    "Failed to check out PR #{} for workspace {}: {}",
+                    pr.pr_number,
+                    workspace.id,
+                    message
+                );
+                // Re-read for the container_ref the cleanup needs to find the tree.
+                let latest = Workspace::find_by_id(&pool, workspace.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or(workspace);
+                cleanup_failed_pr_workspace(&pool, &latest).await;
+                deployment
+                    .container()
+                    .notification_service()
+                    .notify_local_only(
+                        "PR checkout failed",
+                        &format!("PR #{}: {message}", pr.pr_number),
+                        None,
+                    )
+                    .await;
+            }
+        }
+    });
+}
+
+/// Run the repos' setup script once in the review workspace (no agent).
+async fn run_pr_setup_script(deployment: &DeploymentImpl, workspace: &Workspace) {
+    let pool = &deployment.db().pool;
+    let repos = match WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await {
+        Ok(repos) => repos,
+        Err(e) => {
+            tracing::error!("Failed to load repos for setup script: {}", e);
+            return;
+        }
+    };
+    let Some(setup_action) = deployment.container().setup_actions_for_repos(&repos) else {
+        return;
+    };
+    let session = match Session::create(
+        pool,
+        &CreateSession {
+            executor: None,
+            variant: None,
+            name: None,
+        },
+        Uuid::new_v4(),
+        workspace.id,
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(e) => {
+            tracing::error!("Failed to create setup session: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = deployment
+        .container()
+        .start_execution(
+            workspace,
+            &session,
+            &setup_action,
+            &ExecutionProcessRunReason::SetupScript,
+        )
+        .await
+    {
+        tracing::error!("Failed to run setup script: {}", e);
+    }
 }
 
 #[axum::debug_handler]
@@ -1857,8 +1947,6 @@ pub async fn create_workspace_from_pr(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateWorkspaceFromPrBody>,
 ) -> Result<ResponseJson<ApiResponse<CreateWorkspaceFromPrResponse, CreateFromPrError>>, ApiError> {
-    let pool = &deployment.db().pool;
-
     let pr_input = PrReviewInput {
         repo_id: payload.repo_id,
         pr_number: payload.pr_number,
@@ -1869,50 +1957,16 @@ pub async fn create_workspace_from_pr(
         remote_name: payload.remote_name.clone(),
     };
 
-    let workspace =
-        match setup_pr_review_workspace(&deployment, Some(payload.pr_title.clone()), &pr_input)
-            .await?
-        {
-            Ok(workspace) => workspace,
-            Err(BranchFetchFailure { message }) => {
-                return Ok(ResponseJson(ApiResponse::error_with_data(
-                    CreateFromPrError::BranchFetchFailed { message },
-                )));
-            }
-        };
-
-    if payload.run_setup {
-        let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
-        if let Some(setup_action) = deployment.container().setup_actions_for_repos(&repos) {
-            let session = Session::create(
-                pool,
-                &CreateSession {
-                    executor: None,
-                    variant: None,
-                    name: None,
-                },
-                Uuid::new_v4(),
-                workspace.id,
-            )
-            .await?;
-
-            if let Err(e) = deployment
-                .container()
-                .start_execution(
-                    &workspace,
-                    &session,
-                    &setup_action,
-                    &ExecutionProcessRunReason::SetupScript,
-                )
-                .await
-            {
-                tracing::error!("Failed to run setup script: {}", e);
-            }
-        }
-    }
+    let workspace = setup_pr_review_workspace(
+        &deployment,
+        Some(payload.pr_title.clone()),
+        &pr_input,
+        payload.run_setup,
+    )
+    .await?;
 
     tracing::info!(
-        "Created workspace {} from PR #{}",
+        "Created workspace {} from PR #{} (checkout continues in the background)",
         workspace.id,
         payload.pr_number,
     );

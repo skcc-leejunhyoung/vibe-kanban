@@ -52,7 +52,7 @@ use git::{GitService, GitServiceError};
 use services::services::{
     approvals::{Approvals, executor_approvals::ExecutorApprovalBridge},
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
-    container::{ContainerError, ContainerRef, ContainerService},
+    container::{ContainerError, ContainerLocks, ContainerRef, ContainerService},
     diff_stream::{self, DiffStreamHandle},
     events::EventService,
     file::FileService,
@@ -672,11 +672,7 @@ pub struct LocalContainerService {
     output_pipeline: Arc<OutputPipelineBarrier>,
     session_finalization: Arc<SessionFinalizationBarrier>,
     workspace_touch_times: Arc<RwLock<HashMap<Uuid, Instant>>>,
-    /// One lock per workspace around worktree materialisation: the page that
-    /// opens right after a create request (branch status, diffs) and the
-    /// background start both ensure the container, and two concurrent
-    /// `git worktree add`s on the same path fail.
-    container_locks: Arc<RwLock<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>,
+    container_locks: ContainerLocks,
     config: Arc<RwLock<Config>>,
     git: GitService,
     file_service: FileService,
@@ -3276,6 +3272,10 @@ impl ContainerService for LocalContainerService {
         &self.msg_stores
     }
 
+    fn container_locks(&self) -> &ContainerLocks {
+        &self.container_locks
+    }
+
     async fn subagent_handle(&self, id: &Uuid) -> Option<SubagentLiveHandle> {
         let map = self.subagent_handles.read().await;
         map.get(id).cloned()
@@ -3479,19 +3479,10 @@ impl ContainerService for LocalContainerService {
         self.cleanup_workspace(workspace, false).await
     }
 
-    async fn ensure_container_exists(
+    async fn ensure_container_exists_unlocked(
         &self,
         workspace: &Workspace,
     ) -> Result<ContainerRef, ContainerError> {
-        let lock = {
-            let mut locks = self.container_locks.write().await;
-            locks
-                .entry(workspace.id)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
-        };
-        let _materialising = lock.lock().await;
-
         self.touch(workspace).await?;
         let (repositories, workspace_inputs) = self.workspace_repo_inputs(workspace.id).await?;
 

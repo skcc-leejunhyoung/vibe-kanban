@@ -49,7 +49,7 @@ pub struct GithubLinkedBranchInput {
 /// directly on an existing PR's head branch (no new `vk/` worktree branch) and
 /// auto-links that PR. Populated by the frontend when the linked issue carries
 /// the `review` tag and already has an open PR.
-#[derive(Debug, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct PrReviewInput {
     /// Repo whose PR is being reviewed. Must match the single entry in `repos`.
     pub repo_id: Uuid,

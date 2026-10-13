@@ -29,7 +29,7 @@ use crate::{
     error::ApiError,
     routes::workspaces::{
         attachments::{ImportedIssueAttachment, import_issue_attachments_from_remote},
-        pr::{self, BranchFetchFailure},
+        pr,
         review_mode::{self, BranchSetup},
     },
 };
@@ -602,15 +602,9 @@ async fn create_workspace_with_repos(
         // Review mode: check out the existing PR head branch directly and link
         // the PR, instead of branching a new `vk/` worktree.
         BranchSetup::ExistingPrBranch(review) => {
-            let workspace = match pr::setup_pr_review_workspace(deployment, name, review).await? {
-                Ok(workspace) => workspace,
-                Err(BranchFetchFailure { message }) => {
-                    return Err(ApiError::BadRequest(format!(
-                        "Failed to check out PR #{} branch for review: {message}",
-                        review.pr_number
-                    )));
-                }
-            };
+            // The checkout runs in the background; the agent start that follows
+            // waits for it through the workspace's container lock.
+            let workspace = pr::setup_pr_review_workspace(deployment, name, review, false).await?;
 
             deployment
                 .workspace_manager()
