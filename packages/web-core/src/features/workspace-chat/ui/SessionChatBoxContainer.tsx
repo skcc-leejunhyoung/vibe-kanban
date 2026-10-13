@@ -2,9 +2,9 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -17,14 +17,16 @@ import {
   type ExecutionProcess,
   ExecutionProcessStatus,
   type ReviewError,
-  ScratchType,
 } from 'shared/types';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceExecution } from '@/shared/hooks/useWorkspaceExecution';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
-import { createPendingProcess } from '@/shared/providers/executionProcessScope';
+import {
+  createPendingProcess,
+  matchArrivedProcess,
+} from '@/shared/providers/executionProcessScope';
 import { isCodingAgent } from '@/shared/constants/processes';
 import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
@@ -78,12 +80,7 @@ import {
 } from '@/shared/types/actions';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
-import {
-  sessionsApi,
-  scratchApi,
-  workspacesApi,
-  ApiError,
-} from '@/shared/lib/api';
+import { sessionsApi, workspacesApi, ApiError } from '@/shared/lib/api';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
@@ -129,13 +126,40 @@ function computeExecutionStatus(params: {
  */
 interface PendingSend {
   placeholder: ExecutionProcess;
+  /** Process ids known at send time, to recognise the new row on the stream. */
+  knownIds: Set<string>;
+  /** The sent prompt as the server stores it (trimmed), for the same. */
+  prompt: string;
   stopRequested: boolean;
-  /** The real process once the POST has returned. */
+  /** The real process once known (POST returned or streamed earlier). */
   process: ExecutionProcess | null;
   /** Kill the real process: optimistic status + session-scoped stop. */
   stopReal: (processId: string) => void;
 }
 const pendingSends = new Map<string, PendingSend>();
+/**
+ * Prompt of a send that failed after the user had left its session, to be put
+ * back into that session's composer on return. Drafts are per runtime (server
+ * scratch locally, localStorage on remote-web), so this stays in memory rather
+ * than guessing where the composer will read from.
+ */
+const unsentPrompts = new Map<string, string>();
+// Tiny external store so every composer showing a session (split panes, the
+// kanban sidebar) re-renders when a pending send changes, not just the one
+// whose closure made the change.
+let pendingSendsVersion = 0;
+const pendingSendsListeners = new Set<() => void>();
+function pendingSendsChanged() {
+  pendingSendsVersion += 1;
+  pendingSendsListeners.forEach((listener) => listener());
+}
+function subscribePendingSends(listener: () => void) {
+  pendingSendsListeners.add(listener);
+  return () => {
+    pendingSendsListeners.delete(listener);
+  };
+}
+const getPendingSendsVersion = () => pendingSendsVersion;
 
 /** Shared props across all modes */
 interface SharedProps {
@@ -250,7 +274,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     setHandoffTarget(null);
   }, [sessionId]);
   // Re-render when the pending-send registry changes (it lives outside React).
-  const [, bumpPending] = useReducer((n: number) => n + 1, 0);
+  const pendingVersion = useSyncExternalStore(
+    subscribePendingSends,
+    getPendingSendsVersion
+  );
   const pendingSend = sessionId ? pendingSends.get(sessionId) : undefined;
   const queryClient = useQueryClient();
   const hostId = useHostId();
@@ -402,14 +429,14 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (pending) {
       if (pending.stopRequested) return;
       pending.stopRequested = true;
-      bumpPending();
+      pendingSendsChanged();
       if (pending.process) {
         // The POST has returned and the send is only finishing up: the
         // process exists, so kill it right away.
         pending.stopReal(pending.process.id);
-      } else {
-        // Nothing to kill on the server yet: mark the placeholder; the send's
-        // completion callback kills the real process on arrival.
+      } else if (processes.some((p) => p.id === pending.placeholder.id)) {
+        // Nothing to kill on the server yet: mark the placeholder (only where
+        // this overlay shows it); the real process is killed on arrival.
         patchOptimisticProcess(pending.placeholder.id, {
           status: ExecutionProcessStatus.killed,
         });
@@ -646,6 +673,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     scratchData,
     isScratchLoading,
     hasInitialValue,
+    loadedScratchId,
     saveToScratch,
     clearDraft,
     cancelDebouncedSave,
@@ -836,11 +864,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     onOptimisticProcess: addOptimisticProcess,
   });
 
-  // Showing a session (switch or remount) whose send is still pending: the
-  // overlay may be fresh, so put its turn back — and don't carry another
-  // session's send error into this composer.
+  // Any composer showing a session whose send is pending (switch, remount, a
+  // second pane, or the send just started elsewhere): make sure its overlay
+  // shows the turn. Idempotent — adds are de-duplicated by id.
   useEffect(() => {
-    clearError();
     if (!sessionId) return;
     const pending = pendingSends.get(sessionId);
     if (!pending) return;
@@ -851,7 +878,47 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         status: ExecutionProcessStatus.killed,
       });
     }
-  }, [sessionId, clearError, addOptimisticProcess, patchOptimisticProcess]);
+  }, [sessionId, pendingVersion, addOptimisticProcess, patchOptimisticProcess]);
+
+  // The stream publishes the new row on insert, the POST only returns after
+  // the spawn: adopt our process as soon as it shows up so the placeholder
+  // never sits next to it (two user bubbles) and a deferred stop fires early.
+  useEffect(() => {
+    if (!sessionId) return;
+    const pending = pendingSends.get(sessionId);
+    if (!pending || pending.process) return;
+    const arrived = matchArrivedProcess(processes, { sessionId, ...pending });
+    if (!arrived) return;
+    clearOptimisticProcess(pending.placeholder.id);
+    pending.process = arrived;
+    pendingSendsChanged();
+    if (pending.stopRequested) pending.stopReal(arrived.id);
+  }, [sessionId, processes, clearOptimisticProcess]);
+
+  // A send that failed after the user had left: put its text back in front of
+  // whatever this session's draft holds, once that draft (not an approval's,
+  // not the previous session's) has loaded.
+  useEffect(() => {
+    if (!sessionId || scratchId !== sessionId || loadedScratchId !== sessionId)
+      return;
+    const unsent = unsentPrompts.get(sessionId);
+    if (unsent === undefined) return;
+    unsentPrompts.delete(sessionId);
+    const draft = localMessageRef.current;
+    const restored = draft.trim() ? `${unsent}\n\n${draft}` : unsent;
+    cancelDebouncedSave();
+    setLocalMessage(restored);
+    if (executorConfig) void saveToScratch(restored, executorConfig);
+  }, [
+    sessionId,
+    scratchId,
+    loadedScratchId,
+    pendingVersion,
+    cancelDebouncedSave,
+    setLocalMessage,
+    saveToScratch,
+    executorConfig,
+  ]);
 
   const handleHandoff = useCallback(
     (target: BaseCodingAgent) => {
@@ -983,6 +1050,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     // switch in the meantime can't redirect the stop.
     const deferred: { stop?: Promise<void> } = {};
     const stopReal = (processId: string) => {
+      if (deferred.stop) return; // kill once
       patchOptimisticProcess(processId, {
         status: ExecutionProcessStatus.killed,
       });
@@ -1000,14 +1068,18 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     };
     const pendingState: PendingSend = {
       placeholder: pending,
+      knownIds: new Set(processes.map((p) => p.id)),
+      prompt: prompt.trim(),
       stopRequested: false,
       process: null,
       stopReal,
     };
     pendingSends.set(sessionId, pendingState);
-    bumpPending();
+    pendingSendsChanged();
     addOptimisticProcess(pending);
     const sending = send(prompt, (process) => {
+      // Already adopted from the stream — nothing left to swap.
+      if (pendingState.process) return;
       // Swap the placeholder for the real row in one render (no duplicate
       // turn). Adds are session-guarded, so this is safe after a switch.
       clearOptimisticProcess(pending.id);
@@ -1021,33 +1093,24 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (pendingSends.get(sessionId) === pendingState) {
       pendingSends.delete(sessionId);
     }
-    bumpPending();
-    if (success) return;
+    if (success) {
+      pendingSendsChanged();
+      return;
+    }
     clearOptimisticProcess(pending.id);
     // Put the text back (review comments were folded into the prompt and
-    // already cleared, so restore the composed prompt); the send error is
-    // shown by the chat box. If this session is on screen, in front of whatever
-    // was typed meanwhile; otherwise into its draft so it is there on return.
+    // already cleared, so restore the composed prompt) in front of whatever
+    // was typed meanwhile; the send error is shown by the chat box. If the
+    // user has left this session, the restore runs when it is shown again.
     if (sessionIdRef.current === sessionId) {
       const draft = localMessageRef.current;
       const restored = draft.trim() ? `${prompt}\n\n${draft}` : prompt;
       setLocalMessage(restored);
       void saveToScratch(restored, executorConfig);
     } else {
-      scratchApi
-        .update(
-          ScratchType.DRAFT_FOLLOW_UP,
-          sessionId,
-          {
-            payload: {
-              type: 'DRAFT_FOLLOW_UP',
-              data: { message: prompt, executor_config: executorConfig },
-            },
-          },
-          hostId
-        )
-        .catch((e) => console.error('Failed to keep unsent follow-up', e));
+      unsentPrompts.set(sessionId, prompt);
     }
+    pendingSendsChanged();
   }, [
     onScrollToBottom,
     send,

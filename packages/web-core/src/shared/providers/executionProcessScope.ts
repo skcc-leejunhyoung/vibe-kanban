@@ -113,6 +113,30 @@ export function keepOptimisticAdds(
     : next;
 }
 
+/**
+ * The real process behind a pending send, if the stream delivered it before
+ * the POST returned (the row is published on insert, the POST only after the
+ * spawn): a coding-agent row for the session that wasn't there at send time
+ * and carries the sent prompt. Matching on the prompt keeps a turn started by
+ * another client in the meantime from being mistaken for ours.
+ */
+export function matchArrivedProcess(
+  processes: ExecutionProcess[],
+  pending: { sessionId: string; knownIds: Set<string>; prompt: string }
+): ExecutionProcess | undefined {
+  return processes.find((p) => {
+    if (pending.knownIds.has(p.id) || isPendingProcessId(p.id)) return false;
+    if (p.session_id !== pending.sessionId || p.run_reason !== 'codingagent')
+      return false;
+    const typ = p.executor_action.typ;
+    return (
+      (typ.type === 'CodingAgentFollowUpRequest' ||
+        typ.type === 'CodingAgentInitialRequest') &&
+      typ.prompt.trim() === pending.prompt
+    );
+  });
+}
+
 const PENDING_PROCESS_ID_PREFIX = 'pending-';
 
 /** True for a placeholder from `createPendingProcess` (no server row behind it). */

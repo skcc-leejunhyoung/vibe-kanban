@@ -367,6 +367,19 @@ async fn follow_up_inner(
 
     tracing::info!("{:?}", workspace);
 
+    // The prompt being sent is no longer a draft: clear the follow-up scratch
+    // now, before the slow part (container check, previous-turn drain, spawn).
+    // The composer stays open during that wait, so a delete at the end would
+    // wipe whatever the user has typed and saved since. Best-effort: it also
+    // covers a client that navigated away before clearing its own draft.
+    if let Err(e) = Scratch::delete(pool, session.id, &ScratchType::DraftFollowUp).await {
+        tracing::debug!(
+            "Failed to delete draft follow-up scratch for session {}: {}",
+            session.id,
+            e
+        );
+    }
+
     deployment
         .container()
         .ensure_container_exists(&workspace)
@@ -537,17 +550,6 @@ async fn follow_up_inner(
     // A successfully-started manual follow-up supersedes any scheduled
     // usage-limit auto-resume for this session.
     let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
-
-    // Clear the draft follow-up scratch on successful spawn
-    // This ensures the scratch is wiped even if the user navigates away quickly
-    if let Err(e) = Scratch::delete(pool, session.id, &ScratchType::DraftFollowUp).await {
-        // Log but don't fail the request - scratch deletion is best-effort
-        tracing::debug!(
-            "Failed to delete draft follow-up scratch for session {}: {}",
-            session.id,
-            e
-        );
-    }
 
     Ok(ResponseJson(ApiResponse::success(execution_process)))
 }

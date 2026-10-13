@@ -36,7 +36,7 @@ interface UseSessionSendResult {
   ) => Promise<boolean>;
   /** Whether a send operation is in progress */
   isSending: boolean;
-  /** Error message if send failed */
+  /** Error message if the send for the *current* session failed */
   error: string | null;
   /** Clear the error */
   clearError: () => void;
@@ -64,7 +64,16 @@ export function useSessionSend({
   const { mutateAsync: createSession, isPending: isCreatingSession } =
     useCreateSession();
   const [isSendingFollowUp, setIsSendingFollowUp] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Keyed by the session the send targeted: a failure that lands after the
+  // user switched conversations must not show up under the other session.
+  const [errorState, setErrorState] = useState<{
+    sessionId: string | undefined;
+    message: string;
+  } | null>(null);
+  const error =
+    errorState && errorState.sessionId === sessionId
+      ? errorState.message
+      : null;
 
   const send = useCallback(
     async (
@@ -73,6 +82,8 @@ export function useSessionSend({
     ): Promise<boolean> => {
       const trimmed = message.trim();
       if (!trimmed) return false;
+      const setError = (message: string | null) =>
+        setErrorState(message === null ? null : { sessionId, message });
       if (!executorConfig) {
         setError('No executor selected');
         return false;
@@ -146,7 +157,7 @@ export function useSessionSend({
     ]
   );
 
-  const clearError = useCallback(() => setError(null), []);
+  const clearError = useCallback(() => setErrorState(null), []);
 
   return {
     send,

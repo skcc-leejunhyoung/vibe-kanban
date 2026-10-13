@@ -23,6 +23,12 @@ interface UseSessionMessageEditorResult {
   isScratchLoading: boolean;
   /** Whether the initial value has been applied from scratch */
   hasInitialValue: boolean;
+  /**
+   * The scratch id whose draft is currently applied. Unlike `hasInitialValue`
+   * this can be compared against the id a caller expects, so a render that
+   * still carries the previous scratch's flag is not mistaken for "loaded".
+   */
+  loadedScratchId: string | undefined;
   /** Save message and executor config to scratch */
   saveToScratch: (
     message: string,
@@ -57,6 +63,7 @@ export function useSessionMessageEditor({
 
   const [localMessage, setLocalMessage] = useState('');
   const [hasInitialValue, setHasInitialValue] = useState(false);
+  const [loadedScratchId, setLoadedScratchId] = useState<string>();
 
   const saveToScratch = useCallback(
     async (message: string, executorConfig: ExecutorConfig) => {
@@ -124,6 +131,8 @@ export function useSessionMessageEditor({
     hasLoadedRef.current = true;
     setLocalMessage(scratchData?.message ?? '');
     setHasInitialValue(true);
+    setLoadedScratchId(scratchId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isScratchLoading, scratchData?.message]);
 
   // Handle message change with debounced save
@@ -142,6 +151,7 @@ export function useSessionMessageEditor({
     scratchData,
     isScratchLoading,
     hasInitialValue,
+    loadedScratchId,
     saveToScratch,
     clearDraft,
     cancelDebouncedSave,

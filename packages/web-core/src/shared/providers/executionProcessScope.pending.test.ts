@@ -4,6 +4,7 @@ import {
   createPendingProcess,
   isPendingProcessId,
   keepOptimisticAdds,
+  matchArrivedProcess,
   mergeOptimisticProcesses,
   reconcileOptimisticOps,
   type OptimisticOp,
@@ -101,5 +102,38 @@ describe('reconcileOptimisticOps', () => {
     expect(isPendingProcessId('4b1d1f5e-0000-4000-8000-000000000000')).toBe(
       false
     );
+  });
+});
+
+describe('matchArrivedProcess', () => {
+  const sent = createPendingProcess('s', 'do the thing', config);
+  const real = { ...sent, id: 'real-1' };
+  const pending = {
+    sessionId: 's',
+    knownIds: new Set(['old-1']),
+    prompt: 'do the thing',
+  };
+
+  it('finds the new coding-agent row carrying the sent prompt', () => {
+    const old = { ...real, id: 'old-1' };
+    expect(matchArrivedProcess([old, sent, real], pending)).toBe(real);
+  });
+
+  it('ignores rows known at send time, placeholders, other sessions, other prompts', () => {
+    const other = {
+      ...real,
+      id: 'real-2',
+      executor_action: {
+        typ: { ...real.executor_action.typ, prompt: 'something else' },
+        next_action: null,
+      },
+    };
+    const foreign = { ...real, id: 'real-3', session_id: 'other' };
+    expect(
+      matchArrivedProcess(
+        [{ ...real, id: 'old-1' }, sent, other, foreign],
+        pending
+      )
+    ).toBeUndefined();
   });
 });
