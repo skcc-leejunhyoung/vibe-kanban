@@ -2205,7 +2205,9 @@ impl ClaudeLogProcessor {
                     }
                 }
             }
-            ClaudeJson::Assistant { message, .. } => {
+            ClaudeJson::Assistant {
+                message, timestamp, ..
+            } => {
                 if let Some(patch) = extract_model_name(self, message, entry_index_provider) {
                     patches.push(patch);
                 }
@@ -2307,12 +2309,13 @@ impl ClaudeLogProcessor {
                             patches.push(patch);
                         }
                         ClaudeContentItem::Text { .. } | ClaudeContentItem::Thinking { .. } => {
-                            if let Some(entry) = Self::content_item_to_normalized_entry(
+                            if let Some(mut entry) = Self::content_item_to_normalized_entry(
                                 item,
                                 &message.role,
                                 worktree_path,
                                 &mut self.last_assistant_message,
                             ) {
+                                entry.timestamp = timestamp.clone();
                                 let reused = match item {
                                     ClaudeContentItem::Thinking { .. } => {
                                         thinking_indices.pop_front()
@@ -3388,6 +3391,10 @@ pub enum ClaudeJson {
         session_id: Option<String>,
         #[serde(default)]
         uuid: Option<String>,
+        /// When the CLI finished this message (RFC 3339). Dates the entry, so
+        /// a replayed log keeps the original time.
+        #[serde(default)]
+        timestamp: Option<String>,
     },
     User {
         message: ClaudeMessage,
@@ -4770,6 +4777,29 @@ mod tests {
             thinking_entries, 1,
             "the streamed thinking entry must survive instead of being overwritten by the final text"
         );
+    }
+
+    /// The final `assistant` event's own timestamp dates the message entry,
+    /// so a replayed log keeps when the message was written.
+    #[test]
+    fn test_assistant_entry_carries_event_timestamp() {
+        const ASSISTANT_DATED: &str = r#"{"type":"assistant","timestamp":"2026-10-14T02:10:51.995Z","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Hello world"}]}}"#;
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        let mut last = None;
+        for line in [MSG_START, CB_START, CB_DELTA_1, ASSISTANT_DATED, MSG_STOP] {
+            let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+            for patch in &processor.normalize_entries(&parsed, "", &provider) {
+                if let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
+                    && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
+                {
+                    last = Some(entry);
+                }
+            }
+        }
+        let entry = last.unwrap();
+        assert_eq!(entry.content, "Hello world");
+        assert_eq!(entry.timestamp.as_deref(), Some("2026-10-14T02:10:51.995Z"));
     }
 
     /// Claude Code 2.1.29x sends one `assistant` event per finished content

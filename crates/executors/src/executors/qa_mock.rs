@@ -241,6 +241,7 @@ fn generate_mock_logs(prompt: &str) -> Vec<String> {
             },
             session_id: Some(session_id.clone()),
             uuid: Some("uuid-qa-1".to_string()),
+            timestamp: None,
         },
         // 3. Read tool use
         ClaudeJson::Assistant {
@@ -259,6 +260,7 @@ fn generate_mock_logs(prompt: &str) -> Vec<String> {
             },
             session_id: Some(session_id.clone()),
             uuid: Some("uuid-qa-2".to_string()),
+            timestamp: None,
         },
         // 4. Read tool result
         ClaudeJson::User {
@@ -299,6 +301,7 @@ fn generate_mock_logs(prompt: &str) -> Vec<String> {
             },
             session_id: Some(session_id.clone()),
             uuid: Some("uuid-qa-4".to_string()),
+            timestamp: None,
         },
         // 6. Write tool result
         ClaudeJson::User {
@@ -337,6 +340,7 @@ fn generate_mock_logs(prompt: &str) -> Vec<String> {
             },
             session_id: Some(session_id.clone()),
             uuid: Some("uuid-qa-6".to_string()),
+            timestamp: None,
         },
         // 8. Bash tool result
         ClaudeJson::User {
@@ -374,6 +378,7 @@ fn generate_mock_logs(prompt: &str) -> Vec<String> {
             },
             session_id: Some(session_id.clone()),
             uuid: Some("uuid-qa-8".to_string()),
+            timestamp: None,
         },
         // 10. Result success
         ClaudeJson::Result {

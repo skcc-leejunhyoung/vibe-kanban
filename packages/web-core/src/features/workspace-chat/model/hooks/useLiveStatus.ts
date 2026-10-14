@@ -21,7 +21,9 @@ export interface LiveStatusDraft {
 
 export interface StatusHistoryItem {
   text: string;
-  /** Entries carry no timestamp; the process that produced it dates it. */
+  /** When the message carrying the block was written, if the agent says. */
+  at: string | null;
+  /** Dates the block when the message has no time of its own. */
   executionProcessId: string;
 }
 
@@ -75,7 +77,11 @@ export function computeLiveStatus(entries: PatchTypeWithKey[]): LiveStatus {
         patchKey: entry.patchKey,
       };
       if (closed)
-        settled.push({ text, executionProcessId: entry.executionProcessId });
+        settled.push({
+          text,
+          at: entry.content.timestamp ?? null,
+          executionProcessId: entry.executionProcessId,
+        });
     });
   });
   const seen = new Set<string>();

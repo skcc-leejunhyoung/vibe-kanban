@@ -465,6 +465,7 @@ function DisplayConversationEntry(props: Props) {
       return (
         <AssistantMessageEntry
           entryKey={expansionKey}
+          timestamp={entry.timestamp}
           content={entry.content}
           segments={
             props.artifactSegments ?? [
@@ -1114,6 +1115,7 @@ const EMPTY_ARTIFACTS: ArtifactReference[] = [];
  */
 function AssistantMessageEntry({
   entryKey,
+  timestamp,
   content,
   segments,
   workspaceId,
@@ -1121,6 +1123,8 @@ function AssistantMessageEntry({
   executionProcessId,
 }: {
   entryKey: string;
+  /** When the message was written, if the executor reports it. */
+  timestamp: string | null;
   content: string;
   segments: PlacedSegment[];
   workspaceId: string | undefined;
@@ -1128,15 +1132,16 @@ function AssistantMessageEntry({
   executionProcessId: string;
 }) {
   // A block left open by a killed or finished process, or by a message the
-  // agent moved on from, is not being written. Entries carry no timestamp, so
-  // the chip is dated like the strip's history: by the turn that produced it.
+  // agent moved on from, is not being written. The chip is dated by its
+  // message when the executor reports a time, else by the turn.
   const process = useContext(ExecutionProcessesContext)
     ?.executionProcessesByIdAll[executionProcessId];
   const writingKey = useWritingStatusKey();
   const processRunning =
     process?.status === ExecutionProcessStatus.running &&
     (writingKey === undefined || writingKey === entryKey);
-  const chipTime = process?.completed_at ?? process?.started_at ?? null;
+  const chipTime =
+    timestamp ?? process?.completed_at ?? process?.started_at ?? null;
   const parts: (string | ArtifactReference | StatusBlockSegment)[] = [];
   for (const { segment, artifact } of segments) {
     if (artifact && workspaceId && sessionId) {

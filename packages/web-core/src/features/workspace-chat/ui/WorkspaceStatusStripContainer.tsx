@@ -72,7 +72,7 @@ export function WorkspaceStatusStripContainer({
       .filter((item) => item.text !== current)
       .map((item) => ({
         text: item.text,
-        at: processTime(item.executionProcessId),
+        at: item.at ?? processTime(item.executionProcessId),
         processId: item.executionProcessId,
       }));
     if (!current) return past;

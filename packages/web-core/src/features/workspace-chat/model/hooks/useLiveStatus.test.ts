@@ -45,6 +45,23 @@ describe('computeLiveStatus', () => {
     expect(live.draft).toMatchObject({ text: '쓰는 중인 요약', closed: false });
   });
 
+  it('dates history items by their message when it has a time', () => {
+    const dated = entry(
+      'assistant_message',
+      '```vibe-status\n시각 있는 요약.\n```'
+    );
+    (dated.content as { timestamp: string | null }).timestamp =
+      '2026-10-14T02:10:51.995Z';
+    expect(computeLiveStatus([dated]).history[0]).toMatchObject({
+      text: '시각 있는 요약.',
+      at: '2026-10-14T02:10:51.995Z',
+    });
+    expect(
+      computeLiveStatus([entry('assistant_message', '```vibe-status\nB.\n```')])
+        .history[0].at
+    ).toBeNull();
+  });
+
   it('keeps each text once in history, newest copy first', () => {
     const live = computeLiveStatus([
       entry('assistant_message', '```vibe-status\nA.\n```'),
