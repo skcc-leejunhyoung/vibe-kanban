@@ -485,7 +485,12 @@ export function ModelSelectorContainer({
     const modelOverride = selectedProviderId
       ? `${selectedProviderId}/${id}`
       : id;
-    onOverrideChange({ model_id: modelOverride });
+    // Same model, different tier: carry the effort so the model-change reset
+    // in the override setters doesn't drop it.
+    onOverrideChange({
+      model_id: modelOverride,
+      reasoning_id: selectedReasoningId,
+    });
   };
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
