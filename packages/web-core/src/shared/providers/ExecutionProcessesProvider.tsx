@@ -126,12 +126,14 @@ export const ExecutionProcessesProvider: React.FC<{
     takeSeededProcesses(sessionId).forEach(addOptimisticProcess);
   }, [sessionId, seedVersion, addOptimisticProcess]);
 
-  // Drop each op once the stream confirms it (see reconcileOptimisticOps).
+  // Drop each op once the stream confirms it (see reconcileOptimisticOps) —
+  // also when an op is set on a row the stream already settled (e.g. a failed
+  // stop taken back after the turn ended), which no stream change would revisit.
   useEffect(() => {
     setOptimistic((current) =>
       reconcileOptimisticOps(current, executionProcessesById)
     );
-  }, [executionProcessesById]);
+  }, [executionProcessesById, optimistic]);
 
   // Apply removes/patches to streamed rows, then append adds not yet streamed
   // (session-scoped so a stale follow-up can't leak across a conversation
