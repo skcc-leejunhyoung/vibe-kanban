@@ -1690,7 +1690,8 @@ pub trait ContainerService {
     /// runs its own message, and a pending usage-limit resume runs before the
     /// queue. Called after an enqueue and whenever a drain hold is released, so
     /// a message that lands after the last drain looked at the queue still
-    /// runs — exactly once, front first.
+    /// runs — exactly once, front first. A message that can't start goes back
+    /// to the front with the reason, as in [`Self::start_queued_followup`].
     async fn drain_queue_if_idle(
         &self,
         session: &Session,
@@ -1716,23 +1717,34 @@ pub trait ContainerService {
         let Some(queued) = queue.take_next(session.id) else {
             return Ok(None);
         };
-        let (record, action) = match self
+        // Hold the drain until the start settles, as `start_queued_followup`
+        // does.
+        let hold = queue.hold_drain(session.id);
+        let started = match self
             .create_followup_record(session, workspace, &queued.data)
             .await
         {
-            Ok(created) => created,
-            Err(e) => {
-                // Nothing ran: keep the message rather than drop it.
-                queue.enqueue_front(session.id, queued.data);
-                return Err(e);
+            Ok((record, action)) => {
+                drop(starting);
+                if let Err(e) = Scratch::delete(pool, session.id, &ScratchType::DraftFollowUp).await
+                {
+                    tracing::warn!("Failed to delete scratch after consuming queued message: {e}");
+                }
+                self.finish_execution_spawn(workspace, session, &record, &action)
+                    .await
+                    .map(|()| record)
             }
+            Err(e) => Err(e),
         };
-        drop(starting);
-        if let Err(e) = Scratch::delete(pool, session.id, &ScratchType::DraftFollowUp).await {
-            tracing::warn!("Failed to delete scratch after consuming queued message: {e}");
+        if let Err(e) = &started {
+            queue.restore_failed(queued, e.to_string());
         }
-        self.finish_execution_spawn(workspace, session, &record, &action)
-            .await?;
+        drop(hold);
+        let record = started?;
+        // The new turn holds the drain now, unless it already ended.
+        if let Err(e) = self.drain_queue_if_idle(session, workspace).await {
+            tracing::error!("Failed to start queued follow-up: {e}");
+        }
         Ok(Some(record))
     }
 
@@ -1817,19 +1829,28 @@ pub trait ContainerService {
     /// [`Self::start_followup_for_session`] for a message already taken off the
     /// queue. If it can't start, the message goes back to the front of the
     /// queue with the reason instead of being dropped (see
-    /// [`QueuedMessageService::restore_failed`]).
+    /// [`QueuedMessageService::restore_failed`]), and the rest of the queue
+    /// stays behind it.
     async fn start_queued_followup(
         &self,
         session: &Session,
         workspace: &Workspace,
         msg: QueuedMessage,
     ) -> Result<ExecutionProcess, ContainerError> {
+        // Held until the message is back in front on failure, so nothing
+        // queued meanwhile starts ahead of it and a turn that fails to spawn
+        // leaves the queue alone (see `fail_execution_start`).
+        let queue = self.queued_message_service();
+        let hold = queue.hold_drain(session.id);
         let result = self
             .start_followup_for_session(session, workspace, &msg.data)
             .await;
         if let Err(e) = &result {
-            self.queued_message_service()
-                .restore_failed(msg, e.to_string());
+            queue.restore_failed(msg, e.to_string());
+        }
+        drop(hold);
+        if let Err(e) = self.drain_queue_if_idle(session, workspace).await {
+            tracing::error!("Failed to start queued follow-up: {e}");
         }
         result
     }
@@ -2020,7 +2041,12 @@ pub trait ContainerService {
         .await
         {
             Ok(true) => {
-                self.discard_queue_for_unstarted_turn(execution_process);
+                // A drain holder looks at the queue again when it's done (and a
+                // queued message that failed to start keeps the rest behind
+                // it); otherwise nothing would start what queued behind this.
+                if !self.queued_message_service().is_drain_held(session.id) {
+                    self.discard_queue_for_unstarted_turn(execution_process);
+                }
                 if let Ok(Some(completed_process)) =
                     ExecutionProcess::find_by_id(&self.db().pool, execution_process.id).await
                     && let Err(publish_error) = self

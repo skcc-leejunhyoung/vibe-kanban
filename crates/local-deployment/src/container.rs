@@ -4596,7 +4596,11 @@ done
         .expect("the queued follow-up waited for the stdout drain timeout")
         .unwrap();
 
-        assert!(!container.queued_message_service.has_queued(session.id));
+        // The drain reached it; another executor can't start here, so it is
+        // back in front with the reason.
+        let queued = container.queued_message_service.get_queued(session.id);
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].start_error.is_some());
         let process = ExecutionProcess::find_by_id(&pool, process.id)
             .await
             .unwrap()
@@ -5192,15 +5196,6 @@ done
             .collect()
     }
 
-    fn queued_messages(container: &LocalContainerService, session_id: Uuid) -> Vec<String> {
-        container
-            .queued_message_service
-            .get_queued(session_id)
-            .into_iter()
-            .map(|queued| queued.data.message)
-            .collect()
-    }
-
     /// Run a coding turn up to the end of its finalize, as its exit handler
     /// does; the returned hold is that handler still winding down.
     async fn finish_turn(
@@ -5246,11 +5241,23 @@ done
         exit_handler
     }
 
+    /// The queued messages, front first, and whether the front one failed to
+    /// start.
+    fn queue_state(container: &LocalContainerService, session_id: Uuid) -> (Vec<String>, bool) {
+        let queued = container.queued_message_service.get_queued(session_id);
+        let front_failed = queued.first().is_some_and(|m| m.start_error.is_some());
+        (
+            queued.into_iter().map(|m| m.data.message).collect(),
+            front_failed,
+        )
+    }
+
     /// The issue's order: turn A finishes, its finalize finds the queue empty,
     /// and only then does a queue request sent during A arrive. Landing after
     /// A's exit handling, the enqueue starts it; landing while that handling
     /// still winds down, the handler's recheck starts the front message. Each
-    /// runs once, front first.
+    /// runs once, front first. Every start fails here (no worktree), so the
+    /// started message comes back to the front and holds the rest behind it.
     #[tokio::test]
     async fn queued_message_after_last_finalize_runs_once_in_order() {
         let (container, session, workspace) = queue_test_container().await;
@@ -5261,11 +5268,15 @@ done
         // After A's exit handling ended: the enqueue itself starts it.
         drop(finish_turn(&container, &session, &workspace, "a").await);
         assert!(queue.get_queued(session.id).is_empty());
-        queue.enqueue(session.id, follow_up("m1", BaseCodingAgent::ClaudeCode));
+        let m1 = queue.enqueue(session.id, follow_up("m1", BaseCodingAgent::ClaudeCode));
         let _ = container.drain_queue_if_idle(&session, &workspace).await;
         let _ = container.drain_queue_if_idle(&session, &workspace).await;
         assert_eq!(turn_prompts(&container, session.id).await, ["a", "m1"]);
-        assert!(queued_messages(&container, session.id).is_empty());
+        assert_eq!(
+            queue_state(&container, session.id),
+            (vec!["m1".to_string()], true)
+        );
+        queue.cancel_message(session.id, m1.id);
 
         // While B's exit handling still winds down: left to its recheck.
         let b_exit_handler = finish_turn(&container, &session, &workspace, "b").await;
@@ -5280,14 +5291,52 @@ done
         assert_eq!(turn_prompts(&container, session.id).await, ["a", "m1", "b"]);
         drop(b_exit_handler);
         let _ = container.drain_queue_if_idle(&session, &workspace).await;
-        // Only the front message started. Its start fails here (no worktree),
-        // and a turn that fails to start drops what queued behind it, as a
-        // failed turn's finalize does, rather than leaving it stranded.
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        // Only the front message started; m3 waits behind its failure.
         assert_eq!(
             turn_prompts(&container, session.id).await,
             ["a", "m1", "b", "m2"]
         );
-        assert!(queued_messages(&container, session.id).is_empty());
+        assert_eq!(
+            queue_state(&container, session.id),
+            (vec!["m2".to_string(), "m3".to_string()], true)
+        );
+    }
+
+    /// A turn that fails to spawn: a queued message's start (here a finalize
+    /// drain) keeps the rest of the queue behind it, while any other start
+    /// with nobody left to drain the queue drops it, as its finalize would.
+    #[tokio::test]
+    async fn spawn_failure_keeps_the_queue_only_behind_a_queued_message() {
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let queue = &container.queued_message_service;
+
+        for text in ["q1", "q2"] {
+            queue.enqueue(session.id, follow_up(text, BaseCodingAgent::ClaudeCode));
+        }
+        drop(finish_turn(&container, &session, &workspace, "a").await);
+        assert_eq!(turn_prompts(&container, session.id).await, ["a", "q1"]);
+        assert_eq!(
+            queue_state(&container, session.id),
+            (vec!["q1".to_string(), "q2".to_string()], true)
+        );
+
+        queue.clear_queue(session.id);
+        queue.enqueue(session.id, follow_up("q3", BaseCodingAgent::ClaudeCode));
+        let direct = follow_up("direct", BaseCodingAgent::ClaudeCode);
+        assert!(
+            container
+                .start_followup_for_session(&session, &workspace, &direct)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            turn_prompts(&container, session.id).await,
+            ["a", "q1", "direct"]
+        );
+        assert!(!queue.has_queued(session.id));
     }
 
     /// The real exit handler: a message queued while a process runs is left
@@ -5343,15 +5392,19 @@ done
         );
 
         std::fs::write(&go, "").unwrap();
-        tokio::time::timeout(Duration::from_secs(30), async {
-            while turn_prompts(&container, session.id).await.is_empty() {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("the exit handler never started the queued message");
+        let exit_handler = container
+            .take_exit_monitor_handle(&record.id)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(60), exit_handler)
+            .await
+            .expect("the script's exit handler never finished")
+            .unwrap();
         assert_eq!(turn_prompts(&container, session.id).await, ["m1"]);
-        assert!(queued_messages(&container, session.id).is_empty());
+        assert_eq!(
+            queue_state(&container, session.id),
+            (vec!["m1".to_string()], true)
+        );
     }
 
     /// Logs of the failed starts land under the real `dev_assets/sessions/`.

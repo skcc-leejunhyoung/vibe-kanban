@@ -315,13 +315,21 @@ impl QueuedMessageService {
         }
     }
 
+    /// Whether some process holds the session's drain (see [`Self::hold_drain`]).
+    pub fn is_drain_held(&self, session_id: Uuid) -> bool {
+        self.drain_holds.contains_key(&session_id)
+    }
+
     /// Whether this caller may start the session's next queued message itself:
-    /// something is queued, no steer is in flight, and no process holds the
-    /// drain. The caller still has to check for running processes.
+    /// the front message is ready (not a failed start waiting for the user),
+    /// no steer is in flight, and no process holds the drain. The caller still
+    /// has to check for running processes.
     pub fn can_drain_now(&self, session_id: Uuid) -> bool {
-        self.has_queued(session_id)
+        self.queue
+            .get(&session_id)
+            .is_some_and(|q| q.front().is_some_and(|m| m.start_error.is_none()))
             && !self.is_steering(session_id)
-            && !self.drain_holds.contains_key(&session_id)
+            && !self.is_drain_held(session_id)
     }
 
     fn new_message(session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
@@ -613,6 +621,12 @@ mod tests {
         assert!(svc.can_drain_now(session));
 
         svc.mark_steering(session, msg.id);
+        assert!(!svc.can_drain_now(session));
+        svc.take_steering(session);
+
+        // A failed start in front waits for the user.
+        let taken = svc.take_next(session).unwrap();
+        svc.restore_failed(taken, "spawn failed".to_string());
         assert!(!svc.can_drain_now(session));
     }
 }
