@@ -333,10 +333,15 @@ pub type CancellationToken = tokio_util::sync::CancellationToken;
 /// Live per-process client handle for individual subagent control (transcript
 /// reads, `turn/interrupt` / `stop_task`). Valid only while the executor
 /// process runs; the container drops it alongside the child handle.
+///
+/// The handle must not own the executor's stdout pipe writer: the container
+/// keeps it until finalization ends, after the output drain that waits for EOF.
+/// Codex's client owns that writer, so the handle is weak: the JSON-RPC reader
+/// owns the client for as long as it reads the app server's output.
 #[derive(Clone)]
 pub enum SubagentLiveHandle {
     ClaudeCode(claude::protocol::ProtocolPeer),
-    Codex(std::sync::Arc<codex::client::AppServerClient>),
+    Codex(std::sync::Weak<codex::client::AppServerClient>),
 }
 
 pub struct SpawnedChild {

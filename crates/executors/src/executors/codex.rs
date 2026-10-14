@@ -1229,7 +1229,9 @@ impl Codex {
             cancel_for_task,
         );
         client.connect(rpc_peer);
-        let subagent_handle = Some(crate::executors::SubagentLiveHandle::Codex(client.clone()));
+        let subagent_handle = Some(crate::executors::SubagentLiveHandle::Codex(Arc::downgrade(
+            &client,
+        )));
 
         tokio::spawn(async move {
             let result = async {
@@ -1752,5 +1754,94 @@ base_url = "https://api.sailresearch.com/v1"
             assert_eq!(effort.parse::<ReasoningEffort>().unwrap().as_str(), effort);
         }
         assert!("".parse::<ReasoningEffort>().is_err());
+    }
+
+    /// Answers `initialize`, then completes the turn once `turn/interrupt`
+    /// arrives, and stays alive like the real app server.
+    #[cfg(unix)]
+    const FAKE_APP_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"id":%s,"result":{"userAgent":"fake","codexHome":"/tmp","platformFamily":"unix","platformOs":"test"}}\n' "$id" ;;
+    *'"method":"turn/interrupt"'*)
+      printf '{"id":%s,"result":{}}\n' "$id"
+      echo '{"method":"item/completed","params":{"threadId":"t","turnId":"u","item":{"type":"agentMessage","id":"m","text":"FINAL_ANSWER"}}}'
+      echo '{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"u","items":[],"status":"completed","error":null}}}' ;;
+  esac
+done
+"#;
+
+    /// The container holds the live handle until finalization ends, after the
+    /// output drain. Holding it must not keep the stdout pipe open, or queued
+    /// follow-ups wait for the drain timeout after every Codex turn.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn finished_app_server_reaches_stdout_eof_while_live_handle_is_held() {
+        use std::time::Duration;
+
+        use tokio::{
+            io::{AsyncBufReadExt, BufReader},
+            time::timeout,
+        };
+
+        use crate::{command::CommandParts, executors::SubagentLiveHandle};
+
+        let codex: Codex = serde_json::from_value(json!({})).unwrap();
+        let env = ExecutionEnv::new(Default::default(), false, String::new());
+        let mut spawned = codex
+            .spawn_app_server(
+                &std::env::temp_dir(),
+                CommandParts::new("sh".into(), vec!["-c".into(), FAKE_APP_SERVER.into()]),
+                &env,
+                |_, _| async { Ok(()) },
+            )
+            .await
+            .unwrap();
+        let handle = spawned.subagent_handle.take();
+        let Some(SubagentLiveHandle::Codex(client)) = &handle else {
+            panic!("Codex must expose a live handle");
+        };
+        let mut lines = BufReader::new(spawned.child.inner().stdout.take().unwrap()).lines();
+        timeout(Duration::from_secs(10), async {
+            while !lines
+                .next_line()
+                .await
+                .unwrap()
+                .unwrap()
+                .contains("userAgent")
+            {}
+        })
+        .await
+        .expect("initialize response");
+
+        // Subagent control still reaches the running app server.
+        client
+            .upgrade()
+            .expect("client is live while the app server runs")
+            .turn_interrupt("t".into())
+            .await
+            .unwrap();
+
+        // Exit monitor order: exit signal, kill the group, then drain stdout.
+        timeout(Duration::from_secs(10), spawned.exit_signal.take().unwrap())
+            .await
+            .expect("exit signal")
+            .unwrap();
+        spawned.child.kill().await.unwrap();
+        let mut rest = Vec::new();
+        timeout(Duration::from_secs(5), async {
+            while let Some(line) = lines.next_line().await.unwrap() {
+                rest.push(line);
+            }
+        })
+        .await
+        .expect("stdout must reach EOF while the live handle is still held");
+
+        assert!(rest.iter().any(|line| line.contains("FINAL_ANSWER")));
+        assert!(rest.last().unwrap().contains("turn/completed"));
+        assert!(client.upgrade().is_none());
+        drop(handle);
     }
 }

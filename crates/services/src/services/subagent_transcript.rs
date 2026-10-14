@@ -33,7 +33,9 @@ pub async fn read(
 ) -> Result<(String, Vec<NormalizedEntry>, bool)> {
     match target {
         SubagentControlTarget::Codex { thread_id } => {
-            let live = if let Some(SubagentLiveHandle::Codex(client)) = handle {
+            let live = if let Some(SubagentLiveHandle::Codex(client)) = handle
+                && let Some(client) = client.upgrade()
+            {
                 tokio::time::timeout(
                     std::time::Duration::from_secs(2),
                     client.thread_read_full(thread_id.clone()),

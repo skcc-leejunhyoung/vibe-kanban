@@ -745,18 +745,20 @@ async fn subagent_stop(
 
     // Stops need the live client; after the process exits only transcript
     // reads remain possible.
+    let not_running = || {
+        ApiError::Conflict(
+            "execution process is no longer running; the subagent can't be stopped".to_string(),
+        )
+    };
     let handle = deployment
         .container()
         .subagent_handle(&execution_process.id)
         .await
-        .ok_or_else(|| {
-            ApiError::Conflict(
-                "execution process is no longer running; the subagent can't be stopped".to_string(),
-            )
-        })?;
+        .ok_or_else(not_running)?;
 
     match (handle, target) {
         (SubagentLiveHandle::Codex(client), SubagentControlTarget::Codex { thread_id }) => {
+            let client = client.upgrade().ok_or_else(not_running)?;
             client.turn_interrupt(thread_id).await?;
         }
         (
