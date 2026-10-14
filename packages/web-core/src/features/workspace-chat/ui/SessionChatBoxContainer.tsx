@@ -1096,6 +1096,25 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     dropQueuedLocally,
   ]);
 
+  // "Send now" whose message could not start: the server put it back in the
+  // queue (same id) with the reason. No turn will come, so drop the
+  // placeholder and stop hiding the row, which now shows why. A stop owns the
+  // entry once pressed.
+  useEffect(() => {
+    if (!sessionId) return;
+    const pending = pendingSends.get(sessionId);
+    if (!pending?.hideQueuedId || pending.process || pending.stopRequested) {
+      return;
+    }
+    const failed = queuedMessages.some(
+      (m) => m.id === pending.hideQueuedId && m.start_error
+    );
+    if (!failed) return;
+    pendingSends.delete(sessionId);
+    pendingSendsChanged();
+    clearOptimisticProcess(pending.placeholder.id);
+  }, [sessionId, queuedMessages, clearOptimisticProcess]);
+
   // An unmounted composer can't drop its provider's copy of the placeholder
   // any more (the provider may outlive it), so drop it now; a composer showing
   // the session again re-adds it while the send is still pending.

@@ -5010,6 +5010,8 @@ done
         }
     }
 
+    const MISMATCH: &str = "Executor mismatch";
+
     /// The failed message is back in front under its own id with the reason,
     /// the rest of the queue follows in order, and nothing was started.
     async fn assert_kept_in_front(
@@ -5017,6 +5019,7 @@ done
         session: &Session,
         failed: Uuid,
         rest: Uuid,
+        reason: &str,
     ) {
         let queued = container.queued_message_service.get_queued(session.id);
         assert_eq!(
@@ -5027,7 +5030,7 @@ done
             queued[0]
                 .start_error
                 .as_deref()
-                .is_some_and(|e| e.contains("Executor mismatch")),
+                .is_some_and(|e| e.contains(reason)),
             "{:?}",
             queued[0].start_error
         );
@@ -5051,13 +5054,13 @@ done
         container
             .finalize_with_queued_followup(&turn, false, false)
             .await;
-        assert_kept_in_front(&container, &session, a.id, b.id).await;
+        assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
 
         // The next finished turn doesn't retry it, or run `b` ahead of it.
         container
             .finalize_with_queued_followup(&turn, false, false)
             .await;
-        assert_kept_in_front(&container, &session, a.id, b.id).await;
+        assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
     }
 
     #[tokio::test]
@@ -5074,7 +5077,7 @@ done
             .await
             .unwrap();
         assert!(!queue.is_steering(session.id));
-        assert_kept_in_front(&container, &session, a.id, b.id).await;
+        assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
 
         // A plain stop still discards the queue.
         container
@@ -5084,25 +5087,50 @@ done
         assert!(!queue.has_queued(session.id));
     }
 
-    /// The steer route's fallback (kill found no child) and an idle "send now"
-    /// on a queued message both start through `start_queued_followup`.
+    /// The steer route's fallback (kill found no child) fails either preparing
+    /// the workspace or starting the turn; an idle "send now" on the message
+    /// that came back fails again. Each time it stays in front, `b` behind it.
     #[tokio::test]
     async fn steer_fallback_and_send_now_start_failure_keep_the_message() {
         let (container, session, workspace) = queue_test_container().await;
         let queue = &container.queued_message_service;
         let b = queue.enqueue(session.id, follow_up("b", BaseCodingAgent::ClaudeCode));
         let a = queue.enqueue_front(session.id, follow_up("a", BaseCodingAgent::Codex));
-        assert!(queue.mark_steering(session.id, a.id));
 
-        let steered = queue.take_steering(session.id).unwrap();
-        let msg = queue.take_steered_or_front(session.id, steered).unwrap();
-        assert!(
-            container
-                .start_queued_followup(&session, &workspace, msg)
-                .await
-                .is_err()
-        );
-        assert_kept_in_front(&container, &session, a.id, b.id).await;
+        // No repo: the workspace can't be prepared.
+        assert!(queue.mark_steering(session.id, a.id));
+        container
+            .run_steered_message(&session, workspace.clone())
+            .await;
+        assert!(!queue.is_steering(session.id));
+        assert_kept_in_front(&container, &session, a.id, b.id, "no repositories").await;
+
+        // An in-place workspace with a repo prepares fine; the start fails.
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo::find_or_create(&container.db.pool, dir.path(), "repo")
+            .await
+            .unwrap();
+        WorkspaceRepo::create_many(
+            &container.db.pool,
+            workspace.id,
+            &[db::models::workspace_repo::CreateWorkspaceRepo {
+                repo_id: repo.id,
+                target_branch: "main".into(),
+            }],
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE workspaces SET in_place = 1, container_ref = ? WHERE id = ?")
+            .bind(dir.path().to_string_lossy().to_string())
+            .bind(workspace.id)
+            .execute(&container.db.pool)
+            .await
+            .unwrap();
+        assert!(queue.mark_steering(session.id, a.id));
+        container
+            .run_steered_message(&session, workspace.clone())
+            .await;
+        assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
 
         let msg = queue.cancel_message(session.id, a.id).unwrap();
         assert!(
@@ -5111,7 +5139,7 @@ done
                 .await
                 .is_err()
         );
-        assert_kept_in_front(&container, &session, a.id, b.id).await;
+        assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
     }
 
     /// The capture path reads a child's stdout in arbitrary-sized chunks, so a

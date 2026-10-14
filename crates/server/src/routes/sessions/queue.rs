@@ -218,8 +218,8 @@ struct ReorderQueueRequest {
 /// kill's exit handler normally drains the pinned (steered) message and starts
 /// it as a follow-up. If the kill errors because the child is already gone the
 /// exit monitor may never fire, so as a fallback we consume the steering target
-/// and drain that pinned message directly so it isn't stranded. If that can't
-/// start, the message goes back to the front of the queue with the reason.
+/// and drain that pinned message directly
+/// ([`ContainerService::run_steered_message`]) so it isn't stranded.
 fn spawn_steer_kill(
     deployment: DeploymentImpl,
     session: Session,
@@ -243,47 +243,10 @@ fn spawn_steer_kill(
         if stopped.is_ok() && had_child {
             return;
         }
-        let Some(steered_id) = deployment
-            .queued_message_service()
-            .take_steering(session_id)
-        else {
-            return;
-        };
-        let Some(msg) = deployment
-            .queued_message_service()
-            .take_steered_or_front(session_id, steered_id)
-        else {
-            return;
-        };
-        // The container may still be materialising; wait for it and run with
-        // the row as it is then.
-        let workspace = match deployment
+        deployment
             .container()
-            .ensure_container_exists(&workspace)
-            .await
-        {
-            Ok(_) => Workspace::find_by_id(&deployment.db().pool, workspace.id)
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or(workspace),
-            Err(e) => {
-                tracing::error!(
-                    "Steer: fallback could not prepare workspace for session {session_id}: {e}"
-                );
-                deployment
-                    .queued_message_service()
-                    .restore_failed(msg, e.to_string());
-                return;
-            }
-        };
-        if let Err(e) = deployment
-            .container()
-            .start_queued_followup(&session, &workspace, msg)
-            .await
-        {
-            tracing::error!("Steer: fallback follow-up failed for session {session_id}: {e}");
-        }
+            .run_steered_message(&session, workspace)
+            .await;
     });
 }
 

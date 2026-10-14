@@ -1768,6 +1768,43 @@ pub trait ContainerService {
         result
     }
 
+    /// Steer fallback for a kill that leaves no exit handler to drain (the
+    /// child was already gone or never spawned): run the pinned message now.
+    /// If it can't start, it goes back to the front of the queue with the
+    /// reason.
+    async fn run_steered_message(&self, session: &Session, workspace: Workspace) {
+        let queue = self.queued_message_service();
+        let Some(steered_id) = queue.take_steering(session.id) else {
+            return;
+        };
+        let Some(msg) = queue.take_steered_or_front(session.id, steered_id) else {
+            return;
+        };
+        // The container may still be materialising; wait for it and run with
+        // the row as it is then.
+        let workspace = match self.ensure_container_exists(&workspace).await {
+            Ok(_) => Workspace::find_by_id(&self.db().pool, workspace.id)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(workspace),
+            Err(e) => {
+                tracing::error!(
+                    "Steer: fallback could not prepare workspace for session {}: {e}",
+                    session.id
+                );
+                queue.restore_failed(msg, e.to_string());
+                return;
+            }
+        };
+        if let Err(e) = self.start_queued_followup(session, &workspace, msg).await {
+            tracing::error!(
+                "Steer: fallback follow-up failed for session {}: {e}",
+                session.id
+            );
+        }
+    }
+
     /// Creates the `execution_process` row (plus repo state / coding-agent turn /
     /// msg-store setup / workspace un-archive) but does not yet spawn the
     /// underlying agent process. Callers that need to defer the spawn (e.g. the
