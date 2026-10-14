@@ -22,8 +22,10 @@ use uuid::Uuid;
 /// re-reads the row through another pooled connection. Every insert must
 /// still reach the stream as an `add` carrying `running`; otherwise clients
 /// that did not start the turn learn about it only when it ends.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn process_inserts_reach_the_stream_as_running() {
+/// A file-backed WAL database whose writer pool carries the real event hook,
+/// and the stream it publishes to. The hook re-reads rows through its own
+/// pool, exactly like the server.
+async fn hooked_db() -> (tempfile::TempDir, SqlitePool, Arc<MsgStore>) {
     let temp = tempfile::tempdir().unwrap();
     let options = SqliteConnectOptions::from_str(&format!(
         "sqlite://{}",
@@ -56,6 +58,24 @@ async fn process_inserts_reach_the_stream_as_running() {
         .await
         .unwrap();
 
+    (temp, hooked, store)
+}
+
+fn streamed_ops(store: &MsgStore) -> Vec<serde_json::Value> {
+    store
+        .get_history()
+        .iter()
+        .filter_map(|msg| match msg {
+            LogMsg::JsonPatch(patch) => serde_json::to_value(patch).ok(),
+            _ => None,
+        })
+        .flat_map(|value| value.as_array().cloned().unwrap_or_default())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn process_inserts_reach_the_stream_as_running() {
+    let (_temp, hooked, store) = hooked_db().await;
     let workspace = Workspace::create(
         &hooked,
         &CreateWorkspace {
@@ -106,15 +126,7 @@ async fn process_inserts_reach_the_stream_as_running() {
     }
     tokio::time::sleep(Duration::from_millis(800)).await;
 
-    let ops: Vec<serde_json::Value> = store
-        .get_history()
-        .iter()
-        .filter_map(|msg| match msg {
-            LogMsg::JsonPatch(patch) => serde_json::to_value(patch).ok(),
-            _ => None,
-        })
-        .flat_map(|value| value.as_array().cloned().unwrap_or_default())
-        .collect();
+    let ops = streamed_ops(&store);
     let missing: Vec<&Uuid> = ids
         .iter()
         .filter(|id| {
@@ -141,5 +153,169 @@ async fn process_inserts_reach_the_stream_as_running() {
         "{} of {} inserts never streamed as running, {spurious} spurious deletions",
         missing.len(),
         ids.len()
+    );
+}
+
+/// The commit hook also runs before other connections can see the commit, so
+/// an update re-read could publish the previous value. Every value written in
+/// sequence must reach the stream, the last one included.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn row_updates_stream_their_new_values() {
+    let (_temp, hooked, store) = hooked_db().await;
+    let workspace = Workspace::create(
+        &hooked,
+        &CreateWorkspace {
+            branch: "vk/stream".into(),
+            name: None,
+        },
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
+    let notes: Vec<String> = (0..60).map(|n| format!("요약 {n}")).collect();
+    for note in &notes {
+        Workspace::set_status_note(&hooked, workspace.id, note)
+            .await
+            .unwrap();
+        // Spaced like real writers, so each value is still current when its
+        // event re-reads the row; a miss here means the re-read was stale.
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let path = format!("/workspaces/{}", workspace.id);
+    let seen: Vec<String> = streamed_ops(&store)
+        .iter()
+        .filter(|op| op["path"] == path)
+        .filter_map(|op| op["value"]["status_note"].as_str().map(str::to_string))
+        .collect();
+    let missing: Vec<&String> = notes.iter().filter(|note| !seen.contains(note)).collect();
+    assert!(
+        missing.is_empty(),
+        "{} of {} updates streamed a stale value: {:?}",
+        missing.len(),
+        notes.len(),
+        missing.iter().take(5).collect::<Vec<_>>()
+    );
+}
+
+/// Applying the stream in order must end in the database's state: a process
+/// created and finished back to back ends `completed`, a workspace created
+/// and deleted at once ends absent, and a rolled-back insert never appears.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stream_order_matches_commit_order() {
+    let (_temp, hooked, store) = hooked_db().await;
+    let workspace = Workspace::create(
+        &hooked,
+        &CreateWorkspace {
+            branch: "vk/stream".into(),
+            name: None,
+        },
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
+    let session = Session::create(
+        &hooked,
+        &CreateSession {
+            executor: None,
+            variant: None,
+            name: None,
+        },
+        Uuid::new_v4(),
+        workspace.id,
+    )
+    .await
+    .unwrap();
+    let action = ExecutorAction::new(
+        ExecutorActionType::ScriptRequest(ScriptRequest {
+            script: "true".into(),
+            language: ScriptRequestLanguage::Bash,
+            context: ScriptContext::SetupScript,
+            working_dir: None,
+        }),
+        None,
+    );
+    let mut processes = Vec::new();
+    for _ in 0..30 {
+        let id = Uuid::new_v4();
+        ExecutionProcess::create(
+            &hooked,
+            &CreateExecutionProcess {
+                session_id: session.id,
+                executor_action: action.clone(),
+                run_reason: ExecutionProcessRunReason::SetupScript,
+            },
+            id,
+            &[],
+        )
+        .await
+        .unwrap();
+        ExecutionProcess::update_completion(
+            &hooked,
+            id,
+            db::models::execution_process::ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+        processes.push(id);
+    }
+    let doomed = Workspace::create(
+        &hooked,
+        &CreateWorkspace {
+            branch: "vk/doomed".into(),
+            name: None,
+        },
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM workspaces WHERE id = ?")
+        .bind(doomed.id)
+        .execute(&hooked)
+        .await
+        .unwrap();
+    let ghost = Uuid::new_v4();
+    let mut tx = hooked.begin().await.unwrap();
+    sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'vk/ghost')")
+        .bind(ghost)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    // Fold the stream like a client would.
+    let mut state = std::collections::HashMap::<String, serde_json::Value>::new();
+    for op in streamed_ops(&store) {
+        let Some(path) = op["path"].as_str() else {
+            continue;
+        };
+        match op["op"].as_str() {
+            Some("add") | Some("replace") => {
+                state.insert(path.to_string(), op["value"].clone());
+            }
+            Some("remove") => {
+                state.remove(path);
+            }
+            _ => {}
+        }
+    }
+    for id in &processes {
+        assert_eq!(
+            state[&format!("/execution_processes/{id}")]["status"],
+            "completed",
+            "a finished process must not end up running"
+        );
+    }
+    assert!(!state.contains_key(&format!("/workspaces/{}", doomed.id)));
+    // A rolled-back insert is not even re-read (which would surface as a
+    // deleted-record entry).
+    assert!(!state.contains_key(&format!("/workspaces/{ghost}")));
+    assert!(
+        !state
+            .values()
+            .any(|value| value["record"]["type"] == "DELETED_WORKSPACE")
     );
 }
