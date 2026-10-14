@@ -2210,24 +2210,33 @@ impl ClaudeLogProcessor {
                     patches.push(patch);
                 }
 
-                let streaming_message_state = message
+                // Claude Code sends one `assistant` event per finished content
+                // block (same message id): `[thinking]`, then `[text]`. The
+                // streamed state is therefore consumed block by block and only
+                // dropped once the message stopped streaming and every streamed
+                // entry was matched; dropping it on the first event discarded
+                // every later text delta, so the reply appeared all at once.
+                let state_key = message
                     .id
-                    .as_ref()
-                    .and_then(|id| self.streaming_messages.remove(id))
+                    .clone()
+                    .filter(|id| self.streaming_messages.contains_key(id))
                     .or_else(|| {
                         // The final `assistant` id didn't match any streamed
                         // `message_start` id (or the message carries no id at all).
                         // Claude streams one message at a time, so when exactly ONE
-                        // streamed message is still unconsumed it must be this one —
-                        // reuse it instead of orphaning the streamed entry (which
-                        // would render the whole response twice). Stay conservative:
-                        // with 0 or 2+ pending states we can't safely guess, so fall
-                        // through and let a fresh entry be allocated.
-                        if self.streaming_messages.len() == 1 {
-                            let key = self.streaming_messages.keys().next().cloned();
-                            key.and_then(|k| self.streaming_messages.remove(&k))
-                        } else {
-                            None
+                        // streamed message still has unmatched entries it must be
+                        // this one — reuse it instead of orphaning the streamed entry
+                        // (which would render the whole response twice). Stay
+                        // conservative: with 0 or 2+ pending states we can't safely
+                        // guess, so fall through and let a fresh entry be allocated.
+                        let mut pending = self
+                            .streaming_messages
+                            .iter()
+                            .filter(|(_, state)| !state.fully_consumed())
+                            .map(|(key, _)| key);
+                        match (pending.next(), pending.next()) {
+                            (Some(key), None) => Some(key.clone()),
+                            _ => None,
                         }
                     });
 
@@ -2239,9 +2248,12 @@ impl ClaudeLogProcessor {
                 // the `thinking` block), which shifts positional indices and would make
                 // the visible text reuse the thinking entry while its own streamed entry
                 // is left behind -> the whole response renders twice.
-                let (mut text_indices, mut thinking_indices) = streaming_message_state
+                let (mut text_indices, mut thinking_indices) = state_key
+                    .as_ref()
+                    .and_then(|key| self.streaming_messages.get(key))
                     .map(|state| state.entry_indices_by_kind())
                     .unwrap_or_default();
+                let mut consumed = Vec::new();
 
                 for item in message.content.items() {
                     match item {
@@ -2308,6 +2320,7 @@ impl ClaudeLogProcessor {
                                     _ => text_indices.pop_front(),
                                 };
                                 let is_new = reused.is_none();
+                                consumed.extend(reused);
                                 let idx = reused.unwrap_or_else(|| entry_index_provider.next());
                                 let patch = if is_new {
                                     ConversationPatch::add_normalized_entry(idx, entry)
@@ -2318,6 +2331,17 @@ impl ClaudeLogProcessor {
                             }
                         }
                         ClaudeContentItem::ToolResult { .. } | ClaudeContentItem::Unknown => {}
+                    }
+                }
+
+                if let Some(key) = state_key
+                    && let Some(state) = self.streaming_messages.get_mut(&key)
+                {
+                    for entry_index in consumed {
+                        state.consume(entry_index);
+                    }
+                    if self.streaming_message_id.as_ref() != Some(&key) && state.fully_consumed() {
+                        self.streaming_messages.remove(&key);
                     }
                 }
             }
@@ -2724,7 +2748,16 @@ impl ClaudeLogProcessor {
                     // whole response twice. Let the `assistant` handler be the sole
                     // consumer that removes the state; only clear the active id
                     // pointer here so later content blocks aren't misattributed.
-                    self.streaming_message_id = None;
+                    // A message whose blocks were all matched already (one
+                    // `assistant` event per block) is finished: drop its state.
+                    if let Some(id) = self.streaming_message_id.take()
+                        && self
+                            .streaming_messages
+                            .get(&id)
+                            .is_some_and(StreamingMessageState::fully_consumed)
+                    {
+                        self.streaming_messages.remove(&id);
+                    }
                 }
                 ClaudeStreamEvent::Unknown => {}
             },
@@ -3153,6 +3186,21 @@ impl StreamingMessageState {
         }
     }
 
+    fn consume(&mut self, entry_index: usize) {
+        for state in self.contents.values_mut() {
+            if state.entry_index == Some(entry_index) {
+                state.consumed = true;
+            }
+        }
+    }
+
+    /// Every streamed entry has been matched by an `assistant` event.
+    fn fully_consumed(&self) -> bool {
+        self.contents
+            .values()
+            .all(|state| state.consumed || state.entry_index.is_none())
+    }
+
     /// Entry indices allocated during streaming, split into per-kind FIFO queues
     /// ordered by content-block (stream) index. The final `assistant` message
     /// pops these by item kind so that blocks omitted from the final message
@@ -3162,6 +3210,7 @@ impl StreamingMessageState {
         let mut ordered: Vec<(usize, StreamingContentKind, usize)> = self
             .contents
             .iter()
+            .filter(|(_, state)| !state.consumed)
             .filter_map(|(idx, state)| state.entry_index.map(|ei| (*idx, state.kind, ei)))
             .collect();
         ordered.sort_by_key(|(stream_index, _, _)| *stream_index);
@@ -3191,6 +3240,8 @@ struct StreamingContentState {
     // Running estimate of thinking tokens, accumulated from thinking deltas
     // that carry no visible text (redacted/extended thinking).
     thinking_tokens: u64,
+    // Matched by an `assistant` event already; later events skip it.
+    consumed: bool,
 }
 
 impl StreamingContentState {
@@ -3201,12 +3252,14 @@ impl StreamingContentState {
                 buffer: text,
                 entry_index: None,
                 thinking_tokens: 0,
+                consumed: false,
             }),
             ClaudeContentItem::Thinking { thinking } => Some(Self {
                 kind: StreamingContentKind::Thinking,
                 buffer: thinking,
                 entry_index: None,
                 thinking_tokens: 0,
+                consumed: false,
             }),
             _ => None,
         }
@@ -3219,12 +3272,14 @@ impl StreamingContentState {
                 buffer: String::new(),
                 entry_index: None,
                 thinking_tokens: 0,
+                consumed: false,
             }),
             ClaudeContentBlockDelta::ThinkingDelta { .. } => Some(Self {
                 kind: StreamingContentKind::Thinking,
                 buffer: String::new(),
                 entry_index: None,
                 thinking_tokens: 0,
+                consumed: false,
             }),
             _ => None,
         }
@@ -4714,6 +4769,68 @@ mod tests {
         assert_eq!(
             thinking_entries, 1,
             "the streamed thinking entry must survive instead of being overwritten by the final text"
+        );
+    }
+
+    /// Claude Code 2.1.29x sends one `assistant` event per finished content
+    /// block: `[thinking]` right after the thinking block, then `[text]` after
+    /// the text. The first event must not drop the streaming state, or every
+    /// later text delta is discarded and the reply only appears at the end.
+    #[test]
+    fn test_per_block_assistant_events_keep_text_streaming() {
+        const ASSISTANT_THINKING_ONLY: &str = r#"{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":"pondering..."}]}}"#;
+        let lines = [
+            MSG_START,
+            CB_START_THINK_0,
+            CB_DELTA_THINK_0,
+            ASSISTANT_THINKING_ONLY,
+            CB_STOP_THINK_0,
+            CB_START_TEXT_1,
+            CB_DELTA_TEXT_1A,
+            CB_DELTA_TEXT_1B,
+            ASSISTANT_FULL,
+            CB_STOP_TEXT_1,
+            MSG_STOP,
+            RESULT_SUCCESS,
+        ];
+        let mut processor = ClaudeLogProcessor::new();
+        let provider = EntryIndexProvider::test_new();
+        let mut final_by_index: std::collections::BTreeMap<usize, NormalizedEntry> =
+            Default::default();
+        let mut streamed_partial = false;
+        for line in lines {
+            let parsed: ClaudeJson = serde_json::from_str(line).unwrap();
+            for patch in &processor.normalize_entries(&parsed, "", &provider) {
+                if let Some((idx, entry)) = extract_normalized_entry_from_patch(patch) {
+                    if matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
+                        && entry.content == "Hello "
+                    {
+                        streamed_partial = true;
+                    }
+                    final_by_index.insert(idx, entry);
+                }
+            }
+        }
+        assert!(
+            streamed_partial,
+            "text deltas after the thinking event must stream"
+        );
+        let texts = final_by_index
+            .values()
+            .filter(|e| matches!(e.entry_type, NormalizedEntryType::AssistantMessage))
+            .map(|e| e.content.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(texts, ["Hello world"], "rendered exactly once");
+        assert_eq!(
+            final_by_index
+                .values()
+                .filter(|e| matches!(e.entry_type, NormalizedEntryType::Thinking))
+                .count(),
+            1
+        );
+        assert!(
+            processor.streaming_messages.is_empty(),
+            "state dropped once the message is done"
         );
     }
 
