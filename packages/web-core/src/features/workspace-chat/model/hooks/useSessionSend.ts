@@ -26,8 +26,6 @@ interface UseSessionSendResult {
    * composer).
    */
   send: (message: string, options?: SendOptions) => Promise<ExecutionProcess>;
-  /** Whether a send operation is in progress */
-  isSending: boolean;
   /** Error message if the send for the *current* session failed */
   error: string | null;
   /** Clear the error */
@@ -46,7 +44,6 @@ export function useSessionSend({
 }: UseSessionSendOptions): UseSessionSendResult {
   const queryClient = useQueryClient();
   const hostId = useHostId();
-  const [isSending, setIsSending] = useState(false);
   // Keyed by the session the send targeted: a failure that lands after the
   // user switched conversations must not show up under the other session.
   const [errorState, setErrorState] = useState<{
@@ -74,7 +71,6 @@ export function useSessionSend({
       if (!target) throw failure('No session selected');
 
       setErrorState(null);
-      setIsSending(true);
       try {
         const process = await sessionsApi.followUp(
           target,
@@ -94,8 +90,6 @@ export function useSessionSend({
       } catch (e: unknown) {
         const err = e as { message?: string };
         throw failure(`Failed to send: ${err.message ?? 'Unknown error'}`);
-      } finally {
-        setIsSending(false);
       }
     },
     [sessionId, workspaceId, executorConfig, queryClient, hostId]
@@ -103,5 +97,5 @@ export function useSessionSend({
 
   const clearError = useCallback(() => setErrorState(null), []);
 
-  return { send, isSending, error, clearError };
+  return { send, error, clearError };
 }

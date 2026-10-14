@@ -47,6 +47,7 @@ import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { useSessionMessageEditor } from '../model/hooks/useSessionMessageEditor';
 import {
   isOptimisticQueuedId,
+  QueuedAfterFailedSendError,
   useSessionQueueInteraction,
 } from '../model/hooks/useSessionQueueInteraction';
 import { useSessionSend } from '../model/hooks/useSessionSend';
@@ -109,7 +110,7 @@ function computeExecutionStatus(params: {
   isInFeedbackMode: boolean;
   isInEditMode: boolean;
   isStopping: boolean;
-  /** New-session creation or handoff in flight: the composer locks. */
+  /** New-session row being created: the composer locks briefly. */
   isCreating: boolean;
   /** Follow-up POST in flight: its placeholder turn is already on screen. */
   isSendingFollowUp: boolean;
@@ -161,6 +162,8 @@ interface PendingSend {
   whenStopped?: () => Promise<void> | undefined;
   /** "Send now": the steer request (settles, never rejects). */
   steerRequest?: Promise<unknown>;
+  /** The request of a `runPendingSend`: true once it succeeded. */
+  requestSettled?: Promise<boolean>;
   /** "Send now": put the text back when a stop leaves it unsent. */
   onAbandoned?: () => void;
 }
@@ -602,6 +605,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       return next;
     });
   }, []);
+  // Answers the server refused, shown selected again when the banner returns.
+  const refusedAnswersRef = useRef<
+    Record<string, Array<{ question: string; answer: string[] }>>
+  >({});
   // The server refused the response: bring the approval UI back.
   const unresolveApproval = useCallback((approvalId: string) => {
     setResolvedApprovalIds((cur) => {
@@ -944,10 +951,20 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     const message = localMessage;
     // The list already shows the edit; leave edit mode now and only report a
     // refusal (the list is rolled back by the hook).
+    const editedSession = sessionId;
     exitQueuedEdit();
     try {
       await updateQueued(messageId, message, executorConfig);
     } catch (error) {
+      // The list rolled back: keep the edit in the composer, in front of the
+      // draft that came back when edit mode closed.
+      if (sessionIdRef.current === editedSession) {
+        const draft = localMessageRef.current;
+        const restored = draft.trim() ? `${message}\n\n${draft}` : message;
+        cancelDebouncedSave();
+        setLocalMessage(restored);
+        void saveToScratch(restored, executorConfig);
+      }
       void ErrorDialog.show({
         title: t('common:error'),
         message: error instanceof Error ? error.message : String(error),
@@ -957,8 +974,12 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     editingQueuedId,
     localMessage,
     executorConfig,
+    sessionId,
     updateQueued,
     exitQueuedEdit,
+    cancelDebouncedSave,
+    setLocalMessage,
+    saveToScratch,
     t,
   ]);
 
@@ -1183,7 +1204,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     (
       target: string,
       prompt: string,
-      executorConfigForDraft: ExecutorConfig
+      executorConfigForDraft: ExecutorConfig,
+      where: 'before' | 'after' = 'before'
     ) => {
       if (sessionIdRef.current !== target) {
         const earlier = unsentPrompts.get(target);
@@ -1192,7 +1214,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         return;
       }
       const draft = localMessageRef.current;
-      const restored = draft.trim() ? `${prompt}\n\n${draft}` : prompt;
+      const restored = !draft.trim()
+        ? prompt
+        : where === 'before'
+          ? `${prompt}\n\n${draft}`
+          : `${draft}\n\n${prompt}`;
       // A debounced save of what was typed meanwhile would overwrite this.
       cancelDebouncedSave();
       setLocalMessage(restored);
@@ -1232,6 +1258,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         spawned: false,
         stopReal,
       };
+      let settleRequest: (ok: boolean) => void = () => {};
+      pendingState.requestSettled = new Promise<boolean>((resolve) => {
+        settleRequest = resolve;
+      });
       pendingSends.set(target, pendingState);
       pendingSendsChanged();
       addOptimisticProcess(placeholder);
@@ -1260,6 +1290,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         }
         onFailure?.(error);
       }
+      settleRequest(success);
       await deferred.stop;
       if (pendingSends.get(target) === pendingState) {
         pendingSends.delete(target);
@@ -1562,9 +1593,19 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     clearUploadedAttachments();
     reviewContext?.clearComments();
     void clearDraft();
+    const pending = sessionId ? pendingSends.get(sessionId) : undefined;
+    const after =
+      pending && !pending.spawned ? pending.requestSettled : undefined;
     try {
-      await queueMessage(prompt, executorConfig);
+      await queueMessage(prompt, executorConfig, after);
     } catch (error) {
+      if (error instanceof QueuedAfterFailedSendError) {
+        // The send before it failed and was put back already (with its own
+        // error): this one goes back after it.
+        if (sessionId)
+          restorePrompt(sessionId, prompt, executorConfig, 'after');
+        return;
+      }
       if (sessionId) restorePrompt(sessionId, prompt, executorConfig);
       void ErrorDialog.show({
         title: t('common:error'),
@@ -2043,7 +2084,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       const approvalId = pendingApproval.approvalId;
 
       // Drop the question banner at once; it comes back with the mutation's
-      // error if the server refuses.
+      // error (and the answers selected again) if the server refuses.
+      delete refusedAnswersRef.current[approvalId];
       resolveApprovalOptimistically(approvalId);
       try {
         await answerAsync({
@@ -2056,6 +2098,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         });
         onScrollToBottom();
       } catch {
+        refusedAnswersRef.current[approvalId] = answers;
         unresolveApproval(approvalId);
       }
     },
@@ -2340,6 +2383,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           ? {
               isActive: true,
               questions: pendingApproval.questions,
+              initialAnswers:
+                refusedAnswersRef.current[pendingApproval.approvalId],
               onSubmitAnswers: handleAnswerQuestion,
               isSubmitting: isAnswering,
               isTimedOut: isApprovalTimedOut,

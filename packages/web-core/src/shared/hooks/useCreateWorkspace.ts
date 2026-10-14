@@ -64,11 +64,13 @@ export function useCreateWorkspace() {
       // (worktree and agent spawn continue in the background). Open straight
       // into that session with the turn already on screen instead of waiting
       // for the sessions fetch and the first stream replay.
-      queryClient.setQueryData<Session[]>(
-        workspaceSessionKeys.byWorkspace(workspace.id, hostId),
-        [session]
-      );
-      selectWorkspaceSession(workspace.id, hostId, session.id);
+      if (session) {
+        queryClient.setQueryData<Session[]>(
+          workspaceSessionKeys.byWorkspace(workspace.id, hostId),
+          [session]
+        );
+        selectWorkspaceSession(workspace.id, hostId, session.id);
+      }
       seedOptimisticProcess(execution_process);
       return finishWorkspaceCreation(workspace, linkToIssue);
     },

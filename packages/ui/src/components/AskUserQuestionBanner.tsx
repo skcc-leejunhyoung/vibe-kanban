@@ -23,13 +23,22 @@ interface AskUserQuestionBannerProps {
   isSubmitting: boolean;
   isTimedOut: boolean;
   error: string | null;
+  /** Answers to show selected on mount (e.g. a submission the server refused). */
+  initialAnswers?: QuestionAnswer[];
 }
 
 export const AskUserQuestionBanner = forwardRef<
   AskUserQuestionBannerHandle,
   AskUserQuestionBannerProps
 >(function AskUserQuestionBanner(
-  { questions, onSubmitAnswers, isSubmitting, isTimedOut, error },
+  {
+    questions,
+    onSubmitAnswers,
+    isSubmitting,
+    isTimedOut,
+    error,
+    initialAnswers,
+  },
   ref
 ) {
   const { t } = useTranslation('common');
@@ -38,7 +47,11 @@ export const AskUserQuestionBanner = forwardRef<
   // Cmd+Enter (or the confirm button) confirms and moves on, so single- and
   // multi-select share the same select→confirm semantics and answered
   // questions can be revisited with Cmd+←/→ and changed.
-  const [selections, setSelections] = useState<Record<string, string[]>>({});
+  const [selections, setSelections] = useState<Record<string, string[]>>(() =>
+    Object.fromEntries(
+      (initialAnswers ?? []).map((answer) => [answer.question, answer.answer])
+    )
+  );
   const [currentIndex, setCurrentIndex] = useState(0);
   const [submitted, setSubmitted] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState(0);

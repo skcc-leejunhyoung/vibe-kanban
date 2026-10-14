@@ -748,7 +748,12 @@ pr_review: PrReviewInput | null,
  */
 working_branch: WorkingBranchInput, };
 
-export type CreateAndStartWorkspaceResponse = { workspace: Workspace, session: Session, execution_process: ExecutionProcess, };
+export type CreateAndStartWorkspaceResponse = { workspace: Workspace,
+/**
+ * The workspace's first session. Absent in automation receipts stored
+ * before it was added, so replays of those still parse.
+ */
+session: Session | null, execution_process: ExecutionProcess, };
 
 export type CreateQuickChatRequest = {
 /**

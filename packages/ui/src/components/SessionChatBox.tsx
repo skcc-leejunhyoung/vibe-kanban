@@ -177,6 +177,8 @@ interface ApprovalModeProps {
 interface AskQuestionModeProps {
   isActive: boolean;
   questions: AskUserQuestionItem[];
+  /** Answers to show selected again (a submission the server refused). */
+  initialAnswers?: QuestionAnswer[];
   onSubmitAnswers: (answers: QuestionAnswer[]) => void;
   isSubmitting: boolean;
   isTimedOut: boolean;
@@ -822,6 +824,7 @@ export function SessionChatBox<TExecutor extends string = string>({
           isSubmitting={askQuestionMode.isSubmitting}
           isTimedOut={askQuestionMode.isTimedOut}
           error={askQuestionMode.error ?? null}
+          initialAnswers={askQuestionMode.initialAnswers}
         />
       );
     }

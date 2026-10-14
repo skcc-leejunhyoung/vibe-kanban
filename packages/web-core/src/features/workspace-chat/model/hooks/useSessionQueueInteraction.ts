@@ -26,10 +26,15 @@ interface UseSessionQueueInteractionResult {
   queuedMessages: QueuedMessage[];
   /** Whether at least one message is currently queued */
   isQueued: boolean;
-  /** Append a message to the back of the queue */
+  /**
+   * Append a message to the back of the queue. `after`: a send still on its
+   * way — the row shows at once, the request waits for it (so the message
+   * queues behind that turn) and is dropped if it failed.
+   */
   queueMessage: (
     message: string,
-    executorConfig: ExecutorConfig
+    executorConfig: ExecutorConfig,
+    after?: Promise<boolean>
   ) => Promise<void>;
   /**
    * Interrupt the running turn and run this message immediately. Resolves
@@ -61,6 +66,9 @@ interface UseSessionQueueInteractionResult {
 
 const QUEUE_STATUS_KEY = 'queue-status';
 const OPTIMISTIC_QUEUED_PREFIX = 'pending-queue-';
+
+/** The send a queued message was waiting on failed, so it wasn't queued. */
+export class QueuedAfterFailedSendError extends Error {}
 
 /** A row the server hasn't acknowledged yet: there is no id to act on. */
 export const isOptimisticQueuedId = (id: string): boolean =>
@@ -154,18 +162,28 @@ export function useSessionQueueInteraction({
   // Mutation for appending a message to the queue
   const queueMutation = useMutation({
     mutationKey,
-    mutationFn: ({
+    mutationFn: async ({
       message,
       executorConfig,
+      after,
     }: {
       message: string;
       executorConfig: ExecutorConfig;
-    }) =>
-      queueApi.queue(
+      after?: Promise<boolean>;
+    }) => {
+      // Queued while a send was on its way: post only once that turn exists,
+      // so the queue drain can't start this message next to it.
+      if (after && !(await after)) {
+        throw new QueuedAfterFailedSendError(
+          'The message before this one was not sent, so it was not queued.'
+        );
+      }
+      return queueApi.queue(
         sessionId!,
         { message, executor_config: executorConfig },
         hostId
-      ),
+      );
+    },
     onMutate: ({ message, executorConfig }) =>
       editLocally((messages) => [
         ...messages,
@@ -288,9 +306,13 @@ export function useSessionQueueInteraction({
   });
 
   const queueMessage = useCallback(
-    async (message: string, executorConfig: ExecutorConfig) => {
+    async (
+      message: string,
+      executorConfig: ExecutorConfig,
+      after?: Promise<boolean>
+    ) => {
       if (!sessionId) return;
-      await queueMutation.mutateAsync({ message, executorConfig });
+      await queueMutation.mutateAsync({ message, executorConfig, after });
     },
     [sessionId, queueMutation]
   );

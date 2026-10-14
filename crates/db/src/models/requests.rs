@@ -114,7 +114,10 @@ pub struct CreateAndStartWorkspaceRequest {
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct CreateAndStartWorkspaceResponse {
     pub workspace: Workspace,
-    pub session: Session,
+    /// The workspace's first session. Absent in automation receipts stored
+    /// before it was added, so replays of those still parse.
+    #[serde(default)]
+    pub session: Option<Session>,
     pub execution_process: ExecutionProcess,
 }
 

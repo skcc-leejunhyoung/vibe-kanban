@@ -604,8 +604,15 @@ async fn create_workspace_with_repos(
         BranchSetup::ExistingPrBranch(review) => {
             // Checked out inline: the issue is marked "In review" and the prompt
             // cleared right after, so a failed checkout must stay a request error.
-            let workspace =
-                pr::setup_pr_review_workspace(deployment, name, review, false, false).await?;
+            let workspace = match pr::setup_pr_review_workspace(deployment, name, review).await? {
+                Ok(workspace) => workspace,
+                Err(message) => {
+                    return Err(ApiError::BadRequest(format!(
+                        "Failed to check out PR #{} branch for review: {message}",
+                        review.pr_number
+                    )));
+                }
+            };
 
             deployment
                 .workspace_manager()
@@ -785,8 +792,8 @@ async fn create_and_start_workspace_inner(
                 // host's LOCAL subscriptions (e.g. a desktop browser paired via
                 // the local server), which the remote push never reaches. Local
                 // only, to avoid double-notifying remote devices.
-                // The row still carries the base ref until the background
-                // checkout renames it; the PR head branch is what the user knows.
+                // An unnamed review workspace: the PR head branch is what the
+                // user knows it by.
                 let name = workspace.name.as_deref().unwrap_or_else(|| {
                     pr_review
                         .as_ref()
@@ -936,7 +943,7 @@ async fn create_and_start_workspace_inner(
     Ok(ResponseJson(ApiResponse::success(
         CreateAndStartWorkspaceResponse {
             workspace,
-            session,
+            session: Some(session),
             execution_process,
         },
     )))
@@ -1058,7 +1065,7 @@ pub async fn create_and_start_quick_chat(
     Ok(ResponseJson(ApiResponse::success(
         CreateAndStartWorkspaceResponse {
             workspace,
-            session,
+            session: Some(session),
             execution_process,
         },
     )))

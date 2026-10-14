@@ -330,11 +330,13 @@ const QuickChatDialogImpl = create<NoProps>(() => {
         );
       // Open straight into the new session with its first turn on screen (the
       // agent spawn continues server-side) — see useCreateWorkspace.
-      queryClient.setQueryData<Session[]>(
-        workspaceSessionKeys.byWorkspace(workspace.id, selectedHostId),
-        [session]
-      );
-      selectWorkspaceSession(workspace.id, selectedHostId, session.id);
+      if (session) {
+        queryClient.setQueryData<Session[]>(
+          workspaceSessionKeys.byWorkspace(workspace.id, selectedHostId),
+          [session]
+        );
+        selectWorkspaceSession(workspace.id, selectedHostId, session.id);
+      }
       seedOptimisticProcess(execution_process);
       // Sent: the draft is now the workspace's first message, so drop it.
       setPrompt('');
