@@ -2892,6 +2892,22 @@ impl LocalContainerService {
         prompt: &str,
         executor_config: Option<ExecutorConfig>,
     ) -> Result<Session, ContainerError> {
+        let (review_session, executor_config) = self
+            .vibe_create_review_session(workspace, session, executor_config)
+            .await?;
+        self.vibe_run_review_session(workspace, &review_session, prompt, executor_config)
+            .await?;
+        Ok(review_session)
+    }
+
+    /// First half of [`Self::vibe_start_review_session`]: resolve the executor
+    /// config and create the (empty) review session.
+    async fn vibe_create_review_session(
+        &self,
+        workspace: &Workspace,
+        session: &Session,
+        executor_config: Option<ExecutorConfig>,
+    ) -> Result<(Session, ExecutorConfig), ContainerError> {
         // See `vibe_send_followup`: a missing profile must error, not no-op, so
         // the run is not silently abandoned in a non-terminal phase. A manual
         // review uses the chat selector config; automated reviews inherit the
@@ -2914,7 +2930,18 @@ impl LocalContainerService {
         };
         let review_session =
             Session::create(&self.db.pool, &create, session_id, workspace.id).await?;
+        Ok((review_session, executor_config))
+    }
 
+    /// Second half of [`Self::vibe_start_review_session`]: spawn the review
+    /// agent, then move the run to the review phase.
+    async fn vibe_run_review_session(
+        &self,
+        workspace: &Workspace,
+        review_session: &Session,
+        prompt: &str,
+        executor_config: ExecutorConfig,
+    ) -> Result<(), ContainerError> {
         let working_dir = review_session
             .agent_working_dir
             .as_ref()
@@ -2935,7 +2962,7 @@ impl LocalContainerService {
         );
         self.start_execution(
             workspace,
-            &review_session,
+            review_session,
             &action,
             &ExecutionProcessRunReason::CodingAgent,
         )
@@ -2950,7 +2977,7 @@ impl LocalContainerService {
         VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id)
             .await
             .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
-        Ok(review_session)
+        Ok(())
     }
 
     /// Rule 5: fast-forward merge each qualifying repo into its target branch,
@@ -3758,6 +3785,28 @@ impl ContainerService for LocalContainerService {
                                     "Failed to publish execution stop"
                                 );
                             }
+                            // A turn stopped before it ever ran gets no exit
+                            // handler, so do what its finalize does for a user
+                            // stop: drop the queued follow-ups — unless a steer
+                            // owns this stop and is about to run its message.
+                            if status == ExecutionProcessStatus::Killed
+                                && execution_process.run_reason
+                                    != ExecutionProcessRunReason::DevServer
+                                && !self
+                                    .queued_message_service
+                                    .is_steering(execution_process.session_id)
+                            {
+                                let discarded = self
+                                    .queued_message_service
+                                    .clear_queue(execution_process.session_id);
+                                if !discarded.is_empty() {
+                                    tracing::info!(
+                                        "Discarded {} queued message(s) for session {}: its turn was stopped before it started",
+                                        discarded.len(),
+                                        execution_process.session_id
+                                    );
+                                }
+                            }
                         }
                         if let Some(msg) =
                             self.msg_stores.write().await.remove(&execution_process.id)
@@ -4067,6 +4116,7 @@ impl ContainerService for LocalContainerService {
         // run off the request path.
         {
             let this = self.clone();
+            let client = client.clone();
             tokio::spawn(async move {
                 this.vibe_tag(&client, task_id, vibe_orchestrator::TAG_VIBE)
                     .await;
@@ -4075,9 +4125,41 @@ impl ContainerService for LocalContainerService {
             });
         }
 
+        // Answer with the review session as soon as it exists so the UI can
+        // switch to it; the agent spawn follows in the background. A start that
+        // fails there blocks the run (as the workflow's Block does), so anything
+        // waiting on the review — "review and create PR" — stops instead of
+        // polling until its timeout.
         let prompt = vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_A);
-        self.vibe_start_review_session(workspace, session, &prompt, executor_config)
-            .await
+        let (review_session, executor_config) = self
+            .vibe_create_review_session(workspace, session, executor_config)
+            .await?;
+        {
+            let this = self.clone();
+            let workspace = workspace.clone();
+            let review = review_session.clone();
+            tokio::spawn(async move {
+                if let Err(e) = this
+                    .vibe_run_review_session(&workspace, &review, &prompt, executor_config)
+                    .await
+                {
+                    tracing::error!(
+                        "vibe: manual review for workspace {} failed to start: {}",
+                        workspace.id,
+                        e
+                    );
+                    let _ = VibeRun::set_phase(
+                        &this.db.pool,
+                        workspace.id,
+                        VibePhase::Blocked.as_str(),
+                    )
+                    .await;
+                    this.vibe_tag(&client, task_id, vibe_orchestrator::TAG_BLOCK)
+                        .await;
+                }
+            });
+        }
+        Ok(review_session)
     }
 }
 fn success_exit_status() -> std::process::ExitStatus {

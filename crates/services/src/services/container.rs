@@ -1347,32 +1347,7 @@ pub trait ContainerService {
         assistant_message_in_store(&msg_store)
     }
 
-    async fn start_workspace(
-        &self,
-        workspace: &Workspace,
-        executor_config: ExecutorConfig,
-        prompt: String,
-    ) -> Result<ExecutionProcess, ContainerError> {
-        self.start_workspace_with_origin(workspace, executor_config, prompt, None)
-            .await
-    }
-
-    async fn start_workspace_with_origin(
-        &self,
-        workspace: &Workspace,
-        executor_config: ExecutorConfig,
-        prompt: String,
-        automation_origin: Option<AutomationOrigin>,
-    ) -> Result<ExecutionProcess, ContainerError> {
-        let prepared = self
-            .prepare_workspace_start(workspace, executor_config, prompt, automation_origin)
-            .await?;
-        let execution_process = prepared.execution_process.clone();
-        self.complete_workspace_start(workspace, prepared).await?;
-        Ok(execution_process)
-    }
-
-    /// First half of [`Self::start_workspace_with_origin`]: the session and the
+    /// First half of a workspace start: the session and the
     /// execution-process row(s), without touching the container. Cheap, so a
     /// create request can answer with ids the UI opens immediately; the
     /// worktree and the spawns follow in [`Self::complete_workspace_start`].
