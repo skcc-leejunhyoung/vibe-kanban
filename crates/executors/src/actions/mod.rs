@@ -178,9 +178,9 @@ fn append_artifact_instructions(prompt: &mut String, suffix: &str) {
 // same channel as the artifact rules, so one copy survives compaction.
 const ARTIFACT_REMINDER: &str = "[Artifacts] Attach each deliverable on its own line as \
      [Title](relative/path \"vibe-artifact\"). The full artifact rules are in your instructions. \
-     [Status] Keep the ```vibe-status block current: one plain paragraph under 1000 visible \
-     characters telling someone without context what this work is and how far it has come; \
-     the full rules are in your instructions.";
+     [Status] Keep the ```vibe-status block current: plain prose under 1000 visible characters \
+     telling someone without context what this work is and how far it has come; the full \
+     rules are in your instructions.";
 
 const ARTIFACT_INSTRUCTIONS: &str = "[Artifacts]\n\
              Only attach deliverables you intentionally want the user to preview or download. \

@@ -68,7 +68,9 @@ fn scan(text: &str, mut on_block: impl FnMut(usize, usize, String, bool)) {
         }
         if let Some(marker @ ('`' | '~')) = delimiter.chars().next() {
             let count = delimiter.chars().take_while(|ch| *ch == marker).count();
-            if count >= 3 {
+            // CommonMark: a backtick in a backtick fence's info string makes
+            // the line inline code, not a fence.
+            if count >= 3 && !(marker == '`' && delimiter[count..].contains('`')) {
                 // CommonMark: the first word of the info string is the language.
                 let language = delimiter[count..].split_whitespace().next();
                 fence = Some(Fence {
@@ -208,6 +210,14 @@ mod tests {
             "x"
         );
         assert_eq!(extract_last_block("```vibe-statusx\nx\n```"), None);
+        // Inline code at the start of a line is not a fence and must not
+        // swallow the real block after it.
+        assert_eq!(
+            extract_last_block("```vibe-status``` 블록을 고쳤어요.\n```vibe-status\n요약\n```")
+                .unwrap()
+                .text,
+            "요약"
+        );
     }
 
     #[test]

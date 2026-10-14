@@ -289,3 +289,43 @@ async fn final_message_readers_skip_block_only_messages() {
         Some("Done. VIBE_RESULT: done")
     );
 }
+
+/// The history keeps every streamed snapshot of a message. A final message
+/// that is only a summary block must not make the reader fall back to an
+/// earlier, half-streamed snapshot of that same message (a bare "```").
+#[tokio::test]
+async fn final_message_readers_ignore_earlier_snapshots_of_a_message() {
+    use services::services::container::assistant_message_in_store;
+
+    let store = MsgStore::new();
+    store.push_patch(ConversationPatch::add_normalized_entry(
+        0,
+        message(NormalizedEntryType::AssistantMessage, "Earlier prose."),
+    ));
+    for snapshot in [
+        "```",
+        "```vibe-st",
+        "```vibe-status\n요약",
+        "```vibe-status\n요약이에요.\n```",
+    ] {
+        store.push_patch(ConversationPatch::replace(
+            1,
+            message(NormalizedEntryType::AssistantMessage, snapshot),
+        ));
+    }
+    assert_eq!(
+        assistant_message_in_store(&store).as_deref(),
+        Some("Earlier prose.")
+    );
+    store.push_patch(ConversationPatch::replace(
+        1,
+        message(
+            NormalizedEntryType::AssistantMessage,
+            "```vibe-status\n요약이에요.\n```\nVIBE_RESULT: done",
+        ),
+    ));
+    assert_eq!(
+        assistant_message_in_store(&store).as_deref(),
+        Some("VIBE_RESULT: done")
+    );
+}

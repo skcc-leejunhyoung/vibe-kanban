@@ -269,6 +269,7 @@ describe('artifact segments', () => {
       '    ```vibe-status\nindented code\n```',
       '```vibe-status\nf\n``\n```\n```html vibe-artifact\n<p>g</p>\n```',
       '~~~vibe-status\n```\nnot closed by backticks\n~~~',
+      '```vibe-status``` 블록을 고쳤어요.\n```vibe-status\nh\n```',
     ];
     const status = (segments: { kind: string }[]) =>
       segments

@@ -1832,36 +1832,35 @@ impl LocalContainerService {
                 content.to_string()
             }
         };
-        // A turn that ends with only its live summary block (and perhaps the
-        // result sentinel) still needs a summary: the block itself is the best
-        // one, but any real prose the turn wrote comes first.
-        let mut block_only: Option<String> = None;
+        // History keeps every streamed snapshot of an entry; only the latest
+        // counts, or a half-streamed fence would pass for prose.
+        let mut seen = HashSet::new();
         for msg in history.iter().rev() {
-            if let LogMsg::JsonPatch(patch) = msg {
-                // Try to extract a NormalizedEntry from the patch
-                if let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
-                    && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
+            if let LogMsg::JsonPatch(patch) = msg
+                && let Some((index, entry)) = extract_normalized_entry_from_patch(patch)
+                && seen.insert(index)
+                && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
+            {
+                // The live summary block is workspace state, not prose.
+                let content = executors::logs::status_note::strip_blocks(&entry.content);
+                if !vibe_orchestrator::strip_result_sentinel(&content)
+                    .trim()
+                    .is_empty()
                 {
-                    // The live summary block is workspace state, not prose.
-                    let content = executors::logs::status_note::strip_blocks(&entry.content);
-                    if !vibe_orchestrator::strip_result_sentinel(&content)
-                        .trim()
-                        .is_empty()
-                    {
-                        return Some(cap(&content));
-                    }
-                    if block_only.is_none()
-                        && let Some(block) =
-                            executors::logs::status_note::extract_last_block(&entry.content)
-                        && !block.text.is_empty()
-                    {
-                        block_only = Some(block.text);
-                    }
+                    return Some(cap(&content));
+                }
+                // A final message holding only the summary (and perhaps the
+                // result sentinel): the summary itself describes the turn.
+                if let Some(block) =
+                    executors::logs::status_note::extract_last_block(&entry.content)
+                    && !block.text.is_empty()
+                {
+                    return Some(cap(&block.text));
                 }
             }
         }
 
-        block_only.map(|text| cap(&text))
+        None
     }
 
     /// Like [`extract_last_assistant_message`] but returns the full, untruncated
@@ -1870,9 +1869,12 @@ impl LocalContainerService {
     fn extract_last_assistant_message_full(&self, exec_id: &Uuid) -> Option<String> {
         let msg_stores = self.msg_stores.try_read().ok()?;
         let msg_store = msg_stores.get(exec_id)?;
+        // Only an entry's latest streamed snapshot counts.
+        let mut seen = HashSet::new();
         for msg in msg_store.get_history().iter().rev() {
             if let LogMsg::JsonPatch(patch) = msg
-                && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
+                && let Some((index, entry)) = extract_normalized_entry_from_patch(patch)
+                && seen.insert(index)
                 && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
             {
                 let content = executors::logs::status_note::strip_blocks(&entry.content);

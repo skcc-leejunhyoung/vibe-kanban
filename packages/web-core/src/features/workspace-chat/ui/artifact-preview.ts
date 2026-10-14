@@ -316,7 +316,12 @@ export function splitArtifactSegments(content: string): ArtifactSegment[] {
     if (marker === '`' || marker === '~') {
       let count = 0;
       while (delimiter[count] === marker) count++;
-      if (count >= 3) {
+      // Same rule as the backend: a backtick in a backtick fence's info
+      // string makes the line inline code, not a fence.
+      if (
+        count >= 3 &&
+        !(marker === '`' && delimiter.slice(count).includes('`'))
+      ) {
         const info = delimiter.slice(count).trim();
         fence = {
           marker,

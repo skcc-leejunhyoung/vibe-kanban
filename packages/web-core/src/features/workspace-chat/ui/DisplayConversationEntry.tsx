@@ -54,6 +54,7 @@ import { statusFirstSentence } from '@/shared/lib/statusNote';
 import { StatusNoteChip } from '@vibe/ui/components/WorkspaceStatusStrip';
 import { formatClock } from '@/shared/lib/date';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
+import { useWritingStatusKey } from '../model/hooks/useLiveStatus';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
 import { useLogsPanelActions } from '@/shared/hooks/useLogsPanel';
@@ -463,6 +464,7 @@ function DisplayConversationEntry(props: Props) {
     case 'assistant_message':
       return (
         <AssistantMessageEntry
+          entryKey={expansionKey}
           content={entry.content}
           segments={
             props.artifactSegments ?? [
@@ -1111,24 +1113,29 @@ const EMPTY_ARTIFACTS: ArtifactReference[] = [];
  * that point of the reply; unregistered lines stay ordinary markdown.
  */
 function AssistantMessageEntry({
+  entryKey,
   content,
   segments,
   workspaceId,
   sessionId,
   executionProcessId,
 }: {
+  entryKey: string;
   content: string;
   segments: PlacedSegment[];
   workspaceId: string | undefined;
   sessionId: string | undefined;
   executionProcessId: string;
 }) {
-  // A block left open by a killed or finished process is not being written.
-  // Entries carry no timestamp, so the chip is dated like the strip's history:
-  // by the turn that produced it.
+  // A block left open by a killed or finished process, or by a message the
+  // agent moved on from, is not being written. Entries carry no timestamp, so
+  // the chip is dated like the strip's history: by the turn that produced it.
   const process = useContext(ExecutionProcessesContext)
     ?.executionProcessesByIdAll[executionProcessId];
-  const processRunning = process?.status === ExecutionProcessStatus.running;
+  const writingKey = useWritingStatusKey();
+  const processRunning =
+    process?.status === ExecutionProcessStatus.running &&
+    (writingKey === undefined || writingKey === entryKey);
   const chipTime = process?.completed_at ?? process?.started_at ?? null;
   const parts: (string | ArtifactReference | StatusBlockSegment)[] = [];
   for (const { segment, artifact } of segments) {

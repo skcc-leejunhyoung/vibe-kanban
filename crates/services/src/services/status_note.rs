@@ -13,12 +13,33 @@ use uuid::Uuid;
 pub struct StatusNoteObserver {
     pool: SqlitePool,
     workspace_id: Uuid,
-    /// Text of a block whose closing fence has not arrived; stored at completion.
-    open: Option<String>,
-    /// Entry index and text of the last closed block this process stored. The
-    /// same closed block is observed again on every batch while prose keeps
+    /// Index of the newest message whose block was taken into account. An
+    /// older message seen again (an entry can be replaced after later ones
+    /// streamed in) never overrides a newer summary.
+    newest: Option<usize>,
+    /// Index and text of the newest block while its closing fence has not
+    /// arrived. Stored as far as it got once the agent moves on or the
+    /// process ends.
+    open: Option<(usize, String)>,
+    /// Entry index and text of the last block this process stored. The same
+    /// closed block is observed again on every batch while prose keeps
     /// streaming after it, and must not overwrite what another process wrote.
     stored: Option<(usize, String)>,
+}
+
+/// Entries that mean the agent has moved past an earlier message, mirroring
+/// the client's rule for when an unclosed block stops growing.
+fn moves_on(entry_type: &NormalizedEntryType) -> bool {
+    matches!(
+        entry_type,
+        NormalizedEntryType::AssistantMessage
+            | NormalizedEntryType::ToolUse { .. }
+            | NormalizedEntryType::Thinking
+            | NormalizedEntryType::UserMessage
+            | NormalizedEntryType::UserFeedback { .. }
+            | NormalizedEntryType::UserAnsweredQuestions { .. }
+            | NormalizedEntryType::ErrorMessage { .. }
+    )
 }
 
 impl StatusNoteObserver {
@@ -26,57 +47,80 @@ impl StatusNoteObserver {
         Self {
             pool,
             workspace_id,
+            newest: None,
             open: None,
             stored: None,
         }
     }
 
     /// Entries arrive in index order, each in its latest streamed form, so the
-    /// last closed block seen is the summary the agent currently stands by.
+    /// last closed block of the newest message is the summary the agent
+    /// currently stands by.
     pub async fn observe_entry(&mut self, index: usize, entry: &NormalizedEntry) {
+        if moves_on(&entry.entry_type)
+            && let Some((open_index, text)) = self.open.take()
+        {
+            if index > open_index {
+                self.save(open_index, text).await;
+            } else {
+                self.open = Some((open_index, text));
+            }
+        }
         if !matches!(entry.entry_type, NormalizedEntryType::AssistantMessage) {
             return;
         }
-        match status_note::extract_last_block(&entry.content) {
-            Some(block) if block.closed => {
-                self.open = None;
-                let seen = (index, block.text);
-                if self.stored.as_ref() == Some(&seen) {
-                    return;
-                }
-                self.store(seen.1.clone()).await;
-                self.stored = Some(seen);
-            }
-            Some(block) => self.open = Some(block.text),
-            // A later message without a block leaves an earlier open block as
-            // the draft; it is stored as far as it got when the process ends.
-            None => {}
+        let Some(block) = status_note::extract_last_block(&entry.content) else {
+            return;
+        };
+        if self.newest.is_some_and(|newest| index < newest) {
+            return;
+        }
+        self.newest = Some(index);
+        if block.closed {
+            self.open = None;
+            self.save(index, block.text).await;
+        } else {
+            self.open = Some((index, block.text));
         }
     }
 
     /// The process ended: keep whatever an interrupted block already said.
     pub async fn finish(&mut self) {
-        if let Some(text) = self.open.take() {
-            self.store(text).await;
+        if let Some((index, text)) = self.open.take() {
+            self.save(index, text).await;
+        }
+    }
+
+    async fn save(&mut self, index: usize, text: String) {
+        let seen = (index, text);
+        if self.stored.as_ref() == Some(&seen) {
+            return;
+        }
+        if self.store(&seen.1).await {
+            self.stored = Some(seen);
         }
     }
 
     /// The row is the final dedupe: `set_status_note` is a no-op for an
     /// unchanged note, so a new block that restates the stored summary never
     /// bumps the clock, while a restatement after another process wrote
-    /// something else does win.
-    async fn store(&mut self, text: String) {
+    /// something else does win. False when the write failed (retried on the
+    /// next observation).
+    async fn store(&self, text: &str) -> bool {
         let text = status_note::truncate_visible(text.trim(), MAX_VISIBLE_CHARS);
         if text.is_empty() {
-            return;
+            return true;
         }
         match Workspace::set_status_note(&self.pool, self.workspace_id, &text).await {
-            Ok(()) => {}
-            Err(error) => tracing::warn!(
-                %error,
-                workspace_id = %self.workspace_id,
-                "Workspace status note not saved"
-            ),
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    workspace_id = %self.workspace_id,
+                    "Workspace status note not saved"
+                );
+                false
+            }
         }
     }
 }
@@ -208,8 +252,8 @@ mod tests {
                 .unwrap();
         assert_eq!(stamped, None);
 
-        // A block left open, then a later message without one: the draft is
-        // still the latest summary and is stored as far as it got.
+        // A block left open, then anything after it (here a tool call): the
+        // agent moved on, so the draft is stored as far as it got, right away.
         observer
             .observe_entry(
                 1,
@@ -219,7 +263,20 @@ mod tests {
                 ),
             )
             .await;
-        observer.observe_entry(2, &message("Done.")).await;
+        assert_eq!(
+            note(&pool, id).await.as_deref(),
+            Some("이미 저장된 요약이에요.")
+        );
+        observer
+            .observe_entry(
+                2,
+                &NormalizedEntry {
+                    entry_type: NormalizedEntryType::Thinking,
+                    ..message("")
+                },
+            )
+            .await;
+        assert_eq!(note(&pool, id).await.as_deref(), Some("중간에 끊긴"));
         observer.finish().await;
         assert_eq!(note(&pool, id).await.as_deref(), Some("중간에 끊긴"));
     }
@@ -272,6 +329,46 @@ mod tests {
             .observe_entry(9, &message("```vibe-status\n첫 요약이에요.\n```"))
             .await;
         assert_eq!(note(&pool, id).await.as_deref(), Some("첫 요약이에요."));
+    }
+
+    /// An older message seen again after a newer one never wins: it neither
+    /// overwrites the newer stored summary nor drops a newer open draft.
+    #[tokio::test]
+    async fn older_message_seen_again_never_overrides_a_newer_summary() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE workspaces (id BLOB PRIMARY KEY, status_note TEXT, status_updated_at TEXT);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id) VALUES (?)")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut observer = StatusNoteObserver::new(pool.clone(), id);
+        let old = message("```vibe-status\n옛 요약이에요.\n```");
+        observer.observe_entry(2, &old).await;
+        observer
+            .observe_entry(6, &message("```vibe-status\n새 요약이에요.\n```"))
+            .await;
+        observer.observe_entry(2, &old).await;
+        assert_eq!(note(&pool, id).await.as_deref(), Some("새 요약이에요."));
+
+        observer
+            .observe_entry(9, &message("```vibe-status\n쓰다 끊긴 요약"))
+            .await;
+        observer
+            .observe_entry(6, &message("```vibe-status\n새 요약이에요.\n```"))
+            .await;
+        observer.finish().await;
+        assert_eq!(note(&pool, id).await.as_deref(), Some("쓰다 끊긴 요약"));
     }
 
     #[tokio::test]

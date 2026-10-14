@@ -134,9 +134,12 @@ pub enum ContainerError {
 /// without racing teardown (which removes the store almost immediately after
 /// the process is marked Completed).
 pub fn assistant_message_in_store(msg_store: &MsgStore) -> Option<String> {
+    // History keeps every streamed snapshot of an entry; only the latest counts.
+    let mut seen = HashSet::new();
     for msg in msg_store.get_history().iter().rev() {
         if let LogMsg::JsonPatch(patch) = msg
-            && let Some((_, entry)) = extract_normalized_entry_from_patch(patch)
+            && let Some((index, entry)) = extract_normalized_entry_from_patch(patch)
+            && seen.insert(index)
             && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
         {
             // The live summary block is workspace state, not part of the answer.

@@ -68,6 +68,12 @@ describe('splitStatusSegments', () => {
     expect(splitStatusSegments('```vibe-statusx\nx\n```')).toEqual([
       { kind: 'markdown', text: '```vibe-statusx\nx\n```' },
     ]);
+    // Inline code at the start of a line is not a fence.
+    expect(
+      extractLastStatusBlock(
+        '```vibe-status``` 블록을 고쳤어요.\n```vibe-status\n요약\n```'
+      )
+    ).toEqual({ text: '요약', closed: true });
   });
 
   it('returns the last block of a message', () => {
@@ -128,6 +134,28 @@ describe('statusFirstSentence', () => {
       'Checked the U.S. build.'
     );
     expect(statusFirstSentence('It is done. Really.')).toBe('It is done.');
+  });
+
+  it('still ends a sentence at an abbreviation followed by a new sentence', () => {
+    expect(
+      statusFirstSentence(
+        'Updated the README, CHANGELOG, etc. Next is the API.'
+      )
+    ).toBe('Updated the README, CHANGELOG, etc.');
+    expect(
+      statusFirstSentence('We went with Plan B. The original broke.')
+    ).toBe('We went with Plan B.');
+    expect(statusFirstSentence('Merged the fix from Acme Inc. Waiting.')).toBe(
+      'Merged the fix from Acme Inc.'
+    );
+    expect(statusFirstSentence('Cut p95 latency to 120 ms. Next up.')).toBe(
+      'Cut p95 latency to 120 ms.'
+    );
+    expect(statusFirstSentence('e.g. 로그인 화면을 고치고 있어요. 다음.')).toBe(
+      'e.g. 로그인 화면을 고치고 있어요.'
+    );
+    const long = `Covered the parser, the observer, the strip, the sidebar row, cards, etc.`;
+    expect(statusFirstSentence(long)).toBe(long);
   });
 });
 

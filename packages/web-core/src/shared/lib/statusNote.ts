@@ -63,7 +63,12 @@ export function splitStatusSegments(content: string): StatusSegment[] {
     if (marker === '`' || marker === '~') {
       let count = 0;
       while (delimiter[count] === marker) count++;
-      if (count >= 3) {
+      // CommonMark: a backtick in a backtick fence's info string makes the
+      // line inline code, not a fence.
+      if (
+        count >= 3 &&
+        !(marker === '`' && delimiter.slice(count).includes('`'))
+      ) {
         // CommonMark: the first word of the info string is the language.
         const status =
           delimiter.slice(count).trim().split(/\s+/)[0].toLowerCase() ===
@@ -148,10 +153,12 @@ export function statusPlainText(text: string): string {
   return text.replace(LINK, '$1');
 }
 
-// A period after these does not end a sentence: common abbreviations, and
-// dotted initials or acronyms such as "J." or "U.S.".
+// A period after a title never ends a sentence ("Dr. Kim"). After another
+// abbreviation or dotted initials ("e.g.", "U.S.", "Plan B.") it does only
+// when a capital letter or the end of the text follows.
+const TITLE = /(?:^|[\s(])(?:dr|mr|mrs|prof|st|jr|sr)\.$/i;
 const ABBREVIATION =
-  /(?:^|[\s(])(?:e\.g|i\.e|etc|vs|cf|approx|dr|mr|mrs|ms|prof|st|jr|sr|inc|ltd|co|fig|eq|ref|ch|sec|vol|pp|al)\.$/i;
+  /(?:^|[\s(])(?:e\.g|i\.e|etc|vs|cf|approx|inc|ltd|co|fig|eq|ref|ch|sec|vol|pp|al)\.$/i;
 const INITIALS = /(?:^|[\s(])(?:[A-Z]\.)+$/;
 
 /**
@@ -166,11 +173,19 @@ export function statusFirstSentence(text: string): string {
   let stop: RegExpExecArray | null;
   while ((stop = stops.exec(plain))) {
     const sentence = plain.slice(0, stop.index + 1);
-    if (
-      stop[0] === '.' &&
-      (ABBREVIATION.test(sentence) || INITIALS.test(sentence))
-    )
-      continue;
+    if (stop[0] === '.') {
+      if (TITLE.test(sentence)) continue;
+      const next = plain
+        .slice(stop.index + 1)
+        .trimStart()
+        .charAt(0);
+      if (
+        next !== '' &&
+        !/[A-Z]/.test(next) &&
+        (ABBREVIATION.test(sentence) || INITIALS.test(sentence))
+      )
+        continue;
+    }
     return sentence;
   }
   const chars = Array.from(plain);

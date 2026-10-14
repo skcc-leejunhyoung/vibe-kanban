@@ -18,6 +18,7 @@ import { SessionChatBoxContainer } from '@/features/workspace-chat/ui/SessionCha
 import { ContextBarContainer } from './ContextBarContainer';
 import { WorkspaceStatusStripContainer } from '@/features/workspace-chat/ui/WorkspaceStatusStripContainer';
 import { EntriesProvider } from '@/features/workspace-chat/model/contexts/EntriesContext';
+import { LiveStatusProvider } from '@/features/workspace-chat/model/hooks/useLiveStatus';
 import { MessageEditProvider } from '@/features/workspace-chat/model/contexts/MessageEditContext';
 import { RetryUiProvider } from '@/features/workspace-chat/model/contexts/RetryUiContext';
 import { ApprovalFeedbackProvider } from '@/features/workspace-chat/model/contexts/ApprovalFeedbackContext';
@@ -295,27 +296,31 @@ export const WorkspacesMainContainer = forwardRef<
     <ApprovalFeedbackProvider>
       <EntriesProvider key={entriesProviderKey}>
         <MessageEditProvider>
-          <WorkspacesMain
-            workspaceWithSession={
-              workspaceWithSession ? { id: workspaceWithSession.id } : undefined
-            }
-            isLoading={isLoading}
-            containerRef={containerRef}
-            conversationContent={conversationContent}
-            statusContent={
-              workspaceWithSession ? (
-                <WorkspaceStatusStripContainer
-                  workspaceId={workspaceWithSession.id}
-                  sessionId={selectedSessionId}
-                />
-              ) : null
-            }
-            chatBoxContent={chatBoxContent}
-            contextBarContent={contextBarContent}
-            isAtBottom={isAtBottom}
-            onAtBottomChange={handleAtBottomChange}
-            onScrollToBottom={handleScrollToBottom}
-          />
+          <LiveStatusProvider>
+            <WorkspacesMain
+              workspaceWithSession={
+                workspaceWithSession
+                  ? { id: workspaceWithSession.id }
+                  : undefined
+              }
+              isLoading={isLoading}
+              containerRef={containerRef}
+              conversationContent={conversationContent}
+              statusContent={
+                workspaceWithSession ? (
+                  <WorkspaceStatusStripContainer
+                    workspaceId={workspaceWithSession.id}
+                    sessionId={selectedSessionId}
+                  />
+                ) : null
+              }
+              chatBoxContent={chatBoxContent}
+              contextBarContent={contextBarContent}
+              isAtBottom={isAtBottom}
+              onAtBottomChange={handleAtBottomChange}
+              onScrollToBottom={handleScrollToBottom}
+            />
+          </LiveStatusProvider>
         </MessageEditProvider>
       </EntriesProvider>
     </ApprovalFeedbackProvider>

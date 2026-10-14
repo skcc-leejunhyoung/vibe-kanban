@@ -138,7 +138,9 @@ pub fn markdown_candidates(text: &str) -> Vec<ArtifactCandidate> {
         }
         if let Some(marker @ ('`' | '~')) = delimiter.chars().next() {
             let count = delimiter.chars().take_while(|ch| *ch == marker).count();
-            if count >= 3 {
+            // CommonMark: a backtick in a backtick fence's info string makes
+            // the line inline code, not a fence.
+            if count >= 3 && !(marker == '`' && delimiter[count..].contains('`')) {
                 fence = Some((
                     marker,
                     count,

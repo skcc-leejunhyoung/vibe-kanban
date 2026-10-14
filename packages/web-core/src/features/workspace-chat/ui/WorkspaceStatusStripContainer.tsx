@@ -15,7 +15,7 @@ import {
 } from '@/shared/stores/useUiPreferencesStore';
 import { formatClock, formatRelativeTime } from '@/shared/lib/date';
 import { statusFirstSentence, statusParagraphs } from '@/shared/lib/statusNote';
-import { useLiveStatus } from '../model/hooks/useLiveStatus';
+import { useLiveStatusValue } from '../model/hooks/useLiveStatus';
 import { ArtifactPreviewDialog, useExecutionArtifacts } from './ArtifactCards';
 import { findSegmentArtifact } from './artifact-preview';
 
@@ -41,7 +41,7 @@ export function WorkspaceStatusStripContainer({
       rows.find((workspace) => (workspace.hostId ?? null) === hostId) ?? rows[0]
     );
   }, [activeWorkspaces, archivedWorkspaces, workspaceId, hostId]);
-  const { draft, history } = useLiveStatus();
+  const { draft, history } = useLiveStatusValue();
   // Optional: pages outside a pane scope fall back to the row's running flag.
   const processes = useContext(ExecutionProcessesContext);
   const processById = processes?.executionProcessesByIdAll;
