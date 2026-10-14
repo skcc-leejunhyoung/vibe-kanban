@@ -192,6 +192,7 @@ export function useSessionQueueInteraction({
           session_id: sessionId ?? '',
           data: { message, executor_config: executorConfig },
           queued_at: new Date().toISOString(),
+          start_error: null,
         },
       ]),
     onError: rollback,

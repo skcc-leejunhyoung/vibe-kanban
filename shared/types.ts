@@ -1192,7 +1192,13 @@ data: DraftFollowUpData,
 /**
  * Timestamp when the message was queued
  */
-queued_at: string, };
+queued_at: string,
+/**
+ * Why the last attempt to start this message failed. Set when a drain or
+ * steer took it off the queue and could not start it; while it heads the
+ * queue, the queue waits for the user (send now / edit / remove).
+ */
+start_error: string | null, };
 
 export type QueueStatus = { "status": "empty" } | { "status": "queued", messages: Array<QueuedMessage>, };
 

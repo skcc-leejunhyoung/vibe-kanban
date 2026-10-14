@@ -108,7 +108,8 @@
   },
   "followUp": {
     "queuedCount_one": "{{count}} mensaje en cola",
-    "queuedCount_other": "{{count}} mensajes en cola"
+    "queuedCount_other": "{{count}} mensajes en cola",
+    "queuedStartFailed": "No se pudo iniciar: {{error}}"
   },
   "git": {
     "branch": {

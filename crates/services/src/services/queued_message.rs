@@ -21,6 +21,10 @@ pub struct QueuedMessage {
     pub data: DraftFollowUpData,
     /// Timestamp when the message was queued
     pub queued_at: DateTime<Utc>,
+    /// Why the last attempt to start this message failed. Set when a drain or
+    /// steer took it off the queue and could not start it; while it heads the
+    /// queue, the queue waits for the user (send now / edit / remove).
+    pub start_error: Option<String>,
 }
 
 /// Status of the queue for a session (for frontend display)
@@ -80,13 +84,34 @@ impl QueuedMessageService {
         queued
     }
 
+    /// Put a message that was taken off the queue but failed to start back at
+    /// the front, keeping its id and recording why. The queue then stops
+    /// draining on its own until the user acts on it, so the failure is neither
+    /// lost nor retried behind the user's back.
+    pub fn restore_failed(&self, mut msg: QueuedMessage, error: String) {
+        msg.start_error = Some(error);
+        self.queue
+            .entry(msg.session_id)
+            .or_default()
+            .push_front(msg);
+    }
+
+    /// Pop the front message unless it failed to start (see
+    /// [`Self::restore_failed`]); that one waits for an explicit retry.
+    fn pop_ready(q: &mut VecDeque<QueuedMessage>) -> Option<QueuedMessage> {
+        if q.front()?.start_error.is_some() {
+            return None;
+        }
+        q.pop_front()
+    }
+
     /// Remove and return the front (oldest) message for a session, if any.
     /// Used by the finalization flow to consume the next queued message.
     pub fn take_next(&self, session_id: Uuid) -> Option<QueuedMessage> {
         let msg = self
             .queue
             .get_mut(&session_id)
-            .and_then(|mut q| q.pop_front());
+            .and_then(|mut q| Self::pop_ready(&mut q));
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
         msg
     }
@@ -106,7 +131,7 @@ impl QueuedMessageService {
         let msg = self.queue.get_mut(&session_id).and_then(|mut q| {
             match q.iter().position(|m| m.id == message_id) {
                 Some(pos) => q.remove(pos),
-                None => q.pop_front(),
+                None => Self::pop_ready(&mut q),
             }
         });
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
@@ -261,6 +286,7 @@ impl QueuedMessageService {
             session_id,
             data,
             queued_at: Utc::now(),
+            start_error: None,
         }
     }
 }
@@ -425,6 +451,40 @@ mod tests {
 
         // Empty/unknown session yields None (no panic, nothing to fall back to).
         assert!(svc.take_steered_or_front(Uuid::new_v4(), a.id).is_none());
+    }
+
+    #[test]
+    fn restore_failed_keeps_id_and_order_and_pauses_auto_drain() {
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+
+        let a = svc.enqueue(session, sample_data("a"));
+        let b = svc.enqueue(session, sample_data("b"));
+
+        // A drain takes `a`, then fails to start it.
+        let taken = svc.take_next(session).unwrap();
+        assert_eq!(taken.id, a.id);
+        svc.restore_failed(taken, "executor mismatch".to_string());
+
+        // Same id, back in front of `b`, with the reason.
+        let queued = svc.get_queued(session);
+        assert_eq!(
+            queued.iter().map(|m| m.id).collect::<Vec<_>>(),
+            [a.id, b.id]
+        );
+        assert_eq!(queued[0].start_error.as_deref(), Some("executor mismatch"));
+        assert_eq!(queued[0].queued_at, a.queued_at);
+
+        // Automatic drains (next turn, or a steer whose target is gone) don't
+        // retry it, and don't jump `b` ahead of it.
+        assert!(svc.take_next(session).is_none());
+        assert!(svc.take_steered_or_front(session, Uuid::new_v4()).is_none());
+        assert_eq!(svc.get_queued(session).len(), 2);
+
+        // An explicit "send now" on it still takes it.
+        assert_eq!(svc.take_steered_or_front(session, a.id).unwrap().id, a.id);
+        assert_eq!(svc.take_next(session).unwrap().id, b.id);
+        assert!(!svc.has_queued(session));
     }
 
     #[test]

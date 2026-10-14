@@ -81,7 +81,8 @@
     "noProcesses": "未找到此尝试的执行进程。"
   },
   "followUp": {
-    "queuedCount_other": "{{count}} 条消息排队中"
+    "queuedCount_other": "{{count}} 条消息排队中",
+    "queuedStartFailed": "无法启动：{{error}}"
   },
   "todoPopup": {
     "title": "任务",

@@ -1667,11 +1667,7 @@ impl LocalContainerService {
                         }
 
                         if let Err(e) = container
-                            .start_followup_for_session(
-                                &ctx.session,
-                                &ctx.workspace,
-                                &queued_msg.data,
-                            )
+                            .start_queued_followup(&ctx.session, &ctx.workspace, queued_msg)
                             .await
                         {
                             tracing::error!(
@@ -2237,8 +2233,11 @@ impl LocalContainerService {
         // on disk for the follow-up turn to build on and commit at its own
         // completion. Only coding-agent turns can be steered; the one-shot
         // `take_steering` flag distinguishes a steer-kill from a plain user stop
-        // (which discards the queue). On a drain failure we fall through to normal
-        // completion handling so the turn still finalizes.
+        // (which discards the queue). On a drain failure the message is back at
+        // the front of the queue and we fall through to normal completion
+        // handling so the turn still finalizes — keeping the queue, since this
+        // kill was not a stop.
+        let mut steer_start_failed = false;
         if matches!(
             ctx.execution_process.run_reason,
             ExecutionProcessRunReason::CodingAgent
@@ -2257,7 +2256,7 @@ impl LocalContainerService {
                 tracing::warn!("Failed to delete scratch after consuming steered message: {e}");
             }
             match self
-                .start_followup_for_session(&ctx.session, &ctx.workspace, &queued_msg.data)
+                .start_queued_followup(&ctx.session, &ctx.workspace, queued_msg)
                 .await
             {
                 Ok(_) => return Ok(()),
@@ -2267,6 +2266,7 @@ impl LocalContainerService {
                         ctx.session.id,
                         e
                     );
+                    steer_start_failed = true;
                 }
             }
         }
@@ -2352,7 +2352,8 @@ impl LocalContainerService {
         // path and the normal should_finalize path, so a queued message is never
         // left stuck in the in-memory queue when the cleanup script is skipped.
         if let Some(has_chained) = plan.finalize_with_queue {
-            self.finalize_with_queued_followup(ctx, has_chained).await;
+            self.finalize_with_queued_followup(ctx, has_chained, steer_start_failed)
+                .await;
         }
 
         Ok(())
@@ -2381,10 +2382,14 @@ impl LocalContainerService {
     /// Shared by the normal `should_finalize` path and the "no changes made"
     /// early-finalize path, so that a queued message is never left stuck in the
     /// in-memory queue when the cleanup script is skipped.
+    ///
+    /// `keep_queue`: a steer killed this turn but its message failed to start;
+    /// the queue (with that message back in front) survives the kill.
     async fn finalize_with_queued_followup(
         &self,
         ctx: &ExecutionContext,
         has_chained_follow_up: bool,
+        keep_queue: bool,
     ) {
         let mut started_queued_follow_up = false;
 
@@ -2393,7 +2398,7 @@ impl LocalContainerService {
         let should_execute_queued =
             Self::should_execute_queued_message(&ctx.execution_process.status);
 
-        if !should_execute_queued {
+        if !should_execute_queued && !keep_queue {
             // Execution failed or was killed - discard the ENTIRE queue (not just
             // the front of a multi-message queue) so no follow-ups are left
             // stranded to resurface on a later turn, then finalize.
@@ -2425,11 +2430,12 @@ impl LocalContainerService {
 
             // Execute the queued follow-up
             if let Err(e) = self
-                .start_followup_for_session(&ctx.session, &ctx.workspace, &queued_msg.data)
+                .start_queued_followup(&ctx.session, &ctx.workspace, queued_msg)
                 .await
             {
                 tracing::error!("Failed to start queued follow-up: {}", e);
-                // Fall back to finalization if follow-up fails
+                // The message is back in the queue, waiting for the user;
+                // finalize this turn.
                 self.finalize_task(ctx).await;
                 self.vibe_on_finalize(ctx).await;
             } else {
@@ -4214,6 +4220,7 @@ fn success_exit_status() -> std::process::ExitStatus {
 
 #[cfg(test)]
 mod tests {
+    use db::models::scratch::DraftFollowUpData;
     use executors::logs::{
         NormalizedEntry, NormalizedEntryError, RateLimitInfo, utils::patch::ConversationPatch,
     };
@@ -4889,6 +4896,222 @@ done
                 finalize_with_queue: None,
             }
         );
+    }
+
+    /// Container over an in-memory DB. Built by hand rather than with `new()`
+    /// so the background workspace cleanup never runs against real worktrees.
+    async fn queue_test_container() -> (LocalContainerService, Session, Workspace) {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let db = DBService { pool: pool.clone() };
+        let workspace = Workspace::create(
+            &pool,
+            &db::models::workspace::CreateWorkspace {
+                branch: "vk/queue".into(),
+                name: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        let session = Session::create(
+            &pool,
+            &CreateSession {
+                executor: Some(BaseCodingAgent::ClaudeCode.to_string()),
+                variant: None,
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        let mut config = Config::default();
+        config.notifications.sound_enabled = false;
+        config.notifications.push_enabled = false;
+        let config = Arc::new(RwLock::new(config));
+        let container = LocalContainerService {
+            events: EventService::new(db.clone(), Arc::new(MsgStore::new()), Default::default()),
+            workspace_manager: WorkspaceManager::new(db.clone()),
+            db,
+            child_store: Default::default(),
+            cancellation_tokens: Default::default(),
+            subagent_handles: Default::default(),
+            msg_stores: Default::default(),
+            db_stream_handles: Default::default(),
+            forwarder_handles: Default::default(),
+            normalizer_handles: Default::default(),
+            exit_monitor_handles: Default::default(),
+            output_pipeline: Default::default(),
+            session_finalization: Default::default(),
+            workspace_touch_times: Default::default(),
+            container_locks: Default::default(),
+            session_start_locks: Default::default(),
+            notification_service: NotificationService::new(config.clone(), pool.clone(), None),
+            config,
+            git: GitService::new(),
+            file_service: FileService::new(pool).unwrap(),
+            approvals: Approvals::new(),
+            queued_message_service: QueuedMessageService::new(),
+            remote_client: None,
+        };
+        (container, session, workspace)
+    }
+
+    /// A follow-up for `agent`; anything but Claude Code fails to start in the
+    /// Claude Code test session (executor mismatch, before any process row).
+    fn follow_up(message: &str, agent: BaseCodingAgent) -> DraftFollowUpData {
+        DraftFollowUpData {
+            message: message.into(),
+            executor_config: ExecutorConfig::new(agent),
+        }
+    }
+
+    fn finished_turn(
+        session: &Session,
+        workspace: &Workspace,
+        status: ExecutionProcessStatus,
+    ) -> ExecutionContext {
+        let action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: "turn".into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+                working_dir: None,
+                handoff_from: None,
+                handoff_session_id: None,
+                handoff_user_prompt: None,
+            }),
+            None,
+        );
+        let now = Utc::now();
+        ExecutionContext {
+            execution_process: ExecutionProcess {
+                id: Uuid::new_v4(),
+                session_id: session.id,
+                run_reason: ExecutionProcessRunReason::CodingAgent,
+                executor_action: sqlx::types::Json(
+                    db::models::execution_process::ExecutorActionField::ExecutorAction(action),
+                ),
+                status,
+                exit_code: None,
+                dropped: false,
+                started_at: now,
+                completed_at: Some(now),
+                created_at: now,
+                updated_at: now,
+            },
+            session: session.clone(),
+            workspace: workspace.clone(),
+            repos: vec![],
+        }
+    }
+
+    /// The failed message is back in front under its own id with the reason,
+    /// the rest of the queue follows in order, and nothing was started.
+    async fn assert_kept_in_front(
+        container: &LocalContainerService,
+        session: &Session,
+        failed: Uuid,
+        rest: Uuid,
+    ) {
+        let queued = container.queued_message_service.get_queued(session.id);
+        assert_eq!(
+            queued.iter().map(|m| m.id).collect::<Vec<_>>(),
+            [failed, rest]
+        );
+        assert!(
+            queued[0]
+                .start_error
+                .as_deref()
+                .is_some_and(|e| e.contains("Executor mismatch")),
+            "{:?}",
+            queued[0].start_error
+        );
+        assert!(queued[1].start_error.is_none());
+        assert!(
+            ExecutionProcess::find_by_session_id(&container.db.pool, session.id, true)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_drain_start_failure_keeps_the_message_and_the_queue() {
+        let (container, session, workspace) = queue_test_container().await;
+        let queue = &container.queued_message_service;
+        let a = queue.enqueue(session.id, follow_up("a", BaseCodingAgent::Codex));
+        let b = queue.enqueue(session.id, follow_up("b", BaseCodingAgent::ClaudeCode));
+        let turn = finished_turn(&session, &workspace, ExecutionProcessStatus::Completed);
+
+        container
+            .finalize_with_queued_followup(&turn, false, false)
+            .await;
+        assert_kept_in_front(&container, &session, a.id, b.id).await;
+
+        // The next finished turn doesn't retry it, or run `b` ahead of it.
+        container
+            .finalize_with_queued_followup(&turn, false, false)
+            .await;
+        assert_kept_in_front(&container, &session, a.id, b.id).await;
+    }
+
+    #[tokio::test]
+    async fn steer_exit_start_failure_keeps_the_queue_through_the_kill() {
+        let (container, session, workspace) = queue_test_container().await;
+        let queue = &container.queued_message_service;
+        let b = queue.enqueue(session.id, follow_up("b", BaseCodingAgent::ClaudeCode));
+        let a = queue.enqueue_front(session.id, follow_up("a", BaseCodingAgent::Codex));
+        assert!(queue.mark_steering(session.id, a.id));
+        let killed = finished_turn(&session, &workspace, ExecutionProcessStatus::Killed);
+
+        container
+            .handle_execution_post_completion(&killed, None)
+            .await
+            .unwrap();
+        assert!(!queue.is_steering(session.id));
+        assert_kept_in_front(&container, &session, a.id, b.id).await;
+
+        // A plain stop still discards the queue.
+        container
+            .handle_execution_post_completion(&killed, None)
+            .await
+            .unwrap();
+        assert!(!queue.has_queued(session.id));
+    }
+
+    /// The steer route's fallback (kill found no child) and an idle "send now"
+    /// on a queued message both start through `start_queued_followup`.
+    #[tokio::test]
+    async fn steer_fallback_and_send_now_start_failure_keep_the_message() {
+        let (container, session, workspace) = queue_test_container().await;
+        let queue = &container.queued_message_service;
+        let b = queue.enqueue(session.id, follow_up("b", BaseCodingAgent::ClaudeCode));
+        let a = queue.enqueue_front(session.id, follow_up("a", BaseCodingAgent::Codex));
+        assert!(queue.mark_steering(session.id, a.id));
+
+        let steered = queue.take_steering(session.id).unwrap();
+        let msg = queue.take_steered_or_front(session.id, steered).unwrap();
+        assert!(
+            container
+                .start_queued_followup(&session, &workspace, msg)
+                .await
+                .is_err()
+        );
+        assert_kept_in_front(&container, &session, a.id, b.id).await;
+
+        let msg = queue.cancel_message(session.id, a.id).unwrap();
+        assert!(
+            container
+                .start_queued_followup(&session, &workspace, msg)
+                .await
+                .is_err()
+        );
+        assert_kept_in_front(&container, &session, a.id, b.id).await;
     }
 
     /// The capture path reads a child's stdout in arbitrary-sized chunks, so a

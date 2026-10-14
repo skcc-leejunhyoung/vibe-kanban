@@ -82,7 +82,8 @@
   },
   "followUp": {
     "queuedCount_one": "{{count}} message en file d'attente",
-    "queuedCount_other": "{{count}} messages en file d'attente"
+    "queuedCount_other": "{{count}} messages en file d'attente",
+    "queuedStartFailed": "Impossible de démarrer : {{error}}"
   },
   "todoPopup": {
     "title": "Tâches",

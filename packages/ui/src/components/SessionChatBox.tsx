@@ -105,6 +105,8 @@ interface ActionsProps {
 export interface QueuedMessageItem {
   id: string;
   message: string;
+  /** Why the last attempt to start it failed; the queue waits on it. */
+  startError?: string | null;
 }
 
 export interface SessionOption<TExecutor extends string = string> {
@@ -907,9 +909,24 @@ export function SessionChatBox<TExecutor extends string = string>({
                             {index + 1}.
                           </span>
                           {/* Long messages are truncated to a single line with an ellipsis */}
-                          <span className="text-sm text-normal flex-1 min-w-0 truncate">
-                            {queued.message}
-                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-normal truncate">
+                              {queued.message}
+                            </div>
+                            {queued.startError && (
+                              <div
+                                className="flex items-center gap-half text-xs text-error"
+                                title={queued.startError}
+                              >
+                                <WarningIcon className="h-3 w-3 flex-shrink-0" />
+                                <span className="truncate">
+                                  {t('followUp.queuedStartFailed', {
+                                    error: queued.startError,
+                                  })}
+                                </span>
+                              </div>
+                            )}
+                          </div>
                           {onEditQueued && (
                             <button
                               type="button"

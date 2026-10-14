@@ -218,7 +218,8 @@ struct ReorderQueueRequest {
 /// kill's exit handler normally drains the pinned (steered) message and starts
 /// it as a follow-up. If the kill errors because the child is already gone the
 /// exit monitor may never fire, so as a fallback we consume the steering target
-/// and drain that pinned message directly so it isn't stranded.
+/// and drain that pinned message directly so it isn't stranded. If that can't
+/// start, the message goes back to the front of the queue with the reason.
 fn spawn_steer_kill(
     deployment: DeploymentImpl,
     session: Session,
@@ -270,12 +271,15 @@ fn spawn_steer_kill(
                 tracing::error!(
                     "Steer: fallback could not prepare workspace for session {session_id}: {e}"
                 );
+                deployment
+                    .queued_message_service()
+                    .restore_failed(msg, e.to_string());
                 return;
             }
         };
         if let Err(e) = deployment
             .container()
-            .start_followup_for_session(&session, &workspace, &msg.data)
+            .start_queued_followup(&session, &workspace, msg)
             .await
         {
             tracing::error!("Steer: fallback follow-up failed for session {session_id}: {e}");
@@ -357,21 +361,13 @@ async fn steer_queued_message(
                 .cancel_message(session.id, message_id)
             {
                 // The message is now out of the queue. If starting it fails
-                // (e.g. executor mismatch), put it back at the front instead of
-                // dropping it: unlike `steer_message`, this was a message the
-                // user had safely queued, so losing it on error would be silent
-                // data loss. `start_followup_for_session` only re-enqueues on
-                // its Ok (already-running) path, so this never double-inserts.
-                if let Err(e) = deployment
+                // (e.g. executor mismatch) it goes back to the front with the
+                // reason instead of being dropped: unlike `steer_message`, this
+                // was a message the user had safely queued.
+                deployment
                     .container()
-                    .start_followup_for_session(&session, &workspace, &msg.data)
-                    .await
-                {
-                    deployment
-                        .queued_message_service()
-                        .enqueue_front(session.id, msg.data);
-                    return Err(e.into());
-                }
+                    .start_queued_followup(&session, &workspace, msg)
+                    .await?;
             }
         }
     }

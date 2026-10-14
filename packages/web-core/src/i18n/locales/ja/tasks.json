@@ -107,7 +107,8 @@
     "filesChanged_other": "{{count}} files changed"
   },
   "followUp": {
-    "queuedCount_other": "{{count}} 件のメッセージが待機中"
+    "queuedCount_other": "{{count}} 件のメッセージが待機中",
+    "queuedStartFailed": "開始できませんでした: {{error}}"
   },
   "git": {
     "branch": {

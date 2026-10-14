@@ -94,7 +94,8 @@
   },
   "followUp": {
     "queuedCount_one": "{{count}} message queued",
-    "queuedCount_other": "{{count}} messages queued"
+    "queuedCount_other": "{{count}} messages queued",
+    "queuedStartFailed": "Couldn't start: {{error}}"
   },
   "todoPopup": {
     "title": "Tasks",

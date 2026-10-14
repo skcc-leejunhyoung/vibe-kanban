@@ -127,7 +127,8 @@
     "filesChanged_other": "{{count}} files changed"
   },
   "followUp": {
-    "queuedCount_other": "대기 중인 메시지 {{count}}개"
+    "queuedCount_other": "대기 중인 메시지 {{count}}개",
+    "queuedStartFailed": "시작하지 못함: {{error}}"
   },
   "git": {
     "labels": {

@@ -2312,6 +2312,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         .map((m) => ({
           id: m.id,
           message: m.data.message,
+          startError: m.start_error,
         }))}
       onRemoveQueued={handleRemoveQueued}
       onSteerQueued={pendingSend ? undefined : handleSteerQueued}

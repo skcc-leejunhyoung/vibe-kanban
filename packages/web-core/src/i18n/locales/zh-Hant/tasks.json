@@ -81,7 +81,8 @@
     "noProcesses": "找不到此嘗試的執行程序。"
   },
   "followUp": {
-    "queuedCount_other": "{{count}} 則訊息排隊中"
+    "queuedCount_other": "{{count}} 則訊息排隊中",
+    "queuedStartFailed": "無法啟動：{{error}}"
   },
   "todoPopup": {
     "title": "任務",

@@ -64,8 +64,10 @@ use uuid::Uuid;
 use worktree_manager::WorktreeError;
 
 use crate::services::{
-    events::EventService, execution_process, normalized_replay_cache,
-    notification::NotificationService, queued_message::QueuedMessageService,
+    events::EventService,
+    execution_process, normalized_replay_cache,
+    notification::NotificationService,
+    queued_message::{QueuedMessage, QueuedMessageService},
 };
 pub type ContainerRef = String;
 
@@ -1744,6 +1746,26 @@ pub trait ContainerService {
         self.finish_execution_spawn(workspace, session, &record, &action)
             .await?;
         Ok(record)
+    }
+
+    /// [`Self::start_followup_for_session`] for a message already taken off the
+    /// queue. If it can't start, the message goes back to the front of the
+    /// queue with the reason instead of being dropped (see
+    /// [`QueuedMessageService::restore_failed`]).
+    async fn start_queued_followup(
+        &self,
+        session: &Session,
+        workspace: &Workspace,
+        msg: QueuedMessage,
+    ) -> Result<ExecutionProcess, ContainerError> {
+        let result = self
+            .start_followup_for_session(session, workspace, &msg.data)
+            .await;
+        if let Err(e) = &result {
+            self.queued_message_service()
+                .restore_failed(msg, e.to_string());
+        }
+        result
     }
 
     /// Creates the `execution_process` row (plus repo state / coding-agent turn /
