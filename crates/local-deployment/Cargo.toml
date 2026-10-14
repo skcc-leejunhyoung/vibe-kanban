@@ -43,6 +43,7 @@ portable-pty = "0.8"
 dotenv = "0.15"
 
 [dev-dependencies]
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
 tempfile = "3.8"
 
 [target.'cfg(unix)'.dependencies]

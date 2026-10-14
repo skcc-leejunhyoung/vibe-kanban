@@ -4441,6 +4441,209 @@ mod tests {
             .expect("pipeline waiter should not panic");
     }
 
+    /// Codex's app server stays up after `turn/completed`, so the exit monitor
+    /// kills it and drains stdout before it reaches the queue. The live subagent
+    /// handle stays registered until the monitor ends; if it kept the stdout
+    /// writer open, every queued follow-up would wait out the drain timeout.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_turn_completion_reaches_the_queue_without_the_drain_timeout() {
+        use db::models::{
+            execution_process::CreateExecutionProcess, scratch::DraftFollowUpData,
+            workspace::CreateWorkspace,
+        };
+        use executors::{
+            executors::{CodingAgent, StandardCodingAgentExecutor},
+            profile::{ExecutorConfigs, ExecutorProfileId},
+        };
+
+        // Answers one turn with a tool output, a subagent event and a final
+        // message, then idles like the real one.
+        const FAKE_APP_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/^{"method":"[^"]*","id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    '{"method":"initialize"'*)
+      echo "{\"id\":$id,\"result\":{\"userAgent\":\"fake\",\"codexHome\":\"/tmp\",\"platformFamily\":\"unix\",\"platformOs\":\"test\"}}" ;;
+    '{"method":"account/read"'*)
+      echo "{\"id\":$id,\"result\":{\"requiresOpenaiAuth\":false}}" ;;
+    '{"method":"thread/start"'*)
+      echo "{\"id\":$id,\"result\":{\"thread\":{\"id\":\"t\",\"sessionId\":\"t\",\"preview\":\"\",\"ephemeral\":false,\"modelProvider\":\"fake\",\"createdAt\":0,\"updatedAt\":0,\"status\":{\"type\":\"idle\"},\"cwd\":\"/tmp\",\"cliVersion\":\"0\",\"source\":\"appServer\",\"turns\":[]},\"model\":\"fake\",\"modelProvider\":\"fake\",\"cwd\":\"/tmp\",\"approvalPolicy\":\"never\",\"approvalsReviewer\":\"user\",\"sandbox\":{\"type\":\"dangerFullAccess\"}}}" ;;
+    '{"method":"turn/start"'*)
+      echo "{\"id\":$id,\"result\":{\"turn\":{\"id\":\"u\",\"items\":[],\"status\":\"inProgress\"}}}"
+      echo '{"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":0,"item":{"type":"commandExecution","id":"c","command":"true","cwd":"/tmp","status":"completed","commandActions":[],"aggregatedOutput":"TOOL_OUTPUT","exitCode":0}}}'
+      echo '{"method":"item/completed","params":{"threadId":"child","turnId":"x","completedAtMs":0,"item":{"type":"agentMessage","id":"s","text":"SUBAGENT_NOTE"}}}'
+      echo '{"method":"item/completed","params":{"threadId":"t","turnId":"u","completedAtMs":0,"item":{"type":"agentMessage","id":"m","text":"FINAL_ANSWER"}}}'
+      echo '{"method":"turn/completed","params":{"threadId":"t","turn":{"id":"u","items":[],"status":"completed"}}}' ;;
+  esac
+done
+"#;
+
+        let dir = tempfile::tempdir().unwrap();
+        let server = dir.path().join("app-server.sh");
+        std::fs::write(&server, FAKE_APP_SERVER).unwrap();
+        let Some(CodingAgent::Codex(mut codex)) = ExecutorConfigs::from_defaults()
+            .get_coding_agent(&ExecutorProfileId::new(BaseCodingAgent::Codex))
+        else {
+            panic!("default Codex profile");
+        };
+        codex.cmd.base_command_override = Some(format!("sh {}", server.display()));
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let db = DBService { pool: pool.clone() };
+        let workspace = Workspace::create(
+            &pool,
+            &CreateWorkspace {
+                branch: "vk/codex-queue".into(),
+                name: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        let session = Session::create(
+            &pool,
+            &CreateSession {
+                executor: Some(BaseCodingAgent::Codex.to_string()),
+                variant: None,
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        let process = ExecutionProcess::create(
+            &pool,
+            &CreateExecutionProcess {
+                session_id: session.id,
+                executor_action: ExecutorAction::new(
+                    ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                        prompt: "hi".into(),
+                        executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                        working_dir: None,
+                        handoff_from: None,
+                        handoff_session_id: None,
+                        handoff_user_prompt: None,
+                    }),
+                    None,
+                ),
+                run_reason: ExecutionProcessRunReason::CodingAgent,
+            },
+            Uuid::new_v4(),
+            &[],
+        )
+        .await
+        .unwrap();
+
+        // Assembled directly: `new` would run orphan-workspace cleanup.
+        let mut config = Config::default();
+        config.notifications.sound_enabled = false;
+        config.notifications.push_enabled = false;
+        let config = Arc::new(RwLock::new(config));
+        let container = LocalContainerService {
+            events: EventService::new(db.clone(), Arc::new(MsgStore::new()), Default::default()),
+            workspace_manager: WorkspaceManager::new(db.clone()),
+            db,
+            child_store: Default::default(),
+            cancellation_tokens: Default::default(),
+            subagent_handles: Default::default(),
+            msg_stores: Default::default(),
+            db_stream_handles: Default::default(),
+            forwarder_handles: Default::default(),
+            normalizer_handles: Default::default(),
+            exit_monitor_handles: Default::default(),
+            output_pipeline: Default::default(),
+            session_finalization: Default::default(),
+            workspace_touch_times: Default::default(),
+            container_locks: Default::default(),
+            session_start_locks: Default::default(),
+            notification_service: NotificationService::new(config.clone(), pool.clone(), None),
+            config,
+            git: GitService::new(),
+            file_service: FileService::new(pool.clone()).unwrap(),
+            approvals: Approvals::new(),
+            queued_message_service: QueuedMessageService::new(),
+            remote_client: None,
+        };
+
+        // Same wiring as `start_execution`.
+        let store = Arc::new(MsgStore::new());
+        container
+            .msg_stores
+            .write()
+            .await
+            .insert(process.id, store.clone());
+        let env = ExecutionEnv::new(Default::default(), false, String::new());
+        let mut spawned = codex.spawn(dir.path(), "hi", &env).await.unwrap();
+        container
+            .track_child_msgs_in_store(process.id, &mut spawned.child)
+            .await
+            .unwrap();
+        container
+            .store_normalizer_handles(process.id, codex.normalize_logs(store.clone(), dir.path()))
+            .await;
+        container
+            .add_child_to_store(process.id, spawned.child)
+            .await;
+        container
+            .add_subagent_handle(process.id, spawned.subagent_handle.unwrap())
+            .await;
+        container.mark_output_pipeline_ready(process.id).await;
+        // Another executor fails to start before creating a process row.
+        container.queued_message_service.enqueue(
+            session.id,
+            DraftFollowUpData {
+                message: "next".into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+            },
+        );
+
+        // The monitor takes the queued message last; ~4s of it is the kill.
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            container.spawn_exit_monitor(&process.id, session.id, spawned.exit_signal),
+        )
+        .await
+        .expect("the queued follow-up waited for the stdout drain timeout")
+        .unwrap();
+
+        assert!(!container.queued_message_service.has_queued(session.id));
+        let process = ExecutionProcess::find_by_id(&pool, process.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(process.status, ExecutionProcessStatus::Completed);
+        let history = store.get_history();
+        let stdout: String = history
+            .iter()
+            .filter_map(|msg| match msg {
+                LogMsg::Stdout(chunk) => Some(chunk.as_str()),
+                _ => None,
+            })
+            .collect();
+        for line in [
+            "TOOL_OUTPUT",
+            "SUBAGENT_NOTE",
+            "FINAL_ANSWER",
+            "turn/completed",
+        ] {
+            assert!(stdout.contains(line), "{line} missing from the saved logs");
+        }
+        assert!(history.iter().any(|msg| {
+            matches!(msg, LogMsg::JsonPatch(patch)
+            if extract_normalized_entry_from_patch(patch).is_some_and(|(_, entry)| {
+                matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
+                    && entry.content == "FINAL_ANSWER"
+            }))
+        }));
+    }
+
     /// Regression for the "no changes made" early-finalize path (scenario A).
     ///
     /// A coding agent that completes successfully *without* making changes is
