@@ -359,7 +359,7 @@ async fn follow_up_inner(
     let pool = &deployment.db().pool;
 
     // Load workspace from session
-    let workspace = Workspace::find_by_id(pool, session.workspace_id)
+    let mut workspace = Workspace::find_by_id(pool, session.workspace_id)
         .await?
         .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
             "Workspace not found".to_string(),
@@ -380,10 +380,14 @@ async fn follow_up_inner(
         );
     }
 
-    deployment
+    // Materialised just now (a create that answered early, a tree being
+    // restored): spawn with the path the ensure produced, not the copy read
+    // before it.
+    let container_ref = deployment
         .container()
         .ensure_container_exists(&workspace)
         .await?;
+    workspace.container_ref = Some(container_ref);
 
     // A completed process becomes visible to the UI before its final output is
     // fully drained. Wait for that drain before resolving the native session
@@ -566,7 +570,7 @@ pub async fn handoff(
             "Handoff prompt must not be empty".to_string(),
         ));
     }
-    let workspace = Workspace::find_by_id(pool, session.workspace_id)
+    let mut workspace = Workspace::find_by_id(pool, session.workspace_id)
         .await?
         .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
             "Workspace not found".to_string(),
@@ -578,10 +582,14 @@ pub async fn handoff(
         ));
     }
 
-    deployment
+    // Materialised just now (a create that answered early, a tree being
+    // restored): spawn with the path the ensure produced, not the copy read
+    // before it.
+    let container_ref = deployment
         .container()
         .ensure_container_exists(&workspace)
         .await?;
+    workspace.container_ref = Some(container_ref);
     deployment
         .container()
         .wait_for_session_ready(session.id)
@@ -685,7 +693,7 @@ pub async fn run_setup_script(
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess, RunScriptError>>, ApiError> {
     let pool = &deployment.db().pool;
 
-    let workspace = Workspace::find_by_id(pool, session.workspace_id)
+    let mut workspace = Workspace::find_by_id(pool, session.workspace_id)
         .await?
         .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
             "Workspace not found".to_string(),
@@ -697,10 +705,14 @@ pub async fn run_setup_script(
         )));
     }
 
-    deployment
+    // Materialised just now (a create that answered early, a tree being
+    // restored): spawn with the path the ensure produced, not the copy read
+    // before it.
+    let container_ref = deployment
         .container()
         .ensure_container_exists(&workspace)
         .await?;
+    workspace.container_ref = Some(container_ref);
 
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let executor_action = match deployment.container().setup_actions_for_repos(&repos) {

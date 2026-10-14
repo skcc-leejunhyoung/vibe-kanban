@@ -1483,6 +1483,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         pendingSends.delete(sessionId);
         pendingSendsChanged();
         clearOptimisticProcess(pending.id);
+        // Stop was pressed but no process ever showed up to kill: take the
+        // message out of the queue so it doesn't run later unattended.
+        if (pendingState.stopRequested && pendingState.hideQueuedId) {
+          void cancelOne(pendingState.hideQueuedId);
+        }
       }, 60_000);
     } catch (error) {
       if (pendingSends.get(sessionId) === pendingState) {
@@ -1515,6 +1520,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     createStopReal,
     addOptimisticProcess,
     clearOptimisticProcess,
+    cancelOne,
     restorePrompt,
     t,
   ]);
@@ -1543,6 +1549,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Reorder the queue to a new id order (driven by the up/down arrows)
   const handleReorderQueued = useCallback(
     (messageIds: string[]) => {
+      // A row the server hasn't acknowledged has no id it would accept.
+      if (messageIds.some(isOptimisticQueuedId)) return;
       void reorderQueue(messageIds);
     },
     [reorderQueue]
@@ -1593,8 +1601,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // Handle cancel queue - clear all queued messages
   const handleCancelQueue = useCallback(async () => {
+    // An add still in flight would land after the clear and resurface.
+    if (queuedMessages.some((m) => isOptimisticQueuedId(m.id))) return;
     await cancelQueue();
-  }, [cancelQueue]);
+  }, [cancelQueue, queuedMessages]);
 
   const areAttachmentInputsDisabled =
     mode === 'placeholder' ||

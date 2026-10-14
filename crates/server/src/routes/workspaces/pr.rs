@@ -1803,6 +1803,10 @@ pub(crate) async fn setup_pr_review_workspace(
     )
     .await?;
 
+    // Take the container lock before answering: the agent start that the
+    // create-and-start path spawns right after must find it held, so its own
+    // ensure waits for the checkout instead of racing it onto the base ref.
+    let materialising = deployment.container().lock_container(workspace.id).await;
     spawn_pr_checkout(
         deployment.clone(),
         workspace.clone(),
@@ -1810,6 +1814,7 @@ pub(crate) async fn setup_pr_review_workspace(
         remote,
         pr.clone(),
         run_setup,
+        materialising,
     );
 
     Ok(workspace)
@@ -1825,12 +1830,15 @@ fn spawn_pr_checkout(
     remote: GitRemote,
     pr: PrReviewInput,
     run_setup: bool,
+    materialising: tokio::sync::OwnedMutexGuard<()>,
 ) {
     tokio::spawn(async move {
         let pool = deployment.db().pool.clone();
         let checked_out: Result<Workspace, String> = async {
+            // Held until the checkout is done (or failed); released before the
+            // setup script so other waiters can go on.
+            let _materialising = materialising;
             let container = deployment.container();
-            let _materialising = container.lock_container(workspace.id).await;
             let container_ref = container
                 .ensure_container_exists_unlocked(&workspace)
                 .await
@@ -1876,6 +1884,17 @@ fn spawn_pr_checkout(
                     workspace.id,
                     message
                 );
+                // The PR link was written up front; without the workspace it
+                // would keep pointing at it and shadow a retry's own link.
+                if let Err(e) =
+                    PullRequest::delete_by_workspace_and_repo(&pool, workspace.id, pr.repo_id).await
+                {
+                    tracing::warn!(
+                        "Failed to drop the PR link of workspace {}: {}",
+                        workspace.id,
+                        e
+                    );
+                }
                 // Re-read for the container_ref the cleanup needs to find the tree.
                 let latest = Workspace::find_by_id(&pool, workspace.id)
                     .await

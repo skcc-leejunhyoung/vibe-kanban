@@ -784,7 +784,15 @@ async fn create_and_start_workspace_inner(
                 // host's LOCAL subscriptions (e.g. a desktop browser paired via
                 // the local server), which the remote push never reaches. Local
                 // only, to avoid double-notifying remote devices.
-                let name = workspace.name.as_deref().unwrap_or(&workspace.branch);
+                // The row still carries the base ref until the background
+                // checkout renames it; the PR head branch is what the user knows.
+                let name = workspace.name.as_deref().unwrap_or_else(|| {
+                    pr_review
+                        .as_ref()
+                        .map_or(workspace.branch.as_str(), |review| {
+                            review.head_branch.as_str()
+                        })
+                });
                 deployment
                     .container()
                     .notification_service()

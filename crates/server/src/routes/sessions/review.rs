@@ -77,7 +77,7 @@ pub async fn start_review(
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess, ReviewError>>, ApiError> {
     let pool = &deployment.db().pool;
 
-    let workspace = Workspace::find_by_id(pool, session.workspace_id)
+    let mut workspace = Workspace::find_by_id(pool, session.workspace_id)
         .await?
         .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
             "Workspace not found".to_string(),
@@ -93,6 +93,8 @@ pub async fn start_review(
         .container()
         .ensure_container_exists(&workspace)
         .await?;
+    // Spawn with the path the ensure produced (see follow_up_inner).
+    workspace.container_ref = Some(container_ref.clone());
     deployment
         .container()
         .wait_for_session_ready(session.id)
