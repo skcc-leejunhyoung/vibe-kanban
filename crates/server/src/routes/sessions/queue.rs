@@ -36,7 +36,9 @@ struct CancelQuery {
 }
 
 /// Append a follow-up message to the back of the session's queue. The messages
-/// are drained one at a time as each terminal turn finishes.
+/// are drained one at a time as each terminal turn finishes; when nothing is
+/// left to finish (the turn this was queued behind already ended), the front
+/// message starts now.
 async fn queue_message(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
@@ -51,9 +53,48 @@ async fn queue_message(
         .queued_message_service()
         .enqueue(session.id, data);
 
+    if let Err(e) = drain_idle_queue(&deployment, &session).await {
+        // The message stays queued; the next turn's finish or "send now" runs it.
+        tracing::error!(
+            "Failed to start queued follow-up for idle session {}: {e}",
+            session.id
+        );
+    }
+
     Ok(ResponseJson(ApiResponse::success(
         deployment.queued_message_service().get_status(session.id),
     )))
+}
+
+/// Start the session's front queued message if nothing else will (see
+/// `ContainerService::drain_queue_if_idle`).
+async fn drain_idle_queue(deployment: &DeploymentImpl, session: &Session) -> Result<(), ApiError> {
+    if !deployment
+        .queued_message_service()
+        .can_drain_now(session.id)
+    {
+        return Ok(());
+    }
+    let pool = &deployment.db().pool;
+    let mut workspace = Workspace::find_by_id(pool, session.workspace_id)
+        .await?
+        .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
+            "Workspace not found".to_string(),
+        )))?;
+    // An idle session's tree may have been cleaned up; restore it like a send.
+    let container_ref = deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
+    if let Some(fresh) = Workspace::find_by_id(pool, workspace.id).await? {
+        workspace = fresh;
+    }
+    workspace.container_ref.get_or_insert(container_ref);
+    deployment
+        .container()
+        .drain_queue_if_idle(session, &workspace)
+        .await?;
+    Ok(())
 }
 
 /// Cancel a single queued message (`?message_id=`) or the whole queue.
@@ -243,10 +284,20 @@ fn spawn_steer_kill(
         if stopped.is_ok() && had_child {
             return;
         }
+        // Own the drain until the steered message has its row, so a message
+        // enqueued meanwhile waits behind it instead of starting first; then
+        // pick up whatever arrived.
+        let hold = deployment.queued_message_service().hold_drain(session_id);
         deployment
             .container()
             .run_steered_message(&session, workspace)
             .await;
+        drop(hold);
+        if let Err(e) = drain_idle_queue(&deployment, &session).await {
+            tracing::error!(
+                "Steer: failed to start queued follow-up for session {session_id}: {e}"
+            );
+        }
     });
 }
 

@@ -18,8 +18,9 @@ use db::{
         execution_process_repo_state::{
             CreateExecutionProcessRepoState, ExecutionProcessRepoState,
         },
+        pending_rate_limit_resume::PendingRateLimitResume,
         repo::Repo,
-        scratch::DraftFollowUpData,
+        scratch::{DraftFollowUpData, Scratch, ScratchType},
         session::{CreateSession, Session, SessionError},
         workspace::{Workspace, WorkspaceError},
         workspace_repo::WorkspaceRepo,
@@ -1674,6 +1675,75 @@ pub trait ContainerService {
             return Ok(running);
         }
 
+        let (record, action) = self
+            .create_followup_record(session, workspace, data)
+            .await?;
+        // The row exists: a concurrent start now sees it running.
+        drop(starting);
+        self.finish_execution_spawn(workspace, session, &record, &action)
+            .await?;
+        Ok(record)
+    }
+
+    /// Start the session's next queued message unless someone else will: a
+    /// running or finishing process drains the queue when it ends, a steer
+    /// runs its own message, and a pending usage-limit resume runs before the
+    /// queue. Called after an enqueue and whenever a drain hold is released, so
+    /// a message that lands after the last drain looked at the queue still
+    /// runs — exactly once, front first.
+    async fn drain_queue_if_idle(
+        &self,
+        session: &Session,
+        workspace: &Workspace,
+    ) -> Result<Option<ExecutionProcess>, ContainerError> {
+        let queue = self.queued_message_service();
+        if !queue.can_drain_now(session.id) {
+            return Ok(None);
+        }
+        self.wait_for_session_ready(session.id).await;
+        let starting = self.lock_session_start(session.id).await;
+        let pool = &self.db().pool;
+        if !queue.can_drain_now(session.id)
+            || ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
+                .await?
+            || PendingRateLimitResume::find_by_session_id(pool, session.id)
+                .await
+                .map_err(|e| ContainerError::Other(anyhow!(e)))?
+                .is_some()
+        {
+            return Ok(None);
+        }
+        let Some(queued) = queue.take_next(session.id) else {
+            return Ok(None);
+        };
+        let (record, action) = match self
+            .create_followup_record(session, workspace, &queued.data)
+            .await
+        {
+            Ok(created) => created,
+            Err(e) => {
+                // Nothing ran: keep the message rather than drop it.
+                queue.enqueue_front(session.id, queued.data);
+                return Err(e);
+            }
+        };
+        drop(starting);
+        if let Err(e) = Scratch::delete(pool, session.id, &ScratchType::DraftFollowUp).await {
+            tracing::warn!("Failed to delete scratch after consuming queued message: {e}");
+        }
+        self.finish_execution_spawn(workspace, session, &record, &action)
+            .await?;
+        Ok(Some(record))
+    }
+
+    /// Create the row for a follow-up turn running `data`. Call with the
+    /// session start lock held and no turn running.
+    async fn create_followup_record(
+        &self,
+        session: &Session,
+        workspace: &Workspace,
+        data: &DraftFollowUpData,
+    ) -> Result<(ExecutionProcess, ExecutorAction), ContainerError> {
         let executor_profile_id = data.executor_config.profile_id();
 
         // Validate executor matches session if session has prior executions
@@ -1741,11 +1811,7 @@ pub trait ContainerService {
                 &ExecutionProcessRunReason::CodingAgent,
             )
             .await?;
-        // The row exists: a concurrent start now sees it running.
-        drop(starting);
-        self.finish_execution_spawn(workspace, session, &record, &action)
-            .await?;
-        Ok(record)
+        Ok((record, action))
     }
 
     /// [`Self::start_followup_for_session`] for a message already taken off the

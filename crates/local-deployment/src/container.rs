@@ -57,7 +57,7 @@ use services::services::{
     events::EventService,
     file::FileService,
     notification::NotificationService,
-    queued_message::QueuedMessageService,
+    queued_message::{DrainHold, QueuedMessageService},
     remote_client::RemoteClient,
     remote_sync, session_message_indexer, vibe_orchestrator,
     vibe_orchestrator::{
@@ -1425,12 +1425,15 @@ impl LocalContainerService {
     }
 
     /// Spawn a background task that polls the child process for completion and
-    /// cleans up the execution entry when it exits.
+    /// cleans up the execution entry when it exits. `drain_hold` is released
+    /// once this process's completion handling is done, and the queue is then
+    /// rechecked.
     fn spawn_exit_monitor(
         &self,
         exec_id: &Uuid,
         session_id: Uuid,
         exit_signal: Option<ExecutorExitSignal>,
+        drain_hold: Option<DrainHold>,
     ) -> JoinHandle<()> {
         let exec_id = *exec_id;
         let child_store = self.child_store.clone();
@@ -1633,51 +1636,6 @@ impl LocalContainerService {
                     );
                 }
 
-                // When a parallel setup script finishes and no coding agent is running,
-                // consume any queued message that was stuck waiting
-                if matches!(
-                    ctx.execution_process.run_reason,
-                    ExecutionProcessRunReason::SetupScript
-                ) && !container.should_finalize(&ctx)
-                {
-                    let has_running_agent = ExecutionProcess::has_running_coding_agent_for_session(
-                        &db.pool,
-                        ctx.session.id,
-                    )
-                    .await
-                    .unwrap_or(true);
-
-                    if !has_running_agent
-                        && let Some(queued_msg) =
-                            container.queued_message_service.take_next(ctx.session.id)
-                    {
-                        tracing::info!(
-                            "Parallel setup script finished with queued message for session {}, starting follow-up",
-                            ctx.session.id
-                        );
-
-                        if let Err(e) =
-                            Scratch::delete(&db.pool, ctx.session.id, &ScratchType::DraftFollowUp)
-                                .await
-                        {
-                            tracing::warn!(
-                                "Failed to delete scratch after consuming queued message: {}",
-                                e
-                            );
-                        }
-
-                        if let Err(e) = container
-                            .start_queued_followup(&ctx.session, &ctx.workspace, queued_msg)
-                            .await
-                        {
-                            tracing::error!(
-                                "Failed to start queued follow-up from setup script completion: {}",
-                                e
-                            );
-                        }
-                    }
-                }
-
                 // Sync workspace to remote after CodingAgent execution. This
                 // also backfills the cloud row if the one-shot link at creation
                 // never succeeded, so issue-linked workspaces self-heal instead
@@ -1710,6 +1668,20 @@ impl LocalContainerService {
                         )
                         .await;
                     });
+                }
+
+                // This process's own drain (finalize, steer, rate-limit
+                // deferral) is done. A message queued after it looked at the
+                // queue — or one a parallel setup script was blocking — has
+                // nobody else to start it.
+                if let Some(hold) = drain_hold {
+                    drop(hold);
+                    if let Err(e) = container
+                        .drain_queue_if_idle(&ctx.session, &ctx.workspace)
+                        .await
+                    {
+                        tracing::error!("Failed to start queued follow-up: {}", e);
+                    }
                 }
             }
 
@@ -3465,8 +3437,15 @@ impl ContainerService for LocalContainerService {
             return Ok(());
         }
 
-        self.handle_execution_post_completion(&ctx, ctx.execution_process.exit_code)
-            .await
+        let drain_hold = self.queued_message_service.hold_drain(ctx.session.id);
+        let finalized = self
+            .handle_execution_post_completion(&ctx, ctx.execution_process.exit_code)
+            .await;
+        drop(drain_hold);
+        if let Err(e) = self.drain_queue_if_idle(&ctx.session, &ctx.workspace).await {
+            tracing::error!("Failed to start queued follow-up: {}", e);
+        }
+        finalized
     }
 
     async fn git_branch_prefix(&self) -> String {
@@ -3724,11 +3703,19 @@ impl ContainerService for LocalContainerService {
             self.add_subagent_handle(execution_process.id, handle).await;
         }
 
-        // Spawn unified exit monitor: watches OS exit and optional executor signal
+        // Spawn unified exit monitor: watches OS exit and optional executor signal.
+        // Its completion handling drains the queue, so an enqueue meanwhile
+        // leaves the message to it; dev servers never drain.
+        let drain_hold = (execution_process.run_reason != ExecutionProcessRunReason::DevServer)
+            .then(|| {
+                self.queued_message_service
+                    .hold_drain(execution_process.session_id)
+            });
         let hn = self.spawn_exit_monitor(
             &execution_process.id,
             execution_process.session_id,
             spawned.exit_signal,
+            drain_hold,
         );
         self.add_exit_monitor_handle(execution_process.id, hn).await;
 
@@ -4614,7 +4601,12 @@ done
         // The monitor takes the queued message last; ~4s of it is the kill.
         tokio::time::timeout(
             Duration::from_secs(20),
-            container.spawn_exit_monitor(&process.id, session.id, spawned.exit_signal),
+            container.spawn_exit_monitor(
+                &process.id,
+                session.id,
+                spawned.exit_signal,
+                Some(container.queued_message_service.hold_drain(session.id)),
+            ),
         )
         .await
         .expect("the queued follow-up waited for the stdout drain timeout")
@@ -5178,5 +5170,147 @@ done
                 .all(|m| !matches!(m, LogMsg::Stdout(s) if s.is_empty())),
             "empty chunks must be dropped"
         );
+    }
+
+    /// Give the test workspace a repo, so turn rows can be created. Its path
+    /// doesn't exist: a started turn still fails before any agent runs.
+    async fn add_test_repo(container: &LocalContainerService, workspace: &Workspace) {
+        let pool = &container.db.pool;
+        let repo = Repo::find_or_create(pool, Path::new("/nonexistent/queue-repo"), "repo")
+            .await
+            .unwrap();
+        WorkspaceRepo::create_many(
+            pool,
+            workspace.id,
+            &[db::models::workspace_repo::CreateWorkspaceRepo {
+                repo_id: repo.id,
+                target_branch: "main".into(),
+            }],
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn turn_prompts(container: &LocalContainerService, session_id: Uuid) -> Vec<String> {
+        ExecutionProcess::find_by_session_id(&container.db.pool, session_id, false)
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|process| match process.executor_action().ok()?.typ() {
+                ExecutorActionType::CodingAgentInitialRequest(request) => {
+                    Some(request.prompt.clone())
+                }
+                ExecutorActionType::CodingAgentFollowUpRequest(request) => {
+                    Some(request.prompt.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn queued_messages(container: &LocalContainerService, session_id: Uuid) -> Vec<String> {
+        container
+            .queued_message_service
+            .get_queued(session_id)
+            .into_iter()
+            .map(|queued| queued.data.message)
+            .collect()
+    }
+
+    /// Turn A finishes and its finalize finds the queue empty; only then do
+    /// the queue requests sent during A arrive. Each message must still run,
+    /// exactly once and in order — whether it lands after A's exit handling
+    /// ended (the enqueue starts it) or while it is still winding down (the
+    /// handler's recheck starts it).
+    #[tokio::test]
+    async fn queued_message_after_last_finalize_runs_once_in_order() {
+        use db::models::scratch::DraftFollowUpData;
+
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let pool = container.db.pool.clone();
+        let queue = container.queued_message_service.clone();
+        let config = ExecutorConfig::new(BaseCodingAgent::ClaudeCode);
+        let message = |text: &str| DraftFollowUpData {
+            message: text.into(),
+            executor_config: config.clone(),
+        };
+
+        // Turn A runs and finishes; its exit handler holds the drain meanwhile.
+        let turn_a = container
+            .create_execution_record(
+                &workspace,
+                &session,
+                &ExecutorAction::new(
+                    ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                        prompt: "a".into(),
+                        executor_config: config.clone(),
+                        working_dir: None,
+                        handoff_from: None,
+                        handoff_session_id: None,
+                        handoff_user_prompt: None,
+                    }),
+                    None,
+                ),
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await
+            .unwrap();
+        let a_exit_handler = queue.hold_drain(session.id);
+        ExecutionProcess::update_completion(
+            &pool,
+            turn_a.id,
+            ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+        let ctx = ExecutionProcess::load_context(&pool, turn_a.id)
+            .await
+            .unwrap();
+        container
+            .finalize_with_queued_followup(&ctx, false, false)
+            .await;
+
+        // Late while A's handler is still winding down: left to the handler.
+        for text in ["m1", "m2"] {
+            queue.enqueue(session.id, message(text));
+            let started = container
+                .drain_queue_if_idle(&session, &workspace)
+                .await
+                .unwrap();
+            assert!(started.is_none(), "{text} must not start under A's hold");
+        }
+        assert_eq!(turn_prompts(&container, session.id).await, ["a"]);
+
+        // The handler finishes and rechecks: only the front message starts.
+        drop(a_exit_handler);
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        assert_eq!(turn_prompts(&container, session.id).await, ["a", "m1"]);
+        assert_eq!(queued_messages(&container, session.id), ["m2"]);
+
+        // m1's turn ended (its start failed); the next drain runs m2, and a
+        // message enqueued after that, with nothing left to finish, starts
+        // from the enqueue itself.
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        queue.enqueue(session.id, message("m3"));
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        assert_eq!(
+            turn_prompts(&container, session.id).await,
+            ["a", "m1", "m2", "m3"]
+        );
+        assert!(queued_messages(&container, session.id).is_empty());
+    }
+
+    /// Logs of the failed starts land under the real `dev_assets/sessions/`.
+    struct SessionLogDir(Uuid);
+
+    impl Drop for SessionLogDir {
+        fn drop(&mut self) {
+            let _ =
+                std::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(self.0));
+        }
     }
 }

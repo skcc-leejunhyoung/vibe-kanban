@@ -53,6 +53,27 @@ pub struct QueuedMessageService {
     queue: Arc<DashMap<Uuid, VecDeque<QueuedMessage>>>,
     /// session id -> the queued message id the in-flight steer kill must drain.
     steering: Arc<DashMap<Uuid, Uuid>>,
+    /// session id -> live [`DrainHold`]s: processes that will drain (or
+    /// discard) the queue themselves when they finish.
+    drain_holds: Arc<DashMap<Uuid, usize>>,
+}
+
+/// While alive, an enqueue for the session leaves its message to the holder
+/// (see [`QueuedMessageService::hold_drain`]).
+pub struct DrainHold {
+    holds: Arc<DashMap<Uuid, usize>>,
+    session_id: Uuid,
+}
+
+impl Drop for DrainHold {
+    fn drop(&mut self) {
+        if let Entry::Occupied(mut holds) = self.holds.entry(self.session_id) {
+            *holds.get_mut() -= 1;
+            if *holds.get() == 0 {
+                holds.remove();
+            }
+        }
+    }
 }
 
 impl QueuedMessageService {
@@ -60,6 +81,7 @@ impl QueuedMessageService {
         Self {
             queue: Arc::new(DashMap::new()),
             steering: Arc::new(DashMap::new()),
+            drain_holds: Arc::new(DashMap::new()),
         }
     }
 
@@ -278,6 +300,28 @@ impl QueuedMessageService {
         self.steering
             .remove(&session_id)
             .map(|(_, message_id)| message_id)
+    }
+
+    /// Claim the session's queue drain for a process that will drain (or
+    /// discard) it when it finishes, so an enqueue meanwhile doesn't start a
+    /// turn of its own. Once the hold is dropped, the holder must run
+    /// `ContainerService::drain_queue_if_idle`: a message that landed after
+    /// its own drain looked at the queue has nobody else to start it.
+    pub fn hold_drain(&self, session_id: Uuid) -> DrainHold {
+        *self.drain_holds.entry(session_id).or_default() += 1;
+        DrainHold {
+            holds: self.drain_holds.clone(),
+            session_id,
+        }
+    }
+
+    /// Whether this caller may start the session's next queued message itself:
+    /// something is queued, no steer is in flight, and no process holds the
+    /// drain. The caller still has to check for running processes.
+    pub fn can_drain_now(&self, session_id: Uuid) -> bool {
+        self.has_queued(session_id)
+            && !self.is_steering(session_id)
+            && !self.drain_holds.contains_key(&session_id)
     }
 
     fn new_message(session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
@@ -549,5 +593,26 @@ mod tests {
         assert_eq!(svc.take_steering(session), Some(msg));
         assert!(!svc.is_steering(session));
         assert_eq!(svc.take_steering(session), None);
+    }
+
+    #[test]
+    fn drain_is_free_only_without_holds_or_steer() {
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+        assert!(!svc.can_drain_now(session), "nothing queued");
+
+        let msg = svc.enqueue(session, sample_data("a"));
+        assert!(svc.can_drain_now(session));
+
+        let first = svc.hold_drain(session);
+        let second = svc.hold_drain(session);
+        assert!(!svc.can_drain_now(session));
+        drop(first);
+        assert!(!svc.can_drain_now(session), "one hold still alive");
+        drop(second);
+        assert!(svc.can_drain_now(session));
+
+        svc.mark_steering(session, msg.id);
+        assert!(!svc.can_drain_now(session));
     }
 }
