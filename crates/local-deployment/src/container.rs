@@ -3759,6 +3759,9 @@ impl ContainerService for LocalContainerService {
                     "Failed to publish deferred execution cancellation"
                 );
             }
+            if completed_process.status == ExecutionProcessStatus::Killed {
+                self.discard_queue_for_unstarted_turn(execution_process);
+            }
             if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
                 msg.push_finished();
                 msg.push(LogMsg::StorageFinished);
@@ -3810,27 +3813,8 @@ impl ContainerService for LocalContainerService {
                                     "Failed to publish execution stop"
                                 );
                             }
-                            // A turn stopped before it ever ran gets no exit
-                            // handler, so do what its finalize does for a user
-                            // stop: drop the queued follow-ups — unless a steer
-                            // owns this stop and is about to run its message.
-                            if status == ExecutionProcessStatus::Killed
-                                && execution_process.run_reason
-                                    != ExecutionProcessRunReason::DevServer
-                                && !self
-                                    .queued_message_service
-                                    .is_steering(execution_process.session_id)
-                            {
-                                let discarded = self
-                                    .queued_message_service
-                                    .clear_queue(execution_process.session_id);
-                                if !discarded.is_empty() {
-                                    tracing::info!(
-                                        "Discarded {} queued message(s) for session {}: its turn was stopped before it started",
-                                        discarded.len(),
-                                        execution_process.session_id
-                                    );
-                                }
+                            if status == ExecutionProcessStatus::Killed {
+                                self.discard_queue_for_unstarted_turn(execution_process);
                             }
                         }
                         if let Some(msg) =
@@ -5217,90 +5201,156 @@ done
             .collect()
     }
 
-    /// Turn A finishes and its finalize finds the queue empty; only then do
-    /// the queue requests sent during A arrive. Each message must still run,
-    /// exactly once and in order — whether it lands after A's exit handling
-    /// ended (the enqueue starts it) or while it is still winding down (the
-    /// handler's recheck starts it).
-    #[tokio::test]
-    async fn queued_message_after_last_finalize_runs_once_in_order() {
-        use db::models::scratch::DraftFollowUpData;
-
-        let (container, session, workspace) = queue_test_container().await;
-        add_test_repo(&container, &workspace).await;
-        let _logs = SessionLogDir(session.id);
-        let pool = container.db.pool.clone();
-        let queue = container.queued_message_service.clone();
-        let config = ExecutorConfig::new(BaseCodingAgent::ClaudeCode);
-        let message = |text: &str| DraftFollowUpData {
-            message: text.into(),
-            executor_config: config.clone(),
-        };
-
-        // Turn A runs and finishes; its exit handler holds the drain meanwhile.
-        let turn_a = container
+    /// Run a coding turn up to the end of its finalize, as its exit handler
+    /// does; the returned hold is that handler still winding down.
+    async fn finish_turn(
+        container: &LocalContainerService,
+        session: &Session,
+        workspace: &Workspace,
+        prompt: &str,
+    ) -> DrainHold {
+        let pool = &container.db.pool;
+        let action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: prompt.into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+                working_dir: None,
+                handoff_from: None,
+                handoff_session_id: None,
+                handoff_user_prompt: None,
+            }),
+            None,
+        );
+        let turn = container
             .create_execution_record(
-                &workspace,
-                &session,
-                &ExecutorAction::new(
-                    ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
-                        prompt: "a".into(),
-                        executor_config: config.clone(),
-                        working_dir: None,
-                        handoff_from: None,
-                        handoff_session_id: None,
-                        handoff_user_prompt: None,
-                    }),
-                    None,
-                ),
+                workspace,
+                session,
+                &action,
                 &ExecutionProcessRunReason::CodingAgent,
             )
             .await
             .unwrap();
-        let a_exit_handler = queue.hold_drain(session.id);
+        let exit_handler = container.queued_message_service.hold_drain(session.id);
         ExecutionProcess::update_completion(
-            &pool,
-            turn_a.id,
+            pool,
+            turn.id,
             ExecutionProcessStatus::Completed,
             Some(0),
         )
         .await
         .unwrap();
-        let ctx = ExecutionProcess::load_context(&pool, turn_a.id)
-            .await
-            .unwrap();
+        let ctx = ExecutionProcess::load_context(pool, turn.id).await.unwrap();
         container
             .finalize_with_queued_followup(&ctx, false, false)
             .await;
+        exit_handler
+    }
 
-        // Late while A's handler is still winding down: left to the handler.
-        for text in ["m1", "m2"] {
-            queue.enqueue(session.id, message(text));
+    /// The issue's order: turn A finishes, its finalize finds the queue empty,
+    /// and only then does a queue request sent during A arrive. Landing after
+    /// A's exit handling, the enqueue starts it; landing while that handling
+    /// still winds down, the handler's recheck starts the front message. Each
+    /// runs once, front first.
+    #[tokio::test]
+    async fn queued_message_after_last_finalize_runs_once_in_order() {
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let queue = container.queued_message_service.clone();
+
+        // After A's exit handling ended: the enqueue itself starts it.
+        drop(finish_turn(&container, &session, &workspace, "a").await);
+        assert!(queue.get_queued(session.id).is_empty());
+        queue.enqueue(session.id, follow_up("m1", BaseCodingAgent::ClaudeCode));
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        assert_eq!(turn_prompts(&container, session.id).await, ["a", "m1"]);
+        assert!(queued_messages(&container, session.id).is_empty());
+
+        // While B's exit handling still winds down: left to its recheck.
+        let b_exit_handler = finish_turn(&container, &session, &workspace, "b").await;
+        for text in ["m2", "m3"] {
+            queue.enqueue(session.id, follow_up(text, BaseCodingAgent::ClaudeCode));
             let started = container
                 .drain_queue_if_idle(&session, &workspace)
                 .await
                 .unwrap();
-            assert!(started.is_none(), "{text} must not start under A's hold");
+            assert!(started.is_none(), "{text} must wait for B's exit handler");
         }
-        assert_eq!(turn_prompts(&container, session.id).await, ["a"]);
-
-        // The handler finishes and rechecks: only the front message starts.
-        drop(a_exit_handler);
+        assert_eq!(turn_prompts(&container, session.id).await, ["a", "m1", "b"]);
+        drop(b_exit_handler);
         let _ = container.drain_queue_if_idle(&session, &workspace).await;
-        assert_eq!(turn_prompts(&container, session.id).await, ["a", "m1"]);
-        assert_eq!(queued_messages(&container, session.id), ["m2"]);
-
-        // m1's turn ended (its start failed); the next drain runs m2, and a
-        // message enqueued after that, with nothing left to finish, starts
-        // from the enqueue itself.
-        let _ = container.drain_queue_if_idle(&session, &workspace).await;
-        queue.enqueue(session.id, message("m3"));
-        let _ = container.drain_queue_if_idle(&session, &workspace).await;
-        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        // Only the front message started. Its start fails here (no worktree),
+        // and a turn that fails to start drops what queued behind it, as a
+        // failed turn's finalize does, rather than leaving it stranded.
         assert_eq!(
             turn_prompts(&container, session.id).await,
-            ["a", "m1", "m2", "m3"]
+            ["a", "m1", "b", "m2"]
         );
+        assert!(queued_messages(&container, session.id).is_empty());
+    }
+
+    /// The real exit handler: a message queued while a process runs is left
+    /// to it, and once the process ends its recheck starts the message, once.
+    /// A parallel setup script has no finalize, so only the recheck can.
+    #[tokio::test]
+    async fn exit_handler_starts_message_queued_while_it_ran() {
+        use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+
+        let (container, session, mut workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let dir = tempfile::tempdir().unwrap();
+        let go = dir.path().join("go");
+        // The script runs in the temp dir until `go` exists; its context only
+        // spares it the background priority setup scripts get, which can stall
+        // it for seconds on a busy machine. The stored row keeps no worktree,
+        // so the follow-up started later fails before any agent spawns.
+        workspace.container_ref = Some(dir.path().to_string_lossy().into_owned());
+        let setup = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: format!("while [ ! -f '{}' ]; do sleep 0.05; done", go.display()),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::ToolInstallScript,
+                working_dir: None,
+            }),
+            None,
+        );
+        let record = container
+            .create_execution_record(
+                &workspace,
+                &session,
+                &setup,
+                &ExecutionProcessRunReason::SetupScript,
+            )
+            .await
+            .unwrap();
+        container
+            .finish_execution_spawn(&workspace, &session, &record, &setup)
+            .await
+            .unwrap();
+
+        container
+            .queued_message_service
+            .enqueue(session.id, follow_up("m1", BaseCodingAgent::ClaudeCode));
+        let started = container
+            .drain_queue_if_idle(&session, &workspace)
+            .await
+            .unwrap();
+        assert!(
+            started.is_none(),
+            "the running script's exit handler owns it"
+        );
+
+        std::fs::write(&go, "").unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while turn_prompts(&container, session.id).await.is_empty() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the exit handler never started the queued message");
+        assert_eq!(turn_prompts(&container, session.id).await, ["m1"]);
         assert!(queued_messages(&container, session.id).is_empty());
     }
 

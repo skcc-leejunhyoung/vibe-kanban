@@ -1977,6 +1977,26 @@ pub trait ContainerService {
         Ok(execution_process)
     }
 
+    /// A turn that ends without an exit handler (it failed or was stopped
+    /// before it ran) drops the session's queued follow-ups, as its finalize
+    /// would have, instead of leaving them with nothing to start them —
+    /// unless a steer owns the end and is about to run its message.
+    fn discard_queue_for_unstarted_turn(&self, execution_process: &ExecutionProcess) {
+        let session_id = execution_process.session_id;
+        if execution_process.run_reason == ExecutionProcessRunReason::DevServer
+            || self.queued_message_service().is_steering(session_id)
+        {
+            return;
+        }
+        let discarded = self.queued_message_service().clear_queue(session_id);
+        if !discarded.is_empty() {
+            tracing::info!(
+                "Discarded {} queued message(s) for session {session_id}: its turn ended before it ran",
+                discarded.len()
+            );
+        }
+    }
+
     /// A row that never got to run: mark it failed and leave the reason in its
     /// log, so its turn shows the failure instead of a spinner. Shared by the
     /// spawn-failure path and a failed background workspace start.
@@ -2000,6 +2020,7 @@ pub trait ContainerService {
         .await
         {
             Ok(true) => {
+                self.discard_queue_for_unstarted_turn(execution_process);
                 if let Ok(Some(completed_process)) =
                     ExecutionProcess::find_by_id(&self.db().pool, execution_process.id).await
                     && let Err(publish_error) = self
