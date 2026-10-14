@@ -227,25 +227,58 @@ fn spawn_steer_kill(
 ) {
     tokio::spawn(async move {
         let session_id = session.id;
-        if let Err(e) = deployment
+        // A row that answered early may have no child yet (its worktree is
+        // still materialising): stopping it only marks it killed and no exit
+        // handler will ever drain the steered message, so drain it here — the
+        // same fallback as a kill that errors because the child is gone.
+        let had_child = deployment.container().has_live_child(proc.id).await;
+        let stopped = deployment
             .container()
             .stop_execution(&proc, ExecutionProcessStatus::Killed)
+            .await;
+        if let Err(e) = &stopped {
+            tracing::warn!("Steer: failed to stop running execution for session {session_id}: {e}");
+        }
+        if stopped.is_ok() && had_child {
+            return;
+        }
+        let Some(steered_id) = deployment
+            .queued_message_service()
+            .take_steering(session_id)
+        else {
+            return;
+        };
+        let Some(msg) = deployment
+            .queued_message_service()
+            .take_steered_or_front(session_id, steered_id)
+        else {
+            return;
+        };
+        // The container may still be materialising; wait for it and run with
+        // the row as it is then.
+        let workspace = match deployment
+            .container()
+            .ensure_container_exists(&workspace)
             .await
         {
-            tracing::warn!("Steer: failed to stop running execution for session {session_id}: {e}");
-            if let Some(steered_id) = deployment
-                .queued_message_service()
-                .take_steering(session_id)
-                && let Some(msg) = deployment
-                    .queued_message_service()
-                    .take_steered_or_front(session_id, steered_id)
-                && let Err(e) = deployment
-                    .container()
-                    .start_followup_for_session(&session, &workspace, &msg.data)
-                    .await
-            {
-                tracing::error!("Steer: fallback follow-up failed for session {session_id}: {e}");
+            Ok(_) => Workspace::find_by_id(&deployment.db().pool, workspace.id)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(workspace),
+            Err(e) => {
+                tracing::error!(
+                    "Steer: fallback could not prepare workspace for session {session_id}: {e}"
+                );
+                return;
             }
+        };
+        if let Err(e) = deployment
+            .container()
+            .start_followup_for_session(&session, &workspace, &msg.data)
+            .await
+        {
+            tracing::error!("Steer: fallback follow-up failed for session {session_id}: {e}");
         }
     });
 }

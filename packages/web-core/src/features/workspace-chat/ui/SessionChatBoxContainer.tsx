@@ -1034,9 +1034,19 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   );
 
   // Put a prompt the server refused back in front of whatever has been typed
-  // since, and keep it as the draft.
+  // since, and keep it as the draft — if `target` is still the session on
+  // screen; otherwise it is restored when that session is shown again.
   const restorePrompt = useCallback(
-    (prompt: string, executorConfigForDraft: ExecutorConfig) => {
+    (
+      target: string,
+      prompt: string,
+      executorConfigForDraft: ExecutorConfig
+    ) => {
+      if (sessionIdRef.current !== target) {
+        unsentPrompts.set(target, prompt);
+        pendingSendsChanged();
+        return;
+      }
       const draft = localMessageRef.current;
       const restored = draft.trim() ? `${prompt}\n\n${draft}` : prompt;
       setLocalMessage(restored);
@@ -1101,10 +1111,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       }
       if (!success) {
         clearOptimisticProcess(placeholder.id);
-        // Put the text back in front of whatever was typed meanwhile; if the
-        // user has left this session, the restore runs when it is shown again.
-        if (sessionIdRef.current === target && executorConfig) {
-          restorePrompt(prompt, executorConfig);
+        if (executorConfig) {
+          restorePrompt(target, prompt, executorConfig);
         } else {
           unsentPrompts.set(target, prompt);
         }
@@ -1402,7 +1410,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     try {
       await queueMessage(prompt, executorConfig);
     } catch (error) {
-      restorePrompt(prompt, executorConfig);
+      if (sessionId) restorePrompt(sessionId, prompt, executorConfig);
       void ErrorDialog.show({
         title: t('common:error'),
         message: error instanceof Error ? error.message : String(error),
@@ -1495,7 +1503,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       }
       pendingSendsChanged();
       clearOptimisticProcess(pending.id);
-      restorePrompt(prompt, executorConfig);
+      restorePrompt(sessionId, prompt, executorConfig);
       void ErrorDialog.show({
         title: t('common:error'),
         message: error instanceof Error ? error.message : String(error),

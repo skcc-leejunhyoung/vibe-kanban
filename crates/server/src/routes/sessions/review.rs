@@ -93,8 +93,11 @@ pub async fn start_review(
         .container()
         .ensure_container_exists(&workspace)
         .await?;
-    // Spawn with the path the ensure produced (see follow_up_inner).
-    workspace.container_ref = Some(container_ref.clone());
+    // Spawn with the row as the ensure left it (see follow_up_inner).
+    if let Some(fresh) = Workspace::find_by_id(pool, workspace.id).await? {
+        workspace = fresh;
+    }
+    workspace.container_ref.get_or_insert(container_ref.clone());
     deployment
         .container()
         .wait_for_session_ready(session.id)

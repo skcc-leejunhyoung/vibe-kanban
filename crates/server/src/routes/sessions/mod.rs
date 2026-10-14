@@ -381,13 +381,16 @@ async fn follow_up_inner(
     }
 
     // Materialised just now (a create that answered early, a tree being
-    // restored): spawn with the path the ensure produced, not the copy read
-    // before it.
+    // restored, a review checkout that renamed the branch): spawn with the
+    // row as the ensure left it, not the copy read before it.
     let container_ref = deployment
         .container()
         .ensure_container_exists(&workspace)
         .await?;
-    workspace.container_ref = Some(container_ref);
+    if let Some(fresh) = Workspace::find_by_id(pool, workspace.id).await? {
+        workspace = fresh;
+    }
+    workspace.container_ref.get_or_insert(container_ref);
 
     // A completed process becomes visible to the UI before its final output is
     // fully drained. Wait for that drain before resolving the native session
@@ -583,13 +586,16 @@ pub async fn handoff(
     }
 
     // Materialised just now (a create that answered early, a tree being
-    // restored): spawn with the path the ensure produced, not the copy read
-    // before it.
+    // restored, a review checkout that renamed the branch): spawn with the
+    // row as the ensure left it, not the copy read before it.
     let container_ref = deployment
         .container()
         .ensure_container_exists(&workspace)
         .await?;
-    workspace.container_ref = Some(container_ref);
+    if let Some(fresh) = Workspace::find_by_id(pool, workspace.id).await? {
+        workspace = fresh;
+    }
+    workspace.container_ref.get_or_insert(container_ref);
     deployment
         .container()
         .wait_for_session_ready(session.id)
@@ -706,13 +712,16 @@ pub async fn run_setup_script(
     }
 
     // Materialised just now (a create that answered early, a tree being
-    // restored): spawn with the path the ensure produced, not the copy read
-    // before it.
+    // restored, a review checkout that renamed the branch): spawn with the
+    // row as the ensure left it, not the copy read before it.
     let container_ref = deployment
         .container()
         .ensure_container_exists(&workspace)
         .await?;
-    workspace.container_ref = Some(container_ref);
+    if let Some(fresh) = Workspace::find_by_id(pool, workspace.id).await? {
+        workspace = fresh;
+    }
+    workspace.container_ref.get_or_insert(container_ref);
 
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let executor_action = match deployment.container().setup_actions_for_repos(&repos) {

@@ -602,9 +602,10 @@ async fn create_workspace_with_repos(
         // Review mode: check out the existing PR head branch directly and link
         // the PR, instead of branching a new `vk/` worktree.
         BranchSetup::ExistingPrBranch(review) => {
-            // The checkout runs in the background; the agent start that follows
-            // waits for it through the workspace's container lock.
-            let workspace = pr::setup_pr_review_workspace(deployment, name, review, false).await?;
+            // Checked out inline: the issue is marked "In review" and the prompt
+            // cleared right after, so a failed checkout must stay a request error.
+            let workspace =
+                pr::setup_pr_review_workspace(deployment, name, review, false, false).await?;
 
             deployment
                 .workspace_manager()

@@ -3276,6 +3276,13 @@ impl ContainerService for LocalContainerService {
         &self.container_locks
     }
 
+    async fn has_live_child(&self, execution_process_id: Uuid) -> bool {
+        self.child_store
+            .read()
+            .await
+            .contains_key(&execution_process_id)
+    }
+
     async fn subagent_handle(&self, id: &Uuid) -> Option<SubagentLiveHandle> {
         let map = self.subagent_handles.read().await;
         map.get(id).cloned()

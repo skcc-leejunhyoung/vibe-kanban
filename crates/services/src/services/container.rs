@@ -902,6 +902,10 @@ pub trait ContainerService {
             .await
     }
 
+    /// Whether a child process is registered for this execution: false for a
+    /// row that answered early and hasn't spawned yet, or that already exited.
+    async fn has_live_child(&self, execution_process_id: Uuid) -> bool;
+
     /// [`Self::ensure_container_exists`] for a caller that already holds the
     /// workspace's lock from [`Self::lock_container`].
     async fn ensure_container_exists_unlocked(

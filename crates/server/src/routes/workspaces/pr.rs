@@ -1752,6 +1752,7 @@ pub(crate) async fn setup_pr_review_workspace(
     workspace_name: Option<String>,
     pr: &PrReviewInput,
     run_setup: bool,
+    in_background: bool,
 ) -> Result<Workspace, ApiError> {
     let pool = &deployment.db().pool;
 
@@ -1768,7 +1769,7 @@ pub(crate) async fn setup_pr_review_workspace(
     };
 
     // Start the worktree on the PR base ref; gh pr checkout switches it to the
-    // head branch in the background.
+    // head branch.
     let target_branch_ref = review_target_branch_ref(&remote.name, &pr.base_branch);
 
     let workspace_id = Uuid::new_v4();
@@ -1803,26 +1804,130 @@ pub(crate) async fn setup_pr_review_workspace(
     )
     .await?;
 
-    // Take the container lock before answering: the agent start that the
-    // create-and-start path spawns right after must find it held, so its own
-    // ensure waits for the checkout instead of racing it onto the base ref.
+    // Take the container lock before answering: anything that ensures the
+    // container meanwhile (the page's branch status, the agent start the
+    // create-and-start path spawns) waits for the checkout instead of racing
+    // it onto the base ref.
     let materialising = deployment.container().lock_container(workspace.id).await;
-    spawn_pr_checkout(
-        deployment.clone(),
-        workspace.clone(),
-        repo,
-        remote,
-        pr.clone(),
-        run_setup,
-        materialising,
-    );
 
-    Ok(workspace)
+    if in_background {
+        // Create-from-PR (no agent): answer with the rows, check out meanwhile.
+        spawn_pr_checkout(
+            deployment.clone(),
+            workspace.clone(),
+            repo,
+            remote,
+            pr.clone(),
+            run_setup,
+            materialising,
+        );
+        return Ok(workspace);
+    }
+
+    // Create-and-start review mode: the caller still marks the issue "In
+    // review" and clears the prompt on success, so a failed checkout has to
+    // stay a request error — check out inline.
+    match checkout_pr_branch(deployment, &workspace, &repo, &remote, pr).await {
+        Ok(workspace) => {
+            drop(materialising);
+            Ok(workspace)
+        }
+        Err(message) => {
+            fail_pr_checkout(deployment, &workspace, pr, &message, false).await;
+            drop(materialising);
+            Err(ApiError::BadRequest(format!(
+                "Failed to check out PR #{} branch for review: {message}",
+                pr.pr_number
+            )))
+        }
+    }
 }
 
-/// Materialise a review workspace off the request path: worktree on the base
-/// ref, then `gh pr checkout` onto the head branch, both under the container
-/// lock. Then the optional setup script.
+/// Worktree on the base ref, then `gh pr checkout` onto the head branch and
+/// the row renamed to it. The caller holds the workspace's container lock.
+async fn checkout_pr_branch(
+    deployment: &DeploymentImpl,
+    workspace: &Workspace,
+    repo: &Repo,
+    remote: &GitRemote,
+    pr: &PrReviewInput,
+) -> Result<Workspace, String> {
+    let pool = &deployment.db().pool;
+    let container_ref = deployment
+        .container()
+        .ensure_container_exists_unlocked(workspace)
+        .await
+        .map_err(|e| e.to_string())?;
+    // gh pr checkout handles SSH/HTTPS auth correctly regardless of fork URL.
+    let worktree_path = PathBuf::from(&container_ref).join(&repo.name);
+    let repo_info = GhCli::new()
+        .get_repo_info(&remote.url, &worktree_path)
+        .map_err(|e| format!("Failed to get repository info: {e}"))?;
+    GhCli::new()
+        .pr_checkout(
+            &worktree_path,
+            &repo_info.owner,
+            &repo_info.repo_name,
+            pr.pr_number,
+        )
+        .map_err(|e| e.to_string())?;
+    Workspace::update_branch_name(pool, workspace.id, &pr.head_branch)
+        .await
+        .map_err(|e| e.to_string())?;
+    Workspace::find_by_id(pool, workspace.id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "workspace was deleted meanwhile".to_string())
+}
+
+/// A checkout that failed: drop the PR link written up front (it would keep
+/// pointing at the removed workspace and shadow a retry's own link), remove
+/// the workspace and, for a background checkout, tell the user.
+async fn fail_pr_checkout(
+    deployment: &DeploymentImpl,
+    workspace: &Workspace,
+    pr: &PrReviewInput,
+    message: &str,
+    notify: bool,
+) {
+    let pool = &deployment.db().pool;
+    tracing::error!(
+        "Failed to check out PR #{} for workspace {}: {}",
+        pr.pr_number,
+        workspace.id,
+        message
+    );
+    if let Err(e) = PullRequest::delete_by_workspace_and_repo(pool, workspace.id, pr.repo_id).await
+    {
+        tracing::warn!(
+            "Failed to drop the PR link of workspace {}: {}",
+            workspace.id,
+            e
+        );
+    }
+    // Re-read for the container_ref the cleanup needs to find the tree.
+    let latest = Workspace::find_by_id(pool, workspace.id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| workspace.clone());
+    cleanup_failed_pr_workspace(pool, &latest).await;
+    if notify {
+        deployment
+            .container()
+            .notification_service()
+            .notify_local_only(
+                "PR checkout failed",
+                &format!("PR #{}: {message}", pr.pr_number),
+                None,
+            )
+            .await;
+    }
+}
+
+/// Create-from-PR: materialise the review workspace off the request path, the
+/// container lock (taken by the caller) held through the checkout and, on
+/// failure, through the cleanup — so no waiter runs in a tree being removed.
 fn spawn_pr_checkout(
     deployment: DeploymentImpl,
     workspace: Workspace,
@@ -1833,41 +1938,10 @@ fn spawn_pr_checkout(
     materialising: tokio::sync::OwnedMutexGuard<()>,
 ) {
     tokio::spawn(async move {
-        let pool = deployment.db().pool.clone();
-        let checked_out: Result<Workspace, String> = async {
-            // Held until the checkout is done (or failed); released before the
-            // setup script so other waiters can go on.
-            let _materialising = materialising;
-            let container = deployment.container();
-            let container_ref = container
-                .ensure_container_exists_unlocked(&workspace)
-                .await
-                .map_err(|e| e.to_string())?;
-            // gh pr checkout handles SSH/HTTPS auth correctly regardless of fork URL.
-            let worktree_path = PathBuf::from(&container_ref).join(&repo.name);
-            let repo_info = GhCli::new()
-                .get_repo_info(&remote.url, &worktree_path)
-                .map_err(|e| format!("Failed to get repository info: {e}"))?;
-            GhCli::new()
-                .pr_checkout(
-                    &worktree_path,
-                    &repo_info.owner,
-                    &repo_info.repo_name,
-                    pr.pr_number,
-                )
-                .map_err(|e| e.to_string())?;
-            Workspace::update_branch_name(&pool, workspace.id, &pr.head_branch)
-                .await
-                .map_err(|e| e.to_string())?;
-            Workspace::find_by_id(&pool, workspace.id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "workspace was deleted meanwhile".to_string())
-        }
-        .await;
-
-        match checked_out {
+        match checkout_pr_branch(&deployment, &workspace, &repo, &remote, &pr).await {
             Ok(workspace) => {
+                // Released before the setup script so other waiters can go on.
+                drop(materialising);
                 tracing::info!(
                     "Checked out PR #{} into workspace {}",
                     pr.pr_number,
@@ -1878,39 +1952,8 @@ fn spawn_pr_checkout(
                 }
             }
             Err(message) => {
-                tracing::error!(
-                    "Failed to check out PR #{} for workspace {}: {}",
-                    pr.pr_number,
-                    workspace.id,
-                    message
-                );
-                // The PR link was written up front; without the workspace it
-                // would keep pointing at it and shadow a retry's own link.
-                if let Err(e) =
-                    PullRequest::delete_by_workspace_and_repo(&pool, workspace.id, pr.repo_id).await
-                {
-                    tracing::warn!(
-                        "Failed to drop the PR link of workspace {}: {}",
-                        workspace.id,
-                        e
-                    );
-                }
-                // Re-read for the container_ref the cleanup needs to find the tree.
-                let latest = Workspace::find_by_id(&pool, workspace.id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or(workspace);
-                cleanup_failed_pr_workspace(&pool, &latest).await;
-                deployment
-                    .container()
-                    .notification_service()
-                    .notify_local_only(
-                        "PR checkout failed",
-                        &format!("PR #{}: {message}", pr.pr_number),
-                        None,
-                    )
-                    .await;
+                fail_pr_checkout(&deployment, &workspace, &pr, &message, true).await;
+                drop(materialising);
             }
         }
     });
@@ -1981,6 +2024,7 @@ pub async fn create_workspace_from_pr(
         Some(payload.pr_title.clone()),
         &pr_input,
         payload.run_setup,
+        true,
     )
     .await?;
 
