@@ -2898,8 +2898,18 @@ impl LocalContainerService {
         let (review_session, executor_config) = self
             .vibe_create_review_session(workspace, session, executor_config)
             .await?;
-        self.vibe_run_review_session(workspace, &review_session, prompt, executor_config)
+        self.vibe_spawn_review_agent(workspace, &review_session, prompt, executor_config)
             .await?;
+
+        // Record the review session only AFTER the execution actually started:
+        // the `?` above propagates a spawn failure before any phase change, so
+        // the run stays in its prior `coding` phase and the next finalize retries
+        // StartReview — instead of being stranded in `review` pointing at a
+        // session that never ran (previously recoverable only by the 15-minute
+        // orphan watcher).
+        VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id)
+            .await
+            .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
         Ok(review_session)
     }
 
@@ -2937,8 +2947,8 @@ impl LocalContainerService {
     }
 
     /// Second half of [`Self::vibe_start_review_session`]: spawn the review
-    /// agent, then move the run to the review phase.
-    async fn vibe_run_review_session(
+    /// agent. Moving the run to the review phase is up to the caller.
+    async fn vibe_spawn_review_agent(
         &self,
         workspace: &Workspace,
         review_session: &Session,
@@ -2970,16 +2980,6 @@ impl LocalContainerService {
             &ExecutionProcessRunReason::CodingAgent,
         )
         .await?;
-
-        // Record the review session only AFTER the execution actually started:
-        // the `?` above propagates a spawn failure before any phase change, so
-        // the run stays in its prior `coding` phase and the next finalize retries
-        // StartReview — instead of being stranded in `review` pointing at a
-        // session that never ran (previously recoverable only by the 15-minute
-        // orphan watcher).
-        VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id)
-            .await
-            .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
         Ok(())
     }
 
@@ -4141,13 +4141,18 @@ impl ContainerService for LocalContainerService {
         let (review_session, executor_config) = self
             .vibe_create_review_session(workspace, session, executor_config)
             .await?;
+        // The phase moves now, not after the spawn: the caller polls it right
+        // away and would otherwise read a previous run's `blocked` / `done`.
+        VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id)
+            .await
+            .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
         {
             let this = self.clone();
             let workspace = workspace.clone();
             let review = review_session.clone();
             tokio::spawn(async move {
                 if let Err(e) = this
-                    .vibe_run_review_session(&workspace, &review, &prompt, executor_config)
+                    .vibe_spawn_review_agent(&workspace, &review, &prompt, executor_config)
                     .await
                 {
                     tracing::error!(

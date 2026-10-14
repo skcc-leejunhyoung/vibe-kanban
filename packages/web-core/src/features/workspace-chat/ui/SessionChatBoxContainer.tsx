@@ -1621,6 +1621,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       });
     }
   }, [
+    sessionId,
     localMessage,
     reviewMarkdown,
     executorConfig,
