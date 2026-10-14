@@ -36,15 +36,10 @@ export interface LiveStatus {
   history: StatusHistoryItem[];
 }
 
-const MOVES_ON = new Set([
-  'assistant_message',
-  'tool_use',
-  'thinking',
-  'user_message',
-  'user_feedback',
-  'user_answered_questions',
-  'error_message',
-]);
+// Items that only the agent's own next step produces. Errors (stderr) and
+// user messages can be appended while a message is still streaming, so they
+// do not count. Mirrors `moves_on` in services::status_note.
+const MOVES_ON = new Set(['assistant_message', 'tool_use', 'thinking']);
 
 export function computeLiveStatus(entries: PatchTypeWithKey[]): LiveStatus {
   // ponytail: rescans every assistant message per streaming patch; cache per

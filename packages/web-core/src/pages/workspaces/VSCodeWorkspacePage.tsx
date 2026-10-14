@@ -16,6 +16,7 @@ import {
   type ConversationListHandle,
 } from '@/features/workspace-chat/ui/ConversationListContainer';
 import { EntriesProvider } from '@/features/workspace-chat/model/contexts/EntriesContext';
+import { LiveStatusProvider } from '@/features/workspace-chat/model/hooks/useLiveStatus';
 import { MessageEditProvider } from '@/features/workspace-chat/model/contexts/MessageEditContext';
 import { RetryUiProvider } from '@/features/workspace-chat/model/contexts/RetryUiContext';
 import { ApprovalFeedbackProvider } from '@/features/workspace-chat/model/contexts/ApprovalFeedbackContext';
@@ -194,73 +195,75 @@ export function VSCodeWorkspacePage() {
                   : 'empty'
               }
             >
-              <MessageEditProvider>
-                {isLoading ? (
-                  <div className="flex-1 flex items-center justify-center">
-                    <p className="text-low">{t('workspaces.loading')}</p>
-                  </div>
-                ) : !workspaceWithSession ? (
-                  <div className="flex-1 flex items-center justify-center">
-                    <p className="text-low">{t('workspaces.notFound')}</p>
-                  </div>
-                ) : (
-                  <div
-                    className="flex-1 min-h-0 overflow-hidden flex justify-center"
-                    onWheel={(e) =>
-                      forwardWheelToScroller(e, conversationListRef)
-                    }
-                  >
-                    <div className="w-chat max-w-full h-full">
-                      <RetryUiProvider workspaceId={workspaceWithSession.id}>
-                        <ConversationList
-                          key={`${workspaceWithSession.id}-${selectedSessionId ?? 'new'}`}
-                          ref={conversationListRef}
-                          attempt={workspaceWithSession}
-                          repos={repos}
-                          onAtBottomChange={handleAtBottomChange}
-                          sessionScopeId={selectedSessionId}
-                        />
-                      </RetryUiProvider>
+              <LiveStatusProvider>
+                <MessageEditProvider>
+                  {isLoading ? (
+                    <div className="flex-1 flex items-center justify-center">
+                      <p className="text-low">{t('workspaces.loading')}</p>
                     </div>
-                  </div>
-                )}
+                  ) : !workspaceWithSession ? (
+                    <div className="flex-1 flex items-center justify-center">
+                      <p className="text-low">{t('workspaces.notFound')}</p>
+                    </div>
+                  ) : (
+                    <div
+                      className="flex-1 min-h-0 overflow-hidden flex justify-center"
+                      onWheel={(e) =>
+                        forwardWheelToScroller(e, conversationListRef)
+                      }
+                    >
+                      <div className="w-chat max-w-full h-full">
+                        <RetryUiProvider workspaceId={workspaceWithSession.id}>
+                          <ConversationList
+                            key={`${workspaceWithSession.id}-${selectedSessionId ?? 'new'}`}
+                            ref={conversationListRef}
+                            attempt={workspaceWithSession}
+                            repos={repos}
+                            onAtBottomChange={handleAtBottomChange}
+                            sessionScopeId={selectedSessionId}
+                          />
+                        </RetryUiProvider>
+                      </div>
+                    </div>
+                  )}
 
-                {workspaceWithSession && !isAtBottom && (
-                  <div className="flex justify-center pointer-events-none">
-                    <div className="w-chat max-w-full relative">
-                      <button
-                        type="button"
-                        onClick={() => handleScrollToBottom('auto')}
-                        className="absolute bottom-2 right-4 z-10 pointer-events-auto flex items-center justify-center size-8 rounded-full bg-secondary/80 backdrop-blur-sm border border-secondary text-low hover:text-normal hover:bg-secondary shadow-md transition-all"
-                        aria-label="Scroll to bottom"
-                        title="Scroll to bottom"
-                      >
-                        <ArrowDownIcon
-                          className="size-icon-base"
-                          weight="bold"
-                        />
-                      </button>
+                  {workspaceWithSession && !isAtBottom && (
+                    <div className="flex justify-center pointer-events-none">
+                      <div className="w-chat max-w-full relative">
+                        <button
+                          type="button"
+                          onClick={() => handleScrollToBottom('auto')}
+                          className="absolute bottom-2 right-4 z-10 pointer-events-auto flex items-center justify-center size-8 rounded-full bg-secondary/80 backdrop-blur-sm border border-secondary text-low hover:text-normal hover:bg-secondary shadow-md transition-all"
+                          aria-label="Scroll to bottom"
+                          title="Scroll to bottom"
+                        >
+                          <ArrowDownIcon
+                            className="size-icon-base"
+                            weight="bold"
+                          />
+                        </button>
+                      </div>
                     </div>
+                  )}
+                  <div
+                    className="flex min-h-0 max-h-[50%] justify-center @container pl-px"
+                    data-chatbox-container="true"
+                  >
+                    <VSCodeChatBox
+                      session={selectedSession}
+                      workspaceId={workspaceWithSession?.id}
+                      isNewSessionMode={isNewSessionMode}
+                      sessions={sessions}
+                      onSelectSession={selectSession}
+                      onStartNewSession={startNewSession}
+                      onScrollToPreviousMessage={handleScrollToPreviousMessage}
+                      onScrollToBottom={handleScrollToBottom}
+                      onScrollToUserMessage={handleScrollToUserMessage}
+                      getActiveTurnPatchKey={handleGetActiveTurnPatchKey}
+                    />
                   </div>
-                )}
-                <div
-                  className="flex min-h-0 max-h-[50%] justify-center @container pl-px"
-                  data-chatbox-container="true"
-                >
-                  <VSCodeChatBox
-                    session={selectedSession}
-                    workspaceId={workspaceWithSession?.id}
-                    isNewSessionMode={isNewSessionMode}
-                    sessions={sessions}
-                    onSelectSession={selectSession}
-                    onStartNewSession={startNewSession}
-                    onScrollToPreviousMessage={handleScrollToPreviousMessage}
-                    onScrollToBottom={handleScrollToBottom}
-                    onScrollToUserMessage={handleScrollToUserMessage}
-                    getActiveTurnPatchKey={handleGetActiveTurnPatchKey}
-                  />
-                </div>
-              </MessageEditProvider>
+                </MessageEditProvider>
+              </LiveStatusProvider>
             </EntriesProvider>
           </ApprovalFeedbackProvider>
         </main>

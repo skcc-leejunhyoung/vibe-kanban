@@ -36,6 +36,15 @@ describe('computeLiveStatus', () => {
     expect(live.history.map((item) => item.text)).toEqual(['닫지 않은 요약']);
   });
 
+  it('keeps streaming when only a stderr line or a user message follows', () => {
+    const live = computeLiveStatus([
+      entry('assistant_message', '```vibe-status\n쓰는 중인 요약'),
+      entry('error_message'),
+      entry('user_message'),
+    ]);
+    expect(live.draft).toMatchObject({ text: '쓰는 중인 요약', closed: false });
+  });
+
   it('keeps each text once in history, newest copy first', () => {
     const live = computeLiveStatus([
       entry('assistant_message', '```vibe-status\nA.\n```'),

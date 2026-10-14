@@ -19,6 +19,7 @@ import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { ExecutionProcessesProvider } from '@/shared/providers/ExecutionProcessesProvider';
 import { ApprovalFeedbackProvider } from '@/features/workspace-chat/model/contexts/ApprovalFeedbackContext';
 import { EntriesProvider } from '@/features/workspace-chat/model/contexts/EntriesContext';
+import { LiveStatusProvider } from '@/features/workspace-chat/model/hooks/useLiveStatus';
 import { MessageEditProvider } from '@/features/workspace-chat/model/contexts/MessageEditContext';
 import { CreateModeProvider } from '@/features/create-mode/model/CreateModeProvider';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
@@ -311,140 +312,145 @@ function WorkspaceSessionPanel({
     >
       <ApprovalFeedbackProvider>
         <EntriesProvider key={`${workspaceId}-${selectedSessionId ?? 'new'}`}>
-          <MessageEditProvider>
-            <div
-              ref={panelRef}
-              className="relative flex h-full flex-1 flex-col bg-primary"
-            >
-              <div className="flex items-center justify-between px-base py-half border-b shrink-0">
-                <div className="flex items-center gap-half min-w-0 font-ibm-plex-mono">
-                  <button
-                    type="button"
-                    onClick={handleOpenIssuePanel}
-                    className={`${breadcrumbButtonClass} shrink-0`}
-                    aria-label="Open linked issue"
-                  >
-                    {issueSimpleId ?? 'Issue'}
-                  </button>
-                  <span className="text-low text-sm shrink-0">/</span>
-                  <button
-                    type="button"
-                    onClick={handleOpenWorkspaceView}
-                    className={breadcrumbButtonClass}
-                    aria-label="Open workspace"
-                  >
-                    {workspaceBranch ?? 'Workspace'}
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-half">
-                  <button
-                    type="button"
-                    onClick={handleOpenWorkspaceView}
-                    className="p-half rounded-sm text-low hover:text-normal hover:bg-panel transition-colors"
-                    aria-label="Open in workspace view"
-                  >
-                    <ArrowsOutIcon className="size-icon-sm" weight="bold" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleOpenWorkspaceInNewTab}
-                    className="p-half rounded-sm text-low hover:text-normal hover:bg-panel transition-colors"
-                    aria-label="Open workspace in new tab"
-                  >
-                    <ArrowSquareOutIcon
-                      className="size-icon-sm"
-                      weight="bold"
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="p-half rounded-sm text-low hover:text-normal hover:bg-panel transition-colors"
-                    aria-label="Close conversation view"
-                  >
-                    <XIcon className="size-icon-sm" weight="bold" />
-                  </button>
-                </div>
-              </div>
-
-              {workspaceWithSession ? (
-                <div className="flex flex-1 min-h-0 overflow-hidden justify-center">
-                  <div className="w-chat max-w-full h-full">
-                    <RetryUiProvider workspaceId={workspaceWithSession.id}>
-                      <ConversationList
-                        key={`${workspaceId}-${selectedSessionId ?? 'new'}`}
-                        ref={conversationListRef}
-                        attempt={workspaceWithSession}
-                        onAtBottomChange={handleAtBottomChange}
-                        sessionScopeId={selectedSessionId}
-                      />
-                    </RetryUiProvider>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex-1" />
-              )}
-
-              {workspaceWithSession && !isAtBottom && (
-                <div className="flex justify-center pointer-events-none">
-                  <div className="w-chat max-w-full relative">
+          <LiveStatusProvider>
+            <MessageEditProvider>
+              <div
+                ref={panelRef}
+                className="relative flex h-full flex-1 flex-col bg-primary"
+              >
+                <div className="flex items-center justify-between px-base py-half border-b shrink-0">
+                  <div className="flex items-center gap-half min-w-0 font-ibm-plex-mono">
                     <button
                       type="button"
-                      onClick={() => handleScrollToBottom('auto')}
-                      className="absolute bottom-2 right-4 z-10 pointer-events-auto flex items-center justify-center size-8 rounded-full bg-secondary/80 backdrop-blur-sm border border-secondary text-low hover:text-normal hover:bg-secondary shadow-md transition-all"
-                      aria-label="Scroll to bottom"
-                      title="Scroll to bottom"
+                      onClick={handleOpenIssuePanel}
+                      className={`${breadcrumbButtonClass} shrink-0`}
+                      aria-label="Open linked issue"
                     >
-                      <ArrowDownIcon className="size-icon-base" weight="bold" />
+                      {issueSimpleId ?? 'Issue'}
+                    </button>
+                    <span className="text-low text-sm shrink-0">/</span>
+                    <button
+                      type="button"
+                      onClick={handleOpenWorkspaceView}
+                      className={breadcrumbButtonClass}
+                      aria-label="Open workspace"
+                    >
+                      {workspaceBranch ?? 'Workspace'}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-half">
+                    <button
+                      type="button"
+                      onClick={handleOpenWorkspaceView}
+                      className="p-half rounded-sm text-low hover:text-normal hover:bg-panel transition-colors"
+                      aria-label="Open in workspace view"
+                    >
+                      <ArrowsOutIcon className="size-icon-sm" weight="bold" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleOpenWorkspaceInNewTab}
+                      className="p-half rounded-sm text-low hover:text-normal hover:bg-panel transition-colors"
+                      aria-label="Open workspace in new tab"
+                    >
+                      <ArrowSquareOutIcon
+                        className="size-icon-sm"
+                        weight="bold"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="p-half rounded-sm text-low hover:text-normal hover:bg-panel transition-colors"
+                      aria-label="Close conversation view"
+                    >
+                      <XIcon className="size-icon-sm" weight="bold" />
                     </button>
                   </div>
                 </div>
-              )}
 
-              <div
-                className="flex min-h-0 max-h-[50%] justify-center @container pl-px"
-                data-chatbox-container="true"
-              >
-                <SessionChatBoxContainer
-                  {...(isSessionsLoading || isWorkspaceLoading
-                    ? {
-                        mode: 'placeholder' as const,
-                      }
-                    : isNewSessionMode
+                {workspaceWithSession ? (
+                  <div className="flex flex-1 min-h-0 overflow-hidden justify-center">
+                    <div className="w-chat max-w-full h-full">
+                      <RetryUiProvider workspaceId={workspaceWithSession.id}>
+                        <ConversationList
+                          key={`${workspaceId}-${selectedSessionId ?? 'new'}`}
+                          ref={conversationListRef}
+                          attempt={workspaceWithSession}
+                          onAtBottomChange={handleAtBottomChange}
+                          sessionScopeId={selectedSessionId}
+                        />
+                      </RetryUiProvider>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex-1" />
+                )}
+
+                {workspaceWithSession && !isAtBottom && (
+                  <div className="flex justify-center pointer-events-none">
+                    <div className="w-chat max-w-full relative">
+                      <button
+                        type="button"
+                        onClick={() => handleScrollToBottom('auto')}
+                        className="absolute bottom-2 right-4 z-10 pointer-events-auto flex items-center justify-center size-8 rounded-full bg-secondary/80 backdrop-blur-sm border border-secondary text-low hover:text-normal hover:bg-secondary shadow-md transition-all"
+                        aria-label="Scroll to bottom"
+                        title="Scroll to bottom"
+                      >
+                        <ArrowDownIcon
+                          className="size-icon-base"
+                          weight="bold"
+                        />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div
+                  className="flex min-h-0 max-h-[50%] justify-center @container pl-px"
+                  data-chatbox-container="true"
+                >
+                  <SessionChatBoxContainer
+                    {...(isSessionsLoading || isWorkspaceLoading
                       ? {
-                          mode: 'new-session' as const,
-                          workspaceId,
-                          onSelectSession: selectSession,
+                          mode: 'placeholder' as const,
                         }
-                      : selectedSession
+                      : isNewSessionMode
                         ? {
-                            mode: 'existing-session' as const,
-                            session: selectedSession,
+                            mode: 'new-session' as const,
+                            workspaceId,
                             onSelectSession: selectSession,
-                            onStartNewSession: startNewSession,
                           }
-                        : {
-                            mode: 'placeholder' as const,
-                          })}
-                  // Mirrors WorkspaceDetail: a background pane's chat must not
-                  // grab focus when it mounts or remounts (feedback mode,
-                  // session switch).
-                  autoFocus={isActivePane}
-                  sessions={sessions}
-                  filesChanged={workspaceSummary?.filesChanged ?? 0}
-                  linesAdded={workspaceSummary?.linesAdded ?? 0}
-                  linesRemoved={workspaceSummary?.linesRemoved ?? 0}
-                  disableViewCode
-                  showOpenWorkspaceButton
-                  onScrollToPreviousMessage={handleScrollToPreviousMessage}
-                  onScrollToBottom={handleScrollToBottom}
-                  onScrollToUserMessage={handleScrollToUserMessage}
-                  getActiveTurnPatchKey={handleGetActiveTurnPatchKey}
-                />
+                        : selectedSession
+                          ? {
+                              mode: 'existing-session' as const,
+                              session: selectedSession,
+                              onSelectSession: selectSession,
+                              onStartNewSession: startNewSession,
+                            }
+                          : {
+                              mode: 'placeholder' as const,
+                            })}
+                    // Mirrors WorkspaceDetail: a background pane's chat must not
+                    // grab focus when it mounts or remounts (feedback mode,
+                    // session switch).
+                    autoFocus={isActivePane}
+                    sessions={sessions}
+                    filesChanged={workspaceSummary?.filesChanged ?? 0}
+                    linesAdded={workspaceSummary?.linesAdded ?? 0}
+                    linesRemoved={workspaceSummary?.linesRemoved ?? 0}
+                    disableViewCode
+                    showOpenWorkspaceButton
+                    onScrollToPreviousMessage={handleScrollToPreviousMessage}
+                    onScrollToBottom={handleScrollToBottom}
+                    onScrollToUserMessage={handleScrollToUserMessage}
+                    getActiveTurnPatchKey={handleGetActiveTurnPatchKey}
+                  />
+                </div>
               </div>
-            </div>
-          </MessageEditProvider>
+            </MessageEditProvider>
+          </LiveStatusProvider>
         </EntriesProvider>
       </ApprovalFeedbackProvider>
     </ExecutionProcessesProvider>

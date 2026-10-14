@@ -136,26 +136,40 @@ describe('statusFirstSentence', () => {
     expect(statusFirstSentence('It is done. Really.')).toBe('It is done.');
   });
 
-  it('still ends a sentence at an abbreviation followed by a new sentence', () => {
+  it('ends after etc. or a company suffix only before a capital letter', () => {
     expect(
       statusFirstSentence(
         'Updated the README, CHANGELOG, etc. Next is the API.'
       )
     ).toBe('Updated the README, CHANGELOG, etc.');
-    expect(
-      statusFirstSentence('We went with Plan B. The original broke.')
-    ).toBe('We went with Plan B.');
     expect(statusFirstSentence('Merged the fix from Acme Inc. Waiting.')).toBe(
       'Merged the fix from Acme Inc.'
     );
     expect(statusFirstSentence('Cut p95 latency to 120 ms. Next up.')).toBe(
       'Cut p95 latency to 120 ms.'
     );
+    const long = `Covered the parser, the observer, the strip, the sidebar row, cards, etc.`;
+    expect(statusFirstSentence(long)).toBe(long);
+  });
+
+  it('never ends at a reference abbreviation or initials before a name', () => {
+    expect(
+      statusFirstSentence('Postgres vs. SQLite 성능을 비교하고 있어요. 다음.')
+    ).toBe('Postgres vs. SQLite 성능을 비교하고 있어요.');
+    expect(
+      statusFirstSentence(
+        '상태 저장소를 골랐어요(e.g. Zustand). 다음은 연결이에요.'
+      )
+    ).toBe('상태 저장소를 골랐어요(e.g. Zustand).');
+    expect(statusFirstSentence('(cf. RFC 6902) 규칙대로 고쳤어요. 끝.')).toBe(
+      '(cf. RFC 6902) 규칙대로 고쳤어요.'
+    );
+    expect(statusFirstSentence('Paired with J. Kim on the fix. Done.')).toBe(
+      'Paired with J. Kim on the fix.'
+    );
     expect(statusFirstSentence('e.g. 로그인 화면을 고치고 있어요. 다음.')).toBe(
       'e.g. 로그인 화면을 고치고 있어요.'
     );
-    const long = `Covered the parser, the observer, the strip, the sidebar row, cards, etc.`;
-    expect(statusFirstSentence(long)).toBe(long);
   });
 });
 

@@ -28,17 +28,15 @@ pub struct StatusNoteObserver {
 }
 
 /// Entries that mean the agent has moved past an earlier message, mirroring
-/// the client's rule for when an unclosed block stops growing.
+/// the client's rule for when an unclosed block stops growing. Errors (stderr)
+/// and user messages can be appended while a message still streams, so they
+/// do not count.
 fn moves_on(entry_type: &NormalizedEntryType) -> bool {
     matches!(
         entry_type,
         NormalizedEntryType::AssistantMessage
             | NormalizedEntryType::ToolUse { .. }
             | NormalizedEntryType::Thinking
-            | NormalizedEntryType::UserMessage
-            | NormalizedEntryType::UserFeedback { .. }
-            | NormalizedEntryType::UserAnsweredQuestions { .. }
-            | NormalizedEntryType::ErrorMessage { .. }
     )
 }
 
@@ -57,7 +55,14 @@ impl StatusNoteObserver {
     /// last closed block of the newest message is the summary the agent
     /// currently stands by.
     pub async fn observe_entry(&mut self, index: usize, entry: &NormalizedEntry) {
-        if moves_on(&entry.entry_type)
+        let block = matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
+            .then(|| status_note::extract_last_block(&entry.content))
+            .flatten()
+            .filter(|_| self.newest.is_none_or(|newest| index >= newest));
+        // The agent moved on from an unclosed block: keep it as far as it got,
+        // unless this very entry brings a newer block that replaces it.
+        if block.is_none()
+            && moves_on(&entry.entry_type)
             && let Some((open_index, text)) = self.open.take()
         {
             if index > open_index {
@@ -66,15 +71,10 @@ impl StatusNoteObserver {
                 self.open = Some((open_index, text));
             }
         }
-        if !matches!(entry.entry_type, NormalizedEntryType::AssistantMessage) {
-            return;
-        }
-        let Some(block) = status_note::extract_last_block(&entry.content) else {
+        // An older message seen again never overrides a newer summary.
+        let Some(block) = block else {
             return;
         };
-        if self.newest.is_some_and(|newest| index < newest) {
-            return;
-        }
         self.newest = Some(index);
         if block.closed {
             self.open = None;
@@ -98,6 +98,9 @@ impl StatusNoteObserver {
         }
         if self.store(&seen.1).await {
             self.stored = Some(seen);
+        } else if self.newest.is_none_or(|newest| index >= newest) && self.open.is_none() {
+            // Retried by the next entry that moves on, or at completion.
+            self.open = Some(seen);
         }
     }
 
@@ -267,9 +270,26 @@ mod tests {
             note(&pool, id).await.as_deref(),
             Some("이미 저장된 요약이에요.")
         );
+        // A stderr line can land while the message still streams: not a sign
+        // that the agent moved on.
         observer
             .observe_entry(
                 2,
+                &NormalizedEntry {
+                    entry_type: NormalizedEntryType::ErrorMessage {
+                        error_type: executors::logs::NormalizedEntryError::Other,
+                    },
+                    ..message("warning: something on stderr")
+                },
+            )
+            .await;
+        assert_eq!(
+            note(&pool, id).await.as_deref(),
+            Some("이미 저장된 요약이에요.")
+        );
+        observer
+            .observe_entry(
+                3,
                 &NormalizedEntry {
                     entry_type: NormalizedEntryType::Thinking,
                     ..message("")

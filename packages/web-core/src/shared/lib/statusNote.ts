@@ -153,13 +153,15 @@ export function statusPlainText(text: string): string {
   return text.replace(LINK, '$1');
 }
 
-// A period after a title never ends a sentence ("Dr. Kim"). After another
-// abbreviation or dotted initials ("e.g.", "U.S.", "Plan B.") it does only
-// when a capital letter or the end of the text follows.
-const TITLE = /(?:^|[\s(])(?:dr|mr|mrs|prof|st|jr|sr)\.$/i;
-const ABBREVIATION =
-  /(?:^|[\s(])(?:e\.g|i\.e|etc|vs|cf|approx|inc|ltd|co|fig|eq|ref|ch|sec|vol|pp|al)\.$/i;
+// A period after a title, a reference abbreviation or initials never ends a
+// sentence: "Dr. Kim", "Postgres vs. SQLite", "(e.g. Zustand)", "J. Kim".
+// After "etc." or a company suffix it does when a capital letter follows.
+// ponytail: when unsure, keep going; a longer headline is only clipped by the
+// row, while a fragment like "Paired with J." reads as broken.
+const NEVER_ENDS =
+  /(?:^|[\s(])(?:dr|mr|mrs|prof|st|jr|sr|e\.g|i\.e|vs|cf|approx|fig|eq|ref|ch|sec|vol|pp|al)\.$/i;
 const INITIALS = /(?:^|[\s(])(?:[A-Z]\.)+$/;
+const ENDS_BEFORE_CAPITAL = /(?:^|[\s(])(?:etc|inc|ltd|co)\.$/i;
 
 /**
  * The sentence the collapsed strip, sidebar row and issue card show. Ends at
@@ -174,7 +176,7 @@ export function statusFirstSentence(text: string): string {
   while ((stop = stops.exec(plain))) {
     const sentence = plain.slice(0, stop.index + 1);
     if (stop[0] === '.') {
-      if (TITLE.test(sentence)) continue;
+      if (NEVER_ENDS.test(sentence) || INITIALS.test(sentence)) continue;
       const next = plain
         .slice(stop.index + 1)
         .trimStart()
@@ -182,7 +184,7 @@ export function statusFirstSentence(text: string): string {
       if (
         next !== '' &&
         !/[A-Z]/.test(next) &&
-        (ABBREVIATION.test(sentence) || INITIALS.test(sentence))
+        ENDS_BEFORE_CAPITAL.test(sentence)
       )
         continue;
     }
