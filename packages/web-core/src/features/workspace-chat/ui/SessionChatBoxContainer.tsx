@@ -959,11 +959,22 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     pending.process = arrived;
     if (pending.stopRequested && pending.settleOnAdopt) {
       pending.stopReal(arrived.id);
+    } else if (pending.stopRequested) {
+      // Keep showing the stop on the real row until the answer lets it go out.
+      patchOptimisticProcess(arrived.id, {
+        status: ExecutionProcessStatus.killed,
+      });
     }
     if (pending.hideQueuedId) dropQueuedLocally(pending.hideQueuedId);
     if (pending.settleOnAdopt) pendingSends.delete(sessionId);
     pendingSendsChanged();
-  }, [sessionId, processes, clearOptimisticProcess, dropQueuedLocally]);
+  }, [
+    sessionId,
+    processes,
+    clearOptimisticProcess,
+    patchOptimisticProcess,
+    dropQueuedLocally,
+  ]);
 
   // An unmounted composer can't drop its provider's copy of the placeholder
   // any more (the provider may outlive it), so drop it now; a composer showing
