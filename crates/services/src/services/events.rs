@@ -31,6 +31,25 @@ pub struct EventService {
     entry_count: Arc<RwLock<usize>>,
 }
 
+/// Re-reads a row the commit hook just announced. The hook fires before
+/// SQLite finalises the commit, so a miss is retried briefly before it is
+/// taken for a deletion.
+async fn read_committed<T, E, F, Fut>(mut read: F) -> Result<Option<T>, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Option<T>, E>>,
+{
+    let mut row = read().await?;
+    for _ in 0..5 {
+        if row.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        row = read().await?;
+    }
+    Ok(row)
+}
+
 impl EventService {
     /// Creates a new EventService that will work with a DBService configured with hooks
     pub fn new(db: DBService, msg_store: Arc<MsgStore>, entry_count: Arc<RwLock<usize>>) -> Self {
@@ -137,29 +156,51 @@ impl EventService {
                     }
                 });
 
-                handle.set_update_hook(move |hook: sqlx::sqlite::UpdateHookResult<'_>| {
-                    let runtime_handle = runtime_handle.clone();
-                    let entry_count_for_hook = entry_count_for_hook.clone();
-                    let msg_store_for_hook = msg_store_for_hook.clone();
-                    let db = db_for_hook.clone();
-
-                    if let Ok(table) = HookTables::from_str(hook.table) {
-                        let rowid = hook.rowid;
+                // SQLite fires update hooks while the statement is still running,
+                // before its transaction commits. A pooled re-read at that point
+                // misses a new row (and would publish it as deleted) or sees the
+                // old value of an updated one, so row events are queued per
+                // connection and published from the commit hook.
+                let pending = Arc::new(std::sync::Mutex::new(Vec::<(
+                    HookTables,
+                    SqliteOperation,
+                    i64,
+                )>::new()));
+                handle.set_update_hook({
+                    let pending = pending.clone();
+                    move |hook: sqlx::sqlite::UpdateHookResult<'_>| {
+                        if let Ok(table) = HookTables::from_str(hook.table) {
+                            pending.lock().unwrap().push((
+                                table,
+                                hook.operation.clone(),
+                                hook.rowid,
+                            ));
+                        }
+                    }
+                });
+                handle.set_rollback_hook({
+                    let pending = pending.clone();
+                    move || pending.lock().unwrap().clear()
+                });
+                handle.set_commit_hook(move || {
+                    let batch = std::mem::take(&mut *pending.lock().unwrap());
+                    for (table, operation, rowid) in batch {
+                        let entry_count_for_hook = entry_count_for_hook.clone();
+                        let msg_store_for_hook = msg_store_for_hook.clone();
+                        let db = db_for_hook.clone();
                         runtime_handle.spawn(async move {
-                            // SQLite invokes update hooks before the statement commits.
-                            // Let the issuing query finish first so this pooled re-read
-                            // cannot publish the previous row value after an explicit
-                            // post-commit lifecycle update.
+                            // The commit hook runs just before SQLite finalises the
+                            // commit; let the writer finish first.
                             tokio::task::yield_now().await;
 
-                            let record_type: RecordTypes = match (table, hook.operation.clone()) {
+                            let record_type: RecordTypes = match (table, operation.clone()) {
                                 (HookTables::Workspaces, SqliteOperation::Delete)
                                 | (HookTables::ExecutionProcesses, SqliteOperation::Delete)
                                 | (HookTables::Scratch, SqliteOperation::Delete) => {
                                     return;
                                 }
                                 (HookTables::Workspaces, _) => {
-                                    match Workspace::find_by_rowid(&db.pool, rowid).await {
+                                    match read_committed(|| Workspace::find_by_rowid(&db.pool, rowid)).await {
                                         Ok(Some(workspace)) => RecordTypes::Workspace(workspace),
                                         Ok(None) => RecordTypes::DeletedWorkspace {
                                             rowid,
@@ -174,7 +215,7 @@ impl EventService {
                                     }
                                 }
                                 (HookTables::ExecutionProcesses, _) => {
-                                    match ExecutionProcess::find_by_rowid(&db.pool, rowid).await {
+                                    match read_committed(|| ExecutionProcess::find_by_rowid(&db.pool, rowid)).await {
                                         Ok(Some(process)) => RecordTypes::ExecutionProcess(process),
                                         Ok(None) => RecordTypes::DeletedExecutionProcess {
                                             rowid,
@@ -191,7 +232,7 @@ impl EventService {
                                     }
                                 }
                                 (HookTables::Scratch, _) => {
-                                    match Scratch::find_by_rowid(&db.pool, rowid).await {
+                                    match read_committed(|| Scratch::find_by_rowid(&db.pool, rowid)).await {
                                         Ok(Some(scratch)) => RecordTypes::Scratch(scratch),
                                         Ok(None) => RecordTypes::DeletedScratch {
                                             rowid,
@@ -206,7 +247,7 @@ impl EventService {
                                 }
                             };
 
-                            let db_op: &str = match hook.operation {
+                            let db_op: &str = match operation {
                                 SqliteOperation::Insert => "insert",
                                 SqliteOperation::Delete => "delete",
                                 SqliteOperation::Update => "update",
@@ -216,7 +257,7 @@ impl EventService {
                             // Handle operations with direct patches
                             match &record_type {
                                 RecordTypes::Scratch(scratch) => {
-                                    let patch = match hook.operation {
+                                    let patch = match operation {
                                         SqliteOperation::Insert => scratch_patch::add(scratch),
                                         SqliteOperation::Update => scratch_patch::replace(scratch),
                                         _ => scratch_patch::replace(scratch),
@@ -244,7 +285,7 @@ impl EventService {
                                         Workspace::find_by_id_with_status(&db.pool, workspace.id)
                                             .await
                                     {
-                                        let patch = match hook.operation {
+                                        let patch = match operation {
                                             SqliteOperation::Insert => {
                                                 workspace_patch::add(&workspace_with_status)
                                             }
@@ -258,7 +299,7 @@ impl EventService {
                                     return;
                                 }
                                 RecordTypes::ExecutionProcess(process) => {
-                                    let patch = match hook.operation {
+                                    let patch = match operation {
                                         SqliteOperation::Insert => {
                                             execution_process_patch::add(process)
                                         }
@@ -337,6 +378,8 @@ impl EventService {
                             msg_store_for_hook.push_patch(patch);
                         });
                     }
+                    // `false` would turn the commit into a rollback.
+                    true
                 });
 
                 Ok(())
