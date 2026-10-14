@@ -73,9 +73,16 @@ export function WorkspaceStatusStripContainer({
       .map((item) => ({
         text: item.text,
         at: processTime(item.executionProcessId),
+        processId: item.executionProcessId,
       }));
-    return current ? [{ text: current, at: currentAt }, ...past] : past;
-  }, [current, currentAt, history, processTime]);
+    if (!current) return past;
+    // A stored note is dated by the row; the turn that wrote it (if loaded)
+    // still owns its attachments.
+    const processId =
+      live?.executionProcessId ??
+      history.find((item) => item.text === current)?.executionProcessId;
+    return [{ text: current, at: currentAt, processId }, ...past];
+  }, [current, currentAt, history, live?.executionProcessId, processTime]);
 
   // The reader's position is the summary text, not an index, so a new block
   // arriving in front does not change what they are looking at.
@@ -112,11 +119,11 @@ export function WorkspaceStatusStripContainer({
     toggle();
   }, [toggle]);
 
-  // Attachments are looked up on the process that wrote the block, else the
-  // session's latest process; a stored note from an older session falls
+  // Attachments are looked up on the process that wrote the viewed summary,
+  // else the session's latest process; a note from an older session falls
   // through to the file viewer.
   const processId =
-    draft?.executionProcessId ?? processes?.executionProcessesAll.at(-1)?.id;
+    viewed?.processId ?? processes?.executionProcessesAll.at(-1)?.id;
   const artifacts = useExecutionArtifacts(
     processId ?? '',
     workspaceId,

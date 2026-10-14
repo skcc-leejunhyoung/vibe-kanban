@@ -61,6 +61,15 @@ describe('splitStatusSegments', () => {
     expect(statusTruncate('가'.repeat(1001)).length).toBe(1001);
   });
 
+  it('accepts extra words after the tag, like any info string', () => {
+    expect(splitStatusSegments('```vibe-status live\nx\n```')).toEqual([
+      { kind: 'status', text: 'x', closed: true },
+    ]);
+    expect(splitStatusSegments('```vibe-statusx\nx\n```')).toEqual([
+      { kind: 'markdown', text: '```vibe-statusx\nx\n```' },
+    ]);
+  });
+
   it('returns the last block of a message', () => {
     const content =
       '```vibe-status\nfirst\n```\nmore\n```vibe-status\nsecond\n```';
@@ -97,6 +106,28 @@ describe('statusFirstSentence', () => {
   it('clips a summary without sentence punctuation', () => {
     expect(statusFirstSentence('가'.repeat(100))).toBe(`${'가'.repeat(80)}…`);
     expect(statusFirstSentence('short')).toBe('short');
+    // The clip counts characters, never splitting a surrogate pair.
+    expect(statusFirstSentence(`${'a'.repeat(79)}😀b`)).toBe(
+      `${'a'.repeat(79)}😀…`
+    );
+  });
+
+  it('does not end a sentence at an abbreviation or dotted initials', () => {
+    expect(
+      statusFirstSentence(
+        'Fixing the blank screen after login, e.g. when the token expires. Tests next.'
+      )
+    ).toBe('Fixing the blank screen after login, e.g. when the token expires.');
+    expect(statusFirstSentence('Dr. Kim reviewed it. Approved.')).toBe(
+      'Dr. Kim reviewed it.'
+    );
+    expect(statusFirstSentence('Approx. 40% done. More later.')).toBe(
+      'Approx. 40% done.'
+    );
+    expect(statusFirstSentence('Checked the U.S. build. Next.')).toBe(
+      'Checked the U.S. build.'
+    );
+    expect(statusFirstSentence('It is done. Really.')).toBe('It is done.');
   });
 });
 

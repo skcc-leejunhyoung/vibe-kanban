@@ -178,7 +178,9 @@ fn append_artifact_instructions(prompt: &mut String, suffix: &str) {
 // same channel as the artifact rules, so one copy survives compaction.
 const ARTIFACT_REMINDER: &str = "[Artifacts] Attach each deliverable on its own line as \
      [Title](relative/path \"vibe-artifact\"). The full artifact rules are in your instructions. \
-     [Status] Keep the vibe-status summary block current; the rules are in your instructions.";
+     [Status] Keep the ```vibe-status block current: one plain paragraph under 1000 visible \
+     characters telling someone without context what this work is and how far it has come; \
+     the full rules are in your instructions.";
 
 const ARTIFACT_INSTRUCTIONS: &str = "[Artifacts]\n\
              Only attach deliverables you intentionally want the user to preview or download. \
@@ -209,12 +211,14 @@ const ARTIFACT_INSTRUCTIONS: &str = "[Artifacts]\n\
              then the request or symptom, what you verified (with numbers), what remains, and any \
              decision you need from the user. No labels, bullet points, headings, file names or \
              function names. Stay under 1000 visible characters; markdown links such as \
-             [text](relative/path \"vibe-artifact\") are allowed and their markup is not counted. \
-             Rewrite the whole block whenever the situation changes: when you start a turn, after a \
-             meaningful result, and before you finish. The app stores the block as the workspace \
-             summary and shows a small marker in its place, so do not repeat it in prose. Skip the \
-             block only when the entire reply must be machine-readable, such as a JSON-only answer; \
-             a required final line such as VIBE_RESULT: still follows the block.";
+             [text](relative/path \"vibe-artifact\") are allowed and their markup is not counted: \
+             to link a deliverable, attach it on its own line in your reply as usual and reuse that \
+             path in the block. Rewrite the whole block whenever the situation changes: when you \
+             start a turn, after a meaningful result, and before you finish. The app stores the \
+             block as the workspace summary and shows a small marker in its place; write your \
+             normal reply around it rather than repeating its text in prose. Skip the block only \
+             when the entire reply must be machine-readable, such as a JSON-only answer; a required \
+             final line such as VIBE_RESULT: still follows the block.";
 
 #[cfg(test)]
 mod tests {
@@ -238,7 +242,7 @@ mod tests {
         assert!(prompt.contains("\n\n[Status]\n"));
         assert!(prompt.contains("```vibe-status"));
         assert!(prompt.contains("under 1000 visible characters"));
-        assert!(ARTIFACT_REMINDER.contains("[Status] Keep the vibe-status summary block current"));
+        assert!(ARTIFACT_REMINDER.contains("[Status] Keep the ```vibe-status block current"));
     }
 
     #[test]

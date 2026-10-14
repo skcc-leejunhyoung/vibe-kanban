@@ -220,7 +220,8 @@ export const WorkspacesMainContainer = forwardRef<
     return () => {
       observer.disconnect();
     };
-  }, [workspaceWithSession?.id, session?.id]);
+    // The slots only exist once loading ends; observe them from then on.
+  }, [workspaceWithSession?.id, session?.id, isLoading]);
 
   const entriesProviderKey = workspaceWithSession
     ? `${workspaceWithSession.id}-${selectedSessionId ?? 'new'}`

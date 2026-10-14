@@ -286,12 +286,15 @@ const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
           <div
             className="flex w-full items-center gap-half overflow-hidden whitespace-nowrap pr-double text-xs"
             style={{
-              maskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
-              WebkitMaskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+              maskImage:
+                'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+              WebkitMaskImage:
+                'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
             }}
             title={statusHeadline}
           >
             <span
+              aria-hidden="true"
               className={cn(
                 'size-dot shrink-0 rounded-full',
                 isActuallyRunning

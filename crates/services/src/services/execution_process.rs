@@ -411,7 +411,7 @@ pub fn spawn_stream_raw_logs_to_storage(
                                 observer.observe_entry(index, &entry).await;
                             }
                             if let Some(observer) = &mut status {
-                                observer.observe_entry(&entry).await;
+                                observer.observe_entry(index, &entry).await;
                             }
                         }
                         if let Some(observer) = &mut artifacts

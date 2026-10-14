@@ -1823,6 +1823,19 @@ impl LocalContainerService {
         // Get the history and scan in reverse for the last assistant message
         let history = msg_store.get_history();
 
+        const MAX_SUMMARY_LENGTH: usize = 4096;
+        let cap = |content: &str| {
+            if content.len() > MAX_SUMMARY_LENGTH {
+                let truncated = truncate_to_char_boundary(content, MAX_SUMMARY_LENGTH);
+                format!("{truncated}...")
+            } else {
+                content.to_string()
+            }
+        };
+        // A turn that ends with only its live summary block (and perhaps the
+        // result sentinel) still needs a summary: the block itself is the best
+        // one, but any real prose the turn wrote comes first.
+        let mut block_only: Option<String> = None;
         for msg in history.iter().rev() {
             if let LogMsg::JsonPatch(patch) = msg {
                 // Try to extract a NormalizedEntry from the patch
@@ -1831,20 +1844,24 @@ impl LocalContainerService {
                 {
                     // The live summary block is workspace state, not prose.
                     let content = executors::logs::status_note::strip_blocks(&entry.content);
-                    let content = content.as_str();
-                    if !content.is_empty() {
-                        const MAX_SUMMARY_LENGTH: usize = 4096;
-                        if content.len() > MAX_SUMMARY_LENGTH {
-                            let truncated = truncate_to_char_boundary(content, MAX_SUMMARY_LENGTH);
-                            return Some(format!("{truncated}..."));
-                        }
-                        return Some(content.to_string());
+                    if !vibe_orchestrator::strip_result_sentinel(&content)
+                        .trim()
+                        .is_empty()
+                    {
+                        return Some(cap(&content));
+                    }
+                    if block_only.is_none()
+                        && let Some(block) =
+                            executors::logs::status_note::extract_last_block(&entry.content)
+                        && !block.text.is_empty()
+                    {
+                        block_only = Some(block.text);
                     }
                 }
             }
         }
 
-        None
+        block_only.map(|text| cap(&text))
     }
 
     /// Like [`extract_last_assistant_message`] but returns the full, untruncated

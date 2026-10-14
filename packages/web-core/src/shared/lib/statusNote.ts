@@ -64,8 +64,10 @@ export function splitStatusSegments(content: string): StatusSegment[] {
       let count = 0;
       while (delimiter[count] === marker) count++;
       if (count >= 3) {
+        // CommonMark: the first word of the info string is the language.
         const status =
-          delimiter.slice(count).trim().toLowerCase() === STATUS_INFO_STRING;
+          delimiter.slice(count).trim().split(/\s+/)[0].toLowerCase() ===
+          STATUS_INFO_STRING;
         fence = { marker, count, status, lines: [] };
         if (!status) markdown.push(line);
         continue;
@@ -146,17 +148,33 @@ export function statusPlainText(text: string): string {
   return text.replace(LINK, '$1');
 }
 
+// A period after these does not end a sentence: common abbreviations, and
+// dotted initials or acronyms such as "J." or "U.S.".
+const ABBREVIATION =
+  /(?:^|[\s(])(?:e\.g|i\.e|etc|vs|cf|approx|dr|mr|mrs|ms|prof|st|jr|sr|inc|ltd|co|fig|eq|ref|ch|sec|vol|pp|al)\.$/i;
+const INITIALS = /(?:^|[\s(])(?:[A-Z]\.)+$/;
+
 /**
  * The sentence the collapsed strip, sidebar row and issue card show. Ends at
  * the first terminal punctuation followed by whitespace (so "0.8초" never
- * cuts a sentence) or at a full-width stop; a summary without one is clipped
- * to 80 characters.
+ * cuts a sentence) or at a full-width stop, skipping abbreviations; a
+ * summary without one is clipped to 80 characters.
  */
 export function statusFirstSentence(text: string): string {
   const plain = statusPlainText(text).replace(/\s+/g, ' ').trim();
-  const match = plain.match(/^(.+?(?:[.!?](?=\s|$)|[。！？]))/);
-  if (match) return match[1];
-  return plain.length > 80 ? `${plain.slice(0, 80)}…` : plain;
+  const stops = /[.!?](?=\s|$)|[。！？]/g;
+  let stop: RegExpExecArray | null;
+  while ((stop = stops.exec(plain))) {
+    const sentence = plain.slice(0, stop.index + 1);
+    if (
+      stop[0] === '.' &&
+      (ABBREVIATION.test(sentence) || INITIALS.test(sentence))
+    )
+      continue;
+    return sentence;
+  }
+  const chars = Array.from(plain);
+  return chars.length > 80 ? `${chars.slice(0, 80).join('')}…` : plain;
 }
 
 /**

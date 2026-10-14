@@ -45,6 +45,14 @@ const STATE_BORDER: Record<WorkspaceStatusState, string> = {
   idle: 'border-l-low',
 };
 
+// Spoken name of the state icon; the sidebar already uses these labels.
+const STATE_LABEL: Record<WorkspaceStatusState, string> = {
+  running: 'workspaces.running',
+  pending: 'workspaces.needsAttention',
+  failed: 'error',
+  idle: 'workspaces.idle',
+};
+
 function StateIcon({ state }: { state: WorkspaceStatusState }) {
   if (state === 'running') return <RunningDots />;
   if (state === 'pending')
@@ -106,7 +114,11 @@ export function WorkspaceStatusStrip({
         title={open ? t('status.collapse') : t('status.expand')}
         className="flex w-full items-center gap-base px-base py-half text-left"
       >
-        <span className="flex w-4 shrink-0 items-center justify-center">
+        <span
+          className="flex w-4 shrink-0 items-center justify-center"
+          role="img"
+          aria-label={t(STATE_LABEL[state])}
+        >
           <StateIcon state={state} />
         </span>
         {!open && (

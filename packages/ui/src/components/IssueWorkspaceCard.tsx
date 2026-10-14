@@ -239,6 +239,7 @@ export function IssueWorkspaceCard({
           title={workspace.statusHeadline}
         >
           <span
+            aria-hidden="true"
             className={cn(
               'mt-1.5 size-dot shrink-0 rounded-full',
               isActuallyRunning

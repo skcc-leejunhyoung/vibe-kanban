@@ -69,11 +69,12 @@ fn scan(text: &str, mut on_block: impl FnMut(usize, usize, String, bool)) {
         if let Some(marker @ ('`' | '~')) = delimiter.chars().next() {
             let count = delimiter.chars().take_while(|ch| *ch == marker).count();
             if count >= 3 {
-                let info = delimiter[count..].trim();
+                // CommonMark: the first word of the info string is the language.
+                let language = delimiter[count..].split_whitespace().next();
                 fence = Some(Fence {
                     marker,
                     count,
-                    status: info.eq_ignore_ascii_case(INFO_STRING),
+                    status: language.is_some_and(|word| word.eq_ignore_ascii_case(INFO_STRING)),
                     start: index,
                 });
                 content.clear();
@@ -199,6 +200,14 @@ mod tests {
             })
         );
         assert_eq!(extract_last_block("```rust\nlet x = 1;\n```"), None);
+        // Extra words after the tag are an info string, like any language tag.
+        assert_eq!(
+            extract_last_block("```vibe-status live\nx\n```")
+                .unwrap()
+                .text,
+            "x"
+        );
+        assert_eq!(extract_last_block("```vibe-statusx\nx\n```"), None);
     }
 
     #[test]

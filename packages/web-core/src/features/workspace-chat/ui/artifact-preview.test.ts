@@ -7,6 +7,7 @@ import {
   splitArtifactSegments,
   subagentScope,
 } from './artifact-preview';
+import { splitStatusSegments } from '@/shared/lib/statusNote';
 
 describe('managed tool image copies', () => {
   it('hides a base64 copy without merging different file or execution origins', () => {
@@ -255,6 +256,29 @@ describe('artifact segments', () => {
     ).toEqual([
       { kind: 'markdown', text: '````md\n```vibe-status\nquoted\n```\n````' },
     ]);
+  });
+
+  it('recognises exactly the summary fences the shared parser does', () => {
+    const cases = [
+      '```vibe-status\na\n```',
+      '  ~~~VIBE-STATUS\nb',
+      '```vibe-status\nc\n```  \nVIBE_RESULT: ok',
+      '````md\n```vibe-status\nq\n```\n````',
+      '```vibe-status live\nd\n```',
+      'x\r\n```vibe-status\r\ne\r\n```\r\ny',
+      '    ```vibe-status\nindented code\n```',
+      '```vibe-status\nf\n``\n```\n```html vibe-artifact\n<p>g</p>\n```',
+      '~~~vibe-status\n```\nnot closed by backticks\n~~~',
+    ];
+    const status = (segments: { kind: string }[]) =>
+      segments
+        .filter((segment) => segment.kind === 'status')
+        .map((segment) => JSON.stringify(segment));
+    for (const text of cases) {
+      expect(status(splitArtifactSegments(text))).toEqual(
+        status(splitStatusSegments(text))
+      );
+    }
   });
 
   it('matches segments to registered artifacts by workspace path', () => {

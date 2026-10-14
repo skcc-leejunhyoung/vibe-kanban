@@ -324,7 +324,7 @@ export function splitArtifactSegments(content: string): ArtifactSegment[] {
           language: info.endsWith(' vibe-artifact')
             ? info.slice(0, -' vibe-artifact'.length).toLowerCase()
             : '',
-          status: info.toLowerCase() === 'vibe-status',
+          status: info.split(/\s+/)[0].toLowerCase() === 'vibe-status',
           lines: [line],
         };
         continue;
