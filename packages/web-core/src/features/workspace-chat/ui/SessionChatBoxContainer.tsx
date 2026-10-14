@@ -1269,6 +1269,17 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       try {
         const process = await request();
         pendingState.spawned = true;
+        // Not our turn: another one had just started, and the server put this
+        // message at the front of the queue. Show it there.
+        if (
+          !matchArrivedProcess([process], {
+            sessionId: target,
+            knownIds: new Set(),
+            prompt: pendingState.prompt,
+          })
+        ) {
+          void refreshQueueStatus();
+        }
         // Swap the placeholder for the real row in one render. Drop our copy
         // even when the row was adopted from the stream: another pane may have
         // adopted it, leaving ours unswapped. Adds are session-guarded, so this
@@ -1313,6 +1324,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       addOptimisticProcess,
       clearOptimisticProcess,
       restorePrompt,
+      refreshQueueStatus,
     ]
   );
 
@@ -1829,7 +1841,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const areAttachmentInputsDisabled =
     mode === 'placeholder' ||
     isCreatingSession ||
-    isStopping ||
     !!feedbackContext?.isSubmitting ||
     isApproving ||
     isDenying ||

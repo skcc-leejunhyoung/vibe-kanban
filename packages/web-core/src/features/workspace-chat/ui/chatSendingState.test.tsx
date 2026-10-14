@@ -65,6 +65,13 @@ describe('SessionChatBox while a follow-up send is pending', () => {
     ).toHaveLength(1);
   });
 
+  it('keeps the editor open while stopping, with nothing to send', () => {
+    const html = render('stopping');
+    expect(html).toContain('<textarea data-editor="1">');
+    expect(button(html, 'conversation.actions.queue')).toBeNull();
+    expect(button(html, 'conversation.actions.send')).toBeNull();
+  });
+
   it('still locks the editor while a session is being created', () => {
     const html = render('creating');
     expect(html).toContain('<textarea data-editor="1" disabled="">');

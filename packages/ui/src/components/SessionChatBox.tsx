@@ -385,9 +385,10 @@ export function SessionChatBox<TExecutor extends string = string>({
       : 'normal';
 
   // Derived state from status
+  // 'stopping' only blocks sending (canSend); typing the next message stays
+  // open while the stop goes through.
   const isDisabled = Boolean(
     status === 'creating' ||
-      status === 'stopping' ||
       feedbackMode?.isSubmitting ||
       editMode?.isSubmitting ||
       approvalMode?.isSubmitting ||
