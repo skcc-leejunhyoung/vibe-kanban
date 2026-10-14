@@ -159,6 +159,10 @@ interface PendingSend {
   hideQueuedId?: string | null;
   /** "Send now": settles once a stop sent through `stopReal` has answered. */
   whenStopped?: () => Promise<void> | undefined;
+  /** "Send now": the steer request (settles, never rejects). */
+  steerRequest?: Promise<unknown>;
+  /** "Send now": put the text back when a stop leaves it unsent. */
+  onAbandoned?: () => void;
 }
 
 const STEER_STOP_GRACE_MS = 5_000;
@@ -495,26 +499,42 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         // adopt effect stops it); then stop once more and settle.
         const stoppedSession = sessionId;
         const stopWorkspace = workspaceId;
-        void (async () => {
+        const stopAll = async () => {
           await queueApi.cancel(stoppedSession, hostId).catch(logStopError);
-          if (stopWorkspace) {
-            await workspacesApi
-              .stop(stopWorkspace, hostId, stoppedSession)
-              .catch(logStopError);
-          }
+          if (!stopWorkspace) return undefined;
+          return workspacesApi
+            .stop(stopWorkspace, hostId, stoppedSession)
+            .then(() => undefined)
+            .catch((error: unknown) => {
+              logStopError(error);
+              return error;
+            });
+        };
+        void (async () => {
+          await stopAll();
+          // The steer may still be on its way (held while the old turn
+          // drains, or relayed late) and start the message after the stop
+          // above: wait for it, then clear and stop again.
+          await pending.steerRequest;
+          if (pendingSends.get(stoppedSession) !== pending) return;
+          await stopAll();
           await new Promise((resolve) =>
             setTimeout(resolve, STEER_STOP_GRACE_MS)
           );
           if (pendingSends.get(stoppedSession) !== pending) return;
           if (pending.process) return; // adopted: stopped there
-          if (stopWorkspace) {
-            await workspacesApi
-              .stop(stopWorkspace, hostId, stoppedSession)
-              .catch(logStopError);
-          }
-          if (pendingSends.get(stoppedSession) === pending) {
-            pendingSends.delete(stoppedSession);
-            pendingSendsChanged();
+          const failed = await stopAll();
+          if (pendingSends.get(stoppedSession) !== pending) return;
+          pendingSends.delete(stoppedSession);
+          pendingSendsChanged();
+          // It never became a turn: don't lose the text.
+          pending.onAbandoned?.();
+          if (failed) {
+            void ErrorDialog.show({
+              title: t('common:error'),
+              message:
+                failed instanceof Error ? failed.message : String(failed),
+            });
           }
         })();
       }
@@ -1602,6 +1622,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       settleOnAdopt: true,
       hideQueuedId: null,
       whenStopped: () => deferred.stop,
+      onAbandoned: () => restorePrompt(sessionId, prompt, executorConfig),
     };
     pendingSends.set(sessionId, pendingState);
     pendingSendsChanged();
@@ -1610,8 +1631,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     clearUploadedAttachments();
     reviewContext?.clearComments();
     void clearDraft();
+    const steering = steer(prompt, executorConfig);
+    pendingState.steerRequest = steering.catch(() => undefined);
     try {
-      const status = await steer(prompt, executorConfig);
+      const status = await steering;
       const row =
         status.status === 'queued'
           ? status.messages.find((m) => m.data.message === prompt)
@@ -1644,11 +1667,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       }, 60_000);
     } catch (error) {
       // The steer never took effect, so the running turn is still going: a
-      // stop pressed meanwhile has to reach it.
-      if (pendingState.stopRequested) stopReal(pending.id);
-      if (pendingSends.get(sessionId) === pendingState) {
-        pendingSends.delete(sessionId);
-      }
+      // stop pressed meanwhile has to reach it — unless this send has been
+      // settled already and the session moved on.
+      const current = pendingSends.get(sessionId) === pendingState;
+      if (current && pendingState.stopRequested) stopReal(pending.id);
+      if (current) pendingSends.delete(sessionId);
       pendingSendsChanged();
       clearOptimisticProcess(pending.id);
       restorePrompt(sessionId, prompt, executorConfig);
