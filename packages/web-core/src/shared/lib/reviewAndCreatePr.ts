@@ -5,7 +5,7 @@ import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
-import type { ExecutorConfig } from 'shared/types';
+import type { ExecutorConfig, Session } from 'shared/types';
 
 const VIBE_REVIEW_POLL_MS = 2000;
 const VIBE_REVIEW_TIMEOUT_MS = 60 * 60 * 1000;
@@ -108,10 +108,18 @@ async function executeReviewAndCreatePr({
     reviewSessionId: reviewSession.id,
     hostId: hostId ?? null,
   });
-  await queryClient.invalidateQueries({
+  // Switch at once; the list refetch catches up in the background.
+  queryClient.setQueryData<Session[]>(
+    workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+    (current) => [
+      reviewSession,
+      ...(current ?? []).filter((s) => s.id !== reviewSession.id),
+    ]
+  );
+  onReviewSession?.(reviewSession.id);
+  void queryClient.invalidateQueries({
     queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
   });
-  onReviewSession?.(reviewSession.id);
 
   return continueReviewAndCreatePr(workspaceId, reviewSession.id, hostId);
 }

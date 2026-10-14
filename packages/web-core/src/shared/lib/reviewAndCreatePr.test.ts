@@ -43,6 +43,7 @@ vi.mock('@/shared/stores/usePrFromAiBackgroundStore', () => ({
 
 const queryClient = {
   invalidateQueries: vi.fn(),
+  setQueryData: vi.fn(),
 } as unknown as QueryClient;
 const storage = new Map<string, string>();
 
