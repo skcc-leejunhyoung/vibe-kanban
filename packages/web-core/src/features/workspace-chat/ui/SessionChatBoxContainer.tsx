@@ -157,7 +157,13 @@ interface PendingSend {
   settleOnAdopt?: boolean;
   /** "Send now": the queue row the server shows for the same message. */
   hideQueuedId?: string | null;
+  /** "Send now": settles once a stop sent through `stopReal` has answered. */
+  whenStopped?: () => Promise<void> | undefined;
 }
+
+const STEER_STOP_GRACE_MS = 5_000;
+const logStopError = (error: unknown) =>
+  console.error('Failed to stop a pending "send now"', error);
 const pendingSends = new Map<string, PendingSend>();
 /**
  * Processes whose deferred stop request failed. Every composer that showed
@@ -481,6 +487,37 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         pending.stopReal(pending.process.id);
         return;
       }
+      if (pending.settleOnAdopt && !pending.process && sessionId) {
+        // "Send now" whose turn hasn't shown up. Don't depend on a composer
+        // being here to adopt it: drop the queue now (a stop does that on the
+        // server anyway) so the pinned message never becomes a turn, and stop
+        // the session. A turn already on its way gets a moment to appear (the
+        // adopt effect stops it); then stop once more and settle.
+        const stoppedSession = sessionId;
+        const stopWorkspace = workspaceId;
+        void (async () => {
+          await queueApi.cancel(stoppedSession, hostId).catch(logStopError);
+          if (stopWorkspace) {
+            await workspacesApi
+              .stop(stopWorkspace, hostId, stoppedSession)
+              .catch(logStopError);
+          }
+          await new Promise((resolve) =>
+            setTimeout(resolve, STEER_STOP_GRACE_MS)
+          );
+          if (pendingSends.get(stoppedSession) !== pending) return;
+          if (pending.process) return; // adopted: stopped there
+          if (stopWorkspace) {
+            await workspacesApi
+              .stop(stopWorkspace, hostId, stoppedSession)
+              .catch(logStopError);
+          }
+          if (pendingSends.get(stoppedSession) === pending) {
+            pendingSends.delete(stoppedSession);
+            pendingSendsChanged();
+          }
+        })();
+      }
       // Nothing the server can kill yet: mark the turn shown (only where this
       // overlay shows it); the real process is killed once it can be.
       const shownId = pending.process?.id ?? pending.placeholder.id;
@@ -512,6 +549,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     }
   }, [
     sessionId,
+    workspaceId,
+    hostId,
     processes,
     patchOptimisticProcess,
     clearOptimisticProcess,
@@ -993,7 +1032,20 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       stopShownIdRef.current = arrived.id;
     }
     if (pending.hideQueuedId) dropQueuedLocally(pending.hideQueuedId);
-    if (pending.settleOnAdopt) pendingSends.delete(sessionId);
+    if (pending.settleOnAdopt) {
+      const settle = () => {
+        if (pendingSends.get(sessionId) !== pending) return;
+        pendingSends.delete(sessionId);
+        pendingSendsChanged();
+      };
+      // A stopped one stays registered until the stop answered, so every
+      // pane keeps showing it stopped and the composer says "stopping".
+      if (pending.stopRequested) {
+        void Promise.resolve(pending.whenStopped?.()).then(settle);
+      } else {
+        settle();
+      }
+    }
     pendingSendsChanged();
   }, [
     sessionId,
@@ -1182,8 +1234,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       } catch (error) {
         // The request can fail after the server started the agent (e.g. the
         // relay dropped the answer); a stop asked for meanwhile still goes out.
-        if (pendingState.stopRequested && pendingState.process) {
-          stopReal(pendingState.process.id);
+        // The stop is session-scoped, so it needs no process id.
+        if (pendingState.stopRequested) {
+          stopReal(pendingState.process?.id ?? placeholder.id);
         }
         onFailure?.(error);
       }
@@ -1537,7 +1590,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       executorConfig,
       latestCreatedAtMs(processes)
     );
-    const { stopReal } = createStopReal(workspaceId, sessionId);
+    const { deferred, stopReal } = createStopReal(workspaceId, sessionId);
     const pendingState: PendingSend = {
       placeholder: pending,
       knownIds: new Set(processes.map((p) => p.id)),
@@ -1548,6 +1601,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       stopReal,
       settleOnAdopt: true,
       hideQueuedId: null,
+      whenStopped: () => deferred.stop,
     };
     pendingSends.set(sessionId, pendingState);
     pendingSendsChanged();
@@ -1577,15 +1631,21 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         // Stop was pressed but no process ever showed up to kill: take the
         // message out of the queue so it doesn't run later unattended.
         // Captured session: the composer may show another one by now.
-        if (pendingState.stopRequested && pendingState.hideQueuedId) {
-          void queueApi
-            .cancelOne(sessionId, pendingState.hideQueuedId, hostId)
-            .catch((error) =>
-              console.error('Failed to drop a stopped "send now"', error)
-            );
+        if (pendingState.stopRequested) {
+          if (pendingState.hideQueuedId) {
+            void queueApi
+              .cancelOne(sessionId, pendingState.hideQueuedId, hostId)
+              .catch(logStopError);
+          }
+          void workspacesApi
+            .stop(workspaceId, hostId, sessionId)
+            .catch(logStopError);
         }
       }, 60_000);
     } catch (error) {
+      // The steer never took effect, so the running turn is still going: a
+      // stop pressed meanwhile has to reach it.
+      if (pendingState.stopRequested) stopReal(pending.id);
       if (pendingSends.get(sessionId) === pendingState) {
         pendingSends.delete(sessionId);
       }
