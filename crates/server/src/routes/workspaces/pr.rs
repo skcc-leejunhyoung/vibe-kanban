@@ -26,6 +26,7 @@ use db::models::{
 };
 use deployment::Deployment;
 use executors::{
+    actions::ExecutorAction,
     logs::{
         NormalizedEntryError, NormalizedEntryType,
         utils::patch::extract_normalized_entry_from_patch,
@@ -1736,22 +1737,15 @@ async fn cleanup_failed_pr_workspace(pool: &sqlx::SqlitePool, workspace: &Worksp
     }
 }
 
-/// Shared workspace setup for the "work on an existing PR branch" flows:
-/// create-from-PR (command bar) and review-mode create-and-start. Keeping the
-/// repo `target_branch` at the base ref means later merges / new PRs target
-/// the base.
-///
-/// Create the review workspace's rows (workspace, repo, PR link) and answer
-/// at once; the worktree and the PR checkout follow in the background under
-/// the workspace's container lock, so anything that needs the checkout
-/// (the first message, branch status, a setup script) waits for it rather
-/// than running in a half-made tree. A failed checkout removes the workspace
-/// again and notifies locally, as the synchronous version used to report.
-pub(crate) async fn setup_pr_review_workspace(
+/// Rows of a review workspace on an existing PR branch: the workspace and its
+/// single repo on the PR base ref (`gh pr checkout` switches the worktree to the
+/// head branch; keeping the repo `target_branch` at the base ref means later
+/// merges / new PRs target the base) and the PR link.
+async fn create_pr_review_rows(
     deployment: &DeploymentImpl,
     workspace_name: Option<String>,
     pr: &PrReviewInput,
-) -> Result<Result<Workspace, String>, ApiError> {
+) -> Result<(Workspace, Repo, GitRemote), ApiError> {
     let pool = &deployment.db().pool;
 
     let repo = Repo::find_by_id(pool, pr.repo_id)
@@ -1766,8 +1760,6 @@ pub(crate) async fn setup_pr_review_workspace(
         None => deployment.git().get_default_remote(&repo.path)?,
     };
 
-    // Start the worktree on the PR base ref; gh pr checkout switches it to the
-    // head branch.
     let target_branch_ref = review_target_branch_ref(&remote.name, &pr.base_branch);
 
     let workspace_id = Uuid::new_v4();
@@ -1802,10 +1794,20 @@ pub(crate) async fn setup_pr_review_workspace(
     )
     .await?;
 
-    // Check out under the workspace's container lock, so nothing ensures the
-    // container meanwhile onto the base ref. The checkout stays on the request
-    // path: a failure has to reach the dialog (or the create-and-start caller,
-    // which marks the issue "In review" and clears the prompt on success).
+    Ok((workspace, repo, remote))
+}
+
+/// Review-mode create-and-start: the review workspace checked out on the
+/// request path, under the workspace's container lock. The caller marks the
+/// issue "In review" and clears the prompt on success, so a failed checkout
+/// stays a request error (the inner `Err` carries its message; the workspace
+/// is removed again).
+pub(crate) async fn setup_pr_review_workspace(
+    deployment: &DeploymentImpl,
+    workspace_name: Option<String>,
+    pr: &PrReviewInput,
+) -> Result<Result<Workspace, String>, ApiError> {
+    let (workspace, repo, remote) = create_pr_review_rows(deployment, workspace_name, pr).await?;
     let materialising = deployment.container().lock_container(workspace.id).await;
     let checked_out = checkout_pr_branch(deployment, &workspace, &repo, &remote, pr).await;
     if let Err(message) = &checked_out {
@@ -1813,6 +1815,161 @@ pub(crate) async fn setup_pr_review_workspace(
     }
     drop(materialising);
     Ok(checked_out)
+}
+
+/// Where a create-from-PR checkout running in the background stands; polled
+/// by the dialog that opened the workspace, so a failure still reaches it.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+#[ts(tag = "status", rename_all = "snake_case")]
+pub enum PrCheckoutStatus {
+    Pending,
+    Ready,
+    Failed {
+        message: String,
+    },
+    /// Not tracked (already reported long ago, or the server restarted).
+    Unknown,
+}
+
+const PR_CHECKOUT_STATUS_TTL: Duration = Duration::from_secs(600);
+
+static PR_CHECKOUTS: LazyLock<Mutex<HashMap<Uuid, (PrCheckoutStatus, Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn set_pr_checkout_status(workspace_id: Uuid, status: PrCheckoutStatus) {
+    let mut checkouts = PR_CHECKOUTS.lock().unwrap_or_else(|e| e.into_inner());
+    checkouts.retain(|_, (_, at)| at.elapsed() < PR_CHECKOUT_STATUS_TTL);
+    checkouts.insert(workspace_id, (status, Instant::now()));
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PrCheckoutStatusQuery {
+    workspace_id: Uuid,
+}
+
+pub async fn get_pr_checkout_status(
+    Query(query): Query<PrCheckoutStatusQuery>,
+) -> ResponseJson<ApiResponse<PrCheckoutStatus>> {
+    let status = PR_CHECKOUTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&query.workspace_id)
+        .map(|(status, _)| status.clone())
+        .unwrap_or(PrCheckoutStatus::Unknown);
+    ResponseJson(ApiResponse::success(status))
+}
+
+/// Create-from-PR: answer with the workspace before the checkout. Its rows (and
+/// the setup turn, when asked for, so the page lands on it) exist first; the
+/// worktree and `gh pr checkout` run in the background under the container
+/// lock, taken here, so the page's own requests wait for the checkout instead
+/// of racing it. The outcome is published for the dialog to poll
+/// ([`get_pr_checkout_status`]); a failure fails the setup turn, removes the
+/// workspace and reports the message there.
+async fn start_pr_review_workspace(
+    deployment: &DeploymentImpl,
+    workspace_name: Option<String>,
+    pr: &PrReviewInput,
+    run_setup: bool,
+) -> Result<Workspace, ApiError> {
+    let (workspace, repo, remote) = create_pr_review_rows(deployment, workspace_name, pr).await?;
+
+    let setup = if run_setup {
+        match prepare_pr_setup(deployment, &workspace).await {
+            Ok(setup) => setup,
+            Err(e) => {
+                fail_pr_checkout(deployment, &workspace, pr, &e.to_string()).await;
+                return Err(e);
+            }
+        }
+    } else {
+        None
+    };
+
+    let materialising = deployment.container().lock_container(workspace.id).await;
+    set_pr_checkout_status(workspace.id, PrCheckoutStatus::Pending);
+
+    let deployment = deployment.clone();
+    let pr = pr.clone();
+    let answer = workspace.clone();
+    tokio::spawn(async move {
+        match checkout_pr_branch(&deployment, &workspace, &repo, &remote, &pr).await {
+            Ok(checked_out) => {
+                drop(materialising);
+                set_pr_checkout_status(workspace.id, PrCheckoutStatus::Ready);
+                tracing::info!(
+                    "Checked out PR #{} into workspace {}",
+                    pr.pr_number,
+                    workspace.id
+                );
+                if let Some((session, record, action)) = setup {
+                    deployment
+                        .container()
+                        .backfill_before_head_commit(&checked_out, &record)
+                        .await;
+                    if let Err(e) = deployment
+                        .container()
+                        .finish_execution_spawn(&checked_out, &session, &record, &action)
+                        .await
+                    {
+                        tracing::error!("Failed to run setup script: {}", e);
+                    }
+                }
+            }
+            Err(message) => {
+                if let Some((session, record, _)) = &setup {
+                    deployment
+                        .container()
+                        .fail_execution_start(
+                            session,
+                            record,
+                            &format!("PR checkout failed: {message}"),
+                        )
+                        .await;
+                }
+                fail_pr_checkout(&deployment, &workspace, &pr, &message).await;
+                drop(materialising);
+                set_pr_checkout_status(workspace.id, PrCheckoutStatus::Failed { message });
+            }
+        }
+    });
+
+    Ok(answer)
+}
+
+/// The setup-script turn of a review workspace, recorded before the checkout
+/// (so it is the session the page opens on) and spawned after it.
+async fn prepare_pr_setup(
+    deployment: &DeploymentImpl,
+    workspace: &Workspace,
+) -> Result<Option<(Session, ExecutionProcess, ExecutorAction)>, ApiError> {
+    let pool = &deployment.db().pool;
+    let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
+    let Some(setup_action) = deployment.container().setup_actions_for_repos(&repos) else {
+        return Ok(None);
+    };
+    let session = Session::create(
+        pool,
+        &CreateSession {
+            executor: None,
+            variant: None,
+            name: None,
+        },
+        Uuid::new_v4(),
+        workspace.id,
+    )
+    .await?;
+    let record = deployment
+        .container()
+        .create_execution_record(
+            workspace,
+            &session,
+            &setup_action,
+            &ExecutionProcessRunReason::SetupScript,
+        )
+        .await?;
+    Ok(Some((session, record, setup_action)))
 }
 
 /// Worktree on the base ref, then `gh pr checkout` onto the head branch and
@@ -1885,51 +2042,6 @@ async fn fail_pr_checkout(
     cleanup_failed_pr_workspace(pool, &latest).await;
 }
 
-/// Run the repos' setup script once in the review workspace (no agent).
-async fn run_pr_setup_script(deployment: &DeploymentImpl, workspace: &Workspace) {
-    let pool = &deployment.db().pool;
-    let repos = match WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await {
-        Ok(repos) => repos,
-        Err(e) => {
-            tracing::error!("Failed to load repos for setup script: {}", e);
-            return;
-        }
-    };
-    let Some(setup_action) = deployment.container().setup_actions_for_repos(&repos) else {
-        return;
-    };
-    let session = match Session::create(
-        pool,
-        &CreateSession {
-            executor: None,
-            variant: None,
-            name: None,
-        },
-        Uuid::new_v4(),
-        workspace.id,
-    )
-    .await
-    {
-        Ok(session) => session,
-        Err(e) => {
-            tracing::error!("Failed to create setup session: {}", e);
-            return;
-        }
-    };
-    if let Err(e) = deployment
-        .container()
-        .start_execution(
-            workspace,
-            &session,
-            &setup_action,
-            &ExecutionProcessRunReason::SetupScript,
-        )
-        .await
-    {
-        tracing::error!("Failed to run setup script: {}", e);
-    }
-}
-
 #[axum::debug_handler]
 pub async fn create_workspace_from_pr(
     State(deployment): State<DeploymentImpl>,
@@ -1945,24 +2057,16 @@ pub async fn create_workspace_from_pr(
         remote_name: payload.remote_name.clone(),
     };
 
-    let workspace =
-        match setup_pr_review_workspace(&deployment, Some(payload.pr_title.clone()), &pr_input)
-            .await?
-        {
-            Ok(workspace) => workspace,
-            Err(message) => {
-                return Ok(ResponseJson(ApiResponse::error_with_data(
-                    CreateFromPrError::BranchFetchFailed { message },
-                )));
-            }
-        };
-
-    if payload.run_setup {
-        run_pr_setup_script(&deployment, &workspace).await;
-    }
+    let workspace = start_pr_review_workspace(
+        &deployment,
+        Some(payload.pr_title.clone()),
+        &pr_input,
+        payload.run_setup,
+    )
+    .await?;
 
     tracing::info!(
-        "Created workspace {} from PR #{}",
+        "Created workspace {} from PR #{} (checkout continues in the background)",
         workspace.id,
         payload.pr_number,
     );

@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from '@vibe/ui/components/KeyboardDialog';
 import { Button } from '@vibe/ui/components/Button';
+import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { Label } from '@vibe/ui/components/Label';
@@ -31,6 +32,35 @@ import type { PullRequestDetail, GitRemote } from 'shared/types';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
+
+const PR_CHECKOUT_POLL_MS = 1_000;
+const PR_CHECKOUT_WATCH_MS = 10 * 60_000;
+
+/**
+ * The server answers before the PR checkout (the workspace opens at once) and
+ * finishes it in the background. Follow it from here, independent of this
+ * dialog's lifetime, so a failed checkout still reaches the user — the
+ * workspace is removed again on the server.
+ */
+async function watchPrCheckout(
+  workspaceId: string,
+  hostId: string | null | undefined,
+  onFailed: (message: string) => void
+) {
+  const deadline = Date.now() + PR_CHECKOUT_WATCH_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, PR_CHECKOUT_POLL_MS));
+    let status;
+    try {
+      status = await workspacesApi.getFromPrStatus(workspaceId, hostId);
+    } catch {
+      continue; // transient (relay hiccup): try again
+    }
+    if (status.status === 'pending') continue;
+    if (status.status === 'failed') onFailed(status.message);
+    return;
+  }
+}
 
 export interface CreateWorkspaceFromPrDialogProps {}
 
@@ -198,6 +228,13 @@ const CreateWorkspaceFromPrDialogImpl =
         queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         modal.hide();
         appNavigation.goToWorkspace(data.workspace.id, { hostId });
+        const failedTitle = t(
+          'createWorkspaceFromPr.errors.failedToCreateWorkspace'
+        );
+        void watchPrCheckout(data.workspace.id, hostId, (message) => {
+          queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+          void ErrorDialog.show({ title: failedTitle, message });
+        });
       },
     });
 

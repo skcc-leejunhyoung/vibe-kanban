@@ -52,6 +52,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/start", post(create::create_and_start_workspace))
         .route("/quick-chat", post(create::create_and_start_quick_chat))
         .route("/from-pr", post(pr::create_workspace_from_pr))
+        .route("/from-pr/status", get(pr::get_pr_checkout_status))
         .route("/streams/ws", get(streams::stream_workspaces_ws))
         .route("/streams/sse", get(streams::stream_workspaces_sse))
         .route(

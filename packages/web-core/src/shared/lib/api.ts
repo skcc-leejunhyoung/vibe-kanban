@@ -114,6 +114,7 @@ import {
   CreateWorkspaceFromPrBody,
   CreateWorkspaceFromPrResponse,
   CreateFromPrError,
+  PrCheckoutStatus,
   CreateAndStartWorkspaceRequest,
   CreateAndStartWorkspaceResponse,
   CreateQuickChatRequest,
@@ -1670,6 +1671,18 @@ export const workspacesApi = {
       CreateWorkspaceFromPrResponse,
       CreateFromPrError
     >(response);
+  },
+
+  /** Where a create-from-PR checkout running in the background stands. */
+  getFromPrStatus: async (
+    workspaceId: string,
+    hostId?: string | null
+  ): Promise<PrCheckoutStatus> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/from-pr/status?workspace_id=${encodeURIComponent(workspaceId)}`,
+      hostId
+    );
+    return handleApiResponse<PrCheckoutStatus>(response);
   },
 };
 

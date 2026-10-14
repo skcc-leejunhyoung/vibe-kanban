@@ -871,6 +871,8 @@ export type CreateWorkspaceFromPrResponse = { workspace: Workspace, };
 
 export type CreateFromPrError = { "type": "pr_not_found" } | { "type": "branch_fetch_failed", message: string, } | { "type": "cli_not_installed", provider: ProviderKind, } | { "type": "auth_failed", message: string, } | { "type": "unsupported_provider" };
 
+export type PrCheckoutStatus = { "status": "pending" } | { "status": "ready" } | { "status": "failed", message: string, } | { "status": "unknown" };
+
 export type RepoBranchStatus = { repo_id: string, repo_name: string,
 /**
  * True when the source repository no longer exists on disk (e.g. the project
