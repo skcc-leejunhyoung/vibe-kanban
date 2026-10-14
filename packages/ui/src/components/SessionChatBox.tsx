@@ -430,9 +430,12 @@ export function SessionChatBox<TExecutor extends string = string>({
       }
       return;
     }
-    // Approval mode: Cmd+Enter triggers approve or request changes based on input
+    // Approval mode: Cmd+Enter triggers approve or request changes based on
+    // input — never while a stop is going through (typing stays open then, so
+    // "no sendable text" must not read as "approve").
     if (isInApprovalMode && !approvalMode?.isTimedOut) {
-      if (canSend) {
+      if (status === 'stopping' || status === 'creating') return;
+      if (hasContent) {
         approvalMode?.onRequestChanges();
       } else {
         approvalMode?.onApprove();
