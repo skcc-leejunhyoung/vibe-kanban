@@ -87,7 +87,12 @@ import {
 } from '@/shared/types/actions';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { useActionVisibilityContext } from '@/shared/hooks/useActionVisibilityContext';
-import { sessionsApi, workspacesApi, ApiError } from '@/shared/lib/api';
+import {
+  sessionsApi,
+  workspacesApi,
+  queueApi,
+  ApiError,
+} from '@/shared/lib/api';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
@@ -154,6 +159,12 @@ interface PendingSend {
   hideQueuedId?: string | null;
 }
 const pendingSends = new Map<string, PendingSend>();
+/**
+ * Processes whose deferred stop request failed. Every composer that showed
+ * the stop on one of them (its own overlay copy) takes it back; announced
+ * through the pending-send store version.
+ */
+const failedStops = new Set<string>();
 
 const latestCreatedAtMs = (processes: ExecutionProcess[]) =>
   processes.reduce(
@@ -310,6 +321,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     getPendingSendsVersion
   );
   const pendingSend = sessionId ? pendingSends.get(sessionId) : undefined;
+  // The turn this composer marked as stopped in its own overlay while a send
+  // was pending (taken back if that stop fails, see `failedStops`).
+  const stopShownIdRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
   const hostId = useHostId();
   const { t } = useTranslation('tasks');
@@ -474,6 +488,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         patchOptimisticProcess(shownId, {
           status: ExecutionProcessStatus.killed,
         });
+        stopShownIdRef.current = shownId;
       }
       return;
     }
@@ -918,6 +933,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // composer also drops its copy once the real process is known, the send has
   // settled or it shows another session — not just the composer that sent.
   const shownPlaceholderIdRef = useRef<string | null>(null);
+  // A stop this composer showed whose request failed: take it back here too.
+  useEffect(() => {
+    const shownStop = stopShownIdRef.current;
+    if (shownStop && failedStops.has(shownStop)) {
+      patchOptimisticProcess(shownStop, {
+        status: ExecutionProcessStatus.running,
+      });
+      stopShownIdRef.current = null;
+    }
+  }, [pendingVersion, patchOptimisticProcess]);
   useEffect(() => {
     const pending = sessionId ? pendingSends.get(sessionId) : undefined;
     const placeholderId =
@@ -936,6 +961,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       patchOptimisticProcess(shown.id, {
         status: ExecutionProcessStatus.killed,
       });
+      stopShownIdRef.current = shown.id;
     }
   }, [
     sessionId,
@@ -964,6 +990,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       patchOptimisticProcess(arrived.id, {
         status: ExecutionProcessStatus.killed,
       });
+      stopShownIdRef.current = arrived.id;
     }
     if (pending.hideQueuedId) dropQueuedLocally(pending.hideQueuedId);
     if (pending.settleOnAdopt) pendingSends.delete(sessionId);
@@ -1049,6 +1076,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       const deferred: { stop?: Promise<void> } = {};
       const stopReal = (processId: string) => {
         if (deferred.stop) return;
+        failedStops.delete(processId);
         patchOptimisticProcess(processId, {
           status: ExecutionProcessStatus.killed,
         });
@@ -1058,6 +1086,13 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
             patchOptimisticProcess(processId, {
               status: ExecutionProcessStatus.running,
             });
+            // Let a second Stop try again, and take the stop back everywhere
+            // it is shown (other panes patched their own copy).
+            deferred.stop = undefined;
+            const entry = pendingSends.get(target);
+            if (entry?.stopReal === stopReal) entry.stopRequested = false;
+            failedStops.add(processId);
+            pendingSendsChanged();
             void ErrorDialog.show({
               title: t('common:error'),
               message: error instanceof Error ? error.message : String(error),
@@ -1145,6 +1180,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         if (pendingState.stopRequested) stopReal(process.id);
         success = true;
       } catch (error) {
+        // The request can fail after the server started the agent (e.g. the
+        // relay dropped the answer); a stop asked for meanwhile still goes out.
+        if (pendingState.stopRequested && pendingState.process) {
+          stopReal(pendingState.process.id);
+        }
         onFailure?.(error);
       }
       await deferred.stop;
@@ -1536,8 +1576,13 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         clearOptimisticProcess(pending.id);
         // Stop was pressed but no process ever showed up to kill: take the
         // message out of the queue so it doesn't run later unattended.
+        // Captured session: the composer may show another one by now.
         if (pendingState.stopRequested && pendingState.hideQueuedId) {
-          void cancelOne(pendingState.hideQueuedId);
+          void queueApi
+            .cancelOne(sessionId, pendingState.hideQueuedId, hostId)
+            .catch((error) =>
+              console.error('Failed to drop a stopped "send now"', error)
+            );
         }
       }, 60_000);
     } catch (error) {
@@ -1571,7 +1616,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     createStopReal,
     addOptimisticProcess,
     clearOptimisticProcess,
-    cancelOne,
+    hostId,
     restorePrompt,
     t,
   ]);

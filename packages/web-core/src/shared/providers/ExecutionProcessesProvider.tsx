@@ -53,7 +53,10 @@ export const ExecutionProcessesProvider: React.FC<{
       if (!belongsToSession(process, sessionId)) return;
 
       setOptimistic((current) => {
-        if (current[process.id]?.kind === 'add') return current;
+        // Already shown: an `add` is idempotent, and a `patch` means the row
+        // is streamed and carries a change (e.g. a stop) a re-add must keep.
+        const existing = current[process.id]?.kind;
+        if (existing === 'add' || existing === 'patch') return current;
         // Force `running` so the new turn (and the running indicator) show right
         // away; the authoritative status arrives on the stream moments later.
         return {

@@ -36,7 +36,19 @@ export function mergeOptimisticProcesses(
   for (const p of executionProcesses) {
     const op = optimistic[p.id];
     if (op?.kind === 'remove') continue;
-    result.push(op?.kind === 'patch' ? { ...p, ...op.changes } : p);
+    if (op?.kind === 'patch') {
+      result.push({ ...p, ...op.changes });
+    } else if (
+      op?.kind === 'add' &&
+      p.status === ExecutionProcessStatus.running &&
+      op.process.status !== ExecutionProcessStatus.running
+    ) {
+      // A stop folded into the add before the stream confirmed the row (see
+      // reconcileOptimisticOps): show it until the server reports it.
+      result.push({ ...p, status: op.process.status });
+    } else {
+      result.push(p);
+    }
   }
   for (const [id, op] of Object.entries(optimistic)) {
     if (

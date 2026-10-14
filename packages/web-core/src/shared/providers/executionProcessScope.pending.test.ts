@@ -50,6 +50,20 @@ describe('createPendingProcess', () => {
   });
 });
 
+describe('mergeOptimisticProcesses with a stop folded into an add', () => {
+  it('shows the stop on the streamed row until the server reports it', () => {
+    const row = { ...createPendingProcess('s', 'hi', config), id: 'real-1' };
+    const ops: Record<string, OptimisticOp> = {
+      'real-1': { kind: 'add', process: { ...row, status: 'killed' } },
+    };
+    expect(mergeOptimisticProcesses([row], ops, 's')[0].status).toBe('killed');
+    const done = { ...row, status: 'completed' as const };
+    expect(mergeOptimisticProcesses([done], ops, 's')[0].status).toBe(
+      'completed'
+    );
+  });
+});
+
 describe('reconcileOptimisticOps', () => {
   const real = createPendingProcess('s', 'hi', config);
   const streamedRunning = { ...real, id: 'real-1' };

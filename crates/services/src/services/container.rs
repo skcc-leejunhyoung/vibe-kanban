@@ -2033,6 +2033,29 @@ pub trait ContainerService {
             .start_execution_inner(workspace, execution_process, executor_action)
             .await
         {
+            // A stop that landed during the spawn (it found no child yet and
+            // may have taken the message store with it) makes the start fail;
+            // the row is already stopped, so this is not a start failure to
+            // report on the turn — any half-started child was killed by
+            // `start_execution_inner` on its way out.
+            if ExecutionProcess::find_by_id(&self.db().pool, execution_process.id)
+                .await?
+                .is_some_and(|process| process.status == ExecutionProcessStatus::Killed)
+            {
+                self.msg_stores()
+                    .write()
+                    .await
+                    .remove(&execution_process.id);
+                if let Some(observer) = &mut artifact_observer {
+                    let _ = observer.tick(true).await;
+                }
+                tracing::info!(
+                    "Execution {} was stopped while starting: {}",
+                    execution_process.id,
+                    start_error
+                );
+                return Ok(());
+            }
             self.fail_execution_start(
                 session,
                 execution_process,
