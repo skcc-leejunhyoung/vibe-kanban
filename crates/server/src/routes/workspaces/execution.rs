@@ -63,6 +63,17 @@ pub async fn start_dev_server(
 ) -> Result<ResponseJson<ApiResponse<Vec<ExecutionProcess>>>, ApiError> {
     let pool = &deployment.db().pool;
 
+    // A workspace whose create request answered early may still be getting its
+    // worktree: wait for it, and run with the row as the ensure left it.
+    let container_ref = deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
+    let mut workspace = Workspace::find_by_id(pool, workspace.id)
+        .await?
+        .unwrap_or(workspace);
+    workspace.container_ref.get_or_insert(container_ref);
+
     let existing_dev_servers =
         match ExecutionProcess::find_running_dev_servers_by_workspace(pool, workspace.id).await {
             Ok(servers) => servers,
