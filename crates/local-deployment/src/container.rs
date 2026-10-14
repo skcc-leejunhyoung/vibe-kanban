@@ -2172,7 +2172,9 @@ impl LocalContainerService {
         should_finalize: bool,
         has_chained_follow_up: bool,
     ) -> PostCompletionPlan {
-        let start_next = success_or_cleanup && should_start_next;
+        // Finalizing here (a failed or stopped cleanup with more cleanups
+        // chained) ends the chain: the rest would finalize it again on exit.
+        let start_next = success_or_cleanup && should_start_next && !should_finalize;
         // "No changes made" early-finalize: we bypass the normal flow (no next
         // action runs), so this is the terminal turn and MUST drain the queue.
         // It wins over `should_finalize` (mirrors the old `already_finalized`).
@@ -2310,6 +2312,11 @@ impl LocalContainerService {
             // If the process exited successfully, start the next action
             if let Err(e) = self.try_start_next_action(ctx).await {
                 tracing::error!("Failed to start next action after completion: {}", e);
+                // The chain was left to the next action's exit, which may now
+                // never come.
+                if plan.finalize_with_queue.is_none() {
+                    self.finalize_unstarted_next_action(ctx, &e).await;
+                }
             }
         }
 
@@ -2336,8 +2343,9 @@ impl LocalContainerService {
     ///
     /// A successfully completed turn — including a "no changes made" turn that
     /// finalizes early without running the cleanup script — must still drain its
-    /// queue; only failed or killed turns discard it. Shared decision for both
-    /// finalize paths in [`Self::finalize_with_queued_followup`].
+    /// queue; only failed or killed turns discard it (a failed cleanup holds it
+    /// instead). Shared decision for both finalize paths in
+    /// [`Self::finalize_with_queued_followup`].
     fn should_execute_queued_message(status: &ExecutionProcessStatus) -> bool {
         !matches!(
             status,
@@ -2370,7 +2378,20 @@ impl LocalContainerService {
         let should_execute_queued =
             Self::should_execute_queued_message(&ctx.execution_process.status);
 
-        if !should_execute_queued && !keep_queue {
+        // The coding turn's work stands; only its cleanup failed. Hold the
+        // queue for the user rather than run it on top of the failure or drop
+        // it: the drain below then finds nothing ready.
+        let cleanup_failed =
+            matches!(
+                ctx.execution_process.run_reason,
+                ExecutionProcessRunReason::CleanupScript
+            ) && matches!(ctx.execution_process.status, ExecutionProcessStatus::Failed);
+        if cleanup_failed {
+            self.queued_message_service
+                .hold_front(ctx.session.id, "Cleanup script failed".to_string());
+        }
+
+        if !should_execute_queued && !keep_queue && !cleanup_failed {
             // Execution failed or was killed - discard the ENTIRE queue (not just
             // the front of a multi-message queue) so no follow-ups are left
             // stranded to resurface on a later turn, then finalize.
@@ -2437,6 +2458,50 @@ impl LocalContainerService {
                 e
             );
         }
+    }
+
+    /// `ctx`'s next action failed to start. If no process of it got far enough
+    /// to exit, nothing else will ever finalize this chain, so finalize it here
+    /// as a failure — through the row the failed start left (its log holds the
+    /// error; vibe reads it like a cleanup that ran and failed), or as `ctx`
+    /// itself when not even that row was written. The queue is held: nothing
+    /// runs on top of the failure, and its front waits for the user.
+    async fn finalize_unstarted_next_action(&self, ctx: &ExecutionContext, error: &ContainerError) {
+        let pool = &self.db.pool;
+        // A process that did spawn finalizes the chain from its exit monitor.
+        if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, ctx.session.id)
+            .await
+            .unwrap_or(true)
+        {
+            return;
+        }
+        self.queued_message_service.hold_front(
+            ctx.session.id,
+            format!("Previous step could not start: {error}"),
+        );
+
+        let failed_row = ExecutionProcess::find_by_session_id(pool, ctx.session.id, false)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .find(|p| {
+                p.id != ctx.execution_process.id
+                    && p.created_at >= ctx.execution_process.created_at
+                    && p.status == ExecutionProcessStatus::Failed
+                    && p.run_reason != ExecutionProcessRunReason::DevServer
+            });
+        let failed_id = failed_row.map_or(ctx.execution_process.id, |p| p.id);
+        let mut failed = match ExecutionProcess::load_context(pool, failed_id).await {
+            Ok(failed) => failed,
+            Err(e) => {
+                tracing::error!("Failed to load context to finalize {}: {}", failed_id, e);
+                return;
+            }
+        };
+        failed.execution_process.status = ExecutionProcessStatus::Failed;
+        self.finalize_task(&failed).await;
+        self.vibe_on_finalize(&failed).await;
     }
 
     /// Entry point for the automated `vibe` workflow, called at every terminal
@@ -4473,7 +4538,6 @@ done
             .await
             .unwrap();
         sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
-        let db = DBService { pool: pool.clone() };
         let workspace = Workspace::create(
             &pool,
             &CreateWorkspace {
@@ -4519,36 +4583,7 @@ done
         .await
         .unwrap();
 
-        // Assembled directly: `new` would run orphan-workspace cleanup.
-        let mut config = Config::default();
-        config.notifications.sound_enabled = false;
-        config.notifications.push_enabled = false;
-        let config = Arc::new(RwLock::new(config));
-        let container = LocalContainerService {
-            events: EventService::new(db.clone(), Arc::new(MsgStore::new()), Default::default()),
-            workspace_manager: WorkspaceManager::new(db.clone()),
-            db,
-            child_store: Default::default(),
-            cancellation_tokens: Default::default(),
-            subagent_handles: Default::default(),
-            msg_stores: Default::default(),
-            db_stream_handles: Default::default(),
-            forwarder_handles: Default::default(),
-            normalizer_handles: Default::default(),
-            exit_monitor_handles: Default::default(),
-            output_pipeline: Default::default(),
-            session_finalization: Default::default(),
-            workspace_touch_times: Default::default(),
-            container_locks: Default::default(),
-            session_start_locks: Default::default(),
-            notification_service: NotificationService::new(config.clone(), pool.clone(), None),
-            config,
-            git: GitService::new(),
-            file_service: FileService::new(pool.clone()).unwrap(),
-            approvals: Approvals::new(),
-            queued_message_service: QueuedMessageService::new(),
-            remote_client: None,
-        };
+        let container = container_on(pool.clone());
 
         // Same wiring as `start_execution`.
         let store = Arc::new(MsgStore::new());
@@ -4847,11 +4882,12 @@ done
             }
         );
 
-        // Success with changes, last action -> start next then finalize, carrying has_chained.
+        // A failed/stopped cleanup with more chained -> finalize once, carrying
+        // has_chained, without starting the rest (they'd finalize again).
         assert_eq!(
             LocalContainerService::plan_post_completion(true, true, true, true),
             PostCompletionPlan {
-                start_next: true,
+                start_next: false,
                 log_skip_cleanup: false,
                 finalize_with_queue: Some(true),
             }
@@ -4887,7 +4923,6 @@ done
             .await
             .unwrap();
         sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
-        let db = DBService { pool: pool.clone() };
         let workspace = Workspace::create(
             &pool,
             &db::models::workspace::CreateWorkspace {
@@ -4910,11 +4945,19 @@ done
         )
         .await
         .unwrap();
+        (container_on(pool), session, workspace)
+    }
+
+    /// The container over `pool`, built by hand rather than with `new()` so
+    /// the background workspace cleanup never runs against real worktrees.
+    /// Notifications are off.
+    pub(super) fn container_on(pool: sqlx::SqlitePool) -> LocalContainerService {
+        let db = DBService { pool: pool.clone() };
         let mut config = Config::default();
         config.notifications.sound_enabled = false;
         config.notifications.push_enabled = false;
         let config = Arc::new(RwLock::new(config));
-        let container = LocalContainerService {
+        LocalContainerService {
             events: EventService::new(db.clone(), Arc::new(MsgStore::new()), Default::default()),
             workspace_manager: WorkspaceManager::new(db.clone()),
             db,
@@ -4938,8 +4981,7 @@ done
             approvals: Approvals::new(),
             queued_message_service: QueuedMessageService::new(),
             remote_client: None,
-        };
-        (container, session, workspace)
+        }
     }
 
     /// A follow-up for `agent`; anything but Claude Code fails to start in the
@@ -5408,12 +5450,373 @@ done
     }
 
     /// Logs of the failed starts land under the real `dev_assets/sessions/`.
-    struct SessionLogDir(Uuid);
+    pub(super) struct SessionLogDir(pub(super) Uuid);
 
     impl Drop for SessionLogDir {
         fn drop(&mut self) {
             let _ =
                 std::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(self.0));
         }
+    }
+}
+
+/// A coding turn that made changes chains its cleanup script(s); a message is
+/// queued behind it. Whether a cleanup fails before its row or child exists or
+/// after it ran — even if a later cleanup in the chain succeeds — the chain
+/// must end with nothing running, the message neither run nor lost, and the
+/// queue held for the user to resume.
+#[cfg(test)]
+mod cleanup_failure_queue_tests {
+    use db::models::{
+        execution_process::CreateExecutionProcess,
+        execution_process_repo_state::CreateExecutionProcessRepoState, scratch::DraftFollowUpData,
+        workspace::CreateWorkspace, workspace_repo::CreateWorkspaceRepo,
+    };
+    use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    use super::{tests::SessionLogDir, *};
+
+    struct Chain {
+        container: LocalContainerService,
+        coding: ExecutionContext,
+        _dir: tempfile::TempDir,
+        _logs: SessionLogDir,
+    }
+
+    /// One repo per `(script, repo_dir)`, their cleanups chained in order.
+    /// `repo_dir`: whether that cleanup's working directory exists, i.e.
+    /// whether its child can spawn at all.
+    async fn finished_coding_turn(cleanups: &[(&str, bool)]) -> Chain {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(dir.path().join("db.sqlite"))
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let container = super::tests::container_on(pool.clone());
+
+        let mut repos = Vec::new();
+        for i in 0..cleanups.len() {
+            let name = format!("repo{i}");
+            repos.push(
+                Repo::find_or_create(&pool, &dir.path().join("source").join(&name), &name)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let workspace = Workspace::create(
+            &pool,
+            &CreateWorkspace {
+                branch: "vk/cleanup".into(),
+                name: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        let worktree = dir.path().join("worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+        for (repo, (_, repo_dir)) in repos.iter().zip(cleanups) {
+            if *repo_dir {
+                std::fs::create_dir_all(worktree.join(&repo.name)).unwrap();
+            }
+        }
+        Workspace::update_container_ref(&pool, workspace.id, &worktree.to_string_lossy())
+            .await
+            .unwrap();
+        WorkspaceRepo::create_many(
+            &pool,
+            workspace.id,
+            &repos
+                .iter()
+                .map(|repo| CreateWorkspaceRepo {
+                    repo_id: repo.id,
+                    target_branch: "main".into(),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+        let session = Session::create(
+            &pool,
+            &CreateSession {
+                executor: None,
+                variant: None,
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        let logs = SessionLogDir(session.id);
+
+        let cleanup = repos
+            .iter()
+            .zip(cleanups)
+            .map(|(repo, (script, _))| {
+                ExecutorAction::new(
+                    ExecutorActionType::ScriptRequest(ScriptRequest {
+                        script: script.to_string(),
+                        language: ScriptRequestLanguage::Bash,
+                        context: ScriptContext::CleanupScript,
+                        working_dir: Some(repo.name.clone()),
+                    }),
+                    None,
+                )
+            })
+            .reduce(ExecutorAction::append_action)
+            .unwrap();
+        let coding = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: "A".into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+                working_dir: None,
+                handoff_from: None,
+                handoff_session_id: None,
+                handoff_user_prompt: None,
+            }),
+            Some(Box::new(cleanup)),
+        );
+        let process = ExecutionProcess::create(
+            &pool,
+            &CreateExecutionProcess {
+                session_id: session.id,
+                executor_action: coding,
+                run_reason: ExecutionProcessRunReason::CodingAgent,
+            },
+            Uuid::new_v4(),
+            // A start HEAD the worktree no longer has: the turn made changes,
+            // so its cleanup is due.
+            &repos
+                .iter()
+                .map(|repo| CreateExecutionProcessRepoState {
+                    repo_id: repo.id,
+                    before_head_commit: Some("0".repeat(40)),
+                    after_head_commit: None,
+                    merge_commit: None,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+        ExecutionProcess::update_completion(
+            &pool,
+            process.id,
+            ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+        container.queued_message_service.enqueue(
+            session.id,
+            DraftFollowUpData {
+                message: "B".into(),
+                // Not A's executor: should B ever start by mistake, it fails the
+                // executor check instead of launching a real agent.
+                executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+            },
+        );
+
+        Chain {
+            coding: ExecutionProcess::load_context(&pool, process.id)
+                .await
+                .unwrap(),
+            container,
+            _dir: dir,
+            _logs: logs,
+        }
+    }
+
+    impl Chain {
+        /// A's completion as its exit monitor runs it: under A's drain hold,
+        /// then the recheck once that is released.
+        async fn finish_coding_turn(&self) {
+            let ctx = &self.coding;
+            let exit_handler = self
+                .container
+                .queued_message_service
+                .hold_drain(ctx.session.id);
+            self.container
+                .handle_execution_post_completion(ctx, Some(0))
+                .await
+                .unwrap();
+            drop(exit_handler);
+            self.container
+                .drain_queue_if_idle(&ctx.session, &ctx.workspace)
+                .await
+                .unwrap();
+        }
+
+        /// The cleanup rows in start order, asserting B never ran: the only
+        /// coding turn is A.
+        async fn cleanup_rows(&self) -> Vec<ExecutionProcess> {
+            let rows = ExecutionProcess::find_by_session_id(
+                &self.container.db.pool,
+                self.coding.session.id,
+                false,
+            )
+            .await
+            .unwrap();
+            let (cleanups, others): (Vec<_>, Vec<_>) = rows
+                .into_iter()
+                .partition(|p| p.run_reason == ExecutionProcessRunReason::CleanupScript);
+            assert_eq!(
+                others.iter().map(|p| p.id).collect::<Vec<_>>(),
+                [self.coding.execution_process.id],
+                "{others:?}"
+            );
+            cleanups
+        }
+
+        async fn wait_for_exit(&self, process: &ExecutionProcess) {
+            let monitor = self
+                .container
+                .take_exit_monitor_handle(&process.id)
+                .await
+                .expect("a spawned cleanup finishes the chain from its exit monitor");
+            // Generous: cleanup scripts run at background QoS (`nice` +
+            // `taskpolicy -b`), which a loaded machine can starve for a while.
+            tokio::time::timeout(Duration::from_secs(120), monitor)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+
+        /// Nothing runs and B waits in front, held with `reason`.
+        async fn assert_ended_with_b_held(&self, reason: &str) {
+            assert!(
+                !ExecutionProcess::has_running_non_dev_server_processes_for_session(
+                    &self.container.db.pool,
+                    self.coding.session.id,
+                )
+                .await
+                .unwrap()
+            );
+            let queued = self
+                .container
+                .queued_message_service
+                .get_queued(self.coding.session.id);
+            let [b] = &queued[..] else {
+                panic!("queued message was lost: {queued:?}");
+            };
+            assert_eq!(b.data.message, "B");
+            assert!(
+                b.start_error.as_deref().is_some_and(|e| e.contains(reason)),
+                "queue must wait for the user, not a turn: {:?}",
+                b.start_error
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_that_cannot_spawn_ends_the_chain_and_holds_the_queue() {
+        let chain = finished_coding_turn(&[("true", false)]).await;
+
+        chain.finish_coding_turn().await;
+
+        let [cleanup] = &chain.cleanup_rows().await[..] else {
+            panic!("expected one cleanup row");
+        };
+        assert_eq!(cleanup.status, ExecutionProcessStatus::Failed);
+        assert!(
+            chain
+                .container
+                .take_exit_monitor_handle(&cleanup.id)
+                .await
+                .is_none(),
+            "no child, so no exit event will ever finish this chain"
+        );
+        let log = std::fs::read_to_string(utils::execution_logs::process_log_file_path(
+            chain.coding.session.id,
+            cleanup.id,
+        ))
+        .unwrap();
+        assert!(log.contains("Failed to start execution"), "{log}");
+        chain
+            .assert_ended_with_b_held("Previous step could not start")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn cleanup_that_runs_and_fails_holds_the_queue_from_its_exit() {
+        let chain = finished_coding_turn(&[("exit 3", true)]).await;
+
+        chain.finish_coding_turn().await;
+        chain.wait_for_exit(&chain.cleanup_rows().await[0]).await;
+
+        let [cleanup] = &chain.cleanup_rows().await[..] else {
+            panic!("expected one cleanup row");
+        };
+        assert_eq!(cleanup.status, ExecutionProcessStatus::Failed);
+        assert_eq!(cleanup.exit_code, Some(3));
+        chain
+            .assert_ended_with_b_held("Cleanup script failed")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn cleanup_whose_row_cannot_be_written_ends_the_chain_and_holds_the_queue() {
+        let chain = finished_coding_turn(&[("true", true)]).await;
+        // The repos A ran with are gone by the time its cleanup is recorded.
+        sqlx::query("DELETE FROM workspace_repos WHERE workspace_id = ?")
+            .bind(chain.coding.workspace.id)
+            .execute(&chain.container.db.pool)
+            .await
+            .unwrap();
+
+        chain.finish_coding_turn().await;
+
+        assert!(chain.cleanup_rows().await.is_empty());
+        chain
+            .assert_ended_with_b_held("Previous step could not start")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn failed_cleanup_ends_its_chain_once_without_starting_the_rest() {
+        let chain = finished_coding_turn(&[("exit 3", true), ("true", true)]).await;
+
+        chain.finish_coding_turn().await;
+        chain.wait_for_exit(&chain.cleanup_rows().await[0]).await;
+
+        // The second cleanup never starts, so its exit can't finalize (and
+        // run the queue) a second time.
+        let [first] = &chain.cleanup_rows().await[..] else {
+            panic!("expected only the first cleanup row");
+        };
+        assert_eq!(first.status, ExecutionProcessStatus::Failed);
+        chain
+            .assert_ended_with_b_held("Cleanup script failed")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn later_cleanup_that_cannot_spawn_is_recorded_as_cleanup_and_holds_the_queue() {
+        let chain = finished_coding_turn(&[("true", true), ("true", false)]).await;
+
+        chain.finish_coding_turn().await;
+        chain.wait_for_exit(&chain.cleanup_rows().await[0]).await;
+
+        let [first, second] = &chain.cleanup_rows().await[..] else {
+            panic!("expected both cleanup rows");
+        };
+        assert_eq!(first.status, ExecutionProcessStatus::Completed);
+        assert_eq!(second.status, ExecutionProcessStatus::Failed);
+        assert!(
+            chain
+                .container
+                .take_exit_monitor_handle(&second.id)
+                .await
+                .is_none()
+        );
+        chain
+            .assert_ended_with_b_held("Previous step could not start")
+            .await;
     }
 }

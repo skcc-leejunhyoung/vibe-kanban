@@ -118,6 +118,18 @@ impl QueuedMessageService {
             .push_front(msg);
     }
 
+    /// Hold the queue behind a failure that is not its front message's own
+    /// (e.g. the cleanup ahead of it failed): the front waits with `reason`
+    /// exactly like a message that failed to start. Keeps an earlier reason.
+    pub fn hold_front(&self, session_id: Uuid, reason: String) {
+        if let Some(mut q) = self.queue.get_mut(&session_id)
+            && let Some(front) = q.front_mut()
+            && front.start_error.is_none()
+        {
+            front.start_error = Some(reason);
+        }
+    }
+
     /// Pop the front message unless it failed to start (see
     /// [`Self::restore_failed`]); that one waits for an explicit retry.
     fn pop_ready(q: &mut VecDeque<QueuedMessage>) -> Option<QueuedMessage> {
@@ -537,6 +549,29 @@ mod tests {
         assert_eq!(svc.take_steered_or_front(session, a.id).unwrap().id, a.id);
         assert_eq!(svc.take_next(session).unwrap().id, b.id);
         assert!(!svc.has_queued(session));
+    }
+
+    #[test]
+    fn hold_front_pauses_auto_drain_until_the_front_is_sent() {
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+
+        // Nothing queued: nothing to hold, and a later message is not held.
+        svc.hold_front(session, "cleanup failed".into());
+        let a = svc.enqueue(session, sample_data("a"));
+        svc.enqueue(session, sample_data("b"));
+        assert!(svc.get_queued(session)[0].start_error.is_none());
+
+        svc.hold_front(session, "cleanup failed".into());
+        svc.hold_front(session, "later".into());
+        let queued = svc.get_queued(session);
+        assert_eq!(queued[0].start_error.as_deref(), Some("cleanup failed"));
+        assert!(queued[1].start_error.is_none());
+        assert!(svc.take_next(session).is_none());
+
+        // "Send now" on the held front releases the rest.
+        assert_eq!(svc.take_steered_or_front(session, a.id).unwrap().id, a.id);
+        assert_eq!(svc.take_next(session).unwrap().data.message, "b");
     }
 
     #[test]

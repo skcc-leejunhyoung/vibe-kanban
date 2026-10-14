@@ -1951,13 +1951,16 @@ pub trait ContainerService {
             .write()
             .await
             .insert(execution_process.id, Arc::new(MsgStore::new()));
+        // From here on a failure must not leave the row running with no child.
         if *run_reason != ExecutionProcessRunReason::ArchiveScript
             && let Err(e) = Workspace::set_archived(&self.db().pool, workspace.id, false).await
         {
-            self.msg_stores()
-                .write()
-                .await
-                .remove(&execution_process.id);
+            self.fail_execution_start(
+                session,
+                &execution_process,
+                &format!("Failed to start execution: {e}"),
+            )
+            .await;
             return Err(e.into());
         }
 
@@ -1987,10 +1990,12 @@ pub trait ContainerService {
             )
             .await
             {
-                self.msg_stores()
-                    .write()
-                    .await
-                    .remove(&execution_process.id);
+                self.fail_execution_start(
+                    session,
+                    &execution_process,
+                    &format!("Failed to start execution: {e}"),
+                )
+                .await;
                 return Err(e.into());
             }
         }
@@ -2424,6 +2429,12 @@ pub trait ContainerService {
 
         // Determine the run reason of the next action
         let next_run_reason = match (action.typ(), next_action.typ()) {
+            // A multi-repo cleanup chain stays a cleanup chain.
+            (ExecutorActionType::ScriptRequest(_), ExecutorActionType::ScriptRequest(next))
+                if matches!(next.context, ScriptContext::CleanupScript) =>
+            {
+                ExecutionProcessRunReason::CleanupScript
+            }
             (ExecutorActionType::ScriptRequest(_), ExecutorActionType::ScriptRequest(_)) => {
                 ExecutionProcessRunReason::SetupScript
             }
