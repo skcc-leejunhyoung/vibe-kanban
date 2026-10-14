@@ -3718,42 +3718,57 @@ impl ContainerService for LocalContainerService {
             return Ok(());
         }
 
-        let Some(child) = self.get_child_from_store(&execution_process.id).await else {
-            // The row is created before the child is registered. A cancelled
-            // start request can leave it running forever with no child to kill.
-            if ExecutionProcess::update_completion_if_running(
-                &self.db.pool,
-                execution_process.id,
-                status,
-                None,
-            )
-            .await?
-            {
-                let completed_process =
-                    ExecutionProcess::find_by_id(&self.db.pool, execution_process.id)
-                        .await?
-                        .ok_or_else(|| {
-                            ContainerError::Other(anyhow!(
-                                "Execution process disappeared after stop"
-                            ))
-                        })?;
-                if let Err(error) = self
-                    .events
-                    .publish_execution_process_update(&completed_process)
-                    .await
-                {
-                    tracing::error!(
-                        execution_process_id = %execution_process.id,
-                        %error,
-                        "Failed to publish execution stop"
-                    );
+        let child = match self.get_child_from_store(&execution_process.id).await {
+            Some(child) => child,
+            None => {
+                // The row is created before the child is registered. A cancelled
+                // start request can leave it running forever with no child to
+                // kill, so mark it stopped; `finish_execution_spawn` re-reads the
+                // row after registering and kills a child that started anyway.
+                let marked = ExecutionProcess::update_completion_if_running(
+                    &self.db.pool,
+                    execution_process.id,
+                    status.clone(),
+                    None,
+                )
+                .await?;
+                // The child can also be registered between the lookup above and
+                // the mark, after that re-read still saw the row running — then
+                // nobody would kill it. Look again now the row is marked.
+                match self.get_child_from_store(&execution_process.id).await {
+                    Some(child) => child,
+                    None => {
+                        if marked {
+                            let completed_process =
+                                ExecutionProcess::find_by_id(&self.db.pool, execution_process.id)
+                                    .await?
+                                    .ok_or_else(|| {
+                                        ContainerError::Other(anyhow!(
+                                            "Execution process disappeared after stop"
+                                        ))
+                                    })?;
+                            if let Err(error) = self
+                                .events
+                                .publish_execution_process_update(&completed_process)
+                                .await
+                            {
+                                tracing::error!(
+                                    execution_process_id = %execution_process.id,
+                                    %error,
+                                    "Failed to publish execution stop"
+                                );
+                            }
+                        }
+                        if let Some(msg) =
+                            self.msg_stores.write().await.remove(&execution_process.id)
+                        {
+                            msg.push_finished();
+                            msg.push(LogMsg::StorageFinished);
+                        }
+                        return Ok(());
+                    }
                 }
             }
-            if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
-                msg.push_finished();
-                msg.push(LogMsg::StorageFinished);
-            }
-            return Ok(());
         };
         let exit_code = if status == ExecutionProcessStatus::Completed {
             Some(0)
