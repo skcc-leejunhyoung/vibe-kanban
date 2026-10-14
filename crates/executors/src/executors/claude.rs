@@ -2686,6 +2686,14 @@ impl ClaudeLogProcessor {
                             patches.push(patch);
                         }
 
+                        // A new message means earlier ones already matched by an
+                        // `assistant` event are over, even if a block of theirs
+                        // was never matched (thinking omitted from the final
+                        // message); keeping them would leak and defeat the
+                        // single-pending fallback below.
+                        self.streaming_messages.retain(|_, state| {
+                            !state.contents.values().any(|content| content.consumed)
+                        });
                         if let Some(message_id) = message.id.clone() {
                             self.streaming_messages.insert(
                                 message_id.clone(),
@@ -4777,6 +4785,37 @@ mod tests {
             thinking_entries, 1,
             "the streamed thinking entry must survive instead of being overwritten by the final text"
         );
+    }
+
+    /// A message whose final `assistant` omitted its thinking block leaves that
+    /// entry unmatched. The next message must still reuse its own streamed
+    /// entry when its `assistant` id does not match, so the earlier state may
+    /// not linger as a second pending candidate.
+    #[test]
+    fn test_partially_matched_message_does_not_block_next_fallback() {
+        const MSG_START_2: &str = r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_2","role":"assistant","content":[]}}}"#;
+        const CB_DELTA_SECOND: &str = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"second"}}}"#;
+        const ASSISTANT_OTHER_ID: &str = r#"{"type":"assistant","message":{"id":"msg_other","role":"assistant","content":[{"type":"text","text":"second"}]}}"#;
+        let lines = [
+            MSG_START,
+            CB_START_THINK_0,
+            CB_DELTA_THINK_0,
+            CB_STOP_THINK_0,
+            CB_START_TEXT_1,
+            CB_DELTA_TEXT_1A,
+            CB_DELTA_TEXT_1B,
+            ASSISTANT_FULL,
+            CB_STOP_TEXT_1,
+            MSG_STOP,
+            MSG_START_2,
+            CB_START,
+            CB_DELTA_SECOND,
+            ASSISTANT_OTHER_ID,
+            CB_STOP,
+            MSG_STOP,
+        ];
+        assert_eq!(count_assistant_entries_with(&lines, "second"), 1);
+        assert_eq!(count_assistant_entries_with(&lines, "Hello world"), 1);
     }
 
     /// The final `assistant` event's own timestamp dates the message entry,

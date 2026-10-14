@@ -157,11 +157,10 @@ async fn process_inserts_reach_the_stream_as_running() {
 }
 
 /// The commit hook also runs before other connections can see the commit, so
-/// an update re-read could publish the previous value. Streamed values must
-/// never go backwards and must end at the last write. Commits that queue up
-/// while the publisher is busy may be read together and coalesce into the
-/// newer value (update n streams n+1); a stale read is the opposite signature
-/// (update n streams n-1: n-1 twice while n never shows).
+/// an update re-read could publish the previous value. Each update publishes
+/// exactly one event, in commit order; commits that queue up while the
+/// publisher is busy may be read together and show a newer value, but the
+/// k-th event must never carry a value older than the k-th write.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn row_updates_stream_their_new_values() {
     let (_temp, hooked, store) = hooked_db().await;
@@ -188,7 +187,9 @@ async fn row_updates_stream_their_new_values() {
     let path = format!("/workspaces/{}", workspace.id);
     let seen: Vec<usize> = streamed_ops(&store)
         .iter()
-        .filter(|op| op["path"] == path)
+        // The workspace insert streams as `add` (and may already carry the
+        // first note); each update streams exactly one `replace`.
+        .filter(|op| op["path"] == path && op["op"] == "replace")
         .filter_map(|op| {
             op["value"]["status_note"]
                 .as_str()?
@@ -197,18 +198,18 @@ async fn row_updates_stream_their_new_values() {
                 .ok()
         })
         .collect();
-    assert!(
-        seen.windows(2).all(|pair| pair[0] <= pair[1]),
-        "values went backwards: {seen:?}"
-    );
-    assert_eq!(seen.last(), Some(&(WRITES - 1)), "{seen:?}");
-    let stale: Vec<usize> = (1..WRITES)
-        .filter(|n| !seen.contains(n) && seen.iter().filter(|v| **v == n - 1).count() > 1)
+    assert_eq!(seen.len(), WRITES, "one event per update: {seen:?}");
+    let stale: Vec<(usize, usize)> = seen
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(k, v)| v < k)
         .collect();
     assert!(
         stale.is_empty(),
-        "updates streamed the previous value: {stale:?} in {seen:?}"
+        "events carried a value older than their write: {stale:?} in {seen:?}"
     );
+    assert_eq!(seen.last(), Some(&(WRITES - 1)), "{seen:?}");
 }
 
 /// Applying the stream in order must end in the database's state: a process
