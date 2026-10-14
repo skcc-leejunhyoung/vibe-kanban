@@ -138,6 +138,13 @@ interface PendingSend {
   stopRequested: boolean;
   /** The real process once known (POST returned or streamed earlier). */
   process: ExecutionProcess | null;
+  /**
+   * The request returned: the agent is registered and a stop reaches it. The
+   * stream shows the row before that; a stop is then deferred to the answer.
+   * ("Send now" has no answer to wait for; it stops on adoption and relies on
+   * the server re-checking for a child registered during the stop.)
+   */
+  spawned: boolean;
   /** Kill the real process: optimistic status + session-scoped stop. */
   stopReal: (processId: string) => void;
   /** "Send now": nothing to await after the steer answers, so the entry is
@@ -454,14 +461,17 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       if (pending.stopRequested) return;
       pending.stopRequested = true;
       pendingSendsChanged();
-      if (pending.process) {
-        // The POST has returned and the send is only finishing up: the
-        // process exists, so kill it right away.
+      if (pending.spawned && pending.process) {
+        // The request has returned and the send is only finishing up: the
+        // agent is registered, so kill it right away.
         pending.stopReal(pending.process.id);
-      } else if (processes.some((p) => p.id === pending.placeholder.id)) {
-        // Nothing to kill on the server yet: mark the placeholder (only where
-        // this overlay shows it); the real process is killed on arrival.
-        patchOptimisticProcess(pending.placeholder.id, {
+        return;
+      }
+      // Nothing the server can kill yet: mark the turn shown (only where this
+      // overlay shows it); the real process is killed once it can be.
+      const shownId = pending.process?.id ?? pending.placeholder.id;
+      if (processes.some((p) => p.id === shownId)) {
+        patchOptimisticProcess(shownId, {
           status: ExecutionProcessStatus.killed,
         });
       }
@@ -937,7 +947,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // The stream publishes the new row on insert, the POST only returns after
   // the spawn: adopt our process as soon as it shows up so the placeholder
-  // never sits next to it (two user bubbles) and a deferred stop fires early.
+  // never sits next to it (two user bubbles). A deferred stop waits for the
+  // request's answer (`PendingSend.spawned`), except "send now", which has none.
   useEffect(() => {
     if (!sessionId) return;
     const pending = pendingSends.get(sessionId);
@@ -946,11 +957,25 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!arrived) return;
     clearOptimisticProcess(pending.placeholder.id);
     pending.process = arrived;
-    if (pending.stopRequested) pending.stopReal(arrived.id);
+    if (pending.stopRequested && pending.settleOnAdopt) {
+      pending.stopReal(arrived.id);
+    }
     if (pending.hideQueuedId) dropQueuedLocally(pending.hideQueuedId);
     if (pending.settleOnAdopt) pendingSends.delete(sessionId);
     pendingSendsChanged();
   }, [sessionId, processes, clearOptimisticProcess, dropQueuedLocally]);
+
+  // An unmounted composer can't drop its provider's copy of the placeholder
+  // any more (the provider may outlive it), so drop it now; a composer showing
+  // the session again re-adds it while the send is still pending.
+  useEffect(() => {
+    const shownPlaceholder = shownPlaceholderIdRef;
+    return () => {
+      if (shownPlaceholder.current) {
+        clearOptimisticProcess(shownPlaceholder.current);
+      }
+    };
+  }, [clearOptimisticProcess]);
 
   // A send that failed after the user had left: put its text back in front of
   // whatever this session's draft holds, once that draft (not an approval's,
@@ -1043,16 +1068,19 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       executorConfigForDraft: ExecutorConfig
     ) => {
       if (sessionIdRef.current !== target) {
-        unsentPrompts.set(target, prompt);
+        const earlier = unsentPrompts.get(target);
+        unsentPrompts.set(target, earlier ? `${earlier}\n\n${prompt}` : prompt);
         pendingSendsChanged();
         return;
       }
       const draft = localMessageRef.current;
       const restored = draft.trim() ? `${prompt}\n\n${draft}` : prompt;
+      // A debounced save of what was typed meanwhile would overwrite this.
+      cancelDebouncedSave();
       setLocalMessage(restored);
       void saveToScratch(restored, executorConfigForDraft);
     },
-    [setLocalMessage, saveToScratch]
+    [setLocalMessage, saveToScratch, cancelDebouncedSave]
   );
 
   // Send `prompt` into `target` with `placeholder` shown as its turn right
@@ -1083,6 +1111,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         prompt: prompt.trim(),
         stopRequested: false,
         process: null,
+        spawned: false,
         stopReal,
       };
       pendingSends.set(target, pendingState);
@@ -1091,16 +1120,18 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       let success = false;
       try {
         const process = await request();
-        // Unless the stream already delivered it (adopted), swap the
-        // placeholder for the real row in one render. Adds are
-        // session-guarded, so this is safe after a switch.
+        pendingState.spawned = true;
+        // Swap the placeholder for the real row in one render. Drop our copy
+        // even when the row was adopted from the stream: another pane may have
+        // adopted it, leaving ours unswapped. Adds are session-guarded, so this
+        // is safe after a switch.
+        clearOptimisticProcess(placeholder.id);
         if (!pendingState.process) {
-          clearOptimisticProcess(placeholder.id);
           addOptimisticProcess(process);
           pendingState.process = process;
-          pendingSendsChanged(); // other composers swap their copy too
-          if (pendingState.stopRequested) stopReal(process.id);
         }
+        pendingSendsChanged(); // other composers swap their copy too
+        if (pendingState.stopRequested) stopReal(process.id);
         success = true;
       } catch (error) {
         onFailure?.(error);
@@ -1462,6 +1493,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       prompt: prompt.trim(),
       stopRequested: false,
       process: null,
+      spawned: false,
       stopReal,
       settleOnAdopt: true,
       hideQueuedId: null,
