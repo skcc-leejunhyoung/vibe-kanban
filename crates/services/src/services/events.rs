@@ -39,15 +39,14 @@ enum RowChange {
 
 /// The commit hook runs before its commit is visible to other connections.
 /// Taking the write lock waits until the committing writer has released it,
-/// so reads that start afterwards see this commit (or a newer one).
+/// so reads that start afterwards see this commit (or a newer one). Both
+/// statements go to the connection's worker as one batch, so the lock is
+/// released without waiting on the async runtime in between.
 async fn wait_for_commit(pool: &SqlitePool) {
-    match pool.begin_with("BEGIN IMMEDIATE").await {
-        Ok(barrier) => {
-            if let Err(error) = barrier.commit().await {
-                tracing::debug!(%error, "Commit barrier did not release cleanly");
-            }
-        }
-        Err(error) => tracing::warn!(%error, "Commit barrier failed; publishing anyway"),
+    // An empty write transaction cannot fail to commit once BEGIN succeeded,
+    // so the pooled connection is never left inside a transaction.
+    if let Err(error) = sqlx::raw_sql("BEGIN IMMEDIATE; COMMIT").execute(pool).await {
+        tracing::warn!(%error, "Commit barrier failed; publishing anyway");
     }
 }
 
@@ -294,21 +293,28 @@ impl EventService {
                     changes.extend(more);
                 }
                 wait_for_commit(&db_service.pool).await;
-                for change in changes {
-                    match change {
-                        RowChange::Row(table, operation, rowid) => {
-                            publish_row(
-                                table,
-                                operation,
-                                rowid,
-                                &db_service,
-                                &msg_store,
-                                &entry_count,
-                            )
-                            .await
+                // One task publishes every event, so a panic must cost only
+                // this batch, not the live UI for the rest of the process.
+                let batch = std::panic::AssertUnwindSafe(async {
+                    for change in changes {
+                        match change {
+                            RowChange::Row(table, operation, rowid) => {
+                                publish_row(
+                                    table,
+                                    operation,
+                                    rowid,
+                                    &db_service,
+                                    &msg_store,
+                                    &entry_count,
+                                )
+                                .await
+                            }
+                            RowChange::Removed(patch) => msg_store.push_patch(patch),
                         }
-                        RowChange::Removed(patch) => msg_store.push_patch(patch),
                     }
+                });
+                if futures::FutureExt::catch_unwind(batch).await.is_err() {
+                    tracing::error!("Event publisher panicked; one batch of row events dropped");
                 }
             }
         });

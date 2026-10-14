@@ -157,8 +157,11 @@ async fn process_inserts_reach_the_stream_as_running() {
 }
 
 /// The commit hook also runs before other connections can see the commit, so
-/// an update re-read could publish the previous value. Every value written in
-/// sequence must reach the stream, the last one included.
+/// an update re-read could publish the previous value. Streamed values must
+/// never go backwards and must end at the last write. Commits that queue up
+/// while the publisher is busy may be read together and coalesce into the
+/// newer value (update n streams n+1); a stale read is the opposite signature
+/// (update n streams n-1: n-1 twice while n never shows).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn row_updates_stream_their_new_values() {
     let (_temp, hooked, store) = hooked_db().await;
@@ -172,30 +175,39 @@ async fn row_updates_stream_their_new_values() {
     )
     .await
     .unwrap();
-    let notes: Vec<String> = (0..60).map(|n| format!("요약 {n}")).collect();
-    for note in &notes {
-        Workspace::set_status_note(&hooked, workspace.id, note)
+    const WRITES: usize = 60;
+    for n in 0..WRITES {
+        Workspace::set_status_note(&hooked, workspace.id, &format!("요약 {n}"))
             .await
             .unwrap();
-        // Spaced like real writers, so each value is still current when its
-        // event re-reads the row; a miss here means the re-read was stale.
+        // Spaced like real writers.
         tokio::time::sleep(Duration::from_millis(15)).await;
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let path = format!("/workspaces/{}", workspace.id);
-    let seen: Vec<String> = streamed_ops(&store)
+    let seen: Vec<usize> = streamed_ops(&store)
         .iter()
         .filter(|op| op["path"] == path)
-        .filter_map(|op| op["value"]["status_note"].as_str().map(str::to_string))
+        .filter_map(|op| {
+            op["value"]["status_note"]
+                .as_str()?
+                .strip_prefix("요약 ")?
+                .parse()
+                .ok()
+        })
         .collect();
-    let missing: Vec<&String> = notes.iter().filter(|note| !seen.contains(note)).collect();
     assert!(
-        missing.is_empty(),
-        "{} of {} updates streamed a stale value: {:?}",
-        missing.len(),
-        notes.len(),
-        missing.iter().take(5).collect::<Vec<_>>()
+        seen.windows(2).all(|pair| pair[0] <= pair[1]),
+        "values went backwards: {seen:?}"
+    );
+    assert_eq!(seen.last(), Some(&(WRITES - 1)), "{seen:?}");
+    let stale: Vec<usize> = (1..WRITES)
+        .filter(|n| !seen.contains(n) && seen.iter().filter(|v| **v == n - 1).count() > 1)
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "updates streamed the previous value: {stale:?} in {seen:?}"
     );
 }
 
