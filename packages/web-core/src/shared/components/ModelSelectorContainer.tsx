@@ -435,6 +435,16 @@ export function ModelSelectorContainer({
   ]);
 
   const handleModelSelect = (modelId: string | null, providerId?: string) => {
+    // Re-picking the current model (click, or Enter to reach its effort menu)
+    // must not drop its fast tier or effort.
+    if (
+      modelId &&
+      modelId.toLowerCase() === selectedModelId?.toLowerCase() &&
+      (providerId ?? '').toLowerCase() ===
+        (selectedProviderId ?? '').toLowerCase()
+    ) {
+      return;
+    }
     const modelOverride = (() => {
       if (!modelId) return null;
       if (providerId) return `${providerId}/${modelId}`;
@@ -485,11 +495,12 @@ export function ModelSelectorContainer({
     const modelOverride = selectedProviderId
       ? `${selectedProviderId}/${id}`
       : id;
-    // Same model, different tier: carry the effort so the model-change reset
-    // in the override setters doesn't drop it.
+    // Same model, different tier: carry the stored effort so the model-change
+    // reset in the override setters doesn't drop it. Not selectedReasoningId —
+    // its display-only fallback would pin a default into Settings profiles.
     onOverrideChange({
       model_id: modelOverride,
-      reasoning_id: selectedReasoningId,
+      reasoning_id: executorConfig?.reasoning_id ?? null,
     });
   };
 
