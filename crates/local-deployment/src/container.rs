@@ -1853,7 +1853,6 @@ impl LocalContainerService {
                 // result sentinel): the summary itself describes the turn.
                 if let Some(block) =
                     executors::logs::status_note::extract_last_block(&entry.content)
-                    && !block.text.is_empty()
                 {
                     return Some(cap(&block.text));
                 }
@@ -1869,18 +1868,23 @@ impl LocalContainerService {
     fn extract_last_assistant_message_full(&self, exec_id: &Uuid) -> Option<String> {
         let msg_stores = self.msg_stores.try_read().ok()?;
         let msg_store = msg_stores.get(exec_id)?;
+        Self::last_assistant_message_full_from_msgs(&msg_store.get_history())
+    }
+
+    /// The newest assistant message without its summary blocks. A message
+    /// holding only a block is still the last one: a sentinel it lacks must not
+    /// be taken from an earlier message of the turn.
+    fn last_assistant_message_full_from_msgs(msgs: &[LogMsg]) -> Option<String> {
         // Only an entry's latest streamed snapshot counts.
         let mut seen = HashSet::new();
-        for msg in msg_store.get_history().iter().rev() {
+        for msg in msgs.iter().rev() {
             if let LogMsg::JsonPatch(patch) = msg
                 && let Some((index, entry)) = extract_normalized_entry_from_patch(patch)
                 && seen.insert(index)
                 && matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
+                && !entry.content.trim().is_empty()
             {
-                let content = executors::logs::status_note::strip_blocks(&entry.content);
-                if !content.is_empty() {
-                    return Some(content);
-                }
+                return Some(executors::logs::status_note::strip_blocks(&entry.content));
             }
         }
         None
@@ -4230,6 +4234,39 @@ mod tests {
                 metadata: None,
             },
         ))
+    }
+
+    #[test]
+    fn result_sentinel_is_read_from_the_last_message_only() {
+        let message = |index, content: &str| {
+            LogMsg::JsonPatch(ConversationPatch::add_normalized_entry(
+                index,
+                NormalizedEntry {
+                    timestamp: None,
+                    entry_type: NormalizedEntryType::AssistantMessage,
+                    content: content.to_string(),
+                    metadata: None,
+                },
+            ))
+        };
+        // The final message is only a summary: no sentinel, even though an
+        // earlier message of the turn mentioned one.
+        let msgs = vec![
+            message(0, "I will end with VIBE_RESULT: approve"),
+            message(1, "```vibe-status\nDone.\n```"),
+        ];
+        assert_eq!(
+            LocalContainerService::last_assistant_message_full_from_msgs(&msgs).as_deref(),
+            Some("")
+        );
+        let msgs = vec![
+            message(0, "earlier"),
+            message(1, "```vibe-status\nDone.\n```\nVIBE_RESULT: approve"),
+        ];
+        assert_eq!(
+            LocalContainerService::last_assistant_message_full_from_msgs(&msgs).as_deref(),
+            Some("VIBE_RESULT: approve")
+        );
     }
 
     #[test]

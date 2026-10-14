@@ -1175,12 +1175,15 @@ function AssistantMessageEntry({
               renderMermaidArtifacts
             />
           ) : 'kind' in part ? (
-            <StatusNoteChip
-              key={index}
-              headline={statusFirstSentence(part.text)}
-              writing={!part.closed && processRunning}
-              time={chipTime ? formatClock(chipTime) : undefined}
-            />
+            // An empty block (a fence just opened) says nothing yet.
+            part.text ? (
+              <StatusNoteChip
+                key={index}
+                headline={statusFirstSentence(part.text)}
+                writing={!part.closed && processRunning}
+                time={chipTime ? formatClock(chipTime) : undefined}
+              />
+            ) : null
           ) : (
             // The same file may be attached on two lines of one message.
             <ArtifactCards

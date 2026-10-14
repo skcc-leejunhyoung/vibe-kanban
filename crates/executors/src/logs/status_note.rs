@@ -91,14 +91,18 @@ fn scan(text: &str, mut on_block: impl FnMut(usize, usize, String, bool)) {
 }
 
 /// The summary the message currently ends with. An earlier block is replaced
-/// by a later one, so the agent can refresh it within a single message.
+/// by a later one, so the agent can refresh it within a single message. An
+/// empty block (a fence just opened) says nothing and replaces nothing.
 pub fn extract_last_block(text: &str) -> Option<StatusBlock> {
     let mut last = None;
     scan(text, |_, _, text, closed| {
-        last = Some(StatusBlock {
-            text: text.trim().to_string(),
-            closed,
-        });
+        let text = text.trim();
+        if !text.is_empty() {
+            last = Some(StatusBlock {
+                text: text.to_string(),
+                closed,
+            });
+        }
     });
     last
 }
@@ -210,6 +214,15 @@ mod tests {
             "x"
         );
         assert_eq!(extract_last_block("```vibe-statusx\nx\n```"), None);
+        // An empty block neither counts nor hides the one before it.
+        assert_eq!(extract_last_block("```vibe-status\n  \n```"), None);
+        assert_eq!(
+            extract_last_block("```vibe-status\nkept\n```\n```vibe-status\n"),
+            Some(StatusBlock {
+                text: "kept".into(),
+                closed: true
+            })
+        );
         // Inline code at the start of a line is not a fence and must not
         // swallow the real block after it.
         assert_eq!(

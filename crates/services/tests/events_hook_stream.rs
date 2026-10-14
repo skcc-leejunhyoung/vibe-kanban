@@ -18,10 +18,6 @@ use tokio::sync::RwLock;
 use utils::{log_msg::LogMsg, msg_store::MsgStore};
 use uuid::Uuid;
 
-/// SQLite fires the update hook before the statement commits, and the hook
-/// re-reads the row through another pooled connection. Every insert must
-/// still reach the stream as an `add` carrying `running`; otherwise clients
-/// that did not start the turn learn about it only when it ends.
 /// A file-backed WAL database whose writer pool carries the real event hook,
 /// and the stream it publishes to. The hook re-reads rows through its own
 /// pool, exactly like the server.
@@ -73,6 +69,10 @@ fn streamed_ops(store: &MsgStore) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// SQLite fires the update hook before the statement commits, and the hook
+/// re-reads the row through another pooled connection. Every insert must
+/// still reach the stream as an `add` carrying `running`; otherwise clients
+/// that did not start the turn learn about it only when it ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn process_inserts_reach_the_stream_as_running() {
     let (_temp, hooked, store) = hooked_db().await;
@@ -214,7 +214,7 @@ async fn row_updates_stream_their_new_values() {
 
 /// Applying the stream in order must end in the database's state: a process
 /// created and finished back to back ends `completed`, a workspace created
-/// and deleted at once ends absent, and a rolled-back insert never appears.
+/// and deleted at once ends absent, and a rolled-back delete removes nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stream_order_matches_commit_order() {
     let (_temp, hooked, store) = hooked_db().await;
@@ -289,14 +289,23 @@ async fn stream_order_matches_commit_order() {
         .execute(&hooked)
         .await
         .unwrap();
-    let ghost = Uuid::new_v4();
-    let mut tx = hooked.begin().await.unwrap();
-    sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'vk/ghost')")
-        .bind(ghost)
-        .execute(&mut *tx)
+    // Roll back a delete, then commit on the same connection: a removal left
+    // queued by the rollback would be published with that commit.
+    let survivor = processes[0];
+    let mut conn = hooked.acquire().await.unwrap();
+    sqlx::query("BEGIN").execute(&mut *conn).await.unwrap();
+    sqlx::query("DELETE FROM execution_processes WHERE id = ?")
+        .bind(survivor)
+        .execute(&mut *conn)
         .await
         .unwrap();
-    tx.rollback().await.unwrap();
+    sqlx::query("ROLLBACK").execute(&mut *conn).await.unwrap();
+    sqlx::query("UPDATE workspaces SET name = 'after rollback' WHERE id = ?")
+        .bind(workspace.id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    drop(conn);
     tokio::time::sleep(Duration::from_millis(800)).await;
 
     // Fold the stream like a client would.
@@ -315,6 +324,10 @@ async fn stream_order_matches_commit_order() {
             _ => {}
         }
     }
+    assert!(
+        state.contains_key(&format!("/execution_processes/{survivor}")),
+        "a rolled-back delete must not remove the process"
+    );
     for id in &processes {
         assert_eq!(
             state[&format!("/execution_processes/{id}")]["status"],
@@ -323,12 +336,8 @@ async fn stream_order_matches_commit_order() {
         );
     }
     assert!(!state.contains_key(&format!("/workspaces/{}", doomed.id)));
-    // A rolled-back insert is not even re-read (which would surface as a
-    // deleted-record entry).
-    assert!(!state.contains_key(&format!("/workspaces/{ghost}")));
-    assert!(
-        !state
-            .values()
-            .any(|value| value["record"]["type"] == "DELETED_WORKSPACE")
+    assert_eq!(
+        state[&format!("/workspaces/{}", workspace.id)]["name"],
+        "after rollback"
     );
 }

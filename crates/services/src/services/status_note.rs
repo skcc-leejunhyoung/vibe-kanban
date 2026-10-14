@@ -58,9 +58,6 @@ impl StatusNoteObserver {
         let block = matches!(entry.entry_type, NormalizedEntryType::AssistantMessage)
             .then(|| status_note::extract_last_block(&entry.content))
             .flatten()
-            // A fence opened but still empty is not a summary yet (the client
-            // skips it too), so it neither replaces nor drops an earlier draft.
-            .filter(|block| !block.text.is_empty())
             .filter(|_| self.newest.is_none_or(|newest| index >= newest));
         // The agent moved on from an unclosed block: keep it as far as it got,
         // unless this very entry brings a newer block that replaces it.

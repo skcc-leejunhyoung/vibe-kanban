@@ -83,6 +83,11 @@ describe('splitStatusSegments', () => {
       text: 'second',
       closed: true,
     });
+    // An empty block neither counts nor hides the one before it.
+    expect(extractLastStatusBlock('```vibe-status\n  \n```')).toBeUndefined();
+    expect(
+      extractLastStatusBlock('```vibe-status\nkept\n```\n```vibe-status\n')
+    ).toEqual({ text: 'kept', closed: true });
   });
 });
 

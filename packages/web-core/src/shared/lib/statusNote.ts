@@ -137,13 +137,16 @@ export function statusTruncate(
   return cut ? `${out.trimEnd()}…` : out;
 }
 
-/** The summary a message currently ends with; a later block replaces an earlier one. */
+/**
+ * The summary a message currently ends with; a later block replaces an earlier
+ * one and an empty block (a fence just opened) is skipped.
+ */
 export function extractLastStatusBlock(
   content: string
 ): { text: string; closed: boolean } | undefined {
   let last: { text: string; closed: boolean } | undefined;
   for (const segment of splitStatusSegments(content))
-    if (segment.kind === 'status')
+    if (segment.kind === 'status' && segment.text)
       last = { text: segment.text, closed: segment.closed };
   return last;
 }
