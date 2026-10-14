@@ -2313,10 +2313,8 @@ impl LocalContainerService {
             if let Err(e) = self.try_start_next_action(ctx).await {
                 tracing::error!("Failed to start next action after completion: {}", e);
                 // The chain was left to the next action's exit, which may now
-                // never come.
-                if plan.finalize_with_queue.is_none() {
-                    self.finalize_unstarted_next_action(ctx, &e).await;
-                }
+                // never come (`start_next` never comes with a finalize here).
+                self.finalize_unstarted_next_action(ctx, &e).await;
             }
         }
 
@@ -2870,17 +2868,14 @@ impl LocalContainerService {
         // execution_process_logs DB table, so a DB read returns nothing right
         // after completion — which made this always paste "(로그가 비어 있음)".
         // Prefer the still-alive MsgStore, mirroring the rate-limit detection
-        // path above; fall back to the DB only if the store is already gone.
+        // path above; once it is gone (a cleanup that failed to start), read
+        // the log file its start failure was written to.
         let msgs = if let Some(store) = self.get_msg_store_by_id(&exec_id).await {
             store.get_history()
         } else {
-            match ExecutionProcessLogs::find_by_execution_id(&self.db.pool, exec_id).await {
-                Ok(records) => ExecutionProcessLogs::parse_logs(&records).unwrap_or_default(),
-                Err(e) => {
-                    tracing::warn!("vibe: failed to load cleanup logs for {}: {}", exec_id, e);
-                    Vec::new()
-                }
-            }
+            services::services::execution_process::load_raw_log_messages(&self.db.pool, exec_id)
+                .await
+                .unwrap_or_default()
         };
         vibe_orchestrator::cleanup_failure_log_text(&msgs, 4000)
     }
@@ -5738,6 +5733,14 @@ mod cleanup_failure_queue_tests {
         ))
         .unwrap();
         assert!(log.contains("Failed to start execution"), "{log}");
+        // vibe's cleanup-fix prompt gets that error, not an empty log.
+        assert!(
+            chain
+                .container
+                .vibe_cleanup_failure_log(cleanup.id)
+                .await
+                .contains("Failed to start execution")
+        );
         chain
             .assert_ended_with_b_held("Previous step could not start")
             .await;
