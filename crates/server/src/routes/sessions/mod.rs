@@ -18,7 +18,7 @@ use db::models::{
     pending_execution_start::PendingExecutionStart,
     pending_rate_limit_resume::PendingRateLimitResume,
     requests::UpdateSession,
-    scratch::{DraftFollowUpData, Scratch, ScratchType},
+    scratch::{Scratch, ScratchType},
     session::{CreateSession, Session, SessionError},
     workspace::{Workspace, WorkspaceError},
     workspace_repo::WorkspaceRepo,
@@ -450,7 +450,6 @@ async fn follow_up_inner(
     let latest_session_info = CodingAgentTurn::find_latest_session_info(pool, session.id).await?;
 
     let prompt = payload.prompt;
-    let queued_prompt = prompt.clone();
 
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
@@ -509,21 +508,19 @@ async fn follow_up_inner(
 
     // Serialise "is a turn running? → create the row" with the queue drain and
     // other clients. A follow-up that finds a turn just started (the queue
-    // drained, another tab sent) goes to the front of the queue and runs next,
-    // instead of running side by side with it; the answer is that turn.
+    // drained, another tab sent) is refused rather than run side by side with
+    // it — the caller keeps the message (the chat puts it back to queue or
+    // resend; MCP / automation get a clear error, not someone else's turn).
     let starting = deployment.container().lock_session_start(session.id).await;
     if payload.retry_process_id.is_none()
-        && let Some(running) =
-            ExecutionProcess::find_running_coding_agent_for_session(pool, session.id).await?
+        && ExecutionProcess::find_running_coding_agent_for_session(pool, session.id)
+            .await?
+            .is_some()
     {
-        deployment.queued_message_service().enqueue_front(
-            session.id,
-            DraftFollowUpData {
-                message: queued_prompt,
-                executor_config: executor_config.clone(),
-            },
-        );
-        return Ok(ResponseJson(ApiResponse::success(running)));
+        return Err(ApiError::Conflict(
+            "Another turn started in this session just now; queue the message or send it again when it finishes"
+                .to_string(),
+        ));
     }
     let record = deployment
         .container()
