@@ -18,7 +18,7 @@ use db::models::{
     pending_execution_start::PendingExecutionStart,
     pending_rate_limit_resume::PendingRateLimitResume,
     requests::UpdateSession,
-    scratch::{Scratch, ScratchType},
+    scratch::{DraftFollowUpData, Scratch, ScratchType},
     session::{CreateSession, Session, SessionError},
     workspace::{Workspace, WorkspaceError},
     workspace_repo::WorkspaceRepo,
@@ -450,6 +450,7 @@ async fn follow_up_inner(
     let latest_session_info = CodingAgentTurn::find_latest_session_info(pool, session.id).await?;
 
     let prompt = payload.prompt;
+    let queued_prompt = prompt.clone();
 
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
@@ -506,17 +507,36 @@ async fn follow_up_inner(
         None => None,
     };
 
-    let execution_process = if let Some((task_id, blocker_count)) = gated_blocker {
-        let record = deployment
-            .container()
-            .create_execution_record(
-                &workspace,
-                &session,
-                &action,
-                &ExecutionProcessRunReason::CodingAgent,
-            )
-            .await?;
+    // Serialise "is a turn running? → create the row" with the queue drain and
+    // other clients. A follow-up that finds a turn just started (the queue
+    // drained, another tab sent) goes to the front of the queue and runs next,
+    // instead of running side by side with it; the answer is that turn.
+    let starting = deployment.container().lock_session_start(session.id).await;
+    if payload.retry_process_id.is_none()
+        && let Some(running) =
+            ExecutionProcess::find_running_coding_agent_for_session(pool, session.id).await?
+    {
+        deployment.queued_message_service().enqueue_front(
+            session.id,
+            DraftFollowUpData {
+                message: queued_prompt,
+                executor_config: executor_config.clone(),
+            },
+        );
+        return Ok(ResponseJson(ApiResponse::success(running)));
+    }
+    let record = deployment
+        .container()
+        .create_execution_record(
+            &workspace,
+            &session,
+            &action,
+            &ExecutionProcessRunReason::CodingAgent,
+        )
+        .await?;
+    drop(starting);
 
+    let execution_process = if let Some((task_id, blocker_count)) = gated_blocker {
         match PendingExecutionStart::create(pool, record.id, workspace.id, session.id, task_id)
             .await
         {
@@ -545,13 +565,9 @@ async fn follow_up_inner(
     } else {
         deployment
             .container()
-            .start_execution(
-                &workspace,
-                &session,
-                &action,
-                &ExecutionProcessRunReason::CodingAgent,
-            )
-            .await?
+            .finish_execution_spawn(&workspace, &session, &record, &action)
+            .await?;
+        record
     };
 
     // A successfully-started manual follow-up supersedes any scheduled

@@ -872,6 +872,25 @@ pub trait ContainerService {
 
     fn container_locks(&self) -> &ContainerLocks;
 
+    /// Per-session locks around "is a coding-agent turn running? → create the
+    /// next turn's row"; see [`Self::lock_session_start`].
+    fn session_start_locks(&self) -> &ContainerLocks;
+
+    /// Hold this from the running-turn check until the new turn's row exists,
+    /// so two starts for one session (a follow-up request and the queue drain,
+    /// or two clients) can't both see "nothing running" and run side by side.
+    /// Release it before the spawn.
+    async fn lock_session_start(&self, session_id: Uuid) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.session_start_locks().write().await;
+            locks
+                .entry(session_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+
     /// Hold this while materialising a workspace's checkout in several steps
     /// (worktree, then a PR checkout): every [`Self::ensure_container_exists`]
     /// for the workspace waits for the guard, so nothing runs in a half-made
@@ -1608,6 +1627,7 @@ pub trait ContainerService {
         data: &DraftFollowUpData,
     ) -> Result<ExecutionProcess, ContainerError> {
         self.wait_for_session_ready(session.id).await;
+        let starting = self.lock_session_start(session.id).await;
 
         // Concurrency guard: never start a second coding-agent turn for a session
         // that already has one running. A steer kill's fallback path (when
@@ -1685,13 +1705,19 @@ pub trait ContainerService {
 
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
-        self.start_execution(
-            workspace,
-            session,
-            &action,
-            &ExecutionProcessRunReason::CodingAgent,
-        )
-        .await
+        let record = self
+            .create_execution_record(
+                workspace,
+                session,
+                &action,
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await?;
+        // The row exists: a concurrent start now sees it running.
+        drop(starting);
+        self.finish_execution_spawn(workspace, session, &record, &action)
+            .await?;
+        Ok(record)
     }
 
     /// Creates the `execution_process` row (plus repo state / coding-agent turn /

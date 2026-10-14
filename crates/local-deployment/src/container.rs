@@ -673,6 +673,7 @@ pub struct LocalContainerService {
     session_finalization: Arc<SessionFinalizationBarrier>,
     workspace_touch_times: Arc<RwLock<HashMap<Uuid, Instant>>>,
     container_locks: ContainerLocks,
+    session_start_locks: ContainerLocks,
     config: Arc<RwLock<Config>>,
     git: GitService,
     file_service: FileService,
@@ -722,6 +723,7 @@ impl LocalContainerService {
         let session_finalization = Arc::new(SessionFinalizationBarrier::default());
         let workspace_touch_times = Arc::new(RwLock::new(HashMap::new()));
         let container_locks = Arc::new(RwLock::new(HashMap::new()));
+        let session_start_locks = Arc::new(RwLock::new(HashMap::new()));
         let notification_service =
             NotificationService::new(config.clone(), db.pool.clone(), remote_client.clone());
 
@@ -741,6 +743,7 @@ impl LocalContainerService {
             session_finalization,
             workspace_touch_times,
             container_locks,
+            session_start_locks,
             config,
             git,
             file_service,
@@ -3301,6 +3304,10 @@ impl ContainerService for LocalContainerService {
 
     fn container_locks(&self) -> &ContainerLocks {
         &self.container_locks
+    }
+
+    fn session_start_locks(&self) -> &ContainerLocks {
+        &self.session_start_locks
     }
 
     async fn has_live_child(&self, execution_process_id: Uuid) -> bool {
