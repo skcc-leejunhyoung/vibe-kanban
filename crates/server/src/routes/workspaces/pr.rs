@@ -1832,7 +1832,7 @@ pub enum PrCheckoutStatus {
     Unknown,
 }
 
-const PR_CHECKOUT_STATUS_TTL: Duration = Duration::from_secs(600);
+const PR_CHECKOUT_STATUS_TTL: Duration = Duration::from_secs(30 * 60);
 
 static PR_CHECKOUTS: LazyLock<Mutex<HashMap<Uuid, (PrCheckoutStatus, Instant)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));

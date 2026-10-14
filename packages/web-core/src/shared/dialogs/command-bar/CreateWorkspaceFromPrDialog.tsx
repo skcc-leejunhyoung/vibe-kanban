@@ -231,8 +231,13 @@ const CreateWorkspaceFromPrDialogImpl =
         const failedTitle = t(
           'createWorkspaceFromPr.errors.failedToCreateWorkspace'
         );
-        void watchPrCheckout(data.workspace.id, hostId, (message) => {
+        const workspaceId = data.workspace.id;
+        void watchPrCheckout(workspaceId, hostId, (message) => {
           queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+          // The server removed the workspace: don't leave the user on it.
+          if (window.location.pathname.includes(workspaceId)) {
+            appNavigation.goToWorkspacesCreate();
+          }
           void ErrorDialog.show({ title: failedTitle, message });
         });
       },
