@@ -168,6 +168,7 @@ impl<'a> OAuthAccountRepository<'a> {
         }
         let rotated = sqlx::query(
             "UPDATE auth_sessions SET refresh_token_id = $2, refresh_token_issued_at = NOW(),
+                 authenticated_at = COALESCE(authenticated_at, NOW()),
                  last_used_at = NOW(), previous_refresh_token_id = NULL,
                  previous_refresh_token_grace_expires_at = NULL
              WHERE id = $1 AND user_id = $3 AND revoked_at IS NULL",

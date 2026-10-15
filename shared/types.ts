@@ -373,6 +373,26 @@ export type ProviderProfile = { provider: string, username: string | null, displ
 
 export type StatusResponse = { logged_in: boolean, profile: ProfileResponse | null, degraded: boolean | null, };
 
+export type HostAuthMode = "legacy_pairing" | "migrating" | "account";
+
+export type HostAccessGrant = { host_id: string, user_id: string, granted_by: string | null, version: number, created_at: string, updated_at: string, revoked_at: string | null, };
+
+export type HostAccessPolicy = { host_id: string, owner_user_id: string, auth_mode: HostAuthMode, auth_generation: number, remote_access_enabled: boolean,
+/**
+ * Includes revoked grants, whose versions are required to grant access again.
+ */
+grants: Array<HostAccessGrant>, };
+
+export type ChangeHostAccessRequest = { expected_host_generation: number,
+/**
+ * Zero only when this account has never had a grant on this host.
+ */
+expected_version: number, };
+
+export type HostAccessErrorCode = "HOST_NOT_FOUND" | "ACCOUNT_NOT_FOUND" | "ACCOUNT_SESSION_REVOKED" | "REAUTHENTICATION_REQUIRED" | "OWNER_ACCESS_IMMUTABLE" | "HOST_GENERATION_CONFLICT" | "GRANT_VERSION_CONFLICT" | "HOST_TRANSITION_IN_PROGRESS" | "INVALID_ACCESS_VERSION" | "INTERNAL_ERROR";
+
+export type HostAccessErrorResponse = { code: HostAccessErrorCode, error: string, };
+
 export enum MemberRole { ADMIN = "ADMIN", MEMBER = "MEMBER" }
 
 export enum InvitationStatus { PENDING = "PENDING", ACCEPTED = "ACCEPTED", DECLINED = "DECLINED", EXPIRED = "EXPIRED" }

@@ -13,7 +13,7 @@ impl<'a> HostRepository<'a> {
 
     pub async fn is_owned_by(&self, host_id: Uuid, user_id: Uuid) -> Result<bool, sqlx::Error> {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM hosts WHERE id = $1 AND owner_user_id = $2)",
+            "SELECT EXISTS(SELECT 1 FROM hosts WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL)",
         )
         .bind(host_id)
         .bind(user_id)
@@ -38,15 +38,20 @@ impl<'a> HostRepository<'a> {
                 h.agent_version,
                 h.created_at,
                 h.updated_at,
-                CASE
-                    WHEN h.owner_user_id = $1 THEN 'owner'
-                    ELSE 'member'
-                END AS "access_role!"
+                host_access_role(h.id, $1) AS "access_role!"
             FROM hosts h
-            LEFT JOIN organization_member_metadata om
-                ON om.organization_id = h.shared_with_organization_id
-                AND om.user_id = $1
-            WHERE h.owner_user_id = $1 OR om.user_id IS NOT NULL
+            JOIN (
+                SELECT id FROM hosts WHERE owner_user_id = $1
+                UNION
+                SELECT shared.id FROM hosts shared
+                JOIN organization_member_metadata om
+                    ON om.organization_id = shared.shared_with_organization_id
+                WHERE om.user_id = $1
+                UNION
+                SELECT host_id FROM host_access_grants
+                WHERE user_id = $1 AND revoked_at IS NULL
+            ) candidates ON candidates.id = h.id
+            WHERE host_access_role(h.id, $1) IS NOT NULL
             ORDER BY h.updated_at DESC
             "#,
             user_id
@@ -67,7 +72,7 @@ impl<'a> HostRepository<'a> {
             UPDATE hosts
             SET custom_name = $3,
                 updated_at = NOW()
-            WHERE id = $1 AND owner_user_id = $2
+            WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL
             RETURNING
                 id,
                 owner_user_id,

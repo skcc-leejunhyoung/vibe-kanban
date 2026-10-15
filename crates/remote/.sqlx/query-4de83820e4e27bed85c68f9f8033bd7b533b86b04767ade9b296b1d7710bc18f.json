@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE auth_sessions\n            SET refresh_token_id = $2,\n                refresh_token_issued_at = NOW(),\n                authenticated_at = COALESCE(authenticated_at, NOW()),\n                previous_refresh_token_id = NULL,\n                previous_refresh_token_grace_expires_at = NULL\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4de83820e4e27bed85c68f9f8033bd7b533b86b04767ade9b296b1d7710bc18f"
+}

@@ -90,6 +90,12 @@ fn export_shapes() -> String {
     // Generate type declarations for all Electric types
     output.push_str("// Electric row types\n");
     let type_decls = vec![
+        api_types::HostAuthMode::decl(),
+        api_types::HostAccessGrant::decl(),
+        api_types::HostAccessPolicy::decl(),
+        api_types::ChangeHostAccessRequest::decl(),
+        api_types::HostAccessErrorCode::decl(),
+        api_types::HostAccessErrorResponse::decl(),
         serde_json::Value::decl(),
         Project::decl(),
         Notification::decl(),

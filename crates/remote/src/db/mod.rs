@@ -5,6 +5,7 @@ pub mod electric_publications;
 pub mod export;
 pub mod github_host_credentials;
 pub mod github_issue_links;
+pub mod host_access;
 pub mod hosts;
 pub mod identity_errors;
 pub mod invitations;

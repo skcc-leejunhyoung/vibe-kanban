@@ -15,13 +15,14 @@ impl<'a> HostRepository<'a> {
     /// Find or create a host for the given user and machine identity.
     /// If a host with the same owner and machine_id exists, returns it and updates name/version.
     /// Otherwise, creates a new one.
+    /// Non-legacy, disabled, and deleted registrations cannot use this login-token path.
     pub async fn upsert_host(
         &self,
         owner_user_id: Uuid,
         machine_id: &str,
         name: &str,
         agent_version: Option<&str>,
-    ) -> Result<Uuid, sqlx::Error> {
+    ) -> Result<Option<Uuid>, sqlx::Error> {
         let row = sqlx::query!(
             r#"
             INSERT INTO hosts (
@@ -37,6 +38,8 @@ impl<'a> HostRepository<'a> {
                 SET name = EXCLUDED.name,
                     agent_version = COALESCE(EXCLUDED.agent_version, hosts.agent_version),
                     updated_at = NOW()
+                WHERE hosts.auth_mode = 'legacy_pairing'
+                    AND hosts.remote_access_enabled AND hosts.deleted_at IS NULL
             RETURNING id AS "id!: Uuid"
             "#,
             owner_user_id,
@@ -44,10 +47,10 @@ impl<'a> HostRepository<'a> {
             name,
             agent_version
         )
-        .fetch_one(self.pool)
+        .fetch_optional(self.pool)
         .await?;
 
-        Ok(row.id)
+        Ok(row.map(|row| row.id))
     }
 
     pub async fn assert_host_access(
@@ -60,11 +63,10 @@ impl<'a> HostRepository<'a> {
             SELECT EXISTS (
                 SELECT 1
                 FROM hosts h
-                LEFT JOIN organization_member_metadata om
-                    ON om.organization_id = h.shared_with_organization_id
-                    AND om.user_id = $2
                 WHERE h.id = $1
-                  AND (h.owner_user_id = $2 OR om.user_id IS NOT NULL)
+                  AND h.auth_mode = 'legacy_pairing'
+                  AND h.remote_access_enabled AND h.deleted_at IS NULL
+                  AND host_access_role(h.id, $2) IS NOT NULL
             ) AS "allowed!"
             "#,
             host_id,
@@ -91,8 +93,8 @@ impl<'a> HostRepository<'a> {
         &self,
         host_id: Uuid,
         agent_version: Option<&str>,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query!(
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query!(
             r#"
             UPDATE hosts
             SET status = 'online',
@@ -100,13 +102,15 @@ impl<'a> HostRepository<'a> {
                 agent_version = COALESCE($2, agent_version),
                 updated_at = NOW()
             WHERE id = $1
+                AND auth_mode = 'legacy_pairing'
+                AND remote_access_enabled AND deleted_at IS NULL
             "#,
             host_id,
             agent_version
         )
         .execute(self.pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn mark_host_offline(&self, host_id: Uuid) -> Result<(), sqlx::Error> {

@@ -44,12 +44,24 @@ impl<'a> RelayBrowserSessionRepository<'a> {
         host_id: Uuid,
         user_id: Uuid,
         auth_session_id: Uuid,
-    ) -> Result<RelayBrowserSession, sqlx::Error> {
+    ) -> Result<Option<RelayBrowserSession>, sqlx::Error> {
         sqlx::query_as!(
             RelayBrowserSession,
             r#"
+            WITH authorized_host AS (
+                SELECT h.id FROM hosts h
+                WHERE h.id = $1 AND h.auth_mode = 'legacy_pairing'
+                    AND h.remote_access_enabled AND h.deleted_at IS NULL
+                    AND host_access_role(h.id, $2) IS NOT NULL
+                FOR SHARE
+            ), authorized_session AS (
+                SELECT id FROM auth_sessions
+                WHERE id = $3 AND user_id = $2 AND revoked_at IS NULL
+                    AND COALESCE(last_used_at, created_at) >= NOW() - INTERVAL '365 days'
+                FOR SHARE
+            )
             INSERT INTO relay_browser_sessions (host_id, user_id, auth_session_id)
-            VALUES ($1, $2, $3)
+            SELECT h.id, $2, s.id FROM authorized_host h CROSS JOIN authorized_session s
             RETURNING
                 id              AS "id!: Uuid",
                 host_id         AS "host_id!: Uuid",
@@ -63,7 +75,7 @@ impl<'a> RelayBrowserSessionRepository<'a> {
             user_id,
             auth_session_id
         )
-        .fetch_one(self.pool)
+        .fetch_optional(self.pool)
         .await
     }
 
@@ -93,11 +105,10 @@ impl<'a> RelayBrowserSessionRepository<'a> {
                 EXISTS (
                     SELECT 1
                     FROM hosts h
-                    LEFT JOIN organization_member_metadata om
-                        ON om.organization_id = h.shared_with_organization_id
-                        AND om.user_id = s.user_id
                     WHERE h.id = $2
-                      AND (h.owner_user_id = s.user_id OR om.user_id IS NOT NULL)
+                      AND h.auth_mode = 'legacy_pairing'
+                      AND h.remote_access_enabled AND h.deleted_at IS NULL
+                      AND host_access_role(h.id, s.user_id) IS NOT NULL
                 ) AS "host_allowed!"
             FROM relay_browser_sessions rbs
             LEFT JOIN auth_sessions s ON s.id = rbs.auth_session_id

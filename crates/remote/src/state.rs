@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use axum::extract::FromRef;
 use sqlx::PgPool;
 
 use crate::{
@@ -18,6 +19,12 @@ pub struct AppState {
     handoff: Arc<OAuthHandoffService>,
     oauth_token_validator: Arc<OAuthTokenValidator>,
     azure_blob: Option<AzureBlobService>,
+}
+
+impl FromRef<AppState> for PgPool {
+    fn from_ref(state: &AppState) -> Self {
+        state.pool.clone()
+    }
 }
 
 impl AppState {

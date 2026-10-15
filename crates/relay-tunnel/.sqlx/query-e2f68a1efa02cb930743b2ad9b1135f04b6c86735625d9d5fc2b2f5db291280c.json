@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXISTS (\n                SELECT 1\n                FROM hosts h\n                WHERE h.id = $1\n                  AND h.auth_mode = 'legacy_pairing'\n                  AND h.remote_access_enabled AND h.deleted_at IS NULL\n                  AND host_access_role(h.id, $2) IS NOT NULL\n            ) AS \"allowed!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "allowed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e2f68a1efa02cb930743b2ad9b1135f04b6c86735625d9d5fc2b2f5db291280c"
+}

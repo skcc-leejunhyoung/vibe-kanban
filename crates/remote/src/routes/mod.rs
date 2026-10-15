@@ -21,6 +21,8 @@ mod github_host_credentials;
 mod github_images;
 pub mod github_issue_links;
 mod github_pull_requests;
+#[cfg(test)]
+mod host_access_tests;
 pub mod hosts;
 mod identity;
 pub mod issue_assignees;

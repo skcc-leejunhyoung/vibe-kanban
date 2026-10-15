@@ -46,18 +46,36 @@ pub async fn relay_connect(
         )
         .await
     {
-        Ok(id) => id,
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return (
+                StatusCode::CONFLICT,
+                "Host does not accept legacy connections",
+            )
+                .into_response();
+        }
         Err(error) => {
             tracing::error!(?error, "failed to upsert host for relay connect");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
 
-    if let Err(error) = repo
+    match repo
         .mark_host_online(host_id, query.agent_version.as_deref())
         .await
     {
-        tracing::warn!(?error, "failed to mark host online");
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::CONFLICT,
+                "Host does not accept legacy connections",
+            )
+                .into_response();
+        }
+        Err(error) => {
+            tracing::warn!(?error, "failed to mark host online");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     }
 
     let registry = state.relay_registry.clone();

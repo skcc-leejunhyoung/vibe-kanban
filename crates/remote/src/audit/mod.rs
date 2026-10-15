@@ -18,6 +18,8 @@ pub enum AuditAction {
 
     GitHubReviewThreadUpdate,
     GitHubCredentialUpdate,
+    HostAccessGranted,
+    HostAccessRevoked,
 }
 
 impl AuditAction {
@@ -35,6 +37,8 @@ impl AuditAction {
             Self::MemberRoleChange => "member.role_change",
             Self::GitHubReviewThreadUpdate => "github.review_thread_update",
             Self::GitHubCredentialUpdate => "github.credential_update",
+            Self::HostAccessGranted => "host.access_granted",
+            Self::HostAccessRevoked => "host.access_revoked",
         }
     }
 }

@@ -134,6 +134,7 @@ async fn test_pool() -> (PgPool, PgPool, String) {
         ),
         include_str!("../../migrations/20260311120000_refresh_token_overlap.sql"),
         include_str!("../../migrations/20260907000000_bind_oauth_reconnections.sql"),
+        include_str!("../../migrations/20261015000000_auth_session_authenticated_at.sql"),
     ] {
         sqlx::raw_sql(migration).execute(&pool).await.unwrap();
     }

@@ -1,4 +1,6 @@
 pub mod auth_sessions;
+#[cfg(test)]
+mod host_access_tests;
 pub mod hosts;
 pub mod identity_errors;
 pub mod relay_browser_sessions;

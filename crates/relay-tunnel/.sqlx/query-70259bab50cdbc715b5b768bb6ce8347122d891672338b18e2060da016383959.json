@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH authorized_host AS (\n                SELECT h.id FROM hosts h\n                WHERE h.id = $1 AND h.auth_mode = 'legacy_pairing'\n                    AND h.remote_access_enabled AND h.deleted_at IS NULL\n                    AND host_access_role(h.id, $2) IS NOT NULL\n                FOR SHARE\n            ), authorized_session AS (\n                SELECT id FROM auth_sessions\n                WHERE id = $3 AND user_id = $2 AND revoked_at IS NULL\n                    AND COALESCE(last_used_at, created_at) >= NOW() - INTERVAL '365 days'\n                FOR SHARE\n            )\n            INSERT INTO relay_browser_sessions (host_id, user_id, auth_session_id)\n            SELECT h.id, $2, s.id FROM authorized_host h CROSS JOIN authorized_session s\n            RETURNING\n                id              AS \"id!: Uuid\",\n                host_id         AS \"host_id!: Uuid\",\n                user_id         AS \"user_id!: Uuid\",\n                auth_session_id AS \"auth_session_id!: Uuid\",\n                created_at,\n                last_used_at,\n                revoked_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "host_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "auth_session_id!: Uuid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_used_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "revoked_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "70259bab50cdbc715b5b768bb6ce8347122d891672338b18e2060da016383959"
+}

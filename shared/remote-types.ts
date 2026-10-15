@@ -2,6 +2,26 @@
 // Do not edit manually.
 
 // Electric row types
+export type HostAuthMode = "legacy_pairing" | "migrating" | "account";
+
+export type HostAccessGrant = { host_id: string, user_id: string, granted_by: string | null, version: number, created_at: string, updated_at: string, revoked_at: string | null, };
+
+export type HostAccessPolicy = { host_id: string, owner_user_id: string, auth_mode: HostAuthMode, auth_generation: number, remote_access_enabled: boolean,
+/**
+ * Includes revoked grants, whose versions are required to grant access again.
+ */
+grants: Array<HostAccessGrant>, };
+
+export type ChangeHostAccessRequest = { expected_host_generation: number,
+/**
+ * Zero only when this account has never had a grant on this host.
+ */
+expected_version: number, };
+
+export type HostAccessErrorCode = "HOST_NOT_FOUND" | "ACCOUNT_NOT_FOUND" | "ACCOUNT_SESSION_REVOKED" | "REAUTHENTICATION_REQUIRED" | "OWNER_ACCESS_IMMUTABLE" | "HOST_GENERATION_CONFLICT" | "GRANT_VERSION_CONFLICT" | "HOST_TRANSITION_IN_PROGRESS" | "INVALID_ACCESS_VERSION" | "INTERNAL_ERROR";
+
+export type HostAccessErrorResponse = { code: HostAccessErrorCode, error: string, };
+
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]?: JsonValue } | null;
 
 export type Project = { id: string, organization_id: string, name: string, color: string, sort_order: number, created_at: string, updated_at: string, };

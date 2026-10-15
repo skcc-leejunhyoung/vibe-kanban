@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE hosts\n            SET status = 'online',\n                last_seen_at = NOW(),\n                agent_version = COALESCE($2, agent_version),\n                updated_at = NOW()\n            WHERE id = $1\n                AND auth_mode = 'legacy_pairing'\n                AND remote_access_enabled AND deleted_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dda5e708f6d79c1a770e4137d56142dd4ab9cd8aee80ab52f800b4bd8ee88600"
+}

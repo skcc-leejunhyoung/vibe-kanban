@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO hosts (\n                owner_user_id,\n                shared_with_organization_id,\n                machine_id,\n                name,\n                status,\n                agent_version\n            )\n            VALUES ($1, NULL, $2, $3, 'offline', $4)\n            ON CONFLICT (owner_user_id, machine_id) DO UPDATE\n                SET name = EXCLUDED.name,\n                    agent_version = COALESCE(EXCLUDED.agent_version, hosts.agent_version),\n                    updated_at = NOW()\n                WHERE hosts.auth_mode = 'legacy_pairing'\n                    AND hosts.remote_access_enabled AND hosts.deleted_at IS NULL\n            RETURNING id AS \"id!: Uuid\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: Uuid",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0e971a27e61203e991262aa8f0f4c2708b60272150e59b76aa6d299f713d1c0d"
+}

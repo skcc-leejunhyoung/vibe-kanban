@@ -41,7 +41,8 @@ pub async fn create_relay_session(
         .create(host_id, ctx.user.id, ctx.session_id)
         .await
     {
-        Ok(session) => session,
+        Ok(Some(session)) => session,
+        Ok(None) => return Err((StatusCode::FORBIDDEN, "Host access denied").into_response()),
         Err(error) => {
             tracing::warn!(?error, "failed to create relay browser session");
             return Err((
