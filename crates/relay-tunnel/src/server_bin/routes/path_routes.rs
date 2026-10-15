@@ -166,7 +166,7 @@ async fn do_relay_proxy_for_host(
     state: &RelayAppState,
     host_id: Uuid,
     browser_session_id: Uuid,
-    request: Request,
+    mut request: Request,
 ) -> Response {
     let relay = match state.relay_registry.get(&host_id).await {
         Some(relay) => relay,
@@ -174,5 +174,14 @@ async fn do_relay_proxy_for_host(
     };
 
     let strip_prefix = format!("{RELAY_PROXY_PREFIX}/{host_id}/s/{browser_session_id}");
+    request.headers_mut().remove("x-vk-preview-session");
+    request.headers_mut().remove("x-vk-preview-origin");
+    let cancellation = state
+        .connection_guards
+        .watch(state.pool.clone(), host_id, browser_session_id)
+        .await;
+    request
+        .extensions_mut()
+        .insert(relay_tunnel_core::server::RelayCancellation(cancellation));
     proxy_request_over_control(relay.control.as_ref(), request, &strip_prefix).await
 }

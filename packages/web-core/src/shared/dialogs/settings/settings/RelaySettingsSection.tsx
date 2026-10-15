@@ -32,6 +32,7 @@ import {
 } from './SettingsComponents';
 import { useSettingsDirty } from './SettingsDirtyContext';
 import { RemoteCloudHostsSettingsCardContent } from './RemoteCloudHostsSettingsCard';
+import { AccountHostSettings } from './AccountHostSettings';
 
 const RELAY_PAIRED_CLIENTS_QUERY_KEY = ['relay', 'paired-clients'] as const;
 const RELAY_REMOTE_CONTROL_DOCS_URL =
@@ -53,13 +54,23 @@ export function RelaySettingsSectionContent({
   const runtime = useAppRuntime();
 
   if (runtime === 'local') {
-    return <LocalRelaySettingsSectionContent onClose={onClose} />;
+    return (
+      <AccountHostSettings
+        initialHostId={initialState?.hostId}
+        legacy={<LocalRelaySettingsSectionContent onClose={onClose} />}
+      />
+    );
   }
 
   return (
-    <RemoteRelaySettingsSectionContent
-      initialState={initialState}
-      onClose={onClose}
+    <AccountHostSettings
+      initialHostId={initialState?.hostId}
+      legacy={
+        <RemoteRelaySettingsSectionContent
+          initialState={initialState}
+          onClose={onClose}
+        />
+      }
     />
   );
 }

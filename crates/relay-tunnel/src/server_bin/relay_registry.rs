@@ -29,6 +29,15 @@ pub struct RelayRegistry {
 }
 
 impl RelayRegistry {
+    pub async fn insert_if_absent(&self, host_id: Uuid, relay: Arc<ActiveRelay>) -> bool {
+        let mut relays = self.inner.lock().await;
+        if let std::collections::hash_map::Entry::Vacant(entry) = relays.entry(host_id) {
+            entry.insert(relay);
+            true
+        } else {
+            false
+        }
+    }
     /// Register a relay for a host. Replaces any existing relay for that host.
     pub async fn insert(&self, host_id: Uuid, relay: Arc<ActiveRelay>) {
         self.inner.lock().await.insert(host_id, relay);

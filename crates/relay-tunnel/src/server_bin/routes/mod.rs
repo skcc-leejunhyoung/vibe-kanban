@@ -1,3 +1,4 @@
+pub mod account_preview;
 mod auth_code;
 pub mod connect;
 pub mod path_routes;
@@ -47,16 +48,15 @@ pub fn build_router(state: RelayAppState) -> Router {
             any(path_routes::relay_path_proxy_with_tail),
         );
 
-    let public = Router::new().route("/health", get(health));
+    let public = Router::new().route("/health", get(health)).route(
+        "/v1/relay/account/connect",
+        get(connect::account_relay_connect),
+    );
 
     Router::<RelayAppState>::new()
         .nest("/v1", protected)
         .nest("/v1", proxy)
         .merge(public)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            preview_subdomain_dispatch,
-        ))
         .layer(
             // Reflect the request origin but DO NOT allow credentials. Relay
             // requests are authenticated with cryptographic signed headers/frames
@@ -78,6 +78,11 @@ pub fn build_router(state: RelayAppState) -> Router {
                     HeaderName::from_static("x-pull-requests-warming"),
                 ])),
         )
+        // Cookie-authenticated preview origins never pass through reflected CORS.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            preview_subdomain_dispatch,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -99,6 +104,9 @@ async fn preview_subdomain_dispatch(
     next: Next,
 ) -> Response {
     let suffix = state.config.preview_host_suffix.as_deref();
+    if account_preview::matches(&request, suffix) {
+        return account_preview::handle(State(state), request).await;
+    }
     if preview_subdomain::is_preview_request(&request, suffix) {
         return preview_subdomain::preview_subdomain_handler(State(state), request).await;
     }

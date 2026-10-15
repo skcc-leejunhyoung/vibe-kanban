@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { LightningIcon, StackIcon } from "@phosphor-icons/react";
 import type { Project } from "shared/remote-types";
 import type { OrganizationWithRole } from "shared/types";
 import { listOrganizationProjects } from "@remote/shared/lib/api";
-import { clearTokens } from "@remote/shared/lib/auth";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
 import { AppBarNotificationBellContainer } from "@/pages/workspaces/AppBarNotificationBellContainer";
 import { useOrganizationStore } from "@/shared/stores/useOrganizationStore";
@@ -50,7 +49,13 @@ export default function HomePage() {
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { isSignedIn } = useAuth();
-  const { hosts } = useRelayAppBarHosts(isSignedIn);
+  const {
+    hosts,
+    relayHosts,
+    isLoading: hostsLoading,
+    isError: hostsError,
+    retry: retryHosts,
+  } = useRelayAppBarHosts(isSignedIn);
   const isMobile = useIsMobile();
 
   const openRelaySettings = useCallback((hostId?: string) => {
@@ -83,14 +88,6 @@ export default function HomePage() {
       initialState: { organizationId: legacyOrgId },
     });
   }, [navigate, search.legacyOrgSettingsOrgId, setSelectedOrgId]);
-
-  const handleSignInAgain = async () => {
-    await clearTokens();
-    navigate({
-      to: "/account",
-      replace: true,
-    });
-  };
 
   useEffect(() => {
     if (!organizations) {
@@ -146,35 +143,6 @@ export default function HomePage() {
         : "Failed to load organizations"
       : null);
 
-  if (loading) {
-    return (
-      <CenteredCard>
-        <h1 className="text-lg font-semibold text-high">Organizations</h1>
-        <p className="mt-base text-sm text-normal">
-          Loading organizations and projects...
-        </p>
-      </CenteredCard>
-    );
-  }
-
-  if (displayError) {
-    return (
-      <CenteredCard>
-        <h1 className="text-lg font-semibold text-high">Failed to load</h1>
-        <p className="mt-base text-sm text-normal">{displayError}</p>
-        <button
-          type="button"
-          className="mt-double rounded-sm bg-brand px-base py-half text-sm font-medium text-on-brand transition-colors hover:bg-brand-hover"
-          onClick={() => {
-            void handleSignInAgain();
-          }}
-        >
-          Sign in again
-        </button>
-      </CenteredCard>
-    );
-  }
-
   const organizationCount = items.length;
   const totalProjectCount = items.reduce(
     (count, item) => count + item.projects.length,
@@ -184,12 +152,23 @@ export default function HomePage() {
   return (
     <div className="h-full overflow-auto">
       <div className="mx-auto w-full max-w-6xl px-base py-base sm:px-double sm:py-double">
-        {isMobile && isSignedIn && (
+        {isSignedIn && (
           <section className="mb-double">
             <h2 className="text-lg font-semibold text-high">Your Hosts</h2>
-            {hosts.length === 0 ? (
+            {hostsError && (
+              <p role="alert" className="text-error">
+                호스트 목록을 불러오지 못했습니다.{" "}
+                <button onClick={retryHosts}>다시 시도</button>
+              </p>
+            )}
+            {hostsLoading && (
+              <p role="status">호스트 연결을 확인하고 있습니다…</p>
+            )}
+            {!hostsLoading && !hostsError && hosts.length === 0 ? (
               <div className="mt-base rounded-sm border border-border bg-secondary p-base text-center">
-                <p className="text-sm text-low">No hosts linked yet</p>
+                <p className="text-sm text-low">
+                  사용할 수 있는 호스트가 없습니다
+                </p>
                 <button
                   type="button"
                   className="mt-base rounded-sm border border-border bg-primary px-base py-half text-sm font-medium text-normal hover:border-brand/60 hover:text-high"
@@ -197,7 +176,7 @@ export default function HomePage() {
                     openRelaySettings();
                   }}
                 >
-                  Link a host
+                  호스트 등록·접근 계정 관리
                 </button>
               </div>
             ) : (
@@ -218,6 +197,7 @@ export default function HomePage() {
                   </span>
                 </button>
                 {hosts.map((host) => {
+                  const metadata = relayHosts.find((row) => row.id === host.id);
                   const isOnline = host.status === "online";
                   const isUnpaired = host.status === "unpaired";
                   const isClickable = isOnline || isUnpaired;
@@ -246,6 +226,22 @@ export default function HomePage() {
                       </div>
                       <span className="min-w-0 flex-1 truncate text-sm font-medium text-high">
                         {host.name}
+                        <span className="block text-xs text-low">
+                          {metadata?.access_role === "owner"
+                            ? "소유자"
+                            : "사용자"}{" "}
+                          ·{" "}
+                          {isOnline
+                            ? "접속 가능 · 열기"
+                            : metadata?.auth_mode === "migrating"
+                              ? "호스트 연결 확인 중"
+                              : metadata?.remote_access_enabled === false
+                                ? "원격 접속 중지됨"
+                                : "호스트가 오프라인입니다"}
+                          {metadata?.last_seen_at
+                            ? ` · ${new Date(metadata.last_seen_at).toLocaleString()}`
+                            : ""}
+                        </span>
                       </span>
                       <span
                         className={`h-2.5 w-2.5 shrink-0 rounded-full ${
@@ -266,7 +262,7 @@ export default function HomePage() {
                     openRelaySettings();
                   }}
                 >
-                  Link a host
+                  호스트 등록·접근 계정 관리
                 </button>
               </div>
             )}
@@ -298,7 +294,13 @@ export default function HomePage() {
           )}
         </header>
 
-        {organizationCount === 0 ? (
+        {loading && <p role="status">조직과 프로젝트를 불러오고 있습니다…</p>}
+        {displayError && (
+          <p role="alert">
+            {displayError} · 호스트는 위 목록에서 사용할 수 있습니다.
+          </p>
+        )}
+        {!loading && !displayError && organizationCount === 0 ? (
           <section className="mt-double rounded-sm border border-border bg-secondary p-base sm:p-double">
             <h2 className="text-base font-medium text-high">
               No organizations found
@@ -319,16 +321,6 @@ export default function HomePage() {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function CenteredCard({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex h-full items-center justify-center px-base">
-      <section className="w-full max-w-md rounded-sm border border-border bg-secondary p-double text-center">
-        {children}
-      </section>
     </div>
   );
 }

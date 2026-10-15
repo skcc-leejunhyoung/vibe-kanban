@@ -6,6 +6,61 @@ export type HostAuthMode = "legacy_pairing" | "migrating" | "account";
 
 export type HostAccessGrant = { host_id: string, user_id: string, granted_by: string | null, version: number, created_at: string, updated_at: string, revoked_at: string | null, };
 
+export type CreateHostPreviewRequest = { port: number, };
+
+export type CreateHostPreviewResponse = { exchange_url: string, code: string, };
+
+export type ReportPreviewPortsRequest = { ports: Array<number>, };
+
+export type AuthorizeHostPreviewRequest = { preview_id: string, port: number, };
+
+export type AccountHostStatus = { account_mode: boolean, api_base: string | null, registration: AccountHostRegistration | null, };
+
+export type RegisterAccountHostRequest = { request_id: string,
+/**
+ * Explicit owner-approved credential recovery. None never replaces a registration.
+ */
+expected_generation: number | null, machine_id: string, name: string,
+/**
+ * Generated and durably saved by the installation before sending. The
+ * server stores only its hash; retrying never needs plaintext at rest there.
+ */
+credential: string, capabilities: Array<string>, };
+
+export type AccountHostRegistration = { host_id: string, owner_user_id: string, generation: number, transition_request_id: string, auth_mode: string, };
+
+export type ActivateAccountHostRequest = { transition_request_id: string, generation: number, capabilities: Array<string>, };
+
+export type RotateHostCredentialRequest = { request_id: string, credential: string, };
+
+export type OpenHostConnectionRequest = { public_key_b64: string, connection_id: string | null, };
+
+export type HostConnectionApproval = { connection_id: string, grant: string, expires_at: string, };
+
+export type HostGrantKey = { kid: string, algorithm: string, public_key_b64: string, };
+
+export type HostGrantKeys = { issuer: string, keys: Array<HostGrantKey>, };
+
+export type StartAccountSessionRequest = { grant: string, proof_b64: string, };
+
+export type StartAccountSessionResponse = { signing_session_id: string, server_public_key_b64: string, };
+
+export type RenewHostConnectionsRequest = { connections: Array<string>, };
+
+export type HostConnectionLease = { connection_id: string, public_key_b64: string, user_id: string, auth_session_id: string, host_generation: number, grant_version: number, remaining_seconds: number, };
+
+export type RenewHostConnectionsResponse = { leases: Array<HostConnectionLease>, };
+
+export type ChangeHostStateRequest = { expected_generation: number, remote_access_enabled: boolean, };
+
+export type HostConnectionInfo = { id: string, user_id: string, auth_session_id: string, created_at: string, last_used_at: string | null, expires_at: string | null, };
+
+export type AccountSessionInfo = { id: string, device_label: string | null, created_at: string, last_used_at: string | null, current: boolean, };
+
+export type HostAccessAuditEntry = { id: string, actor_id: string | null, target_id: string | null, action: string, result: string, created_at: string, };
+
+export type HostAccountProfile = { id: string, username: string | null, first_name: string | null, last_name: string | null, };
+
 export type HostAccessPolicy = { host_id: string, owner_user_id: string, auth_mode: HostAuthMode, auth_generation: number, remote_access_enabled: boolean,
 /**
  * Includes revoked grants, whose versions are required to grant access again.
@@ -168,7 +223,7 @@ export type UpdateUserWebSettingsRequest = { settings: JsonValue,
  */
 config_revision: string | null, };
 
-export type RelayHost = { id: string, owner_user_id: string, machine_id: string, name: string, status: string, last_seen_at: string | null, agent_version: string | null, created_at: string, updated_at: string, access_role: string, };
+export type RelayHost = { id: string, owner_user_id: string, machine_id: string, name: string, status: string, last_seen_at: string | null, agent_version: string | null, created_at: string, updated_at: string, access_role: string, auth_mode: string, auth_generation: number, remote_access_enabled: boolean, capabilities: Array<string>, };
 
 export type ListRelayHostsResponse = { hosts: Array<RelayHost>, };
 

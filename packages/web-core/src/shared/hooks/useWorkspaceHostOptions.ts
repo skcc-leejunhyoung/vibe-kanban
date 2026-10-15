@@ -17,13 +17,15 @@ import {
 } from '@/shared/lib/relayHostQueryKeys';
 
 function mapRelayHostStatus(host: RelayHost): AppBarHostStatus {
-  return host.status === 'online' ? 'online' : 'offline';
+  return host.status === 'online' && host.remote_access_enabled !== false
+    ? 'online'
+    : 'offline';
 }
 
 /**
  * Build the directly reachable relay host options shown to the remote web app.
- * Hosts known only through another machine are deliberately excluded: this
- * browser must have its own IndexedDB pairing for every selectable host.
+ * Account hosts come from central access policy; only legacy hosts require a
+ * pairing in this browser.
  */
 export function buildRelayHostOptions(
   relayHosts: RelayHost[],
@@ -32,7 +34,9 @@ export function buildRelayHostOptions(
   const pairedHostIds = new Set(pairedHosts.map((host) => host.host_id));
 
   return relayHosts
-    .filter((host) => pairedHostIds.has(host.id))
+    .filter(
+      (host) => host.auth_mode === 'account' || pairedHostIds.has(host.id)
+    )
     .map((host) => ({
       id: host.id,
       name: host.name,

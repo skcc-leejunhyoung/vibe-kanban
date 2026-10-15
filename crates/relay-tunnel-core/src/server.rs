@@ -10,12 +10,17 @@ use futures_util::StreamExt;
 use hyper::{body::Body as _, client::conn::http1 as client_http1, upgrade};
 use hyper_util::rt::TokioIo;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tokio_yamux::{Control, Session};
 use ws_bridge::axum_ws_stream_io;
 
 use crate::yamux_config;
 
 pub type SharedControl = Arc<Mutex<Control>>;
+
+/// Stops both directions of an upgraded stream and unbounded response bodies.
+#[derive(Clone)]
+pub struct RelayCancellation(pub CancellationToken);
 
 #[derive(Clone)]
 struct ReplayableRequest {
@@ -86,9 +91,18 @@ pub async fn proxy_request_over_control(
     request: Request,
     strip_prefix: &str,
 ) -> Response {
+    let cancellation = request
+        .extensions()
+        .get::<RelayCancellation>()
+        .cloned()
+        .unwrap_or_else(|| RelayCancellation(CancellationToken::new()))
+        .0;
     let stream = {
-        let mut control = control.lock().await;
-        match control.open_stream().await {
+        let opened = tokio::select! {
+            _=cancellation.cancelled()=>return StatusCode::FORBIDDEN.into_response(),
+            result=async { control.lock().await.open_stream().await }=>result,
+        };
+        match opened {
             Ok(stream) => stream,
             Err(error) => {
                 tracing::warn!(?error, "failed to open relay stream");
@@ -112,7 +126,11 @@ pub async fn proxy_request_over_control(
     let mut outbound = axum::http::Request::from_parts(parts, body);
     let request_upgrade = upgrade::on(&mut outbound);
 
-    let mut response = match send_request_over_stream(stream, outbound).await {
+    let result = tokio::select! {
+        _=cancellation.cancelled()=>return StatusCode::FORBIDDEN.into_response(),
+        result=send_request_over_stream(stream, outbound)=>result,
+    };
+    let mut response = match result {
         Ok(response) => response,
         Err(error) => {
             if error.is_parse()
@@ -120,8 +138,11 @@ pub async fn proxy_request_over_control(
             {
                 tracing::warn!(?error, path = %request_path, "relay response parse failed; retrying once");
                 let retry_stream = {
-                    let mut control = control.lock().await;
-                    match control.open_stream().await {
+                    let opened = tokio::select! {
+                        _=cancellation.cancelled()=>return StatusCode::FORBIDDEN.into_response(),
+                        result=async { control.lock().await.open_stream().await }=>result,
+                    };
+                    match opened {
                         Ok(stream) => stream,
                         Err(retry_error) => {
                             tracing::warn!(?retry_error, path = %request_path, "failed to open relay retry stream");
@@ -130,7 +151,11 @@ pub async fn proxy_request_over_control(
                         }
                     }
                 };
-                match send_request_over_stream(retry_stream, replayable.into_request()).await {
+                let retry_result = tokio::select! {
+                    _=cancellation.cancelled()=>return StatusCode::FORBIDDEN.into_response(),
+                    result=send_request_over_stream(retry_stream, replayable.into_request())=>result,
+                };
+                match retry_result {
                     Ok(response) => response,
                     Err(retry_error) => {
                         tracing::warn!(?retry_error, path = %request_path, "relay request retry failed");
@@ -146,21 +171,26 @@ pub async fn proxy_request_over_control(
 
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
         let response_upgrade = upgrade::on(&mut response);
+        let cancellation = cancellation.clone();
         tokio::spawn(async move {
-            let Ok(from_client) = request_upgrade.await else {
-                return;
-            };
-            let Ok(to_local) = response_upgrade.await else {
-                return;
-            };
-            let mut from_client = TokioIo::new(from_client);
-            let mut to_local = TokioIo::new(to_local);
-            let _ = tokio::io::copy_bidirectional(&mut from_client, &mut to_local).await;
+            tokio::select! {
+                _=cancellation.cancelled()=>{},
+                _=async {
+                    let Ok(from_client)=request_upgrade.await else {return;};
+                    let Ok(to_local)=response_upgrade.await else {return;};
+                    let mut from_client=TokioIo::new(from_client);
+                    let mut to_local=TokioIo::new(to_local);
+                    let _=tokio::io::copy_bidirectional(&mut from_client,&mut to_local).await;
+                }=>{}
+            }
         });
     }
 
     let (parts, body) = response.into_parts();
-    Response::from_parts(parts, Body::new(body))
+    let stream = Body::new(body)
+        .into_data_stream()
+        .take_until(cancellation.cancelled_owned());
+    Response::from_parts(parts, Body::from_stream(stream))
 }
 
 async fn send_request_over_stream(

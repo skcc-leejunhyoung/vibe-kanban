@@ -16,6 +16,7 @@ use relay_control::signing::{
     build_response_signing_message,
 };
 use services::services::artifacts;
+use tracing::Instrument;
 use url::form_urlencoded;
 use uuid::Uuid;
 
@@ -35,7 +36,12 @@ pub async fn require_relay_request_signature(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if !is_relay_request(&request) {
+    if !is_relay_request(&request)
+        || request
+            .extensions()
+            .get::<RelayRequestSignatureContext>()
+            .is_some()
+    {
         return Ok(next.run(request).await);
     }
 
@@ -67,8 +73,139 @@ pub async fn require_relay_request_signature(
 
     let mut request = Request::from_parts(parts, Body::from(body_bytes));
     request.extensions_mut().insert(request_signature);
+    let account = deployment.relay_signing().account_sessions.get(
+        request
+            .extensions()
+            .get::<RelayRequestSignatureContext>()
+            .unwrap()
+            .signing_session_id,
+    );
+    if let Some(account) = account {
+        // Use only the verified session and signed nonce, never caller-supplied
+        // actor/request headers. Exclude query strings and command bodies.
+        let mutation = !matches!(request.method().as_str(), "GET" | "HEAD" | "OPTIONS");
+        let span = tracing::info_span!(
+            "account_host_request",
+            actor_id = %account.identity.user_id,
+            auth_session_id = %account.identity.auth_session_id,
+            connection_id = %account.identity.connection_id,
+            request_id = %request.extensions().get::<RelayRequestSignatureContext>().unwrap().nonce,
+            method = %request.method(),
+            path = %request.uri().path(),
+        );
+        request.extensions_mut().insert(account.clone());
+        let response = async {
+            if mutation {
+                tracing::info!("Account host operation accepted");
+            }
+            let response = tokio::select! {
+                _=account.cancelled.cancelled()=>{
+                    if mutation {
+                        tracing::info!("Account host interaction revoked; check operation state before retrying");
+                    }
+                    return Err(ApiError::Unauthorized);
+                },
+                response=deployment::ACCOUNT_HOST_REQUEST.scope(true, next.run(request))=>response,
+            };
+            if mutation {
+                tracing::info!(status = response.status().as_u16(), "Account host operation responded");
+            }
+            Ok(response)
+        }.instrument(span).await?;
+        let (parts, body) = response.into_parts();
+        use futures_util::StreamExt;
+        let body = Body::from_stream(
+            body.into_data_stream()
+                .take_until(account.cancelled.cancelled_owned()),
+        );
+        Ok(Response::from_parts(parts, body))
+    } else {
+        Ok(next.run(request).await)
+    }
+}
 
-    Ok(next.run(request).await)
+/// Account hosts reject all old enrollment/proxy paths before dispatch,
+/// including routes historically outside the signing middleware.
+pub async fn guard_account_host(
+    State(deployment): State<DeploymentImpl>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if !deployment.relay_signing().account_mode() {
+        return Ok(next.run(request).await);
+    }
+    let path = request.uri().path();
+    if path.starts_with("/api/relay-auth/server/") {
+        return Err(ApiError::Conflict(
+            "This host uses account access; update your client".into(),
+        ));
+    }
+    if !is_relay_request(&request) {
+        return Ok(next.run(request).await);
+    }
+    if let Some(preview) = request
+        .headers()
+        .get("x-vk-preview-session")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<Uuid>().ok())
+    {
+        let host = request
+            .headers()
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        let port = host
+            .split('.')
+            .next()
+            .and_then(|v| v.parse::<u16>().ok())
+            .ok_or(ApiError::Unauthorized)?;
+        let account =
+            crate::runtime::host_accounts::authorize_preview(&deployment, preview, port).await?;
+        request.headers_mut().remove("x-vk-preview-session");
+        request
+            .extensions_mut()
+            .insert(preview_proxy::PreviewCancellation(
+                account.cancelled.clone(),
+            ));
+        let response = tokio::select! {_=account.cancelled.cancelled()=>return Err(ApiError::Unauthorized),response=next.run(request)=>response};
+        let (parts, body) = response.into_parts();
+        use futures_util::StreamExt;
+        return Ok(Response::from_parts(
+            parts,
+            Body::from_stream(
+                body.into_data_stream()
+                    .take_until(account.cancelled.cancelled_owned()),
+            ),
+        ));
+    }
+    if path == "/api/relay-auth/account/session" {
+        return Ok(next.run(request).await);
+    }
+    if path == "/api/relay-auth/account/preview-ports" {
+        return require_relay_request_signature(State(deployment), request, next).await;
+    }
+    if account_host_path_forbidden(path) || crate::routes::request_has_preview_host(&request) {
+        return Err(ApiError::Forbidden(
+            "Use your own central account and an authenticated direct host connection".into(),
+        ));
+    }
+    require_relay_request_signature(State(deployment), request, next).await
+}
+
+fn account_host_path_forbidden(path: &str) -> bool {
+    [
+        "host",
+        "relay-auth",
+        "auth",
+        "oauth",
+        "remote",
+        "organizations",
+        "invitations",
+        "preview",
+    ]
+    .iter()
+    .any(|part| path == format!("/api/{part}") || path.starts_with(&format!("/api/{part}/")))
 }
 
 pub async fn sign_relay_response(
@@ -317,4 +454,28 @@ fn is_relay_request(request: &Request) -> bool {
         .get(RELAY_HEADER)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.trim() == "1")
+}
+
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+    #[test]
+    fn account_access_never_exposes_host_oauth_or_nested_proxy_credentials() {
+        for path in [
+            "/api/auth/token",
+            "/api/auth/logout",
+            "/api/auth/local/login",
+            "/api/remote/issues",
+            "/api/host/another/tasks",
+            "/api/organizations",
+            "/api/invitations/token",
+            "/api/relay-auth/server/pair",
+            "/api/preview/5173/",
+        ] {
+            assert!(account_host_path_forbidden(path), "{path}");
+        }
+        for path in ["/api/workspaces", "/api/webrtc/offer"] {
+            assert!(!account_host_path_forbidden(path), "{path}");
+        }
+    }
 }

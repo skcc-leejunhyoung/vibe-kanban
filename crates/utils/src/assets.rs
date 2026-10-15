@@ -48,6 +48,10 @@ pub fn server_signing_key_path() -> std::path::PathBuf {
     asset_dir().join("server_ed25519_signing_key")
 }
 
+pub fn account_host_registration_path() -> std::path::PathBuf {
+    asset_dir().join("host_account_registration.json")
+}
+
 pub fn relay_host_credentials_path() -> std::path::PathBuf {
     asset_dir().join("relay_host_credentials.json")
 }

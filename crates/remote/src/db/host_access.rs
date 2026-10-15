@@ -101,15 +101,17 @@ impl<'a> HostAccessRepository<'a> {
         if request.expected_host_generation != host.auth_generation {
             return Err(HostAccessError::HostGenerationConflict);
         }
-        if host.auth_mode == HostAuthMode::Migrating {
+        if grant_access && host.auth_mode == HostAuthMode::Migrating {
             return Err(HostAccessError::HostTransitionInProgress);
         }
-        let user_exists =
-            sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE id = $1 FOR KEY SHARE")
-                .bind(user_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .is_some();
+        let user_exists = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM users WHERE id = $1 AND (NOT $2 OR suspended_at IS NULL) FOR SHARE",
+        )
+        .bind(user_id)
+        .bind(grant_access)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some();
         if !user_exists {
             return Err(HostAccessError::AccountNotFound);
         }
@@ -161,6 +163,18 @@ impl<'a> HostAccessRepository<'a> {
             .execute(&mut *tx)
             .await?;
         }
+        super::host_connections::audit(
+            &mut tx,
+            host_id,
+            actor_id,
+            Some(user_id),
+            if grant_access {
+                "host.access_granted"
+            } else {
+                "host.access_revoked"
+            },
+        )
+        .await?;
         let txid = super::get_txid(&mut *tx).await?;
         tx.commit().await?;
         Ok(MutationResponse { data, txid })
@@ -183,12 +197,22 @@ async fn lock_owned_host(
     .ok_or(HostAccessError::HostNotFound)
 }
 
-async fn validate_session(
+pub(crate) async fn validate_session(
     tx: &mut Transaction<'_, Postgres>,
     actor_id: Uuid,
     session_id: Uuid,
     require_recent_login: bool,
 ) -> Result<(), HostAccessError> {
+    if sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM users WHERE id = $1 AND suspended_at IS NULL FOR SHARE",
+    )
+    .bind(actor_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .is_none()
+    {
+        return Err(HostAccessError::AccountSessionRevoked);
+    }
     #[derive(sqlx::FromRow)]
     struct Session {
         created_at: DateTime<Utc>,

@@ -42,6 +42,7 @@ const LOCAL_ONLY_API_PREFIXES = [
   '/api/open-remote-editor/',
   '/api/relay-auth/server/',
   '/api/relay-auth/client/',
+  '/api/relay-auth/account/registration',
 ];
 
 function isAbsoluteUrl(pathOrUrl: string): boolean {
@@ -102,18 +103,39 @@ function resolveScopedPath(
 }
 
 const defaultTransport: LocalApiTransport = {
-  request: (pathOrUrl, init = {}) => {
-    const {
-      hostScope: _hostScope,
-      hostId: _hostId,
-      relayHostId: _relayHostId,
-      ...requestInit
-    } = init;
+  request: async (pathOrUrl, init = {}) => {
+    const requestInit = { ...init };
+    delete requestInit.hostScope;
+    delete requestInit.hostId;
+    delete requestInit.relayHostId;
+    if (pathOrUrl.startsWith('/api/host/')) {
+      const account = await import('@/shared/lib/accountHostTransport');
+      const target = await account.resolveLocalAccountTarget(pathOrUrl);
+      if (target)
+        return account.requestAccountHost(
+          target.host,
+          target.path,
+          requestInit
+        );
+    }
     return fetch(pathOrUrl, requestInit);
   },
-  openWebSocket: (pathOrUrl, _options = {}) =>
-    new WebSocket(toAbsoluteWsUrl(pathOrUrl)),
-  openStream: (pathOrUrl, _options = {}) => {
+  openWebSocket: async (pathOrUrl) => {
+    if (pathOrUrl.startsWith('/api/host/')) {
+      const account = await import('@/shared/lib/accountHostTransport');
+      const target = await account.resolveLocalAccountTarget(pathOrUrl);
+      if (target)
+        return account.openAccountHostWebSocket(target.host, target.path);
+    }
+    return new WebSocket(toAbsoluteWsUrl(pathOrUrl));
+  },
+  openStream: async (pathOrUrl) => {
+    if (pathOrUrl.startsWith('/api/host/')) {
+      const account = await import('@/shared/lib/accountHostTransport');
+      const target = await account.resolveLocalAccountTarget(pathOrUrl);
+      if (target)
+        return account.openAccountHostWebSocket(target.host, target.path);
+    }
     if (shouldUseSseStream()) {
       // The SSE adapter exposes the same WebSocket-shaped surface the stream
       // consumers drive, so it's safe to present it as a WebSocket.

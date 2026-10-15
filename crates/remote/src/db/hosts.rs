@@ -33,12 +33,13 @@ impl<'a> HostRepository<'a> {
                 h.owner_user_id,
                 h.machine_id AS "machine_id!",
                 COALESCE(h.custom_name, h.name) AS "name!",
-                h.status,
+                CASE WHEN h.auth_mode='account' AND (h.relay_lease_until IS NULL OR h.relay_lease_until<=clock_timestamp()) THEN 'offline' ELSE h.status END AS "status!",
                 h.last_seen_at,
                 h.agent_version,
                 h.created_at,
                 h.updated_at,
-                host_access_role(h.id, $1) AS "access_role!"
+                host_access_role(h.id, $1) AS "access_role!",
+                h.auth_mode, h.auth_generation, h.remote_access_enabled, h.capabilities
             FROM hosts h
             JOIN (
                 SELECT id FROM hosts WHERE owner_user_id = $1
@@ -83,7 +84,8 @@ impl<'a> HostRepository<'a> {
                 agent_version,
                 created_at,
                 updated_at,
-                'owner' AS "access_role!"
+                'owner' AS "access_role!",
+                auth_mode, auth_generation, remote_access_enabled, capabilities
             "#,
             host_id,
             owner_user_id,

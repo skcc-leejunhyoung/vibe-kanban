@@ -321,7 +321,7 @@ async fn proxy_request(
 
     for (key, values) in &request.headers {
         let k = key.to_ascii_lowercase();
-        if k == "origin" || k == "host" || k == "x-vk-relayed" {
+        if k == "origin" || k == "host" || k == "x-vk-relayed" || k.starts_with("x-vk-preview-") {
             continue;
         }
         for value in values {

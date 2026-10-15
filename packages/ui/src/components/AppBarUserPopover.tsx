@@ -36,6 +36,8 @@ interface AppBarUserPopoverProps {
   onSignIn: () => void;
   onLogout: () => void;
   onAvatarError: () => void;
+  accountId?: string | null;
+  onLoginSessions?: () => void;
 }
 
 export function AppBarUserPopover({
@@ -52,6 +54,8 @@ export function AppBarUserPopover({
   onSignIn,
   onLogout,
   onAvatarError,
+  accountId,
+  onLoginSessions,
 }: AppBarUserPopoverProps) {
   const { t } = useTranslation();
   const settingsLabel = t('settings:settings.layout.nav.title', {
@@ -121,6 +125,9 @@ export function AppBarUserPopover({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="right" align="end" className="min-w-[200px]">
+        {accountId && <DropdownMenuItem onClick={() => { void navigator.clipboard.writeText(accountId); }}>내 계정 ID 복사</DropdownMenuItem>}
+        {onLoginSessions && <DropdownMenuItem onClick={onLoginSessions}>로그인한 기기</DropdownMenuItem>}
+        <DropdownMenuSeparator />
         <DropdownMenuLabel>{t('orgSwitcher.organizations')}</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {organizations.map((org) => (

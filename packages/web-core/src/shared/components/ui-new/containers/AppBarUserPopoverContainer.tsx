@@ -20,7 +20,7 @@ export function AppBarUserPopoverContainer({
   onOrgSelect,
 }: AppBarUserPopoverContainerProps) {
   const { executeAction } = useActions();
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, userId } = useAuth();
   const { loginStatus } = useUserSystem();
   const setSelectedOrgId = useOrganizationStore((s) => s.setSelectedOrgId);
   const [open, setOpen] = useState(false);
@@ -53,6 +53,11 @@ export function AppBarUserPopoverContainer({
   return (
     <AppBarUserPopover
       isSignedIn={isSignedIn}
+      accountId={userId}
+      onLoginSessions={() => {
+        setOpen(false);
+        void SettingsDialog.show({ initialSection: 'relay' });
+      }}
       avatarUrl={avatarUrl}
       avatarError={avatarError}
       organizations={organizations}

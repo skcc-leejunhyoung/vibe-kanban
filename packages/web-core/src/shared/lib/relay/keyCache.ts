@@ -1,11 +1,11 @@
-import type { PairedRelayHost } from "@/shared/lib/relayPairingStorage";
+import type { PairedRelayHost } from '@/shared/lib/relayPairingStorage';
 import {
   migratePairedHostKey,
   resolveSigningKey,
   subscribeRelayPairingChanges,
-} from "@/shared/lib/relayPairingStorage";
+} from '@/shared/lib/relayPairingStorage';
 
-import { base64ToBytes, toArrayBuffer } from "@remote/shared/lib/relay/bytes";
+import { base64ToBytes, toArrayBuffer } from '@/shared/lib/relay/bytes';
 
 const signingKeyCache = new Map<string, CryptoKey>();
 const serverVerifyKeyCache = new Map<string, CryptoKey>();
@@ -15,11 +15,12 @@ subscribeRelayPairingChanges(({ hostId }) => {
 });
 
 export async function getSigningKey(
-  pairedHost: PairedRelayHost,
+  pairedHost: PairedRelayHost
 ): Promise<CryptoKey> {
+  if (pairedHost.account_ephemeral) return resolveSigningKey(pairedHost);
   const signingSessionId = pairedHost.signing_session_id;
   if (!signingSessionId) {
-    throw new Error("Missing signing session for paired host.");
+    throw new Error('Missing signing session for paired host.');
   }
 
   const cacheKey = pairedHost.host_id;
@@ -44,14 +45,14 @@ export async function getSigningKey(
 }
 
 export async function getServerVerifyKey(
-  pairedHost: PairedRelayHost,
+  pairedHost: PairedRelayHost
 ): Promise<CryptoKey> {
   const signingSessionId = pairedHost.signing_session_id;
   if (!signingSessionId) {
-    throw new Error("Missing signing session for paired host.");
+    throw new Error('Missing signing session for paired host.');
   }
 
-  const cacheKey = pairedHost.host_id;
+  const cacheKey = `${pairedHost.host_id}:${pairedHost.server_public_key_b64}`;
   const cachedKey = serverVerifyKeyCache.get(cacheKey);
   if (cachedKey) {
     return cachedKey;
@@ -59,15 +60,15 @@ export async function getServerVerifyKey(
 
   const serverPublicKeyB64 = pairedHost.server_public_key_b64;
   if (!serverPublicKeyB64) {
-    throw new Error("Missing server signing key for paired host.");
+    throw new Error('Missing server signing key for paired host.');
   }
 
   const importedKey = await crypto.subtle.importKey(
-    "raw",
+    'raw',
     toArrayBuffer(base64ToBytes(serverPublicKeyB64)),
-    { name: "Ed25519" },
+    { name: 'Ed25519' },
     false,
-    ["verify"],
+    ['verify']
   );
 
   serverVerifyKeyCache.set(cacheKey, importedKey);
@@ -76,5 +77,7 @@ export async function getServerVerifyKey(
 
 export function clearRelayHostCryptoCaches(hostId: string): void {
   signingKeyCache.delete(hostId);
-  serverVerifyKeyCache.delete(hostId);
+  for (const key of serverVerifyKeyCache.keys()) {
+    if (key.startsWith(`${hostId}:`)) serverVerifyKeyCache.delete(key);
+  }
 }

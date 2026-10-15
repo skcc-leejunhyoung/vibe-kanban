@@ -2,7 +2,7 @@ export const TEXT_ENCODER = new TextEncoder();
 export const TEXT_DECODER = new TextDecoder();
 
 export function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
+  let binary = '';
   for (const value of bytes) {
     binary += String.fromCharCode(value);
   }
@@ -21,14 +21,14 @@ export function base64ToBytes(value: string): Uint8Array {
 export function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
     bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength,
+    bytes.byteOffset + bytes.byteLength
   ) as ArrayBuffer;
 }
 
 export async function sha256Base64(bytes: Uint8Array): Promise<string> {
   const hashBuffer = await crypto.subtle.digest(
-    "SHA-256",
-    toArrayBuffer(bytes),
+    'SHA-256',
+    toArrayBuffer(bytes)
   );
   return bytesToBase64(new Uint8Array(hashBuffer));
 }

@@ -86,6 +86,11 @@ export function RemoteAppBarUserPopoverContainer({
   return (
     <AppBarUserPopover
       isSignedIn={isSignedIn}
+      accountId={userId}
+      onLoginSessions={() => {
+        setOpen(false);
+        void SettingsDialog.show({ initialSection: "relay" });
+      }}
       avatarUrl={avatarUrl}
       avatarError={avatarError}
       organizations={organizations}

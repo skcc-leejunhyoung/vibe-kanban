@@ -42,7 +42,7 @@ vi.mock("@remote/shared/lib/relay/routing", () => ({
   toPathAndQuery: (x: string) => x,
   resolveRelayHostIdForCurrentPage: () => "host-1",
 }));
-vi.mock("@remote/shared/lib/relay/bytes", () => ({
+vi.mock("@/shared/lib/relay/bytes", () => ({
   base64ToBytes: vi.fn(),
 }));
 

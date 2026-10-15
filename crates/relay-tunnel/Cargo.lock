@@ -1538,6 +1538,9 @@ dependencies = [
  "base64",
  "ed25519-dalek",
  "rand 0.8.5",
+ "relay-types",
+ "serde",
+ "serde_json",
  "sha2",
  "tokio",
  "tokio-util",
@@ -1572,6 +1575,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jsonwebtoken",
+ "relay-control",
  "relay-tunnel-core",
  "relay-types",
  "relay-ws",
@@ -1588,6 +1592,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

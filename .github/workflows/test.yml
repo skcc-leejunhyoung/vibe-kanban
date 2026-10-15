@@ -100,6 +100,8 @@ jobs:
               - '.github/actions/**'
             backend-remote:
               - 'crates/remote/**'
+              - 'crates/relay-control/**'
+              - 'scripts/test-host-account-access.py'
               - 'crates/relay-tunnel/**'
               - 'crates/relay-tunnel-core/**'
               - 'crates/ws-bridge/**'
@@ -266,6 +268,9 @@ jobs:
 
       - name: Sqlx checks
         run: npm run remote:prepare-db:check
+
+      - name: Account host and relay database regressions
+        run: python3 scripts/test-host-account-access.py --docker
 
   backend-clippy:
     needs: changes

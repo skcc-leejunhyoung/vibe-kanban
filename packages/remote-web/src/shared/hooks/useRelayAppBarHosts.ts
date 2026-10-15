@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { RelayHost } from "shared/remote-types";
 import type { AppBarHost } from "@vibe/ui/components/AppBar";
 import {
   buildRelayHostOptions,
@@ -11,6 +12,9 @@ import { RELAY_REMOTE_HOSTS_QUERY_KEY } from "@/shared/lib/relayHostQueryKeys";
 interface UseRelayAppBarHostsResult {
   hosts: AppBarHost[];
   isLoading: boolean;
+  relayHosts: RelayHost[];
+  isError: boolean;
+  retry: () => void;
 }
 
 export function useRelayAppBarHosts(
@@ -37,6 +41,11 @@ export function useRelayAppBarHosts(
 
   return {
     hosts,
+    relayHosts: hostsQuery.data ?? [],
+    isError: hostsQuery.isError,
+    retry: () => {
+      void hostsQuery.refetch();
+    },
     isLoading: enabled && (hostsQuery.isLoading || pairedHostsQuery.isLoading),
   };
 }

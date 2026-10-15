@@ -10,6 +10,7 @@ pub struct RelayAppState {
     pub config: RelayServerConfig,
     pub jwt: Arc<JwtService>,
     pub relay_registry: RelayRegistry,
+    pub connection_guards: super::connection_guards::ConnectionGuards,
 }
 
 impl RelayAppState {
@@ -19,6 +20,7 @@ impl RelayAppState {
             config,
             jwt,
             relay_registry: RelayRegistry::default(),
+            connection_guards: Default::default(),
         }
     }
 }

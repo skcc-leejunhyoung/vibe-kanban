@@ -83,6 +83,11 @@ const SELF_RELAY_HOST_TTL: Duration = Duration::from_secs(5 * 60);
 const SELF_RELAY_HOST_MISS_TTL: Duration = Duration::from_secs(30);
 
 pub(crate) async fn self_relay_host_id(deployment: &DeploymentImpl) -> Option<Uuid> {
+    if let Ok(Some(state)) =
+        relay_control::account_registration::read(&utils::assets::account_host_registration_path())
+    {
+        return state.registration.map(|registration| registration.host_id);
+    }
     let mut cache = SELF_RELAY_HOST.lock().await;
     let last_known = cache.and_then(|(_, host_id)| host_id);
     if let Some((refreshed_at, host_id)) = *cache {

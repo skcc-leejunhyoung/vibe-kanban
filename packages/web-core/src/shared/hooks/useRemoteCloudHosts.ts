@@ -16,6 +16,7 @@ export interface RemoteCloudHost {
   pairedAt: string;
   lastUsedAt: string;
 }
+const EMPTY_REMOTE_HOSTS: RemoteCloudHost[] = [];
 
 interface RemoteCloudHostsState {
   hosts: RemoteCloudHost[];
@@ -42,36 +43,28 @@ export async function fetchRemoteCloudHostsState(
     listCloudHosts: listRelayHosts,
   }
 ): Promise<RemoteCloudHostsState> {
-  // Enumerate from the local pairing list, which is available without the
-  // cloud. The cloud `/v1/hosts` response only *decorates* status. A failed
-  // cloud lookup (auth expiry, dev-origin CORS, ...) is not evidence that every
-  // paired host is offline, so keep the paired hosts and fall back to an
-  // optimistic `online` status: the relay data plane usually still works when
-  // only the auth layer fails, and marking them online keeps their workspaces
-  // hydrating instead of vanishing from the sidebar/picker/snapshots.
-  // ponytail: optimistic online costs a 15s failed snapshot poll per genuinely
-  // offline host *during a cloud outage only*; acceptable for that narrow case.
-  const pairedHosts = await sources.listPairedHosts();
-
-  let remoteHostsById = new Map<string, RelayHost>();
-  let cloudReachable = true;
-  try {
-    const remoteHosts = await sources.listCloudHosts();
-    remoteHostsById = new Map(remoteHosts.map((host) => [host.id, host]));
-  } catch (error) {
-    cloudReachable = false;
-    console.warn(
-      'Cloud host status lookup failed; keeping paired hosts',
-      error
-    );
-  }
+  // A failed authoritative lookup is an error. React Query retains the last
+  // successful list instead of replacing account hosts with an empty result.
+  const [cloud, paired] = await Promise.allSettled([
+    sources.listCloudHosts(),
+    sources.listPairedHosts(),
+  ]);
+  if (cloud.status === 'rejected') throw cloud.reason;
+  const remoteHostsById = new Map(cloud.value.map((host) => [host.id, host]));
+  if (
+    paired.status === 'rejected' &&
+    !cloud.value.some((host) => host.auth_mode === 'account')
+  )
+    throw paired.reason;
+  const pairedHosts = paired.status === 'fulfilled' ? paired.value : [];
 
   const hosts = pairedHosts
+    .filter(
+      (host) => remoteHostsById.get(host.host_id)?.auth_mode !== 'account'
+    )
     .map((host) => {
       const remoteHost = remoteHostsById.get(host.host_id);
-      const status = cloudReachable
-        ? normalizeRemoteCloudHostStatus(remoteHost?.status)
-        : 'online';
+      const status = normalizeRemoteCloudHostStatus(remoteHost?.status);
       const pairedAt = host.paired_at ?? '';
 
       return {
@@ -83,6 +76,19 @@ export async function fetchRemoteCloudHostsState(
       };
     })
     .sort((a, b) => b.pairedAt.localeCompare(a.pairedAt));
+
+  for (const host of remoteHostsById.values()) {
+    if (host.auth_mode === 'account')
+      hosts.push({
+        id: host.id,
+        name: host.name,
+        status: normalizeRemoteCloudHostStatus(
+          host.remote_access_enabled ? host.status : 'offline'
+        ),
+        pairedAt: host.created_at,
+        lastUsedAt: host.last_seen_at ?? host.created_at,
+      });
+  }
 
   return { hosts };
 }
@@ -130,7 +136,7 @@ export function useRemoteCloudHostsAppBarModel(): {
 } {
   const { data } = useRemoteCloudHostsState();
 
-  const remoteHosts = data?.hosts ?? [];
+  const remoteHosts = data?.hosts ?? EMPTY_REMOTE_HOSTS;
 
   const hosts = useMemo<AppBarHost[]>(
     () =>

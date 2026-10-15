@@ -29,6 +29,8 @@ use crate::proxy_common::{
 };
 
 pub mod api;
+#[derive(Clone)]
+pub struct PreviewCancellation(pub tokio_util::sync::CancellationToken);
 mod proxy_common;
 
 #[derive(Clone)]
@@ -334,6 +336,7 @@ fn proxy_host_label(target_port: u16, relay_host_id: Option<Uuid>) -> String {
 /// `vibe-kanban.localhost`).
 #[derive(Clone, Debug)]
 struct ExternalOrigin {
+    protected_host: Option<String>,
     scheme: String,
     /// Authority after the first (port) label; may include an explicit `:port`.
     /// e.g. `localhost:3009` (direct loopback) or `vibe-kanban.localhost` (Caddy).
@@ -344,6 +347,7 @@ impl ExternalOrigin {
     /// Default on-machine proxy origin: plain HTTP loopback on the proxy port.
     fn local(proxy_port: u16) -> Self {
         Self {
+            protected_host: None,
             scheme: "http".to_string(),
             host_suffix: format!("localhost:{proxy_port}"),
         }
@@ -354,6 +358,18 @@ impl ExternalOrigin {
     /// and `X-Forwarded-Proto` is `https`; direct loopback access has no
     /// forwarded proto and falls back to plain HTTP on the proxy port.
     fn from_request_headers(headers: &HeaderMap, proxy_port: u16) -> Self {
+        if let Some(origin) = headers
+            .get("x-vk-preview-origin")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("https://"))
+            .filter(|host| !host.contains('/') && host.starts_with("p-") && host.contains("--"))
+        {
+            return Self {
+                protected_host: Some(origin.into()),
+                scheme: "https".into(),
+                host_suffix: String::new(),
+            };
+        }
         let host_suffix = headers
             .get(header::HOST)
             .and_then(|v| v.to_str().ok())
@@ -376,11 +392,15 @@ impl ExternalOrigin {
         Self {
             scheme,
             host_suffix,
+            protected_host: None,
         }
     }
 
     /// Full host (label + suffix) for the given preview target.
     fn proxy_host(&self, target_port: u16, relay_host_id: Option<Uuid>) -> String {
+        if let Some(host) = &self.protected_host {
+            return host.clone();
+        }
         format!(
             "{}.{}",
             proxy_host_label(target_port, relay_host_id),
@@ -611,6 +631,7 @@ async fn proxy_impl(
     let ws_protocols: Option<String> = extract_ws_protocols(&parts.headers);
 
     if let Ok(ws) = WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
+        let cancelled = parts.extensions.get::<PreviewCancellation>().cloned();
         tracing::debug!(
             "WebSocket upgrade request for path: {} -> localhost:{}",
             path_str,
@@ -627,16 +648,20 @@ async fn proxy_impl(
 
         return ws
             .on_upgrade(move |client_socket| async move {
-                if let Err(e) = handle_ws_proxy(
+                let bridge = handle_ws_proxy(
                     backend_addr,
                     client_socket,
                     target,
                     path_str,
                     query_string,
                     ws_protocols,
-                )
-                .await
-                {
+                );
+                let result = if let Some(cancelled) = cancelled {
+                    tokio::select! {_=cancelled.0.cancelled()=>return,result=bridge=>result}
+                } else {
+                    bridge.await
+                };
+                if let Err(e) = result {
                     tracing::debug!("WebSocket proxy closed: {}", e);
                 }
             })
@@ -1264,6 +1289,7 @@ mod tests {
         // from — not back to plain http (which the browser blocks as mixed
         // content).
         let origin = ExternalOrigin {
+            protected_host: None,
             scheme: "https".to_string(),
             host_suffix: "vibe-kanban.localhost".to_string(),
         };

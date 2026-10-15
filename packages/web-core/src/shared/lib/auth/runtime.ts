@@ -8,6 +8,7 @@ export interface AuthRuntime {
   triggerRefresh: (rejectedAccessToken?: string) => Promise<string | null>;
   registerShape: (shape: PauseableShape) => () => void;
   getCurrentUser: () => Promise<CurrentUser>;
+  logout?: () => Promise<void>;
   /** Browser deployments authenticate centrally instead of opening the local handoff dialog. */
   redirectToOAuth?: (
     provider?: 'github' | 'google',

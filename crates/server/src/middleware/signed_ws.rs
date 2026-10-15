@@ -103,6 +103,14 @@ impl SignedWsUpgrade {
         };
 
         self.ws.on_upgrade(move |socket| async move {
+            let cancelled = relay_signing
+                .as_ref()
+                .and_then(|ctx| {
+                    ctx.signing
+                        .account_sessions
+                        .get(ctx.request_signature.signing_session_id)
+                })
+                .map(|s| s.cancelled);
             let inner = match relay_signing {
                 Some(ctx) => {
                     match signed_axum_websocket(&ctx.signing, &ctx.request_signature, socket).await
@@ -120,7 +128,12 @@ impl SignedWsUpgrade {
                 }
                 None => WebSocketInner::Plain(Box::new(socket)),
             };
-            callback(MaybeSignedWebSocket { inner }).await;
+            let callback = callback(MaybeSignedWebSocket { inner });
+            if let Some(cancelled) = cancelled {
+                tokio::select! {_=cancelled.cancelled()=>{},_=callback=>{}}
+            } else {
+                callback.await;
+            }
         })
     }
 }

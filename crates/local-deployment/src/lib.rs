@@ -211,6 +211,9 @@ impl Deployment for LocalDeployment {
         let trusted_key_auth = TrustedKeyAuthRuntime::new(trusted_keys_path());
         let relay_signing = RelaySigningService::load_or_generate(&server_signing_key_path())
             .expect("Failed to load or generate server signing key");
+        if utils::assets::account_host_registration_path().exists() {
+            relay_signing.lock_account_mode().await;
+        }
         let relay_control = Arc::new(RelayControl::new());
         let client_info = ClientInfo::new();
         let preview_proxy = PreviewProxyService::new();
@@ -396,6 +399,12 @@ impl LocalDeployment {
     }
 
     pub fn remote_client(&self) -> Result<RemoteClient, RemoteClientNotConfigured> {
+        if deployment::ACCOUNT_HOST_REQUEST
+            .try_with(|active| *active)
+            .unwrap_or(false)
+        {
+            return Err(RemoteClientNotConfigured);
+        }
         self.remote_client.clone()
     }
 

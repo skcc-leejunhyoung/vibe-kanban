@@ -33,6 +33,11 @@ import { useInspectModeStore } from '@/features/workspace-chat/model/store/useIn
 import type { PreviewDevToolsMessage } from '@/shared/types/previewDevTools';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { getTargetDevPort, transformProxyUrlToDevUrl } from './previewUrl';
+import { useQuery } from '@tanstack/react-query';
+import { accountHost } from '@/shared/lib/accountHostConnection';
+import { isLocalSelfHost } from '@/shared/lib/accountHostTransport';
+import { openAccountPreview } from '@/shared/lib/accountPreview';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 
 const MIN_RESPONSIVE_WIDTH = 320;
 const MIN_RESPONSIVE_HEIGHT = 480;
@@ -150,6 +155,17 @@ export function PreviewBrowserContainer({
   );
   const { previewProxyPort } = useUserSystem();
   const hostId = useHostId();
+  const runtime = useAppRuntime();
+  const [accountPreviewError, setAccountPreviewError] = useState('');
+  const accountHostQuery = useQuery({
+    queryKey: ['account-preview-host', hostId],
+    queryFn: async () =>
+      runtime === 'local' && (await isLocalSelfHost(hostId!))
+        ? null
+        : accountHost(hostId!),
+    enabled: Boolean(hostId),
+  });
+  const accountPreviewMode = Boolean(hostId) && accountHostQuery.data !== null;
 
   const {
     start,
@@ -235,6 +251,7 @@ export function PreviewBrowserContainer({
   }, [effectiveParsedUrl]);
 
   const iframeUrl = useMemo(() => {
+    if (accountPreviewMode && isLoopbackPreview) return undefined;
     if (!effectiveParsedUrl || !devServerPort) {
       return undefined;
     }
@@ -312,6 +329,7 @@ export function PreviewBrowserContainer({
 
     return proxyUrl.toString();
   }, [
+    accountPreviewMode,
     devServerPort,
     effectiveParsedUrl,
     hostId,
@@ -864,13 +882,26 @@ export function PreviewBrowserContainer({
   }, [displayedPreviewUrl]);
 
   const handleOpenInNewTab = useCallback(() => {
+    if (accountPreviewMode && hostId && devServerPort && isLoopbackPreview) {
+      setAccountPreviewError('');
+      void openAccountPreview(hostId, Number(devServerPort)).catch(
+        (error: Error) => setAccountPreviewError(error.message)
+      );
+      return;
+    }
     if (!displayedPreviewUrl) return;
 
     const normalizedUrl = normalizePreviewUrl(displayedPreviewUrl);
     if (normalizedUrl) {
       openExternalUrl(normalizedUrl);
     }
-  }, [displayedPreviewUrl]);
+  }, [
+    displayedPreviewUrl,
+    accountPreviewMode,
+    hostId,
+    devServerPort,
+    isLoopbackPreview,
+  ]);
 
   const activeShortcutId = useMemo(() => {
     if (!displayedPreviewUrl) return null;
@@ -981,58 +1012,92 @@ export function PreviewBrowserContainer({
   }, [activeWorkspaceId, workspaceId, repos, devServerProcesses]);
 
   return (
-    <PreviewBrowser
-      url={iframeUrl}
-      autoDetectedUrl={urlInfo?.url}
-      urlInputValue={urlInputValue}
-      urlInputRef={urlInputRef}
-      isUsingOverride={hasOverride}
-      onUrlInputChange={handleUrlInputChange}
-      onUrlSubmit={handleUrlSubmit}
-      onUrlEscape={handleUrlEscape}
-      onClearOverride={handleClearOverride}
-      onCopyUrl={handleCopyUrl}
-      onOpenInNewTab={handleOpenInNewTab}
-      shortcuts={shortcuts}
-      activeShortcutId={activeShortcutId}
-      onAddShortcut={handleAddShortcut}
-      onRemoveShortcut={handleRemoveShortcut}
-      onOpenShortcut={handleOpenShortcut}
-      onOpenShortcutInNewTab={handleOpenShortcutInNewTab}
-      onRefresh={handleRefresh}
-      onStart={handleStart}
-      onStop={handleStop}
-      isStarting={isStarting}
-      isStopping={isStopping}
-      isServerRunning={runningDevServers.length > 0}
-      showIframe={showIframe}
-      allowManualUrl={allowManualUrl}
-      screenSize={screenSize}
-      localDimensions={localDimensions}
-      onScreenSizeChange={handleScreenSizeChange}
-      onResizeStart={handleResizeStart}
-      isResizing={isResizing}
-      containerRef={containerRef}
-      repos={repos}
-      handleEditDevScript={handleEditDevScript}
-      handleFixDevScript={
-        workspaceId && repos.length > 0 ? handleFixDevScript : undefined
-      }
-      hasFailedDevServer={hasFailedDevServer}
-      mobileScale={mobileScale}
-      className={className}
-      iframeRef={iframeRef}
-      navigation={navigation}
-      onNavigateBack={handleNavigateBack}
-      onNavigateForward={handleNavigateForward}
-      isInspectMode={isLoopbackPreview && isInspectMode}
-      onToggleInspectMode={isLoopbackPreview ? toggleInspectMode : noop}
-      isErudaVisible={isLoopbackPreview && isErudaVisible}
-      onToggleEruda={isLoopbackPreview ? handleToggleEruda : noop}
-      onIframeLoad={handleIframeLoad}
-      isMobile={isMobile}
-      mobileUrlExpanded={mobileUrlExpanded}
-      onMobileUrlExpandedChange={setMobileUrlExpanded}
-    />
+    <div className="flex h-full min-w-0 flex-col">
+      {accountPreviewMode && isLoopbackPreview && (
+        <div className="flex flex-col gap-half p-base text-normal">
+          <p>
+            계정으로 보호된 미리보기는 새 탭에서 열립니다. Safari에서도 동일한
+            접근 검사를 적용합니다.
+          </p>
+          <button
+            className="rounded-sm border border-border px-base py-half disabled:opacity-50"
+            disabled={
+              !devServerPort ||
+              accountHostQuery.isPending ||
+              accountHostQuery.isError
+            }
+            onClick={handleOpenInNewTab}
+          >
+            보호된 미리보기 열기
+          </button>
+          {accountHostQuery.isError && (
+            <p role="alert">
+              호스트 권한을 확인할 수 없습니다.{' '}
+              <button onClick={() => void accountHostQuery.refetch()}>
+                다시 시도
+              </button>
+            </p>
+          )}
+          {accountPreviewError && (
+            <p role="alert" className="text-error">
+              {accountPreviewError}
+            </p>
+          )}
+        </div>
+      )}
+      <PreviewBrowser
+        url={iframeUrl}
+        autoDetectedUrl={urlInfo?.url}
+        urlInputValue={urlInputValue}
+        urlInputRef={urlInputRef}
+        isUsingOverride={hasOverride}
+        onUrlInputChange={handleUrlInputChange}
+        onUrlSubmit={handleUrlSubmit}
+        onUrlEscape={handleUrlEscape}
+        onClearOverride={handleClearOverride}
+        onCopyUrl={handleCopyUrl}
+        onOpenInNewTab={handleOpenInNewTab}
+        shortcuts={shortcuts}
+        activeShortcutId={activeShortcutId}
+        onAddShortcut={handleAddShortcut}
+        onRemoveShortcut={handleRemoveShortcut}
+        onOpenShortcut={handleOpenShortcut}
+        onOpenShortcutInNewTab={handleOpenShortcutInNewTab}
+        onRefresh={handleRefresh}
+        onStart={handleStart}
+        onStop={handleStop}
+        isStarting={isStarting}
+        isStopping={isStopping}
+        isServerRunning={runningDevServers.length > 0}
+        showIframe={showIframe && !(accountPreviewMode && isLoopbackPreview)}
+        allowManualUrl={allowManualUrl}
+        screenSize={screenSize}
+        localDimensions={localDimensions}
+        onScreenSizeChange={handleScreenSizeChange}
+        onResizeStart={handleResizeStart}
+        isResizing={isResizing}
+        containerRef={containerRef}
+        repos={repos}
+        handleEditDevScript={handleEditDevScript}
+        handleFixDevScript={
+          workspaceId && repos.length > 0 ? handleFixDevScript : undefined
+        }
+        hasFailedDevServer={hasFailedDevServer}
+        mobileScale={mobileScale}
+        className={className}
+        iframeRef={iframeRef}
+        navigation={navigation}
+        onNavigateBack={handleNavigateBack}
+        onNavigateForward={handleNavigateForward}
+        isInspectMode={isLoopbackPreview && isInspectMode}
+        onToggleInspectMode={isLoopbackPreview ? toggleInspectMode : noop}
+        isErudaVisible={isLoopbackPreview && isErudaVisible}
+        onToggleEruda={isLoopbackPreview ? handleToggleEruda : noop}
+        onIframeLoad={handleIframeLoad}
+        isMobile={isMobile}
+        mobileUrlExpanded={mobileUrlExpanded}
+        onMobileUrlExpandedChange={setMobileUrlExpanded}
+      />
+    </div>
   );
 }

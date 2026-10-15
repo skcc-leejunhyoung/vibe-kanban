@@ -23,6 +23,7 @@ pub mod github_issue_links;
 mod github_pull_requests;
 #[cfg(test)]
 mod host_access_tests;
+pub mod host_connections;
 pub mod hosts;
 mod identity;
 pub mod issue_assignees;
@@ -101,11 +102,13 @@ pub fn router(state: AppState) -> Router {
         .merge(oauth::public_router())
         .merge(organization_members::public_router())
         .merge(tokens::public_router());
+    let v1_public = v1_public.merge(host_connections::host_router());
 
     let v1_protected = Router::<AppState>::new()
         .merge(agent_memory::router())
         .merge(identity::router())
         .merge(hosts::router())
+        .merge(host_connections::router())
         .merge(projects::router())
         .merge(organizations::router())
         .merge(organization_members::protected_router())
@@ -134,6 +137,10 @@ pub fn router(state: AppState) -> Router {
         .merge(web_push::router())
         .merge(workspaces::router())
         .merge(export::router())
+        .layer(middleware::from_fn_with_state(
+            state.pool.clone(),
+            host_connections::audit_denied,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,

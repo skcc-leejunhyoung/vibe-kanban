@@ -254,6 +254,20 @@ async fn update_config(
     // Get old config state before updating
     let mut config_guard = deployment.config().write().await;
     let old_config = config_guard.clone();
+    if deployment::ACCOUNT_HOST_REQUEST
+        .try_with(|active| *active)
+        .unwrap_or(false)
+        && (old_config.relay_enabled != new_config.relay_enabled
+            || old_config.host_nickname != new_config.host_nickname)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            ResponseJson(ApiResponse::<VersionedConfig>::error(
+                "Manage remote access and the host name through your central account.",
+            )),
+        )
+            .into_response();
+    }
     let current_revision = revision(&old_config);
     if let Some(expected_revision) = &expected_revision
         && expected_revision != &current_revision

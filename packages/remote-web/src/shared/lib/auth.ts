@@ -4,6 +4,7 @@ import {
   getRefreshTokenSubject,
 } from "shared/jwt";
 import { clearPairedRelayHosts } from "@/shared/lib/relayPairingStorage";
+import { resetAccountHostConnections } from "@/shared/lib/accountHostConnection";
 
 const DB_NAME = "rf-auth";
 const STORE_NAME = "tokens";
@@ -36,7 +37,18 @@ export class ReconnectPendingError extends Error {
   }
 }
 
+const authChannel =
+  typeof window !== "undefined" && typeof BroadcastChannel !== "undefined"
+    ? new BroadcastChannel("vk-account-auth")
+    : null;
+if (authChannel)
+  authChannel.onmessage = () => {
+    resetAccountHostConnections();
+    window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+  };
+
 function emitAuthChanged(): void {
+  authChannel?.postMessage("changed");
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
   }
@@ -98,6 +110,7 @@ export async function storeTokens(
   if (!expectedUserId) {
     const previous = await getAccessToken();
     if (previous && accessTokensBelongToDifferentUsers(previous, accessToken)) {
+      resetAccountHostConnections();
       await clearPairedRelayHosts();
     }
   }
@@ -199,6 +212,7 @@ export async function applyTokenRefresh(
     return true;
   });
   if (applied && !tokens) {
+    resetAccountHostConnections();
     try {
       await clearPairedRelayHosts();
     } finally {
@@ -210,6 +224,7 @@ export async function applyTokenRefresh(
 
 /** Explicit logout always wins, even during reconnect. */
 export async function clearTokens(): Promise<void> {
+  resetAccountHostConnections();
   try {
     await withAuthStore("readwrite", (store) => {
       store.delete(ACCESS_TOKEN_KEY);

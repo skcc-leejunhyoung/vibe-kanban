@@ -11,7 +11,8 @@ pub struct RelayServerConfig {
     /// Suffix used for preview subdomains (e.g. "relay.vk.example.com").
     /// When set, requests with `Host: {port}--{host_id}.{suffix}` are forwarded
     /// to the corresponding host's local preview proxy via the existing control
-    /// tunnel. Tailnet trust is assumed; no per-request signing is required.
+    /// tunnel. Account hosts require a dedicated p-{port}--{host_id} origin
+    /// and a central, revocable preview cookie. The old origin is legacy-only.
     pub preview_host_suffix: Option<String>,
 }
 

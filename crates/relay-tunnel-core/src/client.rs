@@ -47,7 +47,6 @@ pub async fn start_relay_client(config: RelayClientConfig) -> anyhow::Result<()>
 
     let ws_io = tungstenite_ws_stream_io(ws_stream);
     let mut session = Session::new_client(ws_io, yamux_config());
-    let mut control = session.control();
 
     tracing::debug!("Relay control channel connected");
 
@@ -57,7 +56,9 @@ pub async fn start_relay_client(config: RelayClientConfig) -> anyhow::Result<()>
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
-                control.close().await;
+                // close() waits for the same yamux session to be polled. This
+                // branch has stopped polling it, so awaiting close deadlocks
+                // migration/reconnect. Dropping the session closes its socket.
                 return Ok(());
             }
             inbound = session.next() => {

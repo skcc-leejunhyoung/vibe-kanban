@@ -5,12 +5,14 @@ import {
   type AuthContextValue,
 } from '@/shared/hooks/auth/useAuth';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { resetAccountHostConnections } from '@/shared/lib/accountHostConnection';
 
 interface LocalAuthProviderProps {
   children: ReactNode;
 }
 
 export function clearLocalUserQueryCache(queryClient: QueryClient): void {
+  resetAccountHostConnections();
   queryClient.removeQueries({
     predicate: (query) => query.queryKey[0] !== 'user-system',
   });

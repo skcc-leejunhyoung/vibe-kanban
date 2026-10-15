@@ -133,3 +133,8 @@ pub trait Deployment: Clone + Send + Sync + 'static {
             .boxed()
     }
 }
+tokio::task_local! {
+    /// A remote account may operate local work, but cannot borrow the host's
+    /// saved central user session for a nested cloud request.
+    pub static ACCOUNT_HOST_REQUEST: bool;
+}

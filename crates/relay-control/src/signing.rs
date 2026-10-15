@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
+use crate::account_sessions::{AccountSession, AccountSessions};
+
 // ---------------------------------------------------------------------------
 // Request signing — used by local proxy and tunnel to sign outbound requests
 // ---------------------------------------------------------------------------
@@ -93,6 +95,7 @@ pub fn build_response_signing_message(
 // ---------------------------------------------------------------------------
 
 struct RelaySigningSession {
+    account: Option<AccountSession>,
     peer_public_key: VerifyingKey,
     created_at: Instant,
     last_used_at: StdMutex<Instant>,
@@ -142,6 +145,8 @@ type SessionMap = RwLock<HashMap<Uuid, Arc<RelaySigningSession>>>;
 
 #[derive(Clone)]
 pub struct RelaySigningService {
+    pub account_sessions: AccountSessions,
+    account_mode: Arc<std::sync::atomic::AtomicBool>,
     sessions: Arc<SessionMap>,
     cleanup_started: Arc<Once>,
     server_signing_key: Arc<SigningKey>,
@@ -151,8 +156,51 @@ pub struct RelaySigningService {
 }
 
 impl RelaySigningService {
+    pub fn account_mode(&self) -> bool {
+        self.account_mode.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub async fn lock_account_mode(&self) {
+        self.account_mode
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.sessions
+            .write()
+            .await
+            .retain(|_, session| session.account.is_some());
+    }
+
+    pub async fn register_account_session(
+        &self,
+        lease: relay_types::HostConnectionLease,
+        request_started: crate::account_sessions::LeaseRequestTime,
+    ) -> anyhow::Result<()> {
+        let key = crate::account::decode_public_key(&lease.public_key_b64)?;
+        let id = lease.connection_id;
+        anyhow::ensure!(
+            self.account_mode() && self.account_sessions.approve(lease, request_started),
+            "Connection lease expired"
+        );
+        let account = self
+            .account_sessions
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Connection lease expired"))?;
+        let mut sessions = self.sessions.write().await;
+        if sessions.get(&id).is_some_and(|session| {
+            session.account.is_some()
+                && session.peer_public_key == key
+                && is_session_active(session, Instant::now())
+        }) {
+            return Ok(());
+        }
+        let mut session = RelaySigningSession::new(key, Instant::now());
+        session.account = Some(account);
+        sessions.insert(id, Arc::new(session));
+        Ok(())
+    }
     pub fn new(server_signing_key: SigningKey) -> Self {
         Self {
+            account_sessions: AccountSessions::default(),
+            account_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(server_signing_key),
@@ -195,6 +243,8 @@ impl RelaySigningService {
         let sessions = read_persisted_sessions(&persist_path);
 
         Ok(Self {
+            account_sessions: AccountSessions::default(),
+            account_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             sessions: Arc::new(RwLock::new(sessions)),
             cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(key),
@@ -319,6 +369,7 @@ impl RelaySigningService {
             sessions.retain(|_, session| is_session_active(session, now));
             sessions
                 .iter()
+                .filter(|(_, session)| session.account.is_none())
                 .map(|(id, session)| (*id, *session.peer_public_key.as_bytes()))
                 .collect()
         };
@@ -417,7 +468,10 @@ impl RelaySigningService {
             .read()
             .await
             .get(&signing_session_id)
-            .filter(|session| is_session_active(session, Instant::now()))
+            .filter(|session| {
+                is_session_active(session, Instant::now())
+                    && (!self.account_mode() || session.account.is_some())
+            })
             .cloned()
             .ok_or(RelaySignatureValidationError::MissingSigningSession)
     }
@@ -441,6 +495,7 @@ impl RelaySigningService {
 impl RelaySigningSession {
     fn new(peer_public_key: VerifyingKey, now: Instant) -> Self {
         Self {
+            account: None,
             peer_public_key,
             created_at: now,
             last_used_at: StdMutex::new(now),
@@ -464,7 +519,11 @@ async fn cleanup_sessions(sessions: &SessionMap) {
 }
 
 fn is_session_active(session: &RelaySigningSession, now: Instant) -> bool {
-    now.duration_since(session.created_at) <= RELAY_SIGNING_SESSION_TTL
+    session
+        .account
+        .as_ref()
+        .is_none_or(|account| account.active())
+        && now.duration_since(session.created_at) <= RELAY_SIGNING_SESSION_TTL
         && now.saturating_duration_since(*session.last_used_at.lock().unwrap())
             <= RELAY_SIGNING_SESSION_IDLE_TTL
 }
@@ -772,6 +831,8 @@ mod tests {
         let client_key = SigningKey::generate(&mut OsRng);
 
         let writer = RelaySigningService {
+            account_sessions: AccountSessions::default(),
+            account_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(server_key.clone()),
@@ -781,6 +842,8 @@ mod tests {
 
         // Fresh instance loads persisted sessions from disk.
         let reloaded = RelaySigningService {
+            account_sessions: AccountSessions::default(),
+            account_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             sessions: Arc::new(RwLock::new(read_persisted_sessions(&path))),
             cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(server_key),
@@ -846,6 +909,8 @@ mod tests {
             ],
         );
         let service = RelaySigningService {
+            account_sessions: AccountSessions::default(),
+            account_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             sessions: Arc::new(RwLock::new(read_persisted_sessions(&path))),
             cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(server_key),
@@ -868,6 +933,8 @@ mod tests {
         let server_key = SigningKey::generate(&mut OsRng);
         let client_key = SigningKey::generate(&mut OsRng);
         let service = RelaySigningService {
+            account_sessions: AccountSessions::default(),
+            account_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             cleanup_started: Arc::new(Once::new()),
             server_signing_key: Arc::new(server_key),
@@ -883,5 +950,55 @@ mod tests {
         assert!(!map.contains_key(&old_session_id));
         assert!(map.contains_key(&new_session_id));
         assert_eq!(map.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+    use crate::account_sessions::LeaseRequestTime;
+    #[tokio::test]
+    async fn account_refresh_preserves_nonce_replay_protection_and_never_persists_browser_keys() {
+        let directory = std::env::temp_dir().join(format!("vk-account-signing-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let host = RelaySigningService::load_or_generate(&directory.join("server-key")).unwrap();
+        let browser = RelaySigningService::new(SigningKey::from_bytes(&[21; 32]));
+        let legacy = host.create_session(browser.server_public_key()).await;
+        host.lock_account_mode().await;
+        assert!(host.get_session_peer_key(legacy).await.is_none());
+        let lease = relay_types::HostConnectionLease {
+            connection_id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            auth_session_id: Uuid::new_v4(),
+            public_key_b64: BASE64_STANDARD.encode(browser.server_public_key().as_bytes()),
+            host_generation: 2,
+            grant_version: 1,
+            remaining_seconds: 60,
+        };
+        host.register_account_session(lease.clone(), LeaseRequestTime::now())
+            .await
+            .unwrap();
+        let request = browser.sign_request(lease.connection_id, "POST", "/api/action", b"once");
+        host.verify_request(&request, "POST", "/api/action", b"once")
+            .await
+            .unwrap();
+        host.register_account_session(lease.clone(), LeaseRequestTime::now())
+            .await
+            .unwrap();
+        assert!(matches!(
+            host.verify_request(&request, "POST", "/api/action", b"once")
+                .await,
+            Err(RelaySignatureValidationError::ReplayNonce)
+        ));
+        host.persist_sessions().await;
+        let snapshot = std::fs::read_to_string(directory.join("relay_signing_sessions")).unwrap();
+        assert!(!snapshot.contains(&lease.connection_id.to_string()));
+        host.account_sessions.revoke(lease.connection_id);
+        assert!(
+            host.get_session_peer_key(lease.connection_id)
+                .await
+                .is_none()
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

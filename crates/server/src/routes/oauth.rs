@@ -377,7 +377,9 @@ async fn logout(State(deployment): State<DeploymentImpl>) -> Result<StatusCode, 
 
     auth_context.clear_profile().await;
 
-    relay_registration::stop_relay(&deployment).await;
+    if !deployment.relay_signing().account_mode() {
+        relay_registration::stop_relay(&deployment).await;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -66,7 +66,9 @@ async fn resolve_relay_params(deployment: &DeploymentImpl) -> Option<RelayParams
     })?;
 
     let login_status = deployment.get_login_status().await;
-    if matches!(login_status, api_types::LoginStatus::LoggedOut) {
+    if !deployment.relay_signing().account_mode()
+        && matches!(login_status, api_types::LoginStatus::LoggedOut)
+    {
         tracing::debug!("Not logged in; relay will start on login");
         return None;
     }
@@ -93,7 +95,14 @@ pub async fn spawn_relay(deployment: &DeploymentImpl) {
     };
 
     let cancel_token = deployment.relay_control().reset().await;
+    if deployment.relay_signing().account_mode() {
+        tokio::spawn(super::host_accounts::maintain(
+            deployment.clone(),
+            cancel_token.clone(),
+        ));
+    }
 
+    let account_deployment = deployment.clone();
     tokio::spawn(async move {
         tracing::debug!("Relay auto-reconnect loop started");
 
@@ -101,7 +110,8 @@ pub async fn spawn_relay(deployment: &DeploymentImpl) {
         let max_delay = std::time::Duration::from_secs(RELAY_RECONNECT_MAX_DELAY_SECS);
 
         while !cancel_token.is_cancelled()
-            && let Err(error) = start_relay(&params, cancel_token.clone()).await
+            && let Err(error) =
+                start_relay(&params, cancel_token.clone(), &account_deployment).await
         {
             tracing::debug!(
                 ?error,
@@ -111,7 +121,7 @@ pub async fn spawn_relay(deployment: &DeploymentImpl) {
 
             tokio::select! {
                 _ = cancel_token.cancelled() => break,
-                _ = tokio::time::sleep(delay) => {}
+                _ = tokio::time::sleep(delay.mul_f64(0.8 + rand::random::<f64>()*0.4)) => {}
             }
 
             delay = std::cmp::min(delay.saturating_mul(2), max_delay);
@@ -131,7 +141,40 @@ pub async fn stop_relay(deployment: &DeploymentImpl) {
 async fn start_relay(
     params: &RelayParams,
     shutdown: tokio_util::sync::CancellationToken,
+    deployment: &DeploymentImpl,
 ) -> anyhow::Result<()> {
+    if let Some(mut state) =
+        relay_control::account_registration::read(&utils::assets::account_host_registration_path())?
+    {
+        if state
+            .registration
+            .as_ref()
+            .is_none_or(|r| r.auth_mode != "account")
+        {
+            let _guard = deployment.relay_control().account_update_lock.lock().await;
+            state = relay_control::account_registration::read(
+                &utils::assets::account_host_registration_path(),
+            )?
+            .ok_or_else(|| anyhow::anyhow!("Missing account registration"))?;
+            super::host_accounts::activate(&mut state).await?;
+            relay_control::account_registration::write(
+                &utils::assets::account_host_registration_path(),
+                &state,
+            )?;
+        }
+        let mut url = url::Url::parse(&state.relay_base)?;
+        url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
+            .map_err(|_| anyhow::anyhow!("Invalid Relay URL"))?;
+        url.set_path("/v1/relay/account/connect");
+        url.set_query(None);
+        return start_relay_client(RelayClientConfig {
+            ws_url: url.to_string(),
+            bearer_token: state.request.credential,
+            local_addr: params.server_addr,
+            shutdown,
+        })
+        .await;
+    }
     let base_url = params.relay_base.trim_end_matches('/');
 
     let encoded_name = url::form_urlencoded::Serializer::new(String::new())

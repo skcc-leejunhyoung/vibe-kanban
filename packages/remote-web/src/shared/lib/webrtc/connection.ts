@@ -9,7 +9,7 @@ import type {
   SdpAnswer,
   ApiResponse,
 } from "shared/types";
-import { bytesToBase64 } from "@remote/shared/lib/relay/bytes";
+import { bytesToBase64 } from "@/shared/lib/relay/bytes";
 import { requestRelayHostApi } from "@remote/shared/lib/relayHostApi";
 import { Defragmenter, fragment } from "./chunking";
 
@@ -358,6 +358,10 @@ export class WebRtcConnection {
     }
 
     switch (msg.type) {
+      case "http_request":
+      case "ws_open":
+        // These messages are only valid in the browser-to-host direction.
+        break;
       case "http_response": {
         const pending = this.pendingHttp.get(msg.id);
         if (pending) {

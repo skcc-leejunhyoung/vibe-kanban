@@ -1,9 +1,9 @@
-import { buildRemoteSessionBaseUrl } from "@/shared/lib/relayBackendApi";
+import { buildRemoteSessionBaseUrl } from '@/shared/lib/relayBackendApi';
 import {
   buildSignedHeaders,
   CONTENT_TYPE_HEADER,
-} from "@remote/shared/lib/relay/signing";
-import type { RelayHostContext } from "@remote/shared/lib/relay/types";
+} from '@/shared/lib/relay/signing';
+import type { RelayHostContext } from '@/shared/lib/relay/types';
 
 export function isAuthFailureStatus(status: number): boolean {
   return status === 401 || status === 403;
@@ -18,14 +18,14 @@ export async function sendRelayHostRequest(
     bodyBytes: Uint8Array;
     contentType: string | null;
     requestInit: RequestInit;
-  },
+  }
 ): Promise<Response> {
   const headers = await buildSignedHeaders(
     context.pairedHost,
     params.method,
     params.normalizedPath,
     params.bodyBytes,
-    params.requestInit.headers,
+    params.requestInit.headers
   );
 
   if (params.contentType && !headers.has(CONTENT_TYPE_HEADER)) {
@@ -34,13 +34,13 @@ export async function sendRelayHostRequest(
 
   const baseUrl = buildRemoteSessionBaseUrl(
     context.pairedHost.host_id,
-    context.sessionId,
+    context.sessionId
   );
 
   return fetch(`${baseUrl}${params.normalizedPath}`, {
     ...params.requestInit,
     body: params.body,
     headers,
-    credentials: "same-origin",
+    credentials: 'same-origin',
   });
 }

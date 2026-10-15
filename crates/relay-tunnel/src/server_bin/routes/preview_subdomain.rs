@@ -70,6 +70,15 @@ pub async fn preview_subdomain_handler(
     let Some(target) = parse_preview_target(&host_header, suffix) else {
         return (StatusCode::BAD_REQUEST, "Invalid preview Host header").into_response();
     };
+    let legacy=sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM hosts WHERE id=$1 AND auth_mode='legacy_pairing' AND deleted_at IS NULL AND remote_access_enabled AND host_access_role(id,owner_user_id) IS NOT NULL)")
+        .bind(target.host_id).fetch_one(&state.pool).await;
+    if !matches!(legacy, Ok(true)) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Use the protected account preview URL",
+        )
+            .into_response();
+    }
 
     let Some(relay) = state.relay_registry.get(&target.host_id).await else {
         return (StatusCode::NOT_FOUND, "No active host for preview").into_response();

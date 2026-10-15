@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppRouter } from "@remote/app/entry/App";
 import { RemoteAuthProvider } from "@remote/app/providers/RemoteAuthProvider";
-import { getIdentity } from "@remote/shared/lib/api";
+import { getIdentity, logout } from "@remote/shared/lib/api";
 import { getToken, triggerRefresh } from "@remote/shared/lib/auth/tokenManager";
 import { redirectToOAuth } from "@remote/shared/lib/oauth";
 import "@remote/app/styles/index.css";
@@ -52,6 +52,7 @@ installAppZoom();
 
 configureAuthRuntime({
   getToken,
+  logout,
   triggerRefresh,
   redirectToOAuth,
   registerShape: () => () => {},

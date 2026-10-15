@@ -1,3 +1,6 @@
+pub mod account;
+pub mod account_registration;
+pub mod account_sessions;
 pub mod signing;
 
 use tokio::sync::RwLock;
@@ -8,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 /// Start/stop can be called from login/logout handlers to dynamically
 /// manage the relay without restarting the server.
 pub struct RelayControl {
+    pub account_update_lock: tokio::sync::Mutex<()>,
     /// Token used to cancel the current relay connection
     shutdown: RwLock<Option<CancellationToken>>,
 }
@@ -21,6 +25,7 @@ impl Default for RelayControl {
 impl RelayControl {
     pub fn new() -> Self {
         Self {
+            account_update_lock: tokio::sync::Mutex::new(()),
             shutdown: RwLock::new(None),
         }
     }

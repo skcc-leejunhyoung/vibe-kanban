@@ -535,3 +535,655 @@ async fn failed_session_revocation_rolls_back_the_grant_change() {
     );
     f.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires HOST_ACCESS_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+async fn emergency_revoke_is_allowed_during_migration_without_recent_login() {
+    let f = Fixture::new().await;
+    f.change(f.member, 0, true).await.unwrap();
+    sqlx::query("UPDATE hosts SET auth_mode='migrating' WHERE id=$1")
+        .bind(f.host)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE auth_sessions SET authenticated_at=clock_timestamp()-INTERVAL '1 hour' WHERE id=$1",
+    )
+    .bind(f.owner_session)
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    let revoked = f.change(f.member, 1, false).await.unwrap();
+    assert!(revoked.data.revoked_at.is_some());
+    assert_eq!(revoked.data.version, 2);
+    sqlx::query("UPDATE hosts SET auth_mode='account' WHERE id=$1")
+        .bind(f.host)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let role: Option<String> = sqlx::query_scalar("SELECT host_access_role($1,$2)")
+        .bind(f.host)
+        .bind(f.member)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert!(role.is_none());
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires HOST_ACCESS_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+async fn suspended_accounts_cannot_receive_grants_and_suspended_owners_stop_offering_hosts() {
+    let f = Fixture::new().await;
+    sqlx::query("UPDATE users SET suspended_at=clock_timestamp() WHERE id=$1")
+        .bind(f.member)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.change(f.member, 0, true).await,
+        Err(HostAccessError::AccountNotFound)
+    ));
+    sqlx::query("UPDATE users SET suspended_at=clock_timestamp() WHERE id=$1")
+        .bind(f.owner)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert!(
+        HostRepository::new(&f.pool)
+            .list_accessible_hosts(f.owner)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let enabled: bool = sqlx::query_scalar("SELECT remote_access_enabled FROM hosts WHERE id=$1")
+        .bind(f.host)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert!(!enabled);
+    assert!(matches!(
+        f.change(f.outsider, 0, true).await,
+        Err(HostAccessError::AccountSessionRevoked)
+    ));
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires HOST_ACCESS_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+async fn account_registration_lease_revocation_and_rotation_are_bound_to_identity() {
+    use relay_types::*;
+
+    use crate::db::host_connections as c;
+    let f = Fixture::new().await;
+    let secret = relay_control::account::new_credential();
+    let request = RegisterAccountHostRequest {
+        request_id: Uuid::new_v4(),
+        expected_generation: None,
+        machine_id: "first".into(),
+        name: "Account host".into(),
+        credential: secret.clone(),
+        capabilities: vec![ACCOUNT_PROTOCOL.into()],
+    };
+    let registration = c::register(&f.pool, f.owner, f.owner_session, request.clone())
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(
+        registration.host_id, f.host,
+        "migration must preserve existing links"
+    );
+    assert_eq!(registration.auth_mode, "migrating");
+    assert_eq!(
+        c::register(&f.pool, f.owner, f.owner_session, request)
+            .await
+            .unwrap()
+            .data
+            .generation,
+        registration.generation
+    );
+    let activated = ActivateAccountHostRequest {
+        transition_request_id: registration.transition_request_id,
+        generation: registration.generation,
+        capabilities: vec![ACCOUNT_PROTOCOL.into()],
+    };
+    c::activate(&f.pool, &secret, activated.clone())
+        .await
+        .unwrap();
+    c::activate(&f.pool, &secret, activated).await.unwrap();
+    let key_path = std::env::temp_dir().join(format!("host-access-test-key-{}", Uuid::new_v4()));
+    let key = relay_control::signing::RelaySigningService::load_or_generate(&key_path).unwrap();
+    std::fs::remove_file(key_path).unwrap();
+    use base64::Engine;
+    let public_key_b64 =
+        base64::engine::general_purpose::STANDARD.encode(key.server_public_key().as_bytes());
+    let open = OpenHostConnectionRequest {
+        public_key_b64: public_key_b64.clone(),
+        connection_id: None,
+    };
+    assert!(
+        matches!(
+            c::open_connection(&f.pool, f.member, f.member_session, f.host, open.clone()).await,
+            Err(c::AccountError::HostAccessDenied)
+        ),
+        "legacy organization sharing must not migrate"
+    );
+    f.repo()
+        .change(
+            f.host,
+            f.owner,
+            f.owner_session,
+            f.member,
+            &ChangeHostAccessRequest {
+                expected_host_generation: registration.generation,
+                expected_version: 0,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    let approval = c::open_connection(&f.pool, f.member, f.member_session, f.host, open.clone())
+        .await
+        .unwrap()
+        .data;
+    let keys = relay_control::account::HostGrantSigner::from_env()
+        .unwrap()
+        .public_keys();
+    let claims = relay_control::account::verify_grant(
+        &approval.grant,
+        &keys,
+        &keys.issuer,
+        f.host,
+        registration.generation,
+        Utc::now().timestamp(),
+    )
+    .unwrap();
+    assert_eq!(claims.auth_session_id, f.member_session);
+    assert_eq!(claims.public_key_b64, public_key_b64);
+    let renewal = RenewHostConnectionsRequest {
+        connections: vec![approval.connection_id],
+    };
+    let lease = c::renew(&f.pool, &secret, renewal.clone()).await.unwrap();
+    assert_eq!(lease.leases.len(), 1);
+    assert!(lease.leases[0].remaining_seconds <= 60);
+    assert!(
+        c::renew(&f.pool, "user-jwt", renewal.clone())
+            .await
+            .is_err()
+    );
+    f.repo()
+        .change(
+            f.host,
+            f.owner,
+            f.owner_session,
+            f.member,
+            &ChangeHostAccessRequest {
+                expected_host_generation: registration.generation,
+                expected_version: 1,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(
+        c::renew(&f.pool, &secret, renewal.clone())
+            .await
+            .unwrap()
+            .leases
+            .is_empty(),
+        "a still-signed approval cannot reopen a revoked connection"
+    );
+    f.repo()
+        .change(
+            f.host,
+            f.owner,
+            f.owner_session,
+            f.member,
+            &ChangeHostAccessRequest {
+                expected_host_generation: registration.generation,
+                expected_version: 2,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(
+        c::renew(&f.pool, &secret, renewal.clone())
+            .await
+            .unwrap()
+            .leases
+            .is_empty(),
+        "regrant must not revive prior connections"
+    );
+    assert!(matches!(
+        c::open_connection(
+            &f.pool,
+            f.member,
+            f.member_session,
+            f.host,
+            OpenHostConnectionRequest {
+                connection_id: Some(approval.connection_id),
+                ..open
+            }
+        )
+        .await,
+        Err(c::AccountError::HostConnectionExpired)
+    ));
+    AuthSessionRepository::new(&f.pool)
+        .revoke(f.owner_session)
+        .await
+        .unwrap();
+    let successor = RotateHostCredentialRequest {
+        request_id: Uuid::new_v4(),
+        credential: relay_control::account::new_credential(),
+    };
+    c::rotate(&f.pool, &secret, successor.clone())
+        .await
+        .unwrap();
+    c::rotate(&f.pool, &secret, successor.clone())
+        .await
+        .unwrap();
+    assert!(
+        c::renew(&f.pool, &successor.credential, renewal.clone())
+            .await
+            .is_ok(),
+        "owner logout must not revoke host registration"
+    );
+    sqlx::query("UPDATE host_credentials SET expires_at=clock_timestamp()-INTERVAL '1 second' WHERE secret_hash=$1").bind(relay_control::account::credential_hash(&secret).unwrap()).execute(&f.pool).await.unwrap();
+    assert!(matches!(
+        c::renew(&f.pool, &secret, renewal.clone()).await,
+        Err(c::AccountError::HostCredentialRevoked)
+    ));
+    sqlx::query("UPDATE users SET suspended_at=clock_timestamp() WHERE id=$1")
+        .bind(f.owner)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert!(
+        c::renew(&f.pool, &successor.credential, renewal)
+            .await
+            .is_err()
+    );
+    f.cleanup().await;
+}
+
+impl Fixture {
+    async fn register_account(&self) -> (String, relay_types::AccountHostRegistration) {
+        use relay_types::*;
+        let secret = relay_control::account::new_credential();
+        let registration = crate::db::host_connections::register(
+            &self.pool,
+            self.owner,
+            self.owner_session,
+            RegisterAccountHostRequest {
+                request_id: Uuid::new_v4(),
+                expected_generation: None,
+                machine_id: "first".into(),
+                name: "Host".into(),
+                credential: secret.clone(),
+                capabilities: vec![ACCOUNT_PROTOCOL.into()],
+            },
+        )
+        .await
+        .unwrap()
+        .data;
+        crate::db::host_connections::activate(
+            &self.pool,
+            &secret,
+            ActivateAccountHostRequest {
+                transition_request_id: registration.transition_request_id,
+                generation: registration.generation,
+                capabilities: vec![ACCOUNT_PROTOCOL.into()],
+            },
+        )
+        .await
+        .unwrap();
+        (secret, registration)
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires HOST_ACCESS_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+async fn manual_credential_recovery_requires_fresh_owner_and_preserves_host_id() {
+    use relay_types::*;
+
+    use crate::db::host_connections as c;
+    let f = Fixture::new().await;
+    let (old, registration) = f.register_account().await;
+    let mut request = RegisterAccountHostRequest {
+        request_id: Uuid::new_v4(),
+        expected_generation: Some(registration.generation),
+        machine_id: "first".into(),
+        name: "Host".into(),
+        credential: relay_control::account::new_credential(),
+        capabilities: vec![ACCOUNT_PROTOCOL.into()],
+    };
+    sqlx::query("UPDATE auth_sessions SET authenticated_at=clock_timestamp()-INTERVAL '6 minutes' WHERE id=$1").bind(f.owner_session).execute(&f.pool).await.unwrap();
+    assert!(matches!(
+        c::register(&f.pool, f.owner, f.owner_session, request.clone()).await,
+        Err(c::AccountError::Access(
+            HostAccessError::ReauthenticationRequired
+        ))
+    ));
+    assert!(
+        c::renew(
+            &f.pool,
+            &old,
+            RenewHostConnectionsRequest {
+                connections: vec![]
+            }
+        )
+        .await
+        .is_ok(),
+        "failed recovery must roll back, preserving old credential"
+    );
+    sqlx::query("UPDATE auth_sessions SET authenticated_at=clock_timestamp() WHERE id=$1")
+        .bind(f.owner_session)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    request.expected_generation = Some(registration.generation + 1);
+    assert!(matches!(
+        c::register(&f.pool, f.owner, f.owner_session, request.clone()).await,
+        Err(c::AccountError::Conflict)
+    ));
+    request.expected_generation = Some(registration.generation);
+    let recovered = c::register(&f.pool, f.owner, f.owner_session, request.clone())
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(recovered.host_id, f.host);
+    assert_eq!(recovered.generation, registration.generation + 1);
+    assert_eq!(
+        c::register(&f.pool, f.owner, f.owner_session, request.clone())
+            .await
+            .unwrap()
+            .data
+            .generation,
+        recovered.generation,
+        "lost reply retry is idempotent"
+    );
+    assert!(
+        c::renew(
+            &f.pool,
+            &old,
+            RenewHostConnectionsRequest {
+                connections: vec![]
+            }
+        )
+        .await
+        .is_err()
+    );
+    c::activate(
+        &f.pool,
+        &request.credential,
+        ActivateAccountHostRequest {
+            transition_request_id: request.request_id,
+            generation: recovered.generation,
+            capabilities: vec![ACCOUNT_PROTOCOL.into()],
+        },
+    )
+    .await
+    .unwrap();
+    c::change_state(
+        &f.pool,
+        f.host,
+        f.owner,
+        f.owner_session,
+        ChangeHostStateRequest {
+            expected_generation: recovered.generation,
+            remote_access_enabled: false,
+        },
+        true,
+    )
+    .await
+    .unwrap();
+    request.expected_generation = Some(recovered.generation);
+    request.request_id = Uuid::new_v4();
+    request.credential = relay_control::account::new_credential();
+    assert_eq!(
+        c::register(&f.pool, f.owner, f.owner_session, request)
+            .await
+            .unwrap()
+            .data
+            .host_id,
+        f.host,
+        "unregister/re-register keeps installation links"
+    );
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires HOST_ACCESS_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+async fn preview_authorization_is_bound_to_port_consumption_owner_session_and_live_process_report()
+{
+    use relay_types::*;
+
+    use crate::db::host_connections as c;
+    let f = Fixture::new().await;
+    let (secret, registration) = f.register_account().await;
+    c::report_preview_ports(
+        &f.pool,
+        &secret,
+        ReportPreviewPortsRequest { ports: vec![5173] },
+    )
+    .await
+    .unwrap();
+    assert!(
+        c::create_preview(
+            &f.pool,
+            f.host,
+            f.owner,
+            f.owner_session,
+            "https://app.test",
+            CreateHostPreviewRequest { port: 5432 }
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        c::create_preview(
+            &f.pool,
+            f.host,
+            f.member,
+            f.member_session,
+            "https://app.test",
+            CreateHostPreviewRequest { port: 5173 }
+        )
+        .await
+        .is_err()
+    );
+    let opened = c::create_preview(
+        &f.pool,
+        f.host,
+        f.owner,
+        f.owner_session,
+        "https://app.test",
+        CreateHostPreviewRequest { port: 5173 },
+    )
+    .await
+    .unwrap()
+    .data;
+    assert!(opened.exchange_url.contains(&f.host.to_string()));
+    assert!(!opened.exchange_url.contains(&opened.code));
+    let (preview, connection, hash): (Uuid, Uuid, String) = sqlx::query_as(
+        "SELECT id,connection_id,exchange_hash FROM host_preview_sessions WHERE host_id=$1",
+    )
+    .bind(f.host)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_ne!(hash, opened.code);
+    let authorize = AuthorizeHostPreviewRequest {
+        preview_id: preview,
+        port: 5173,
+    };
+    assert!(
+        c::authorize_preview(&f.pool, &secret, authorize.clone())
+            .await
+            .is_err(),
+        "unconsumed codes cannot reach the host"
+    );
+    sqlx::query("UPDATE host_preview_sessions SET consumed_at=clock_timestamp() WHERE id=$1")
+        .bind(preview)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let lease = c::authorize_preview(&f.pool, &secret, authorize.clone())
+        .await
+        .unwrap();
+    assert_eq!(lease.connection_id, connection);
+    assert_eq!(lease.auth_session_id, f.owner_session);
+    assert!(lease.remaining_seconds <= 60);
+    c::report_preview_ports(
+        &f.pool,
+        &secret,
+        ReportPreviewPortsRequest { ports: vec![] },
+    )
+    .await
+    .unwrap();
+    assert!(
+        c::authorize_preview(&f.pool, &secret, authorize.clone())
+            .await
+            .is_err()
+    );
+    c::report_preview_ports(
+        &f.pool,
+        &secret,
+        ReportPreviewPortsRequest { ports: vec![5173] },
+    )
+    .await
+    .unwrap();
+    c::change_state(
+        &f.pool,
+        f.host,
+        f.owner,
+        f.owner_session,
+        ChangeHostStateRequest {
+            expected_generation: registration.generation,
+            remote_access_enabled: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(
+        c::authorize_preview(&f.pool, &secret, authorize)
+            .await
+            .is_err()
+    );
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires HOST_ACCESS_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+async fn login_device_api_rechecks_sessions_and_cannot_logout_other_accounts() {
+    use relay_types::{AccountSessionInfo, RenewHostConnectionsRequest};
+    let f = Fixture::new().await;
+    let (secret, _) = f.register_account().await;
+    let ctx = f.context(f.owner, f.owner_session).await;
+    let app = super::host_connections::router()
+        .merge(super::hosts::router())
+        .layer(axum::middleware::from_fn_with_state(
+            f.pool.clone(),
+            super::host_connections::audit_denied,
+        ))
+        .layer(Extension(ctx))
+        .with_state(f.pool.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+    let list = client
+        .get(format!("{base}/account/sessions"))
+        .header("user-agent", "Fixture browser on test OS")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let rows: Vec<AccountSessionInfo> = list.json().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].current);
+    assert_eq!(
+        rows[0].device_label.as_deref(),
+        Some("Fixture browser on test OS")
+    );
+    assert_eq!(
+        client
+            .delete(format!("{base}/account/sessions/{}", f.member_session))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(
+        AuthSessionRepository::new(&f.pool)
+            .get(f.member_session)
+            .await
+            .unwrap()
+            .revoked_at
+            .is_none()
+    );
+    assert_eq!(
+        client
+            .patch(format!("{base}/hosts/{}", f.other_host))
+            .json(&serde_json::json!({"name":"forbidden"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let denied: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM host_access_audit WHERE host_id=$1 AND actor_id=$2 AND result='404'",
+    )
+    .bind(f.other_host)
+    .bind(f.owner)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(denied, 1);
+    assert!(
+        client
+            .delete(format!("{base}/account/sessions"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    assert_eq!(
+        client
+            .patch(format!("{base}/hosts/{}", f.host))
+            .json(&serde_json::json!({"name":"stale login"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        crate::db::host_connections::renew(
+            &f.pool,
+            &secret,
+            RenewHostConnectionsRequest {
+                connections: vec![]
+            }
+        )
+        .await
+        .is_ok()
+    );
+    assert!(
+        AuthSessionRepository::new(&f.pool)
+            .get(f.member_session)
+            .await
+            .unwrap()
+            .revoked_at
+            .is_none()
+    );
+    server.abort();
+    f.cleanup().await;
+}

@@ -106,7 +106,8 @@ impl<'a> RelayBrowserSessionRepository<'a> {
                     SELECT 1
                     FROM hosts h
                     WHERE h.id = $2
-                      AND h.auth_mode = 'legacy_pairing'
+                      AND ((h.auth_mode = 'legacy_pairing' AND rbs.public_key_b64 IS NULL)
+                           OR host_connection_allowed(rbs.id,h.id))
                       AND h.remote_access_enabled AND h.deleted_at IS NULL
                       AND host_access_role(h.id, s.user_id) IS NOT NULL
                 ) AS "host_allowed!"

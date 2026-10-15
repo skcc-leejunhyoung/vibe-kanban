@@ -170,28 +170,26 @@ async fn update_host(
     Extension(ctx): Extension<RequestContext>,
     Path(host_id): Path<Uuid>,
     Json(request): Json<UpdateRelayHostRequest>,
-) -> Result<Json<RelayHost>, ErrorResponse> {
+) -> Result<Json<RelayHost>, crate::db::host_connections::AccountError> {
+    use crate::db::{
+        host_access::validate_session,
+        host_connections::{self, AccountError},
+    };
     let name = request.name.trim();
     if name.is_empty() || name.chars().count() > 100 {
-        return Err(ErrorResponse::new(
-            StatusCode::BAD_REQUEST,
-            "Host name must be between 1 and 100 characters",
-        ));
+        return Err(AccountError::InvalidRequest);
     }
-
-    let host = HostRepository::new(&pool)
-        .update_name(host_id, ctx.user.id, name)
-        .await
-        .map_err(|error| {
-            tracing::warn!(?error, %host_id, "failed to update relay host name");
-            ErrorResponse::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to update host name",
-            )
-        })?
-        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "Host not found"))?;
-
-    Ok(Json(host))
+    let mut tx = crate::db::begin_tx(&pool).await?;
+    let host = host_connections::lock_host(&mut tx, host_id).await?;
+    validate_session(&mut tx, ctx.user.id, ctx.session_id, false).await?;
+    if host.owner_user_id != ctx.user.id {
+        return Err(HostAccessError::HostNotFound.into());
+    }
+    let row=sqlx::query_as::<_,RelayHost>("UPDATE hosts SET custom_name=$2,updated_at=clock_timestamp() WHERE id=$1 RETURNING id,owner_user_id,machine_id,COALESCE(custom_name,name) AS name,status,last_seen_at,agent_version,created_at,updated_at,'owner'::text AS access_role,auth_mode,auth_generation,remote_access_enabled,capabilities")
+        .bind(host_id).bind(name).fetch_one(&mut *tx).await?;
+    host_connections::audit(&mut tx, host_id, ctx.user.id, None, "host.renamed").await?;
+    tx.commit().await?;
+    Ok(Json(row))
 }
 
 async fn list_hosts(

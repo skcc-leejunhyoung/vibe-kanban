@@ -12,6 +12,7 @@ path = "src/bin/relay_server.rs"
 relay-tunnel-core = { path = "../relay-tunnel-core" }
 api-types = { path = "../api-types" }
 relay-types = { path = "../relay-types" }
+relay-control = { path = "../relay-control" }
 anyhow = "1.0"
 axum = { version = "0.8.4", features = ["macros", "multipart", "ws"] }
 bytes = "1"
@@ -39,5 +40,6 @@ thiserror = "2.0.12"
 tower-http = { version = "0.5", features = ["cors", "request-id", "trace", "fs", "validate-request"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1", features = ["serde", "v4"] }
+url = "2.5"
 
 [workspace]

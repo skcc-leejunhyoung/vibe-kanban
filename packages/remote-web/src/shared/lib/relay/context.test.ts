@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { RelayHostContext } from "@remote/shared/lib/relay/types";
+import type { RelayHostContext } from "@/shared/lib/relay/types";
 
 // context.ts pulls in the relay storage + backend API layers; mock them so the
 // test exercises only the refresh orchestration (single-flight + client_id

@@ -19,6 +19,10 @@ pub(super) fn api_router() -> Router<DeploymentImpl> {
 pub fn subdomain_router(deployment: DeploymentImpl) -> Router {
     Router::new()
         .fallback(subdomain_proxy_request)
+        .layer(axum::middleware::from_fn_with_state(
+            deployment.clone(),
+            crate::middleware::relay_request_signature::guard_account_host,
+        ))
         .with_state(deployment)
 }
 
@@ -28,6 +32,15 @@ async fn proxy_preview_request_no_tail(
     ws_upgrade: Result<SignedWsUpgrade, WebSocketUpgradeRejection>,
     request: Request,
 ) -> Response {
+    if !account_port_allowed(
+        &deployment,
+        target_port,
+        request.headers().contains_key(relay_client::RELAY_HEADER),
+    )
+    .await
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     match ws_upgrade {
         Ok(ws) => forward_preview_ws(ws, target_port, String::new(), request).await,
         Err(rejection) => {
@@ -49,6 +62,15 @@ async fn proxy_preview_request(
     ws_upgrade: Result<SignedWsUpgrade, WebSocketUpgradeRejection>,
     request: Request,
 ) -> Response {
+    if !account_port_allowed(
+        &deployment,
+        target_port,
+        request.headers().contains_key(relay_client::RELAY_HEADER),
+    )
+    .await
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     match ws_upgrade {
         Ok(ws) => forward_preview_ws(ws, target_port, tail, request).await,
         Err(rejection) => {
@@ -113,6 +135,29 @@ pub async fn subdomain_proxy_request(
     State(deployment): State<DeploymentImpl>,
     request: Request,
 ) -> Response {
+    if deployment.relay_signing().account_mode()
+        && request.headers().contains_key(relay_client::RELAY_HEADER)
+    {
+        let port = request
+            .headers()
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|host| host.split('.').next())
+            .and_then(|label| label.parse::<u16>().ok());
+        if let Some(port) = port {
+            if !account_port_allowed(
+                &deployment,
+                port,
+                request.headers().contains_key(relay_client::RELAY_HEADER),
+            )
+            .await
+            {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+        } else {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
     let Some(server_addr) = deployment.client_info().get_server_addr() else {
         return (
             StatusCode::BAD_REQUEST,
@@ -136,4 +181,13 @@ pub async fn subdomain_proxy_request(
         request,
     )
     .await
+}
+
+async fn account_port_allowed(deployment: &DeploymentImpl, port: u16, relayed: bool) -> bool {
+    if !deployment.relay_signing().account_mode() || !relayed {
+        return true;
+    }
+    crate::runtime::host_accounts::preview_ports(deployment)
+        .await
+        .is_ok_and(|ports| ports.contains(&i32::from(port)))
 }

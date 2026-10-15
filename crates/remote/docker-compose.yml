@@ -95,6 +95,16 @@ services:
       SERVER_PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
       VIBEKANBAN_REMOTE_JWT_SECRET: ${VIBEKANBAN_REMOTE_JWT_SECRET:?set in .env.remote}
 
+      # Account host access is disabled while the separate Ed25519 seed is empty.
+      # Set a base64-encoded 32-byte seed, a key ID and the canonical central URL.
+      # Never reuse VIBEKANBAN_REMOTE_JWT_SECRET or install the seed on a host.
+      HOST_GRANT_SIGNING_KEY: ${HOST_GRANT_SIGNING_KEY:-}
+      HOST_GRANT_KEY_ID: ${HOST_GRANT_KEY_ID:-account-v1}
+      HOST_GRANT_ISSUER: ${HOST_GRANT_ISSUER:-${PUBLIC_BASE_URL:-http://localhost:3000}}
+      HOST_GRANT_PREVIOUS_PUBLIC_KEYS: ${HOST_GRANT_PREVIOUS_PUBLIC_KEYS:-[]}
+      # Wildcard HTTPS/DNS must route p-{port}--{host_id} under the configured suffix to the Relay.
+      RELAY_PREVIEW_HOST_SUFFIX: ${RELAY_PREVIEW_HOST_SUFFIX:-}
+
       # Auth 
       # Configure at least one OAuth provider, or set self-host local auth credentials.
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}

@@ -63,6 +63,8 @@ function initializePairingNotifications(): void {
 }
 
 export interface PairedRelayHost {
+  /** Account-approved keys exist only in memory and never enter IndexedDB. */
+  account_ephemeral?: boolean;
   host_id: string;
   host_name: string;
   client_id?: string;
@@ -215,6 +217,8 @@ async function readPairedRelayHosts(): Promise<PairedRelayHost[]> {
 export async function savePairedRelayHost(
   host: PairedRelayHost
 ): Promise<void> {
+  if (host.account_ephemeral)
+    throw new Error('Account connection keys must not be persisted');
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(PAIRED_HOSTS_STORE, 'readwrite');

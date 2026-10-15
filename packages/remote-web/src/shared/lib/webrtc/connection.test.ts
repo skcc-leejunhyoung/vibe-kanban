@@ -5,7 +5,7 @@ import type { DataChannelMessage, WsFrame } from "shared/types";
 import { setLocalApiTransport } from "@/shared/lib/localApiTransport";
 import { clearWsSnapshots } from "@/shared/lib/wsSnapshotCache";
 import { useJsonPatchWsStream } from "@/shared/hooks/useJsonPatchWsStream";
-import { bytesToBase64 } from "@remote/shared/lib/relay/bytes";
+import { bytesToBase64 } from "@/shared/lib/relay/bytes";
 import { WebRtcConnection } from "./connection";
 import { Defragmenter, fragment } from "./chunking";
 import { createDataChannelWebSocket } from "./dataChannelWebSocket";
@@ -13,6 +13,11 @@ import { requestLocalApiViaWebRtc } from "./transport";
 
 const runtime = vi.hoisted(() => ({
   connection: null as WebRtcConnection | null,
+}));
+// These cases exercise the legacy data-channel transport. Account transport
+// authorization is covered by the shared account connection tests.
+vi.mock("@/shared/lib/accountHostConnection", () => ({
+  accountHost: async () => null,
 }));
 const relayRequest = vi.hoisted(() =>
   vi.fn(async () => new Response("fallback")),

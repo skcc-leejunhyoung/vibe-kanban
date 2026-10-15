@@ -1,4 +1,4 @@
-import type { PairedRelayHost } from "@/shared/lib/relayPairingStorage";
+import type { PairedRelayHost } from '@/shared/lib/relayPairingStorage';
 
 export interface RelaySignature {
   signingSessionId: string;
@@ -12,7 +12,7 @@ export interface RelayHostContext {
   sessionId: string;
 }
 
-import type { RelayWsMessageType } from "shared/types";
+import type { RelayWsMessageType } from 'shared/types';
 
 export interface RelaySignedWsEnvelope {
   version: number;

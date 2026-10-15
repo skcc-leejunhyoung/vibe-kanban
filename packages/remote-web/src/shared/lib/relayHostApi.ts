@@ -6,7 +6,7 @@ import {
 import {
   isAuthFailureStatus,
   sendRelayHostRequest,
-} from "@remote/shared/lib/relay/http";
+} from "@/shared/lib/relay/http";
 import {
   isWorkspaceRoutePath,
   normalizePath,
@@ -19,12 +19,16 @@ import {
   appendSignatureToPath,
   buildRelaySignature,
   normalizeRequestBody,
-} from "@remote/shared/lib/relay/signing";
+} from "@/shared/lib/relay/signing";
 import {
   createRelaySignedWebSocket,
   createRelayWsSigningContext,
-} from "@remote/shared/lib/relay/ws";
+} from "@/shared/lib/relay/ws";
 import { buildRemoteSessionBaseUrl } from "@/shared/lib/relayBackendApi";
+import {
+  requestAccountHost,
+  openAccountHostWebSocket,
+} from "@/shared/lib/accountHostTransport";
 import type {
   LocalApiRequestOptions,
   LocalApiWebSocketOptions,
@@ -58,12 +62,11 @@ export async function requestLocalApiViaRelay(
   requestInit: LocalApiRequestOptions = {},
 ): Promise<Response> {
   const pathAndQuery = toPathAndQuery(pathOrUrl);
-  const {
-    relayHostId,
-    hostId: _hostId,
-    hostScope: _hostScope,
-    ...relayRequestInit
-  } = requestInit;
+  const { relayHostId } = requestInit;
+  const relayRequestInit = { ...requestInit };
+  delete relayRequestInit.relayHostId;
+  delete relayRequestInit.hostId;
+  delete relayRequestInit.hostScope;
 
   if (!shouldRelayApiPath(pathAndQuery)) {
     return fetch(pathOrUrl, relayRequestInit);
@@ -120,6 +123,8 @@ export async function requestRelayHostApi(
   );
 
   const context = await resolveRemoteHostContext(hostId);
+  if (context.pairedHost.account_ephemeral)
+    return requestAccountHost(hostId, normalizedPath, requestInit);
   const initialResponse = await sendRelayHostRequest(context, {
     normalizedPath,
     method,
@@ -128,7 +133,10 @@ export async function requestRelayHostApi(
     contentType,
     requestInit,
   });
-  if (!isAuthFailureStatus(initialResponse.status)) {
+  if (
+    initialResponse.status !== 401 ||
+    (method !== "GET" && method !== "HEAD")
+  ) {
     return initialResponse;
   }
 
@@ -158,6 +166,8 @@ export async function openRelayHostWebSocket(
   pathOrUrl: string,
 ): Promise<WebSocket> {
   const baseContext = await resolveRemoteHostContext(hostId);
+  if (baseContext.pairedHost.account_ephemeral)
+    return openAccountHostWebSocket(hostId, pathOrUrl);
   const context =
     (await tryRefreshRelayHostSigningSession(baseContext)) ?? baseContext;
   const pathAndQuery = toPathAndQuery(pathOrUrl);

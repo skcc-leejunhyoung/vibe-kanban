@@ -99,6 +99,10 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
             preview_host_dispatch,
         ))
         .layer(CompressionLayer::new())
+        .layer(axum::middleware::from_fn_with_state(
+            deployment.clone(),
+            middleware::guard_account_host,
+        ))
         .with_state(deployment.clone());
 
     // `Router::layer` runs after routing, so a URI rewrite has to wrap the
@@ -139,7 +143,7 @@ async fn preview_host_dispatch(
     next.run(request).await
 }
 
-fn request_has_preview_host(request: &Request) -> bool {
+pub(crate) fn request_has_preview_host(request: &Request) -> bool {
     let Some(host) = request
         .headers()
         .get(header::HOST)

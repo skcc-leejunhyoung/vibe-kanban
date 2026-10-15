@@ -19,6 +19,10 @@ configureAuthRuntime({
   triggerRefresh: (token) => tokenManager.triggerRefresh(token),
   registerShape: (shape) => tokenManager.registerShape(shape),
   getCurrentUser: () => oauthApi.getCurrentUser(),
+  logout: async () => {
+    await oauthApi.logout();
+    await queryClient.invalidateQueries();
+  },
 });
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

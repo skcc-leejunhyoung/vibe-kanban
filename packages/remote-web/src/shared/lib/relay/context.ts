@@ -11,7 +11,11 @@ import {
 } from "@/shared/lib/relayBackendApi";
 import { buildRelaySigningSessionRefreshPayload } from "@/shared/lib/relaySigningSessionRefresh";
 
-import type { RelayHostContext } from "@remote/shared/lib/relay/types";
+import type { RelayHostContext } from "@/shared/lib/relay/types";
+import {
+  accountHost,
+  resolveAccountHostConnection,
+} from "@/shared/lib/accountHostConnection";
 
 const remoteSessionIdCache = new Map<string, string>();
 
@@ -22,6 +26,7 @@ subscribeRelayPairingChanges(({ hostId }) => {
 export async function resolveRemoteHostContext(
   hostId: string,
 ): Promise<RelayHostContext> {
+  if (await accountHost(hostId)) return resolveAccountHostConnection(hostId);
   const pairedHost = await findPairedHost(hostId);
   if (!pairedHost) {
     throw new Error(
@@ -70,6 +75,8 @@ export async function tryRefreshRelayHostSigningSession(
   context: RelayHostContext,
 ): Promise<RelayHostContext | null> {
   const hostId = context.pairedHost.host_id;
+  if (context.pairedHost.account_ephemeral)
+    return resolveAccountHostConnection(hostId, true);
 
   let pending = inFlightRefreshByHost.get(hostId);
   if (!pending) {

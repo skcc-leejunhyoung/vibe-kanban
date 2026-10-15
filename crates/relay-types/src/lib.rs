@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+mod account;
+pub use account::*;
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, TS)]
 pub struct RelayHost {
     pub id: Uuid,
@@ -15,6 +18,10 @@ pub struct RelayHost {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub access_role: String,
+    pub auth_mode: String,
+    pub auth_generation: i32,
+    pub remote_access_enabled: bool,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

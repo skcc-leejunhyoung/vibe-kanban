@@ -62,7 +62,7 @@ pub(crate) fn normalized_proxy_path(path: &str) -> &str {
 
 pub(crate) fn should_forward_request_header(name: &str) -> bool {
     let name_lower = name.to_ascii_lowercase();
-    !SKIP_REQUEST_HEADERS.contains(&name_lower.as_str())
+    !name_lower.starts_with("x-vk-") && !SKIP_REQUEST_HEADERS.contains(&name_lower.as_str())
 }
 
 pub(crate) fn build_local_upstream_url(

@@ -1,5 +1,8 @@
 import type { DataChannelResponse } from "shared/types";
-import { base64ToBytes } from "@remote/shared/lib/relay/bytes";
+import { accountHost } from "@/shared/lib/accountHostConnection";
+import { resolveAccountHostConnection } from "@/shared/lib/accountHostConnection";
+import { buildSignedHeaders } from "@/shared/lib/relay/signing";
+import { base64ToBytes } from "@/shared/lib/relay/bytes";
 import {
   shouldRelayApiPath,
   toPathAndQuery,
@@ -76,6 +79,7 @@ export async function requestLocalApiViaWebRtc(
     return requestLocalApiViaRelay(pathOrUrl, requestInit);
   }
 
+  const account = await accountHost(hostId);
   const conn = getWebRtcConnection(hostId);
   if (!conn) {
     return requestLocalApiViaRelay(pathOrUrl, requestInit);
@@ -110,6 +114,19 @@ export async function requestLocalApiViaWebRtc(
   }
 
   try {
+    if (account) {
+      const context = await resolveAccountHostConnection(hostId);
+      const signed = await buildSignedHeaders(
+        context.pairedHost,
+        method,
+        unscopeHostApiPath(pathAndQuery, hostId),
+        bodyBytes ?? new Uint8Array(),
+        requestInit.headers,
+      );
+      signed.forEach((value, key) => {
+        headers[key] = [value];
+      });
+    }
     const dcResp = await conn.sendHttpRequest(
       method,
       unscopeHostApiPath(pathAndQuery, hostId),
@@ -142,6 +159,8 @@ export async function openLocalApiWebSocketViaWebRtc(
     return openLocalApiWebSocketViaRelay(pathOrUrl, options);
   }
 
+  if (await accountHost(hostId))
+    return openLocalApiWebSocketViaRelay(pathOrUrl, options);
   const conn = getWebRtcConnection(hostId);
   if (!conn) {
     return openLocalApiWebSocketViaRelay(pathOrUrl, options);
