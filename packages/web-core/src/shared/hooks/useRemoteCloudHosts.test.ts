@@ -73,6 +73,18 @@ describe('fetchRemoteCloudHostsState', () => {
     expect(state.hosts[0].id).toBe('i9');
   });
 
+  it('does not list this machine as a remote account host', async () => {
+    const state = await fetchRemoteCloudHostsState({
+      listPairedHosts: async () => [],
+      listCloudHosts: async () => [
+        relayHost({ id: 'self', auth_mode: 'account' }),
+        relayHost({ auth_mode: 'account' }),
+      ],
+      getSelfHostId: async () => 'self',
+    });
+    expect(state.hosts.map((host) => host.id)).toEqual(['i9']);
+  });
+
   it('does not report an empty host list when the pairing lookup fails', async () => {
     const error = new Error('pairing store unavailable');
 

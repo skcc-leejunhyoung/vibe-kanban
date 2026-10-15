@@ -45,6 +45,9 @@ const LOCAL_ONLY_API_PREFIXES = [
   '/api/relay-auth/client/',
   '/api/relay-auth/account/registration',
 ];
+// Under `/api/auth/` but host-scoped: uploads the selected host's own `gh`
+// login, so it must not fall back to the local machine.
+const HOST_SCOPED_AUTH_PREFIX = '/api/auth/github-credential/';
 
 function isAbsoluteUrl(pathOrUrl: string): boolean {
   return /^https?:\/\//i.test(pathOrUrl) || /^wss?:\/\//i.test(pathOrUrl);
@@ -72,7 +75,10 @@ function scopeLocalApiPath(pathOrUrl: string, hostId: string | null): string {
   const path = toPathAndQuery(pathOrUrl);
   // These endpoints must always hit the local backend because they rely on
   // local-only credentials/state.
-  if (LOCAL_ONLY_API_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+  if (
+    !path.startsWith(HOST_SCOPED_AUTH_PREFIX) &&
+    LOCAL_ONLY_API_PREFIXES.some((prefix) => path.startsWith(prefix))
+  ) {
     return pathOrUrl;
   }
 

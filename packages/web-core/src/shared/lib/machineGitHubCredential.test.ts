@@ -47,4 +47,19 @@ describe('machine GitHub credential sync', () => {
     expect(init.method).toBe('POST');
     expect(init.relayHostId).toBe('host-1');
   });
+
+  it('targets the selected machine from local web instead of syncing this one', async () => {
+    const client = createMachineClient('local', {
+      kind: 'remote',
+      id: 'host-1',
+      apiHostId: 'host-1',
+      label: 'i9-mbp',
+    });
+
+    await client.syncGitHubHostCredential();
+
+    expect(request.mock.calls[0]![0]).toBe(
+      '/api/host/host-1/auth/github-credential/sync'
+    );
+  });
 });

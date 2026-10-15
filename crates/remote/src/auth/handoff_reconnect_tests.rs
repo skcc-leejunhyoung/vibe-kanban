@@ -314,8 +314,30 @@ async fn reconnect_preserves_identity_and_commits_credentials_only_once() {
             .is_none()
     );
 
+    let reconnect_session: Uuid =
+        sqlx::query_scalar("SELECT session_id FROM oauth_handoffs WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "UPDATE auth_sessions SET authenticated_at = NOW() - INTERVAL '1 hour' WHERE id = $1",
+    )
+    .bind(reconnect_session)
+    .execute(&pool)
+    .await
+    .unwrap();
     let redeemed = service.redeem(id, &code, "verifier").await.unwrap();
     assert_eq!(redeemed.user_id, user);
+    // Re-authenticating counts as a fresh login for recent-login checks.
+    let fresh: bool = sqlx::query_scalar(
+        "SELECT authenticated_at > NOW() - INTERVAL '1 minute' FROM auth_sessions WHERE id = $1",
+    )
+    .bind(reconnect_session)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(fresh);
     assert_eq!(
         jwt.decode_access_token(&redeemed.access_token)
             .unwrap()

@@ -113,7 +113,10 @@ export async function redirectToOAuth(
     // Bypass /account's signed-in redirect when renewing provider credentials.
     await startOAuthLogin(provider, next, reauthenticate);
   } else {
-    window.location.assign(`/account?${new URLSearchParams({ next })}`);
+    const search = new URLSearchParams({ next });
+    // Without the flag `/account` sends signed-in users straight home.
+    if (reauthenticate) search.set("reauthenticate", "true");
+    window.location.assign(`/account?${search}`);
   }
 }
 

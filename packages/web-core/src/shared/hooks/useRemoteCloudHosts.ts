@@ -4,6 +4,7 @@ import type { AppBarHost, AppBarHostStatus } from '@vibe/ui/components/AppBar';
 import type { PairRelayHostRequest, RelayPairedHost } from 'shared/types';
 import type { RelayHost } from 'shared/remote-types';
 import { relayApi } from '@/shared/lib/api';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { listRelayHosts } from '@/shared/lib/remoteApi';
 import { REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY } from '@/shared/lib/relayHostQueryKeys';
 
@@ -25,6 +26,8 @@ interface RemoteCloudHostsState {
 interface RemoteCloudHostDataSources {
   listPairedHosts: () => Promise<RelayPairedHost[]>;
   listCloudHosts: () => Promise<RelayHost[]>;
+  /** This machine's own cloud host id, which must not be listed as remote. */
+  getSelfHostId?: () => Promise<string | null>;
 }
 
 function normalizeRemoteCloudHostStatus(
@@ -38,17 +41,16 @@ function normalizeRemoteCloudHostStatus(
 }
 
 export async function fetchRemoteCloudHostsState(
-  sources: RemoteCloudHostDataSources = {
-    listPairedHosts: relayApi.listPairedRelayHosts,
-    listCloudHosts: listRelayHosts,
-  }
+  sources: RemoteCloudHostDataSources
 ): Promise<RemoteCloudHostsState> {
   // A failed authoritative lookup is an error. React Query retains the last
   // successful list instead of replacing account hosts with an empty result.
-  const [cloud, paired] = await Promise.allSettled([
+  const [cloud, paired, self] = await Promise.allSettled([
     sources.listCloudHosts(),
     sources.listPairedHosts(),
+    sources.getSelfHostId?.() ?? null,
   ]);
+  const selfHostId = self.status === 'fulfilled' ? self.value : null;
   if (cloud.status === 'rejected') throw cloud.reason;
   const remoteHostsById = new Map(cloud.value.map((host) => [host.id, host]));
   if (
@@ -78,7 +80,7 @@ export async function fetchRemoteCloudHostsState(
     .sort((a, b) => b.pairedAt.localeCompare(a.pairedAt));
 
   for (const host of remoteHostsById.values()) {
-    if (host.auth_mode === 'account')
+    if (host.auth_mode === 'account' && host.id !== selfHostId)
       hosts.push({
         id: host.id,
         name: host.name,
@@ -94,9 +96,18 @@ export async function fetchRemoteCloudHostsState(
 }
 
 export function useRemoteCloudHostsState(options?: { enabled?: boolean }) {
+  const runtime = useAppRuntime();
   return useQuery({
     queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
-    queryFn: () => fetchRemoteCloudHostsState(),
+    queryFn: () =>
+      fetchRemoteCloudHostsState({
+        listPairedHosts: relayApi.listPairedRelayHosts,
+        listCloudHosts: listRelayHosts,
+        // Local web already shows this machine as itself; its own account
+        // registration would otherwise list it a second time as remote.
+        getSelfHostId:
+          runtime === 'local' ? relayApi.getSelfRelayHostId : undefined,
+      }),
     staleTime: 30_000,
     refetchInterval: 30_000,
     enabled: options?.enabled ?? true,

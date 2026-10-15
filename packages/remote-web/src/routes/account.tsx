@@ -6,12 +6,13 @@ import LoginPage from "../pages/LoginPage";
 
 const searchSchema = z.object({
   next: z.string().optional(),
+  reauthenticate: z.boolean().optional(),
 });
 
 export const Route = createFileRoute("/account")({
   validateSearch: zodValidator(searchSchema),
-  beforeLoad: async () => {
-    await redirectAuthenticatedToHome();
+  beforeLoad: async ({ search }) => {
+    if (!search.reauthenticate) await redirectAuthenticatedToHome();
   },
   component: LoginPage,
 });

@@ -14,7 +14,7 @@ import { Label } from "@vibe/ui/components/Label";
 import { openExternalUrl } from "@vibe/ui/lib/open-url";
 
 export default function LoginPage() {
-  const { next } = useSearch({ from: "/account" });
+  const { next, reauthenticate } = useSearch({ from: "/account" });
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<OAuthProvider | "local" | null>(null);
   const [email, setEmail] = useState("");
@@ -38,7 +38,7 @@ export default function LoginPage() {
     setError(null);
 
     try {
-      await startOAuthLogin(provider, next);
+      await startOAuthLogin(provider, next, reauthenticate);
     } catch (e) {
       setError(e instanceof Error ? e.message : "OAuth init failed");
       setPending(null);
