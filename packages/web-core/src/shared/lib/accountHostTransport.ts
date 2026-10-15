@@ -65,6 +65,24 @@ export async function requestAccountHost(
   };
   let streaming = false;
   let sent = false;
+  const reconcileWriteError = (error: unknown): unknown => {
+    if (
+      sent &&
+      !['GET', 'HEAD'].includes(method) &&
+      !requestInit.signal.aborted
+    ) {
+      // Reconcile by reading state; never replay a command whose result is lost.
+      void queryClient.invalidateQueries({
+        predicate: (query) => query.queryKey.includes(hostId),
+      });
+      return new HostAccountError(
+        502,
+        'HOST_WRITE_OUTCOME_UNKNOWN',
+        '요청 결과를 확인하지 못해 상태를 다시 조회하고 있습니다. 실행 여부를 확인한 뒤 다시 시도하세요.'
+      );
+    }
+    return error;
+  };
   try {
     const body = await normalizeRequestBody(init.body);
     requestInit.signal.throwIfAborted();
@@ -101,7 +119,7 @@ export async function requestAccountHost(
           } else controller.enqueue(result.value);
         } catch (error) {
           remove();
-          controller.error(error);
+          controller.error(reconcileWriteError(error));
         }
       },
       async cancel(reason) {
@@ -115,22 +133,7 @@ export async function requestAccountHost(
       headers: response.headers,
     });
   } catch (error) {
-    if (
-      sent &&
-      !['GET', 'HEAD'].includes(method) &&
-      !requestInit.signal.aborted
-    ) {
-      // Reconcile by reading state; never replay a command whose result is lost.
-      void queryClient.invalidateQueries({
-        predicate: (query) => query.queryKey.includes(hostId),
-      });
-      throw new HostAccountError(
-        502,
-        'HOST_WRITE_OUTCOME_UNKNOWN',
-        '요청 결과를 확인하지 못해 상태를 다시 조회하고 있습니다. 실행 여부를 확인한 뒤 다시 시도하세요.'
-      );
-    }
-    throw error;
+    throw reconcileWriteError(error);
   } finally {
     if (!streaming) remove();
   }
@@ -140,7 +143,9 @@ export async function openAccountHostWebSocket(
   hostId: string,
   path: string
 ): Promise<WebSocket> {
-  const context = await resolveAccountHostConnection(hostId);
+  // WebSocket handshakes cannot expose a 401 for the read-retry path. Restore
+  // the host's in-memory signing session before opening a replacement stream.
+  const context = await resolveAccountHostConnection(hostId, true);
   let socket: WebSocket | undefined;
   let cancelled = false;
   const remove = watchAccountConnectionCleanup(() => {

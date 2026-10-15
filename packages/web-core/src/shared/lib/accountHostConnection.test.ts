@@ -23,6 +23,7 @@ import {
   watchAccountConnectionCleanup,
 } from './accountHostConnection';
 import { HostAccountError } from './hostAccountApi';
+import { openAccountHostWebSocket } from './accountHostTransport';
 function token(user: string) {
   return `header.${btoa(JSON.stringify({ sub: user, session_id: `session-${user}` }))}.sig`;
 }
@@ -65,6 +66,37 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 describe('account host connections', () => {
+  it('reestablishes the host signing session before reopening a stream after a host restart', async () => {
+    let hostSessionAlive = false;
+    vi.mocked(fetch).mockImplementation(async () => {
+      hostSessionAlive = true;
+      return new Response(
+        JSON.stringify({
+          data: {
+            signing_session_id: 'connection',
+            server_public_key_b64: Buffer.alloc(32, 7).toString('base64'),
+          },
+        })
+      );
+    });
+    await resolveAccountHostConnection('host');
+    hostSessionAlive = false;
+    vi.stubGlobal(
+      'WebSocket',
+      class extends EventTarget {
+        constructor() {
+          super();
+          if (!hostSessionAlive)
+            throw new Error('Host signing session was lost on restart');
+        }
+        close() {}
+      }
+    );
+    await expect(
+      openAccountHostWebSocket('host', '/api/workspaces/stream/ws')
+    ).resolves.toBeDefined();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
   it('explains an unsupported browser without creating a connection', async () => {
     vi.stubGlobal('crypto', { subtle: undefined });
     await expect(resolveAccountHostConnection('host')).rejects.toMatchObject({

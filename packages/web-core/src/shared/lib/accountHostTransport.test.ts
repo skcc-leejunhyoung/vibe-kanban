@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { queryClient } from '@/shared/lib/queryClient';
 const mocks = vi.hoisted(() => ({
   resolve: vi.fn(),
   send: vi.fn(),
@@ -37,6 +38,7 @@ beforeEach(() => {
   mocks.account.mockResolvedValue({ auth_mode: 'account' });
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   resetLocalSelfHost();
@@ -75,6 +77,29 @@ describe('account transport', () => {
       await (await requestAccountHost('host', '/api/workspaces')).text()
     ).toBe('ok');
     expect(mocks.resolve).toHaveBeenLastCalledWith('host', true);
+  });
+  it('reconciles a write whose response body is interrupted after headers arrive', async () => {
+    const invalidate = vi
+      .spyOn(queryClient, 'invalidateQueries')
+      .mockResolvedValue();
+    mocks.send.mockResolvedValueOnce(
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            controller.error(new TypeError('connection closed after headers'));
+          },
+        })
+      )
+    );
+    const response = await requestAccountHost('host', '/api/workspaces', {
+      method: 'POST',
+      body: 'command',
+    });
+    await expect(response.json()).rejects.toMatchObject({
+      code: 'HOST_WRITE_OUTCOME_UNKNOWN',
+    });
+    expect(invalidate).toHaveBeenCalledOnce();
+    expect(mocks.send).toHaveBeenCalledOnce();
   });
   it('keeps the local self alias independent of central availability and uses direct account transport for another host', async () => {
     vi.stubGlobal(
