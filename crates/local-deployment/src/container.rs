@@ -4612,7 +4612,7 @@ done
             },
         );
 
-        // The monitor takes the queued message last; ~4s of it is the kill.
+        // The monitor attempts the queued follow-up last; ~4s of it is the kill.
         tokio::time::timeout(
             Duration::from_secs(20),
             container.spawn_exit_monitor(
@@ -4626,11 +4626,18 @@ done
         .expect("the queued follow-up waited for the stdout drain timeout")
         .unwrap();
 
-        // The drain reached it; another executor can't start here, so it is
-        // back in front with the reason.
+        // A failed follow-up is restored for an explicit retry. Its error proves
+        // the monitor reached the queue without waiting for the drain timeout.
         let queued = container.queued_message_service.get_queued(session.id);
         assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].data.message, "next");
         assert!(queued[0].start_error.is_some());
+        assert!(
+            container
+                .queued_message_service
+                .take_next(session.id)
+                .is_none()
+        );
         let process = ExecutionProcess::find_by_id(&pool, process.id)
             .await
             .unwrap()
