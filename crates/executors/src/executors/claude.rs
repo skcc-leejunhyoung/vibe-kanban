@@ -2844,6 +2844,7 @@ impl ClaudeLogProcessor {
                     patches.push(ConversationPatch::add_normalized_entry(idx, entry));
                 } else if matches!(subtype.as_deref(), Some("success"))
                     && let Some(text) = result.as_ref().and_then(|v| v.as_str())
+                    && !text.is_empty()
                     && self.last_assistant_message.is_none()
                 {
                     // Fallback for executors/modes that DON'T stream an assistant
@@ -5079,6 +5080,28 @@ mod tests {
             1,
             "the surviving entry must be the clean streamed assistant message"
         );
+    }
+
+    /// The background-task drain's result (`origin.kind == "task-notification"`,
+    /// empty text) precedes the prompt's turn on a `--resume` with orphaned
+    /// tasks. It is not an answer: no empty bubble before, and no duplicate
+    /// after, the streamed message.
+    #[test]
+    fn test_task_notification_result_before_the_turn_adds_no_bubble() {
+        const NOTIFICATION_RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":"","origin":{"kind":"task-notification"}}"#;
+        let lines = [
+            NOTIFICATION_RESULT,
+            MSG_START,
+            CB_START,
+            CB_DELTA_1,
+            CB_DELTA_2,
+            ASSISTANT_FULL,
+            CB_STOP,
+            MSG_STOP,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Hello world","terminal_reason":"completed"}"#,
+        ];
+        assert_eq!(count_all_assistant_entries(&lines), 1);
+        assert_eq!(count_assistant_entries_with(&lines, "Hello world"), 1);
     }
 
     /// Contract lock: once an assistant message has been streamed, the Result

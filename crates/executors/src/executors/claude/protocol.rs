@@ -7,7 +7,10 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::types::{CLIMessage, ControlRequestType, ControlResponseMessage, ControlResponseType};
+use super::types::{
+    CLIMessage, ControlRequestType, ControlResponseMessage, ControlResponseType,
+    is_task_notification_result,
+};
 use crate::{
     approvals::ExecutorApprovalError,
     executors::{
@@ -90,7 +93,13 @@ impl ProtocolPeer {
                                     self.handle_control_request(&client, request_id, request)
                                         .await;
                                 }
-                                Ok(CLIMessage::Result(_)) => {
+                                Ok(CLIMessage::Result(result)) => {
+                                    // The background-task drain's own result:
+                                    // the prompt's turn is still ahead (or
+                                    // running), so keep stdin and stdout open.
+                                    if is_task_notification_result(&result) {
+                                        continue;
+                                    }
                                     self.stdin.lock().await.take();
                                     break;
                                 }
@@ -285,5 +294,70 @@ mod tests {
                 Err(ExecutorError::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe
             ));
         }
+    }
+
+    /// A `--resume` with orphaned background tasks drains their
+    /// `task_notification`s as a turn of its own, whose `result`
+    /// (`origin.kind == "task-notification"`) arrives before the prompt's turn
+    /// starts. Treating it as terminal closed stdin and stopped reading, so
+    /// the prompt's tool calls and answer never reached the logs.
+    #[tokio::test]
+    async fn task_notification_result_keeps_reading_until_the_prompt_result() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        const NOTIFICATION_RESULT: &str = r#"{"type":"result","subtype":"success","num_turns":0,"result":"","origin":{"kind":"task-notification"}}"#;
+        const ASSISTANT: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"still working"}]}}"#;
+        const FINAL_RESULT: &str = r#"{"type":"result","subtype":"success","result":"done","terminal_reason":"completed"}"#;
+        // Emit the drain's result, wait for our prompt on stdin, answer it,
+        // then idle until stdin EOF like the CLI does.
+        let script = format!(
+            "printf '%s\\n' '{NOTIFICATION_RESULT}'; read line; printf '%s\\n' '{ASSISTANT}' '{FINAL_RESULT}'; cat >/dev/null"
+        );
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let cancel = CancellationToken::new();
+        let (log_writer, log_reader) = tokio::io::duplex(64 * 1024);
+        let client = ClaudeAgentClient::new(
+            LogWriter::new(log_writer),
+            None,
+            RepoContext::default(),
+            false,
+            String::new(),
+            cancel.clone(),
+        );
+        let peer = ProtocolPeer::spawn(stdin, stdout, client, cancel);
+
+        let mut log_lines = BufReader::new(log_reader).lines();
+        let mut next_log_line = async || {
+            tokio::time::timeout(Duration::from_secs(2), log_lines.next_line())
+                .await
+                .expect("log line should arrive")
+                .unwrap()
+                .expect("log should not end before the prompt result")
+        };
+        assert_eq!(next_log_line().await, NOTIFICATION_RESULT);
+        peer.send_user_message("continue".to_string())
+            .await
+            .expect("stdin must stay open after a task-notification result");
+
+        let status = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("the prompt's result should close stdin")
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(next_log_line().await, ASSISTANT);
+        assert_eq!(next_log_line().await, FINAL_RESULT);
+        assert!(matches!(
+            peer.send_user_message("too late".to_string()).await,
+            Err(ExecutorError::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe
+        ));
     }
 }

@@ -24,6 +24,19 @@ pub enum CLIMessage {
     Other(serde_json::Value),
 }
 
+/// Whether a `result` event belongs to the CLI's own background-task drain
+/// rather than to the prompt we sent.
+///
+/// Claude Code ≥ 2.1.29x delivers pending `task_notification`s (e.g. tasks
+/// orphaned by the previous process on `--resume`) as a turn of their own and
+/// closes it with a `result` stamped `origin.kind == "task-notification"`
+/// (`num_turns: 0`, empty `result`). That turn can run before the user's
+/// prompt is even picked up, so its result must not end the session. The
+/// prompt's real result carries no `origin` (and a `terminal_reason`).
+pub fn is_task_notification_result(result: &Value) -> bool {
+    result["origin"]["kind"] == "task-notification"
+}
+
 /// Control request from SDK to CLI (outgoing)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SDKControlRequest {
