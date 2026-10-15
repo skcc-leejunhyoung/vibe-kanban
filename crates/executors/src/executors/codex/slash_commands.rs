@@ -166,6 +166,7 @@ impl Codex {
                             .await?;
                         let thread_id = fork_response.thread.id;
                         tracing::debug!("forked thread for compact, new thread_id={thread_id}");
+                        client.end_on_any_turn();
                         client.thread_compact_start(thread_id).await?;
                     }
                     CodexSlashCommand::Status => {

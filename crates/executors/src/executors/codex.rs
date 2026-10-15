@@ -1756,8 +1756,8 @@ base_url = "https://api.sailresearch.com/v1"
         assert!("".parse::<ReasoningEffort>().is_err());
     }
 
-    /// Answers `initialize`, then completes the turn once `turn/interrupt`
-    /// arrives, and stays alive like the real app server.
+    /// Answers `initialize` and `turn/start`, then completes that turn once
+    /// `turn/interrupt` arrives, and stays alive like the real app server.
     #[cfg(unix)]
     const FAKE_APP_SERVER: &str = r#"
 while IFS= read -r line; do
@@ -1765,6 +1765,8 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*)
       printf '{"id":%s,"result":{"userAgent":"fake","codexHome":"/tmp","platformFamily":"unix","platformOs":"test"}}\n' "$id" ;;
+    *'"method":"turn/start"'*)
+      printf '{"id":%s,"result":{"turn":{"id":"u","items":[],"status":"inProgress","error":null}}}\n' "$id" ;;
     *'"method":"turn/interrupt"'*)
       printf '{"id":%s,"result":{}}\n' "$id"
       echo '{"method":"item/completed","params":{"threadId":"t","turnId":"u","item":{"type":"agentMessage","id":"m","text":"FINAL_ANSWER"}}}'
@@ -1795,7 +1797,12 @@ done
                 &std::env::temp_dir(),
                 CommandParts::new("sh".into(), vec!["-c".into(), FAKE_APP_SERVER.into()]),
                 &env,
-                |_, _| async { Ok(()) },
+                |client, _| async move {
+                    client
+                        .turn_start_with_mode("t".into(), vec![], None)
+                        .await
+                        .map(drop)
+                },
             )
             .await
             .unwrap();
@@ -1804,17 +1811,18 @@ done
             panic!("Codex must expose a live handle");
         };
         let mut lines = BufReader::new(spawned.child.inner().stdout.take().unwrap()).lines();
+        // The turn/start response is logged once its turn id is recorded.
         timeout(Duration::from_secs(10), async {
             while !lines
                 .next_line()
                 .await
                 .unwrap()
                 .unwrap()
-                .contains("userAgent")
+                .contains("inProgress")
             {}
         })
         .await
-        .expect("initialize response");
+        .expect("turn/start response");
 
         // Subagent control still reaches the running app server.
         client

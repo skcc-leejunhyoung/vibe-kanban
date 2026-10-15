@@ -73,6 +73,13 @@ pub struct AppServerClient {
     commit_reminder: bool,
     commit_reminder_prompt: String,
     commit_reminder_sent: AtomicBool,
+    /// Turns this run started, as named by the `turn/start` / `review/start`
+    /// responses (the active turn when the input was steered into it). Only
+    /// their `turn/completed` ends the run: the app server can run turns of
+    /// its own on the thread.
+    own_turn_ids: Mutex<HashSet<String>>,
+    /// Set by `/compact`, whose `thread/compact/start` names no turn.
+    end_on_any_turn: AtomicBool,
     cancel: CancellationToken,
 }
 
@@ -104,8 +111,18 @@ impl AppServerClient {
             commit_reminder,
             commit_reminder_prompt,
             commit_reminder_sent: AtomicBool::new(false),
+            own_turn_ids: Mutex::new(HashSet::new()),
+            end_on_any_turn: AtomicBool::new(false),
             cancel,
         })
+    }
+
+    /// For runs that start a turn without learning its id (`/compact`): the
+    /// next completed turn on the thread ends the run.
+    // ponytail: a server-started turn could end a compaction early; adopt the
+    // `contextCompaction` item's turnId if Codex ever starts turns on forks.
+    pub fn end_on_any_turn(&self) {
+        self.end_on_any_turn.store(true, Ordering::SeqCst);
     }
 
     pub fn connect(&self, peer: JsonRpcPeer) {
@@ -1048,8 +1065,19 @@ impl JsonRpcCallbacks for AppServerClient {
         &self,
         _peer: &JsonRpcPeer,
         raw: &str,
-        _response: &JSONRPCResponse,
+        response: &JSONRPCResponse,
     ) -> Result<(), ExecutorError> {
+        // Only turn-starting requests answer with a `turn`. Recorded by the
+        // reader, before it reads on, so the id is known by the time that
+        // turn's `turn/completed` arrives.
+        if let Some(turn_id) = response
+            .result
+            .get("turn")
+            .and_then(|turn| turn.get("id"))
+            .and_then(Value::as_str)
+        {
+            self.own_turn_ids.lock().await.insert(turn_id.to_string());
+        }
         self.log_writer.log_raw(raw).await
     }
 
@@ -1102,6 +1130,22 @@ impl JsonRpcCallbacks for AppServerClient {
 
         // V2 turn completion detection
         if method == "turn/completed" {
+            if let Some(turn_id) = notification
+                .params
+                .as_ref()
+                .and_then(|params| params.get("turn"))
+                .and_then(|turn| turn.get("id"))
+                .and_then(Value::as_str)
+                && !self.end_on_any_turn.load(Ordering::SeqCst)
+                && !self.own_turn_ids.lock().await.contains(turn_id)
+            {
+                tracing::debug!(
+                    turn_id,
+                    "ignoring completion of a turn this run did not start"
+                );
+                return Ok(false);
+            }
+
             let mut keep_alive = false;
             let mut was_interrupted = false;
             let completed = notification.params.clone().and_then(|params| {
@@ -1472,6 +1516,15 @@ mod tests {
             );
         }
         client.pending_plan.lock().await.take();
+        let response = json!({"id": 1, "result": {"turn": {"id": "parent-turn", "items": [], "status": "inProgress", "error": null}}});
+        client
+            .on_response(
+                &peer,
+                &response.to_string(),
+                &serde_json::from_value(response.clone()).unwrap(),
+            )
+            .await
+            .unwrap();
         let notification = json!({"method": "turn/completed", "params": {
             "threadId": "parent", "turn": {"id": "parent-turn", "items": [], "status": "completed", "error": null}
         }});
@@ -1488,6 +1541,91 @@ mod tests {
         cancel.cancel();
         child.kill().await.unwrap();
         child.wait().await.unwrap();
+    }
+
+    /// The app server can run a turn of its own on the run's thread (Claude
+    /// Code already does: it drains orphaned background-task notifications as
+    /// a turn before the prompt's). Its completion must not end the run, or the
+    /// prompt's turn streams on unseen; `/compact`, which learns no turn id,
+    /// still ends on the next completion.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_turns_the_run_started_end_it() {
+        use std::process::Stdio;
+
+        use serde_json::json;
+
+        use super::super::jsonrpc::ExitSignalSender;
+
+        let completed = |turn_id: &str| {
+            json!({"method": "turn/completed", "params": {
+                "threadId": "thread", "turn": {"id": turn_id, "items": [], "status": "completed", "error": null}
+            }})
+        };
+        let started = json!({"id": 3, "result": {"turn": {"id": "prompt-turn", "items": [], "status": "inProgress", "error": null}}});
+        for compact in [false, true] {
+            let cancel = CancellationToken::new();
+            let client = AppServerClient::new(
+                LogWriter::new(tokio::io::sink()),
+                None,
+                false,
+                false,
+                None,
+                RepoContext::default(),
+                false,
+                String::new(),
+                cancel.clone(),
+            );
+            if compact {
+                client.end_on_any_turn();
+            } else {
+                client.register_session("thread").await.unwrap();
+            }
+            let mut child = tokio::process::Command::new("cat")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            let peer = JsonRpcPeer::spawn(
+                child.stdin.take().unwrap(),
+                child.stdout.take().unwrap(),
+                client.clone(),
+                ExitSignalSender::new(tx),
+                cancel.clone(),
+            );
+            let finishes = |notification: Value| {
+                let client = client.clone();
+                let peer = peer.clone();
+                async move {
+                    client
+                        .on_notification(
+                            &peer,
+                            &notification.to_string(),
+                            serde_json::from_value(notification.clone()).unwrap(),
+                        )
+                        .await
+                        .unwrap()
+                }
+            };
+
+            assert_eq!(finishes(completed("server-turn")).await, compact);
+            if !compact {
+                client
+                    .on_response(
+                        &peer,
+                        &started.to_string(),
+                        &serde_json::from_value(started.clone()).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(finishes(completed("prompt-turn")).await);
+            }
+            cancel.cancel();
+            child.kill().await.unwrap();
+            child.wait().await.unwrap();
+        }
     }
 
     #[test]
