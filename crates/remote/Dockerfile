@@ -77,7 +77,6 @@ COPY crates/executors/Cargo.toml crates/executors/Cargo.toml
 COPY crates/services/Cargo.toml crates/services/Cargo.toml
 COPY crates/worktree-manager/Cargo.toml crates/worktree-manager/Cargo.toml
 COPY crates/workspace-manager/Cargo.toml crates/workspace-manager/Cargo.toml
-COPY crates/relay-control/Cargo.toml crates/relay-control/Cargo.toml
 COPY crates/server-info/Cargo.toml crates/server-info/Cargo.toml
 COPY crates/git/Cargo.toml crates/git/Cargo.toml
 COPY crates/git-host/Cargo.toml crates/git-host/Cargo.toml
@@ -86,6 +85,7 @@ COPY crates/deployment/Cargo.toml crates/deployment/Cargo.toml
 COPY crates/review/Cargo.toml crates/review/Cargo.toml
 COPY crates/api-types crates/api-types
 COPY crates/relay-types crates/relay-types
+COPY crates/relay-control crates/relay-control
 COPY crates/remote crates/remote
 COPY crates/utils crates/utils
 COPY assets assets
