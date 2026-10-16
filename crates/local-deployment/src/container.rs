@@ -1495,25 +1495,37 @@ impl LocalContainerService {
                 .session_finalization
                 .mark_active(session_id, exec_id)
                 .await;
-            if !ExecutionProcess::was_stopped(&db.pool, exec_id).await {
-                match ExecutionProcess::update_completion(&db.pool, exec_id, status, exit_code)
-                    .await
+            let completion: Result<_, ContainerError> = async {
+                if !ExecutionProcess::update_completion_if_running(
+                    &db.pool, exec_id, status, exit_code,
+                )
+                .await?
                 {
-                    Ok(process) => {
-                        if let Err(e) = container
-                            .events
-                            .publish_execution_process_update(&process)
-                            .await
-                        {
-                            tracing::error!(
-                                "Failed to publish execution process completion: {}",
-                                e
-                            );
-                        }
+                    return Ok(None);
+                }
+                ExecutionProcess::find_by_id(&db.pool, exec_id)
+                    .await?
+                    .ok_or_else(|| {
+                        ContainerError::Other(anyhow!(
+                            "Execution process {exec_id} disappeared after completion"
+                        ))
+                    })
+                    .map(Some)
+            }
+            .await;
+            match completion {
+                Ok(Some(process)) => {
+                    if let Err(e) = container
+                        .events
+                        .publish_execution_process_update(&process)
+                        .await
+                    {
+                        tracing::error!("Failed to publish execution process completion: {}", e);
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to update execution process completion: {}", e);
-                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!("Failed to update execution process completion: {}", e);
                 }
             }
 
@@ -3864,13 +3876,20 @@ impl ContainerService for LocalContainerService {
             None
         };
 
-        // The stopped status becomes visible before the exit monitor finishes
-        // draining logs. Register first so an immediate follow-up cannot slip
-        // through the finalization barrier. The exit monitor registers the same
-        // execution idempotently when it observes process exit.
-        self.session_finalization
-            .mark_active(execution_process.session_id, execution_process.id)
-            .await;
+        // Serialize this check with mark_ready so a late stop cannot reopen
+        // a metadata barrier the monitor has already finished.
+        {
+            let mut active = self.session_finalization.active.write().await;
+            if ExecutionProcess::find_by_id(&self.db.pool, execution_process.id)
+                .await?
+                .is_some_and(|process| process.status == ExecutionProcessStatus::Running)
+            {
+                active
+                    .entry(execution_process.session_id)
+                    .or_default()
+                    .insert(execution_process.id);
+            }
+        }
         let completed_process = ExecutionProcess::update_completion(
             &self.db.pool,
             execution_process.id,
@@ -5154,6 +5173,148 @@ done
     }
 
     const MISMATCH: &str = "Executor mismatch";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_after_metadata_finalization_does_not_reopen_the_followup_barrier() {
+        use command_group::AsyncCommandGroup;
+        use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+        use tokio::process::Command;
+
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let action = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "true".into(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::SetupScript,
+                working_dir: None,
+            }),
+            None,
+        );
+        let record = container
+            .create_execution_record(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::SetupScript,
+            )
+            .await
+            .unwrap();
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 60"])
+            .group_spawn()
+            .unwrap();
+        command::kill_process_group(&mut child).await.unwrap();
+        container.add_child_to_store(record.id, child).await;
+        container
+            .session_finalization
+            .mark_active(session.id, record.id)
+            .await;
+        ExecutionProcess::update_completion(
+            &container.db.pool,
+            record.id,
+            ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+        container
+            .session_finalization
+            .mark_ready(session.id, record.id)
+            .await;
+
+        // A stop captured the running row before completion. The monitor has
+        // drained metadata, but still retains the child during its tail work.
+        container
+            .stop_execution(&record, ExecutionProcessStatus::Killed)
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            container.session_finalization.wait_until_ready(session.id),
+        )
+        .await
+        .expect("a late stop reopened the already-finished metadata barrier");
+        assert!(!container.has_live_child(record.id).await);
+    }
+
+    #[tokio::test]
+    async fn stop_wins_over_an_exit_monitor_that_has_already_started() {
+        use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let action = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "true".into(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::SetupScript,
+                working_dir: None,
+            }),
+            None,
+        );
+        let record = container
+            .create_execution_record(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::SetupScript,
+            )
+            .await
+            .unwrap();
+        container.mark_output_pipeline_ready(record.id).await;
+
+        // The single-connection pool queues the monitor first, then the stop.
+        // A separate status read would release the connection before writing,
+        // allowing the stop to win and then be overwritten by that stale read.
+        let connection = container.db.pool.acquire().await.unwrap();
+        let (exit, exited) = tokio::sync::oneshot::channel();
+        exit.send(ExecutorExitResult::Success).unwrap();
+        let monitor = container.spawn_exit_monitor(&record.id, session.id, Some(exited), None);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !container
+                .session_finalization
+                .active
+                .read()
+                .await
+                .contains_key(&session.id)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        let pool = container.db.pool.clone();
+        let (queued, waiting) = tokio::sync::oneshot::channel();
+        let stop = tokio::spawn(async move {
+            queued.send(()).unwrap();
+            ExecutionProcess::update_completion(
+                &pool,
+                record.id,
+                ExecutionProcessStatus::Killed,
+                None,
+            )
+            .await
+            .unwrap()
+        });
+        waiting.await.unwrap();
+        drop(connection);
+        assert_eq!(stop.await.unwrap().status, ExecutionProcessStatus::Killed);
+        tokio::time::timeout(Duration::from_secs(10), monitor)
+            .await
+            .unwrap()
+            .unwrap();
+        let actual = ExecutionProcess::find_by_id(&container.db.pool, record.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual.status, ExecutionProcessStatus::Killed);
+        assert_eq!(actual.exit_code, None);
+    }
 
     /// The failed message is back in front under its own id with the reason,
     /// the rest of the queue follows in order, and nothing was started.
