@@ -203,24 +203,23 @@ export function SettingsHostProvider({
     return [remoteSharedTarget, ...machineTargets];
   }, [localRemoteHosts?.hosts, pairedRelayHosts, relayHosts, runtime, t]);
 
-  const [selectedHostId, setSelectedHostId] =
+  const [chosenHostId, setSelectedHostId] =
     useState<SettingsHostTargetId | null>(null);
+  // Only explicit user choices persist; a loading fallback must follow the list.
+  const selectedHostId =
+    chosenHostId && availableHosts.some((host) => host.id === chosenHostId)
+      ? chosenHostId
+      : getInitialHostId(availableHosts, runtime, routeHostId, initialHostId);
 
   useEffect(() => {
-    const nextHostId = getInitialHostId(
-      availableHosts,
-      runtime,
-      routeHostId,
-      initialHostId
-    );
-
+    if (!hostsResolved) return;
     setSelectedHostId((current) => {
       if (current && availableHosts.some((host) => host.id === current)) {
         return current;
       }
-      return nextHostId;
+      return null;
     });
-  }, [availableHosts, initialHostId, routeHostId, runtime]);
+  }, [availableHosts, hostsResolved]);
 
   const selectedHost = useMemo(
     () => availableHosts.find((host) => host.id === selectedHostId) ?? null,

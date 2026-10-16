@@ -25,7 +25,7 @@ import {
   HostStatus,
   accountButton,
   accountInput,
-  registerLocalAccountHost,
+  useLocalAccountHostRegistration,
   useAccountSettingsAction,
 } from './AccountSettingsShared';
 
@@ -105,6 +105,8 @@ export function LocalAccountHostSettings({
   const { config, loginStatus } = useUserSystem();
   const client = useQueryClient();
   const action = useAccountSettingsAction();
+  const { register: registerHost, reset: resetRegistration } =
+    useLocalAccountHostRegistration();
   const [name, setName] = useState(
     config?.host_nickname || t('settings.remoteAccess.defaultComputerName')
   );
@@ -120,7 +122,10 @@ export function LocalAccountHostSettings({
     if (!name.trim()) return;
     await action.run(
       (isCurrent) =>
-        registerLocalAccountHost(userId, registrationMissing, isCurrent),
+        registerHost(
+          registrationMissing ? registration?.generation : undefined,
+          isCurrent
+        ),
       t('settings.remoteAccess.registeredWaiting'),
       async (registered, isCurrent) => {
         client.setQueryData(['account-host-registration', userId], registered);
@@ -177,7 +182,7 @@ export function LocalAccountHostSettings({
     )
       return;
     await action.run(
-      (isCurrent) => registerLocalAccountHost(userId, true, isCurrent),
+      (isCurrent) => registerHost(registration?.generation, isCurrent),
       t('settings.remoteAccess.repaired')
     );
   }
@@ -383,7 +388,10 @@ export function LocalAccountHostSettings({
       <Dialog
         open={registrationOpen}
         onOpenChange={(open) => {
-          if (!action.busy) onRegistrationOpenChange(open);
+          if (!action.busy) {
+            if (!open) resetRegistration();
+            onRegistrationOpenChange(open);
+          }
         }}
       >
         <DialogContent>
@@ -448,7 +456,10 @@ export function LocalAccountHostSettings({
               type="button"
               className={accountButton}
               disabled={action.busy}
-              onClick={() => onRegistrationOpenChange(false)}
+              onClick={() => {
+                resetRegistration();
+                onRegistrationOpenChange(false);
+              }}
             >
               {t('settings.remoteAccess.cancel')}
             </button>

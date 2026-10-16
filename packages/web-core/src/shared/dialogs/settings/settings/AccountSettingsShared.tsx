@@ -153,7 +153,7 @@ export async function localHostRegistration(
 
 export async function registerLocalAccountHost(
   userId: string | null,
-  replace: boolean,
+  replaceGeneration: number | undefined,
   isCurrent: () => boolean
 ): Promise<AccountHostStatus> {
   const current = await localHostRegistration('GET');
@@ -164,9 +164,45 @@ export async function registerLocalAccountHost(
   )
     throw new HostAccountError(403, 'HOST_NOT_FOUND', 'Host owner changed');
   const activated = current.registration?.auth_mode === 'account';
-  if (activated && !replace) return current;
+  const replace =
+    replaceGeneration !== undefined &&
+    current.registration?.generation === replaceGeneration;
+  if (activated && !replace) {
+    // A lost success response must not replace the completed registration again.
+    resetLocalSelfHost();
+    return current;
+  }
   // Resume a persisted transition instead of issuing another credential on retry.
   return localHostRegistration('POST', replace && activated);
+}
+
+export function useLocalAccountHostRegistration() {
+  const { userId } = useAuth();
+  const pending = useRef<{
+    userId: string | null;
+    generation: number | undefined;
+  } | null>(null);
+  async function register(
+    generation: number | undefined,
+    isCurrent: () => boolean
+  ) {
+    // Polling may advance the cached generation after a response was lost.
+    if (!pending.current || pending.current.userId !== userId)
+      pending.current = { userId, generation };
+    const result = await registerLocalAccountHost(
+      userId,
+      pending.current.generation,
+      isCurrent
+    );
+    pending.current = null;
+    return result;
+  }
+  return {
+    register,
+    reset: () => {
+      pending.current = null;
+    },
+  };
 }
 
 export async function signInToAccount(reauthenticate = false) {

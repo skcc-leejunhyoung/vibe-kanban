@@ -749,6 +749,7 @@ function ShareHostDialog({
           </button>
           <button
             type="button"
+            data-dialog-primary
             className={cn(
               accountButton,
               'border-brand bg-brand text-on-brand hover:bg-brand-hover'

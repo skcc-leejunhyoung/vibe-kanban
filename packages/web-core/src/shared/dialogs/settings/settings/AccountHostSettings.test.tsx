@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RelayHost } from 'shared/remote-types';
 import type { AccountHostStatus } from 'shared/types';
+import { findDialogPrimaryAction } from '@vibe/ui/lib/dialog-keyboard';
 import en from '@/i18n/locales/en/settings.json';
 import { AccountHostSettings } from './AccountHostSettings';
 import { AccountSettingsSection } from './AccountSettingsSection';
@@ -378,6 +379,35 @@ describe('remote access settings information architecture', () => {
     expect(html).toContain('Verify account');
     expect(html).not.toContain('checked=');
     expect(html).toMatch(/disabled=""[^>]*>Allow access<\/button>/);
+    const shareHtml = html.slice(html.lastIndexOf('<div role="dialog">'));
+    const buttons = [
+      ...shareHtml.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g),
+    ].map(([, attributes, label]) => ({
+      label,
+      disabled: attributes.includes('disabled=""'),
+      primary: attributes.includes('data-dialog-primary'),
+      getAttribute: (name: string) =>
+        attributes.match(new RegExp(`${name}="([^"]*)"`))?.[1] ?? null,
+    }));
+    const container = {
+      querySelectorAll: (selector: string) =>
+        buttons.filter((button) =>
+          selector === 'button[data-dialog-primary]'
+            ? button.primary
+            : selector === 'button[type="submit"]'
+              ? button.getAttribute('type') === 'submit'
+              : true
+        ),
+    } as unknown as HTMLElement;
+    const verify = buttons.find((button) => button.label === 'Verify account')!;
+    const grant = buttons.find((button) => button.label === 'Allow access')!;
+    expect(findDialogPrimaryAction(container)).toBe(verify);
+    // Once verification and consent enable the final action, the shared shortcut follows it.
+    grant.disabled = false;
+    expect(findDialogPrimaryAction(container)).toBe(grant);
+    grant.disabled = true;
+    verify.disabled = true;
+    expect(findDialogPrimaryAction(container)).toBeNull();
   });
 
   it('never offers registration under another account as an enabled action', () => {

@@ -9,6 +9,7 @@ import {
   localHostRegistration,
   registerLocalAccountHost,
   useAccountSettingsAction,
+  useLocalAccountHostRegistration,
 } from './AccountSettingsShared';
 
 const auth = vi.hoisted(() => ({ userId: 'alice' }));
@@ -22,9 +23,11 @@ vi.mock('@/shared/lib/accountHostTransport', () => ({
 
 let root: Root,
   client: QueryClient,
-  action: ReturnType<typeof useAccountSettingsAction>;
+  action: ReturnType<typeof useAccountSettingsAction>,
+  registrationAction: ReturnType<typeof useLocalAccountHostRegistration>;
 function Probe() {
   action = useAccountSettingsAction();
+  registrationAction = useLocalAccountHostRegistration();
   return null;
 }
 function tree(key = 'one') {
@@ -194,7 +197,7 @@ describe('registration retry and ownership', () => {
       .mockResolvedValueOnce(respond(localStatus(null)))
       .mockResolvedValueOnce(respond(localStatus('account')));
     vi.stubGlobal('fetch', fetch);
-    await registerLocalAccountHost('alice', false, () => true);
+    await registerLocalAccountHost('alice', undefined, () => true);
     expect(fetch.mock.calls.map((call) => [call[0], call[1].method])).toEqual([
       ['/api/relay-auth/account/registration', 'GET'],
       ['/api/relay-auth/account/registration', 'POST'],
@@ -206,7 +209,7 @@ describe('registration retry and ownership', () => {
       .mockResolvedValueOnce(respond(localStatus('account')))
       .mockResolvedValueOnce(respond(localStatus('account')));
     vi.stubGlobal('fetch', fetch);
-    await registerLocalAccountHost('alice', true, () => true);
+    await registerLocalAccountHost('alice', 3, () => true);
     expect(fetch.mock.calls[1]).toEqual([
       '/api/relay-auth/account/registration?replace=true',
       { method: 'POST' },
@@ -218,7 +221,7 @@ describe('registration retry and ownership', () => {
       .mockResolvedValueOnce(respond(localStatus('migrating')))
       .mockResolvedValueOnce(respond(localStatus('account')));
     vi.stubGlobal('fetch', fetch);
-    await registerLocalAccountHost('alice', true, () => true);
+    await registerLocalAccountHost('alice', 3, () => true);
     expect(fetch.mock.calls[1]).toEqual([
       '/api/relay-auth/account/registration',
       { method: 'POST' },
@@ -229,10 +232,14 @@ describe('registration retry and ownership', () => {
       .fn()
       .mockResolvedValueOnce(respond(localStatus('account')));
     vi.stubGlobal('fetch', fetch);
-    const result = await registerLocalAccountHost('alice', false, () => true);
+    const result = await registerLocalAccountHost(
+      'alice',
+      undefined,
+      () => true
+    );
     expect(result.registration?.host_id).toBe('host');
     expect(fetch).toHaveBeenCalledOnce();
-    expect(resetLocalSelfHost).not.toHaveBeenCalled();
+    expect(resetLocalSelfHost).toHaveBeenCalledOnce();
   });
   it('rejects a new owner discovered by the preflight without changing registration', async () => {
     const fetch = vi
@@ -240,7 +247,7 @@ describe('registration retry and ownership', () => {
       .mockResolvedValueOnce(respond(localStatus('account', 'bob')));
     vi.stubGlobal('fetch', fetch);
     await expect(
-      registerLocalAccountHost('alice', true, () => true)
+      registerLocalAccountHost('alice', 3, () => true)
     ).rejects.toMatchObject({ code: 'HOST_NOT_FOUND' });
     expect(fetch).toHaveBeenCalledOnce();
   });
@@ -250,9 +257,131 @@ describe('registration retry and ownership', () => {
       .mockResolvedValueOnce(respond(localStatus('account')));
     vi.stubGlobal('fetch', fetch);
     await expect(
-      registerLocalAccountHost('alice', true, () => false)
+      registerLocalAccountHost('alice', 3, () => false)
     ).rejects.toMatchObject({ name: 'AbortError' });
     expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('reconciles activation committed before a lost reply without replacing twice', async () => {
+    let generation = 3;
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      const status = () => {
+        const result = localStatus('account');
+        result.registration!.generation = generation;
+        return respond(result);
+      };
+      if (init.method === 'GET') return status();
+      generation++;
+      throw new Error('reply lost after activation');
+    });
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      registerLocalAccountHost('alice', 3, () => true)
+    ).rejects.toThrow('reply lost');
+    expect(resetLocalSelfHost).not.toHaveBeenCalled();
+    for (let retry = 0; retry < 2; retry++) {
+      const result = await registerLocalAccountHost('alice', 3, () => true);
+      expect(result.registration?.generation).toBe(4);
+    }
+    expect(
+      fetch.mock.calls.filter(([, init]) => init.method === 'POST')
+    ).toHaveLength(1);
+    expect(resetLocalSelfHost).toHaveBeenCalledTimes(2);
+  });
+  it('still permits a fresh explicit recovery of the reconciled generation', async () => {
+    const current = localStatus('account');
+    current.registration!.generation = 4;
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(current))
+      .mockResolvedValueOnce(respond(current));
+    vi.stubGlobal('fetch', fetch);
+    await registerLocalAccountHost('alice', 4, () => true);
+    expect(fetch.mock.calls[1]).toEqual([
+      '/api/relay-auth/account/registration?replace=true',
+      { method: 'POST' },
+    ]);
+  });
+  it('retries a replacement that failed before activation without suppressing it', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus('account')))
+      .mockRejectedValueOnce(new Error('request not delivered'))
+      .mockResolvedValueOnce(respond(localStatus('account')))
+      .mockResolvedValueOnce(respond(localStatus('account')));
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      registerLocalAccountHost('alice', 3, () => true)
+    ).rejects.toThrow('not delivered');
+    await registerLocalAccountHost('alice', 3, () => true);
+    expect(fetch.mock.calls[3]).toEqual([
+      '/api/relay-auth/account/registration?replace=true',
+      { method: 'POST' },
+    ]);
+  });
+  it('retains failed request intent across polling and permits a new recovery after reconciliation', async () => {
+    const completed = localStatus('account');
+    completed.registration!.generation = 4;
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus('account')))
+      .mockRejectedValueOnce(new Error('reply lost'))
+      .mockResolvedValueOnce(respond(completed))
+      .mockResolvedValueOnce(respond(completed))
+      .mockResolvedValueOnce(respond(completed));
+    vi.stubGlobal('fetch', fetch);
+    await expect(registrationAction.register(3, () => true)).rejects.toThrow(
+      'reply lost'
+    );
+    await act(() => root.render(tree()));
+    const reconciled = await registrationAction.register(4, () => true);
+    expect(reconciled.registration?.generation).toBe(4);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    await registrationAction.register(4, () => true);
+    expect(fetch.mock.calls[4]).toEqual([
+      '/api/relay-auth/account/registration?replace=true',
+      { method: 'POST' },
+    ]);
+  });
+  it('discards a failed registration intent when the form is cancelled', async () => {
+    const current = localStatus('account');
+    current.registration!.generation = 4;
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus('account')))
+      .mockRejectedValueOnce(new Error('reply lost'))
+      .mockResolvedValueOnce(respond(current))
+      .mockResolvedValueOnce(respond(current));
+    vi.stubGlobal('fetch', fetch);
+    await expect(registrationAction.register(3, () => true)).rejects.toThrow(
+      'reply lost'
+    );
+    registrationAction.reset();
+    await registrationAction.register(4, () => true);
+    expect(fetch.mock.calls[3]).toEqual([
+      '/api/relay-auth/account/registration?replace=true',
+      { method: 'POST' },
+    ]);
+  });
+  it('never carries a failed registration intent into another account', async () => {
+    const current = localStatus('account', 'bob');
+    current.registration!.generation = 7;
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus('account')))
+      .mockRejectedValueOnce(new Error('reply lost'))
+      .mockResolvedValueOnce(respond(current))
+      .mockResolvedValueOnce(respond(current));
+    vi.stubGlobal('fetch', fetch);
+    await expect(registrationAction.register(3, () => true)).rejects.toThrow(
+      'reply lost'
+    );
+    auth.userId = 'bob';
+    await act(() => root.render(tree()));
+    await registrationAction.register(7, () => true);
+    expect(fetch.mock.calls[3]).toEqual([
+      '/api/relay-auth/account/registration?replace=true',
+      { method: 'POST' },
+    ]);
   });
   it('does not replay a registration whose result was lost', async () => {
     const fetch = vi
@@ -261,7 +390,7 @@ describe('registration retry and ownership', () => {
       .mockRejectedValueOnce(new Error('response lost'));
     vi.stubGlobal('fetch', fetch);
     await expect(
-      registerLocalAccountHost('alice', true, () => true)
+      registerLocalAccountHost('alice', 3, () => true)
     ).rejects.toThrow('response lost');
     expect(fetch).toHaveBeenCalledTimes(2);
   });
