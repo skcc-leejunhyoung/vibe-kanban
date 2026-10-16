@@ -210,16 +210,17 @@ impl ClaudeCode {
         if !plan && !approvals && self.dont_ask.unwrap_or(false) {
             builder = builder.extend_params(["--disallowedTools=AskUserQuestion"]);
         } else {
-            // Enable bypass at startup, otherwise we cannot change to it after exiting plan mode.
             // The stdio permission prompt is what routes AskUserQuestion (via the
             // PreToolUse "ask" hook decision) to the question UI, so plain Auto
             // needs it too.
             builder = builder.extend_params(["--permission-prompt-tool=stdio"]);
-            builder = builder.extend_params([format!(
-                "--permission-mode={}",
-                PermissionMode::BypassPermissions
-            )]);
         }
+        // The CLI only accepts later bypass mode changes when enabled at startup,
+        // including Don't Ask profiles without --dangerously-skip-permissions.
+        builder = builder.extend_params([format!(
+            "--permission-mode={}",
+            PermissionMode::BypassPermissions
+        )]);
         if self.dangerously_skip_permissions.unwrap_or(false) {
             builder = builder.extend_params(["--dangerously-skip-permissions"]);
         }
@@ -4143,6 +4144,33 @@ mod tests {
                 .iter()
                 .any(|p| p.contains("--permission-prompt-tool"))
         );
+    }
+
+    #[tokio::test]
+    async fn dont_ask_starts_in_bypass_mode_without_dangerous_flag() {
+        for config in [
+            serde_json::json!({"dont_ask": true}),
+            serde_json::json!({
+                "dont_ask": true,
+                "dangerously_skip_permissions": false,
+            }),
+        ] {
+            let claude: ClaudeCode = serde_json::from_value(config).unwrap();
+            let params = claude
+                .build_command_builder()
+                .await
+                .unwrap()
+                .params
+                .unwrap();
+            assert!(
+                params
+                    .iter()
+                    .any(|p| p == "--permission-mode=bypassPermissions"),
+                "the CLI must allow the bypass mode sent by spawn_internal: {params:?}"
+            );
+            assert!(!params.iter().any(|p| p == "--dangerously-skip-permissions"));
+            assert_eq!(claude.permission_mode(), PermissionMode::BypassPermissions);
+        }
     }
 
     #[tokio::test]
