@@ -669,7 +669,7 @@ function deferredResponse() {
 function drop(source: string, destination: string, index = 0) {
   return act(() => {
     boardUi.onDragEnd!({
-      draggableId: 'i1',
+      draggableId: boardUi.columns.get(source)![0],
       type: 'DEFAULT',
       reason: 'DROP',
       mode: 'FLUID',
@@ -706,6 +706,46 @@ async function setupFallbackBoard() {
 const saved = () => new Response(JSON.stringify({ txid: 7 }));
 
 describe('KanbanContainer fallback drag mutations', () => {
+  it('preserves a dropped order with descending manual sorting', async () => {
+    const { projectId, writes, gets } = await setupFallbackBoard();
+    await act(() => {
+      useUiPreferencesStore.getState().setProjectViews(projectId, [
+        {
+          id: 'descending',
+          name: 'Descending',
+          layout: 'kanban',
+          groupStatusIds: null,
+          filters: { ...DEFAULT_KANBAN_FILTER_STATE, sortDirection: 'desc' },
+          showSubIssues: true,
+          showWorkspaces: true,
+          hideBlocked: false,
+        },
+      ]);
+    });
+    expect(boardUi.columns.get('s1')).toEqual(['i2', 'i1']);
+    await drop('s1', 's1', 1);
+    expect(boardUi.columns.get('s1')).toEqual(['i1', 'i2']);
+    const body = JSON.parse(
+      vi.mocked(makeRequest).mock.calls.at(-1)![1]!.body as string
+    ) as { updates: Array<{ id: string; sort_order: number }> };
+    await act(async () => {
+      writes[0].resolve(saved());
+      await vi.advanceTimersByTimeAsync(0);
+      gets[0].resolve(
+        new Response(
+          JSON.stringify({
+            issues: seedRows(projectId).issues.map((row) => ({
+              ...row,
+              ...body.updates.find((update) => update.id === row.id),
+            })),
+          })
+        )
+      );
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(boardUi.columns.get('s1')).toEqual(['i1', 'i2']);
+  });
+
   it.each(['before', 'after'] as const)(
     'ignores a pre-save poll resolving %s the confirming GET',
     async (order) => {

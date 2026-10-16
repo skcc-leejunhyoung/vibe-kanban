@@ -987,13 +987,15 @@ export function KanbanContainer() {
   );
 
   // Calculate sort_order based on column index and issue position
-  // Formula: 1000 * [COLUMN_INDEX] + [ISSUE_INDEX] (both 1-based)
+  // Reverse the stored positions when the displayed order is descending.
   const calculateSortOrder = useCallback(
-    (statusId: string, issueIndex: number): number => {
+    (statusId: string, issueIndex: number, issueCount: number): number => {
       const columnIndex = statusColumnIndexMap.get(statusId) ?? 1;
-      return 1000 * columnIndex + (issueIndex + 1);
+      const position =
+        sortDirection === 'desc' ? issueCount - issueIndex : issueIndex + 1;
+      return 1000 * columnIndex + position;
     },
-    [statusColumnIndexMap]
+    [statusColumnIndexMap, sortDirection]
   );
 
   // Simple onDragEnd handler - the library handles all visual movement
@@ -1053,7 +1055,7 @@ export function KanbanContainer() {
           id: issueId,
           changes: {
             status_id: destId,
-            sort_order: calculateSortOrder(destId, index),
+            sort_order: calculateSortOrder(destId, index, destIssueIds.length),
           },
         });
       });
@@ -1065,7 +1067,11 @@ export function KanbanContainer() {
           updates.push({
             id: issueId,
             changes: {
-              sort_order: calculateSortOrder(sourceId, index),
+              sort_order: calculateSortOrder(
+                sourceId,
+                index,
+                sourceIssueIds.length
+              ),
             },
           });
         });
