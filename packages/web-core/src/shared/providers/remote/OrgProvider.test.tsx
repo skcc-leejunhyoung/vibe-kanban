@@ -12,6 +12,8 @@ import {
   type OrgContextValue,
 } from '@/shared/hooks/useOrgContext';
 import { OrgProvider } from './OrgProvider';
+import { organizationsApi } from '@/shared/lib/api';
+import { makeRequest } from '@/shared/lib/remoteApi';
 
 vi.mock('@tanstack/electric-db-collection', async () => {
   const kit = await import('@/shared/lib/electric/electricTestKit');
@@ -83,6 +85,34 @@ async function renderProvider() {
 }
 
 describe('OrgProvider context stability', () => {
+  it('shows projects while members are stalled and retries their request', async () => {
+    vi.mocked(organizationsApi.getMembers).mockImplementationOnce(
+      () => new Promise(() => {})
+    );
+    vi.mocked(makeRequest).mockResolvedValue(
+      new Response(JSON.stringify({ projects: [{ id: 'pr1', name: 'P' }] }))
+    );
+    const provider = await renderProvider();
+    expect(provider.latest().isLoading).toBe(false);
+    expect(provider.latest().projects.map((project) => project.id)).toEqual([
+      'pr1',
+    ]);
+    await act(() => provider.latest().retry());
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(provider.latest().membersWithProfilesById.has('u1')).toBe(true);
+    expect(provider.latest().error).toBeNull();
+  });
+
+  it('exposes member failures without discarding the board', async () => {
+    vi.mocked(organizationsApi.getMembers).mockRejectedValueOnce(
+      new Error('Members offline')
+    );
+    const provider = await renderProvider();
+    expect(provider.latest().isLoading).toBe(false);
+    expect(provider.latest().projects).toHaveLength(1);
+    expect(provider.latest().error?.message).toBe('Members offline');
+  });
+
   it('keeps the context value when the parent re-renders without changes', async () => {
     const provider = await renderProvider();
     const settled = provider.latest();

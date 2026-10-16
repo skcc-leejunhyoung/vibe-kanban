@@ -251,7 +251,13 @@ export function KanbanContainer() {
     projects,
     membersWithProfilesById,
     isLoading: orgLoading,
+    error: orgError,
+    retry: retryOrg,
   } = useOrgContext();
+  const retryPanel = useCallback(() => {
+    retryProject();
+    retryOrg();
+  }, [retryProject, retryOrg]);
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
   const { userId } = useAuth();
   const workspaceHostMap = useWorkspaceHostMap();
@@ -1764,7 +1770,10 @@ export function KanbanContainer() {
 
   if (isLoading) {
     return (
-      <ProjectLoadingState hasError={!!projectError} onRetry={retryProject} />
+      <ProjectLoadingState
+        hasError={!!(projectError || orgError)}
+        onRetry={retryPanel}
+      />
     );
   }
 
@@ -1783,7 +1792,7 @@ export function KanbanContainer() {
 
           <IconButton
             icon={ArrowClockwiseIcon}
-            onClick={retryProject}
+            onClick={retryPanel}
             aria-label={t('kanban.refreshProject')}
             title={t('kanban.refreshProject')}
           />
@@ -1867,7 +1876,7 @@ export function KanbanContainer() {
         </div>
       </div>
 
-      {projectError && (
+      {(projectError || orgError) && (
         <p role="alert" className="px-double text-error">
           {t('kanban.syncFailed')}
         </p>

@@ -475,7 +475,8 @@ export function RemoteProjectsSettingsSection({
   });
   const { data: orgMembers } = useQuery({
     queryKey: organizationKeys.members(selectedOrgId || ''),
-    queryFn: () => organizationsApi.getMembers(selectedOrgId || ''),
+    queryFn: ({ signal }) =>
+      organizationsApi.getMembers(selectedOrgId || '', signal),
     enabled: !!selectedOrgId,
     staleTime: 5 * 60 * 1000,
   });

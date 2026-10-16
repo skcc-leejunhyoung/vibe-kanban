@@ -19,7 +19,8 @@ export function useNotificationMembers(notifications: Notification[]) {
   const memberQueries = useQueries({
     queries: organizationIds.map((organizationId) => ({
       queryKey: organizationKeys.members(organizationId),
-      queryFn: () => organizationsApi.getMembers(organizationId),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        organizationsApi.getMembers(organizationId, signal),
       enabled: Boolean(organizationId),
       staleTime: 5 * 60 * 1000,
     })),

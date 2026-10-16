@@ -281,7 +281,7 @@ function useFindProjectById(projectId: string | undefined) {
     data: orgsData,
     isLoading: orgsLoading,
     error: orgsError,
-    refetch: refetchOrgs,
+    retry: retryOrgs,
   } = useUserOrganizations();
   const selectedOrgId = useOrganizationStore((s) => s.selectedOrgId);
   const organizations = orgsData?.organizations ?? [];
@@ -298,8 +298,8 @@ function useFindProjectById(projectId: string | undefined) {
 
   const refresh = useCallback(() => {
     retry();
-    void refetchOrgs();
-  }, [retry, refetchOrgs]);
+    void retryOrgs();
+  }, [retry, retryOrgs]);
 
   const project = useMemo(() => {
     if (!projectId) return undefined;

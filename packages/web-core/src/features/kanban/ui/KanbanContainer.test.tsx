@@ -338,6 +338,7 @@ async function renderBoard(setup?: (projectId: string) => void, load = true) {
     projects: [{ id: projectId, name: 'Project', organization_id: 'org' }],
     isLoading: false,
     error: null,
+    retry: vi.fn(),
     membersWithProfilesById: new Map([['u1', member]]),
   } as unknown as OrgContextValue;
 
@@ -365,6 +366,7 @@ async function renderBoard(setup?: (projectId: string) => void, load = true) {
 
   return {
     projectId,
+    retryOrg: orgValue.retry,
     context: () => projectContext,
     rerenderHost: () => act(() => bump()),
     change: (table: string, type: 'insert' | 'update', row: object) =>
@@ -398,6 +400,7 @@ describe('KanbanContainer project refresh', () => {
       await act(async () => refreshButtons.mock.calls.at(-1)![0]());
       await act(() => vi.advanceTimersByTimeAsync(0));
 
+      expect(board.retryOrg).toHaveBeenCalledOnce();
       expect(makeRequest).toHaveBeenCalledTimes(12);
       for (const [path] of vi.mocked(makeRequest).mock.calls) {
         expect(

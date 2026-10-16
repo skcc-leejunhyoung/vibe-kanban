@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useCallback } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { organizationsApi } from '@/shared/lib/api';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import type { ListOrganizationsResponse } from 'shared/types';
@@ -9,11 +10,25 @@ import { organizationKeys } from '@/shared/hooks/organizationKeys';
  */
 export function useUserOrganizations() {
   const { isSignedIn } = useAuth();
+  const queryClient = useQueryClient();
 
-  return useQuery<ListOrganizationsResponse>({
+  const query = useQuery<ListOrganizationsResponse>({
     queryKey: organizationKeys.userList(),
-    queryFn: () => organizationsApi.getUserOrganizations(),
+    queryFn: ({ signal }) => organizationsApi.getUserOrganizations(signal),
     enabled: isSignedIn,
     staleTime: 5 * 60 * 1000, // 5 minutes
+    retry: false,
+    refetchInterval: (query) =>
+      query.state.status === 'error' ? 30_000 : false,
   });
+  const { refetch } = query;
+  const retry = useCallback(async () => {
+    if (!isSignedIn) return;
+    await queryClient.cancelQueries({
+      queryKey: organizationKeys.userList(),
+      exact: true,
+    });
+    await refetch();
+  }, [isSignedIn, queryClient, refetch]);
+  return { ...query, retry };
 }

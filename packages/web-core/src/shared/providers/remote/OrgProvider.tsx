@@ -1,5 +1,4 @@
 import { useMemo, useCallback, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { useShape } from '@/shared/integrations/electric/hooks';
 import {
   PROJECTS_SHAPE,
@@ -7,8 +6,7 @@ import {
   type Project,
 } from 'shared/remote-types';
 import type { OrganizationMemberWithProfile } from 'shared/types';
-import { organizationsApi } from '@/shared/lib/api';
-import { organizationKeys } from '@/shared/hooks/organizationKeys';
+import { useOrganizationMembers } from '@/shared/hooks/useOrganizationMembers';
 import { OrgContext, type OrgContextValue } from '@/shared/hooks/useOrgContext';
 
 interface OrgProviderProps {
@@ -30,32 +28,27 @@ export function OrgProvider({ organizationId, children }: OrgProviderProps) {
   });
 
   // Members data from API
-  const membersQuery = useQuery({
-    queryKey: organizationKeys.members(organizationId),
-    queryFn: () => organizationsApi.getMembers(organizationId),
-    enabled: Boolean(organizationId),
-    staleTime: 5 * 60 * 1000, // 5 minutes
-  });
+  const membersQuery = useOrganizationMembers(organizationId);
 
   // useQuery hands back a new tracked object every render; only its fields
   // are stable, so depend on those rather than on the result object.
   const {
     data: members,
-    isLoading: membersLoading,
-    refetch: refetchMembers,
+    error: membersError,
+    retry: retryMembers,
   } = membersQuery;
 
-  // Combined loading state
-  const isLoading = projectsResult.isLoading || membersLoading;
+  // Member profiles hydrate separately; they must not block the whole board.
+  const isLoading = projectsResult.isLoading;
 
   // First error found
-  const error = projectsResult.error || null;
+  const error = projectsResult.error || membersError || null;
 
   // Combined retry
   const retry = useCallback(() => {
     projectsResult.retry();
-    refetchMembers();
-  }, [projectsResult, refetchMembers]);
+    void retryMembers();
+  }, [projectsResult, retryMembers]);
 
   // Computed Maps for O(1) lookup
   const projectsById = useMemo(() => {

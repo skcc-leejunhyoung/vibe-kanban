@@ -144,6 +144,7 @@ import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import { createWorkspaceWithSession } from '@/shared/types/attempt';
 import { resolveHostRequestScope } from '@/shared/lib/hostRequestScope';
 import { makeRequest as makeRemoteRequest } from '@/shared/lib/remoteApi';
+import { withRequestTimeout } from '@/shared/lib/withRequestTimeout';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
 
 export type {
@@ -2585,18 +2586,26 @@ const handleRemoteResponse = async <T>(response: Response): Promise<T> => {
 // Organizations API
 export const organizationsApi = {
   getMembers: async (
-    orgId: string
+    orgId: string,
+    signal?: AbortSignal
   ): Promise<OrganizationMemberWithProfile[]> => {
-    const response = await makeRemoteRequest(
-      `/v1/organizations/${orgId}/members`
-    );
-    const result = await handleRemoteResponse<ListMembersResponse>(response);
-    return result.members;
+    return withRequestTimeout(async (signal) => {
+      const response = await makeRemoteRequest(
+        `/v1/organizations/${orgId}/members`,
+        { signal }
+      );
+      const result = await handleRemoteResponse<ListMembersResponse>(response);
+      return result.members;
+    }, signal);
   },
 
-  getUserOrganizations: async (): Promise<ListOrganizationsResponse> => {
-    const response = await makeRemoteRequest('/v1/organizations');
-    return handleRemoteResponse<ListOrganizationsResponse>(response);
+  getUserOrganizations: async (
+    signal?: AbortSignal
+  ): Promise<ListOrganizationsResponse> => {
+    return withRequestTimeout(async (signal) => {
+      const response = await makeRemoteRequest('/v1/organizations', { signal });
+      return handleRemoteResponse<ListOrganizationsResponse>(response);
+    }, signal);
   },
 
   createOrganization: async (

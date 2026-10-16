@@ -1,5 +1,9 @@
-import { electricCollectionOptions } from '@tanstack/electric-db-collection';
+import {
+  electricCollectionOptions,
+  TimeoutWaitingForTxIdError,
+} from '@tanstack/electric-db-collection';
 import { createCollection } from '@tanstack/react-db';
+import { isEqual } from 'lodash';
 
 import { getAuthRuntime } from '@/shared/lib/auth/runtime';
 import { getRemoteApiUrl, makeRequest } from '@/shared/lib/remoteApi';
@@ -19,7 +23,7 @@ type SourceRuntime = {
   mode: SourceMode;
   fallbackLocked: boolean;
   fallbackLockedAt: number | null;
-  refreshers: Set<() => Promise<void>>;
+  refreshers: Set<(afterMutation?: boolean) => Promise<void>>;
   fallbackSwitchers: Set<() => void>;
   /** Sessions currently on the fallback that can probe Electric on demand. */
   probeTriggers: Set<() => void>;
@@ -30,7 +34,7 @@ type MutationFnParams = {
     mutations: Array<{
       modified?: unknown;
       original?: unknown;
-      key?: string;
+      key?: string | number;
       changes?: unknown;
     }>;
   };
@@ -311,7 +315,7 @@ function registerFallbackSwitcher(
 
 function registerFallbackRefresher(
   sourceKey: string,
-  refresher: () => Promise<void>
+  refresher: (afterMutation?: boolean) => Promise<void>
 ): () => void {
   const runtime = getOrCreateSourceRuntime(sourceKey);
   runtime.refreshers.add(refresher);
@@ -335,11 +339,14 @@ function invalidateFallbackCache(sourceKey: string): void {
   fallbackSnapshotCache.delete(sourceKey);
 }
 
-function refreshFallbackSource(sourceKey: string): void {
+async function refreshFallbackSource(
+  sourceKey: string,
+  afterMutation = false
+): Promise<void> {
   const runtime = getOrCreateSourceRuntime(sourceKey);
-  for (const refresher of runtime.refreshers) {
-    void refresher();
-  }
+  await Promise.all(
+    Array.from(runtime.refreshers, (refresh) => refresh(afterMutation))
+  );
 }
 
 function isAbortError(error: unknown): boolean {
@@ -431,6 +438,8 @@ function createErrorHandlingFetch(args: {
     try {
       return await fetch(input, init);
     } catch (error) {
+      // Closing an old stream must not poison the new probe's error count.
+      if (init?.signal?.aborted) throw error;
       args.onStreamError();
       if (isTransientElectricFailure(error)) {
         throw error;
@@ -583,10 +592,14 @@ function createFallbackSync(args: {
     let refreshPromise: Promise<void> | null = null;
     let requestController: AbortController | null = null;
 
-    const refreshNow = async () => {
+    const refreshNow = async (afterMutation = false): Promise<void> => {
       if (isCleanedUp) return;
       if (refreshPromise) {
-        return refreshPromise;
+        if (!afterMutation) return refreshPromise;
+        // A read started before the write cannot confirm it. Keep the
+        // optimistic transaction until a read started after the write finishes.
+        await refreshPromise;
+        return refreshNow();
       }
 
       refreshPromise = (async () => {
@@ -923,10 +936,45 @@ function isSourceFallbackLocked(sourceKey: string): boolean {
   return runtime.fallbackLocked;
 }
 
-function maybeRefreshFallbackAfterMutation(sourceKey: string): void {
+async function maybeRefreshFallbackAfterMutation(
+  sourceKey: string
+): Promise<void> {
   if (!isSourceFallbackLocked(sourceKey)) return;
   invalidateFallbackCache(sourceKey);
-  refreshFallbackSource(sourceKey);
+  await refreshFallbackSource(sourceKey, true);
+}
+
+function confirmFromFallback<T extends MutationFnParams>(
+  handler: ((params: T) => Promise<unknown>) | undefined,
+  sourceKey: string,
+  operation: SyncMessage['type']
+) {
+  if (!handler) return undefined;
+  return async (params: T) => {
+    try {
+      return await handler(params);
+    } catch (error) {
+      // A txid timeout happens after the API accepted the write. A refresh
+      // can replace its stream, so accept a REST snapshot proving the result.
+      if (!(error instanceof TimeoutWaitingForTxIdError)) throw error;
+      await refreshFallbackSource(sourceKey);
+      const rows = fallbackSnapshotCache.get(sourceKey);
+      if (!rows) throw error;
+      const byKey = new Map(rows.map((row) => [getRowKey(row), row]));
+      const confirmed = params.transaction.mutations.every((mutation) => {
+        const row = byKey.get(String(mutation.key));
+        if (operation === 'delete') return !row;
+        if (!row) return false;
+        const expected = (
+          operation === 'insert' ? mutation.modified : mutation.changes
+        ) as Record<string, unknown>;
+        return Object.entries(expected).every(
+          ([key, value]) => value === undefined || isEqual(row[key], value)
+        );
+      });
+      if (!confirmed) throw error;
+    }
+  };
 }
 
 function buildMutationHandlers(
@@ -969,7 +1017,7 @@ function buildMutationHandlers(
         })
       );
 
-      maybeRefreshFallbackAfterMutation(sourceKey);
+      await maybeRefreshFallbackAfterMutation(sourceKey);
 
       if (isSourceFallbackLocked(sourceKey)) {
         return;
@@ -1037,7 +1085,7 @@ function buildMutationHandlers(
         txids = [result.txid];
       }
 
-      maybeRefreshFallbackAfterMutation(sourceKey);
+      await maybeRefreshFallbackAfterMutation(sourceKey);
 
       if (isSourceFallbackLocked(sourceKey)) {
         return;
@@ -1072,7 +1120,7 @@ function buildMutationHandlers(
         })
       );
 
-      maybeRefreshFallbackAfterMutation(sourceKey);
+      await maybeRefreshFallbackAfterMutation(sourceKey);
 
       if (isSourceFallbackLocked(sourceKey)) {
         return;
@@ -1108,7 +1156,7 @@ export function retryShapeSource(collection: object): void {
   if (!sourceKey) return;
   invalidateFallbackCache(sourceKey);
   lockSourceToFallback(sourceKey);
-  refreshFallbackSource(sourceKey);
+  void refreshFallbackSource(sourceKey);
   for (const trigger of getOrCreateSourceRuntime(sourceKey).probeTriggers) {
     trigger();
   }
@@ -1159,6 +1207,21 @@ export function createShapeCollection<TRow extends ElectricRow>(
 
   const collectionOptions = {
     ...electricOptions,
+    onInsert: confirmFromFallback(
+      electricOptions.onInsert,
+      collectionId,
+      'insert'
+    ),
+    onUpdate: confirmFromFallback(
+      electricOptions.onUpdate,
+      collectionId,
+      'update'
+    ),
+    onDelete: confirmFromFallback(
+      electricOptions.onDelete,
+      collectionId,
+      'delete'
+    ),
     sync: {
       ...electricSyncConfig,
       sync: createHybridSync({
