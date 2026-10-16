@@ -15,9 +15,14 @@ import { OrgProvider } from './OrgProvider';
 import { organizationsApi } from '@/shared/lib/api';
 import { makeRequest } from '@/shared/lib/remoteApi';
 
-vi.mock('@tanstack/electric-db-collection', async () => {
+vi.mock('@tanstack/electric-db-collection', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('@tanstack/electric-db-collection')>();
   const kit = await import('@/shared/lib/electric/electricTestKit');
-  return { electricCollectionOptions: kit.fakeElectricCollectionOptions };
+  return {
+    ...original,
+    electricCollectionOptions: kit.fakeElectricCollectionOptions,
+  };
 });
 vi.mock('@/shared/lib/remoteApi', () => ({
   makeRequest: vi.fn(),

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { Collection } from '@tanstack/react-db';
 import { ISSUE_MUTATION, PROJECT_ISSUES_SHAPE } from 'shared/remote-types';
 import { makeRequest } from '@/shared/lib/remoteApi';
 import { configureTestAuthRuntime } from './electricTestKit';
@@ -40,7 +41,7 @@ const snapshot = (title: string) => snapshotRows([{ ...row, title }]);
 
 let counter = 0;
 let fetcher: ReturnType<typeof vi.fn>;
-let collection: ReturnType<typeof createShapeCollection>;
+let collection: Collection<Record<string, unknown>, string>;
 let subscription: { unsubscribe: () => void };
 
 beforeEach(async () => {
@@ -72,7 +73,7 @@ beforeEach(async () => {
     { project_id: `integration${++counter}` },
     undefined,
     ISSUE_MUTATION
-  );
+  ) as unknown as Collection<Record<string, unknown>, string>;
   subscription = collection.subscribeChanges(() => {});
   await vi.advanceTimersByTimeAsync(0);
   expect(collection.isReady()).toBe(true);
@@ -110,6 +111,48 @@ it('adopts a healthy reconnect despite the previous long poll being cancelled', 
   const requests = vi.mocked(makeRequest).mock.calls.length;
   await vi.advanceTimersByTimeAsync(60_001);
   expect(makeRequest).toHaveBeenCalledTimes(requests);
+});
+
+it('follows a newer fallback read while confirming an earlier Electric write', async () => {
+  let resolveLatest!: (response: Response) => void;
+  let reads = 0;
+  vi.mocked(makeRequest).mockImplementation(async (path, init) => {
+    if (!path.startsWith('/v1/fallback/')) return json({ txid: 987 });
+    if (++reads === 1)
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(new DOMException('Aborted', 'AbortError'))
+        );
+      });
+    return new Promise<Response>((resolve) => {
+      resolveLatest = resolve;
+    });
+  });
+  const completed = vi.fn();
+  const failed = vi.fn();
+  const first = collection.update(row.id, (draft) => {
+    draft.title = 'saved';
+  });
+  void first.isPersisted.promise.then(completed, failed);
+  await vi.advanceTimersByTimeAsync(0);
+  retryShapeSource(collection);
+  await vi.advanceTimersByTimeAsync(5001);
+  const second = collection.update(row.id, (draft) => {
+    draft.status_id = 'review';
+  });
+  void second.isPersisted.promise.then(completed, failed);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(failed).not.toHaveBeenCalled();
+  expect(completed).not.toHaveBeenCalled();
+  resolveLatest(
+    json({ issues: [{ ...row, title: 'saved', status_id: 'review' }] })
+  );
+  await vi.advanceTimersByTimeAsync(0);
+  expect(failed).not.toHaveBeenCalled();
+  expect(completed).toHaveBeenCalledTimes(2);
+  expect(collection.toArray).toEqual([
+    { ...row, title: 'saved', status_id: 'review' },
+  ]);
 });
 
 it('does not mask an actual rejected write with matching fallback data', async () => {
@@ -200,6 +243,7 @@ it('waits for a slower REST confirmation instead of failing at the Electric time
 it('reads again after a write when refresh was already in flight', async () => {
   let resolveWrite!: (response: Response) => void;
   let resolveOldRead!: (response: Response) => void;
+  let resolveNewRead!: (response: Response) => void;
   let readCount = 0;
   vi.mocked(makeRequest).mockImplementation(async (path) => {
     if (!path.startsWith('/v1/fallback/'))
@@ -210,7 +254,9 @@ it('reads again after a write when refresh was already in flight', async () => {
       return new Promise((resolve) => {
         resolveOldRead = resolve;
       });
-    return json({ issues: [{ ...row, title: 'saved' }] });
+    return new Promise((resolve) => {
+      resolveNewRead = resolve;
+    });
   });
   const transaction = collection.update(row.id, (draft) => {
     draft.title = 'saved';
@@ -221,9 +267,12 @@ it('reads again after a write when refresh was already in flight', async () => {
   resolveWrite(json({ txid: 987 }));
   await vi.advanceTimersByTimeAsync(0);
   expect(persisted).not.toHaveBeenCalled();
+  expect(readCount).toBe(2);
   resolveOldRead(json({ issues: [row] }));
   await vi.advanceTimersByTimeAsync(0);
-  expect(readCount).toBe(2);
+  expect(persisted).not.toHaveBeenCalled();
+  resolveNewRead(json({ issues: [{ ...row, title: 'saved' }] }));
+  await vi.advanceTimersByTimeAsync(0);
   expect(persisted).toHaveBeenCalledOnce();
   expect(collection.toArray[0].title).toBe('saved');
 });

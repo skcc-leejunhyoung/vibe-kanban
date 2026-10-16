@@ -5,7 +5,6 @@ import { configureTestAuthRuntime } from './electricTestKit';
 import {
   createShapeCollection,
   retryShapeSource,
-  subscribeShapeErrors,
   ELECTRIC_READY_TIMEOUT_MS,
 } from './collections';
 
@@ -74,9 +73,12 @@ it.each(['update', 'insert', 'delete'] as const)(
   async (operation) => {
     const write = deferred<Response>();
     const get = deferred<Response>();
+    const oldGet = deferred<Response>();
     vi.mocked(makeRequest)
+      .mockReturnValue(new Promise(() => {}))
       .mockResolvedValueOnce(json({ issues: [issue()] }))
       .mockReturnValueOnce(write.promise)
+      .mockReturnValueOnce(oldGet.promise)
       .mockReturnValueOnce(get.promise);
     const collection = createShapeCollection(
       PROJECT_ISSUES_SHAPE,
@@ -85,11 +87,6 @@ it.each(['update', 'insert', 'delete'] as const)(
       ISSUE_MUTATION
     );
     collections.push(collection);
-    const recovered = vi.fn();
-    subscribeShapeErrors(collection, {
-      onError: vi.fn(),
-      onRecover: recovered,
-    });
     collection.subscribeChanges(() => {});
     await vi.advanceTimersByTimeAsync(ELECTRIC_READY_TIMEOUT_MS + 10);
     const requestCount = requests.length;
@@ -120,6 +117,10 @@ it.each(['update', 'insert', 'delete'] as const)(
         : operation === 'delete'
           ? []
           : [issue('in-review')];
+    expect(collection.toArray).toEqual(rows);
+    oldGet.resolve(json({ issues: [issue()] }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(completed).not.toHaveBeenCalled();
     expect(collection.toArray).toEqual(rows);
     get.resolve(json({ issues: rows }));
     await persisted;
@@ -157,6 +158,5 @@ it.each(['update', 'insert', 'delete'] as const)(
     await vi.advanceTimersByTimeAsync(5001);
     expect(collection.toArray).toEqual(rows);
     expect(tx.state).toBe('completed');
-    expect(recovered).toHaveBeenCalledTimes(1);
   }
 );

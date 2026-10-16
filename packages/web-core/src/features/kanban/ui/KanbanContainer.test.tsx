@@ -1,6 +1,5 @@
 import { act, Children, isValidElement, useState, type ReactNode } from 'react';
 import type { DropResult } from '@vibe/ui/components/KanbanBoard';
-import { makeRequest } from '@/shared/lib/remoteApi';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import {
   ELECTRIC_READY_TIMEOUT_MS,
@@ -75,9 +74,14 @@ const {
     typeof fallback === 'string' ? fallback : key,
 }));
 
-vi.mock('@tanstack/electric-db-collection', async () => {
+vi.mock('@tanstack/electric-db-collection', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('@tanstack/electric-db-collection')>();
   const kit = await import('@/shared/lib/electric/electricTestKit');
-  return { electricCollectionOptions: kit.fakeElectricCollectionOptions };
+  return {
+    ...original,
+    electricCollectionOptions: kit.fakeElectricCollectionOptions,
+  };
 });
 vi.mock('@/shared/hooks/useSelfCloudHostId', () => ({
   useSelfCloudHostId: () => ({ hostId: null, isPending: false }),

@@ -22,9 +22,14 @@ import { makeRequest } from '@/shared/lib/remoteApi';
 import { PROJECT_ISSUES_SHAPE } from 'shared/remote-types';
 import { ProjectProvider } from './ProjectProvider';
 
-vi.mock('@tanstack/electric-db-collection', async () => {
+vi.mock('@tanstack/electric-db-collection', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('@tanstack/electric-db-collection')>();
   const kit = await import('@/shared/lib/electric/electricTestKit');
-  return { electricCollectionOptions: kit.fakeElectricCollectionOptions };
+  return {
+    ...original,
+    electricCollectionOptions: kit.fakeElectricCollectionOptions,
+  };
 });
 vi.mock('@/shared/hooks/useSelfCloudHostId', () => ({
   useSelfCloudHostId: () => ({ hostId: null, isPending: false }),

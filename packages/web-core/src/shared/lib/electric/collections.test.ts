@@ -28,9 +28,14 @@ import {
   SHAPE_GC_TIME_MS,
 } from './collections';
 
-vi.mock('@tanstack/electric-db-collection', async () => {
+vi.mock('@tanstack/electric-db-collection', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('@tanstack/electric-db-collection')>();
   const kit = await import('./electricTestKit');
-  return { electricCollectionOptions: kit.fakeElectricCollectionOptions };
+  return {
+    ...original,
+    electricCollectionOptions: kit.fakeElectricCollectionOptions,
+  };
 });
 vi.mock('@/shared/lib/remoteApi', () => ({
   makeRequest: vi.fn(),
@@ -514,7 +519,7 @@ describe('fallback mutations', () => {
     }
   );
 
-  it.each(['http', 'network', 'invalid-payload', 'abort'] as const)(
+  it.each(['http', 'network', 'invalid-payload', 'abort', 'timeout'] as const)(
     'retains a saved status on GET %s failure and completes on the next poll',
     async (failure) => {
       const { collection, gets, writes, seen } = await setup();
@@ -529,6 +534,11 @@ describe('fallback mutations', () => {
         gets[0].resolve(new Response('unavailable', { status: 503 }));
       } else if (failure === 'invalid-payload') {
         gets[0].resolve(json({}));
+      } else if (failure === 'timeout') {
+        await vi.advanceTimersByTimeAsync(FALLBACK_REQUEST_TIMEOUT_MS + 1);
+        expect(
+          vi.mocked(makeRequest).mock.calls.at(-1)?.[1]?.signal?.aborted
+        ).toBe(true);
       } else {
         gets[0].reject(
           failure === 'abort'
@@ -541,7 +551,11 @@ describe('fallback mutations', () => {
       expect(collection.get('issue')?.status_id).toBe('in-review');
       if (failure !== 'abort') expect(onError).toHaveBeenCalledTimes(1);
 
-      await vi.advanceTimersByTimeAsync(FALLBACK_REFRESH_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(
+        failure === 'timeout'
+          ? FALLBACK_REFRESH_INTERVAL_MS - FALLBACK_REQUEST_TIMEOUT_MS
+          : FALLBACK_REFRESH_INTERVAL_MS
+      );
       gets[1].resolve(json({ issues: [issue('in-review')] }));
       await tx.isPersisted.promise;
       expect(tx.state).toBe('completed');
@@ -700,7 +714,7 @@ describe('fallback mutations', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(staleProbe.cleanup).toHaveBeenCalledTimes(1);
     expect(tx.state).toBe('persisting');
-    gets[0].resolve(json({ issues: [issue('in-review')] }));
+    gets.at(-1)!.resolve(json({ issues: [issue('in-review')] }));
     await tx.isPersisted.promise;
     expect(collection.get('issue')?.status_id).toBe('in-review');
   });
@@ -718,7 +732,7 @@ describe('fallback mutations', () => {
     retryShapeSource(collection);
     expect(sessionsFor(`issues-${projectId}`)).toHaveLength(sessionCount);
     expect(tx.state).toBe('persisting');
-    gets[0].resolve(json({ issues: [issue('in-review')] }));
+    gets.at(-1)!.resolve(json({ issues: [issue('in-review')] }));
     await tx.isPersisted.promise;
     retryShapeSource(collection);
     expect(sessionsFor(`issues-${projectId}`)).toHaveLength(sessionCount + 1);

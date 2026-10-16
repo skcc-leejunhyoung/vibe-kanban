@@ -810,7 +810,7 @@ function createHybridSync(args: {
 
     const startProbe = () => {
       if (isCleanedUp || !usingFallback || probe) return;
-      if (!isPageVisible() || runtime.pendingMutations.size > 0) {
+      if (!isPageVisible() || runtime.pendingConfirmations > 0) {
         scheduleProbe();
         return;
       }
@@ -829,7 +829,6 @@ function createHybridSync(args: {
         // A probe must not cancel the REST read confirming an accepted write.
         if (
           runtime.pendingConfirmations > 0 ||
-          runtime.pendingMutations.size > 0 ||
           mutationVersionAtStart !== runtime.fallbackMutationVersion
         ) {
           discardProbe();
@@ -998,7 +997,12 @@ function confirmFromFallback<T extends MutationFnParams>(
       try {
         invalidateFallbackCache(sourceKey);
         lockSourceToFallback(sourceKey);
-        await refreshFallbackSource(sourceKey);
+        // A later write can replace the read confirming this one.
+        let version: number;
+        do {
+          version = runtime.fallbackMutationVersion;
+          await refreshFallbackSource(sourceKey);
+        } while (version !== runtime.fallbackMutationVersion);
         const rows = fallbackSnapshotCache.get(sourceKey);
         if (!rows) throw error;
         const byKey = new Map(rows.map((row) => [getRowKey(row), row]));
@@ -1051,11 +1055,20 @@ function buildMutationHandlers(
       const precedingMutations = Array.from(runtime.pendingMutations);
       const persisted = params.transaction.isPersisted.promise;
       runtime.pendingMutations.add(persisted);
+      let confirmingFallback = false;
+      const holdFallback = () => {
+        if (confirmingFallback || !runtime.fallbackLocked) return;
+        confirmingFallback = true;
+        runtime.pendingConfirmations += 1;
+      };
+      holdFallback();
       const release = () => {
         runtime.pendingMutations.delete(persisted);
+        if (confirmingFallback) runtime.pendingConfirmations -= 1;
       };
       void persisted.then(release, release);
       const result = await write(params);
+      holdFallback();
       if (await maybeRefreshFallbackAfterMutation(sourceKey)) {
         // Release older overlays first, even when their PATCH replies arrive later.
         await Promise.allSettled(precedingMutations);
