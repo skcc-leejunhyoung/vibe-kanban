@@ -210,7 +210,7 @@ impl QueuedMessageService {
     }
 
     /// Move an already-queued message to the front of its session's queue, so a
-    /// "send now" on a queued item runs it next. Returns `true` if the message
+    /// "send now" on a queued item retries it next. Returns `true` if the message
     /// was found (and is now at the front), `false` if it isn't queued anymore.
     pub fn promote_to_front(&self, session_id: Uuid, message_id: Uuid) -> bool {
         let Some(mut q) = self.queue.get_mut(&session_id) else {
@@ -219,10 +219,8 @@ impl QueuedMessageService {
         let Some(pos) = q.iter().position(|m| m.id == message_id) else {
             return false;
         };
-        if pos == 0 {
-            return true; // already at the front
-        }
-        if let Some(msg) = q.remove(pos) {
+        if let Some(mut msg) = q.remove(pos) {
+            msg.start_error = None;
             q.push_front(msg);
             true
         } else {
@@ -489,6 +487,28 @@ mod tests {
         // Unknown id (or empty session) returns false.
         assert!(!svc.promote_to_front(session, Uuid::new_v4()));
         assert!(!svc.promote_to_front(Uuid::new_v4(), b.id));
+    }
+
+    #[test]
+    fn promoting_a_failed_message_retries_it_without_changing_its_identity() {
+        for already_front in [false, true] {
+            let svc = QueuedMessageService::new();
+            let session = Uuid::new_v4();
+            let failed = svc.enqueue(session, sample_data("retry"));
+            let taken = svc.take_next(session).unwrap();
+            svc.restore_failed(taken, "spawn failed".into());
+            let other = svc.enqueue(session, sample_data("other"));
+            if !already_front {
+                svc.promote_to_front(session, other.id);
+            }
+
+            assert!(svc.promote_to_front(session, failed.id));
+            let retry = svc.take_next(session).unwrap();
+            assert_eq!(retry.id, failed.id);
+            assert_eq!(retry.queued_at, failed.queued_at);
+            assert!(retry.start_error.is_none());
+            assert_eq!(svc.take_next(session).unwrap().id, other.id);
+        }
     }
 
     #[test]

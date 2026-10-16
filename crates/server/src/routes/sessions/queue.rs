@@ -7,6 +7,7 @@ use axum::{
 };
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    pending_rate_limit_resume::PendingRateLimitResume,
     scratch::DraftFollowUpData,
     session::Session,
     workspace::{Workspace, WorkspaceError},
@@ -199,17 +200,13 @@ async fn steer_message(
                     .queued_message_service()
                     .enqueue(session.id, data);
             } else {
-                if deployment
-                    .container()
-                    .start_followup_for_session(&session, &workspace, &data)
-                    .await?
-                    .is_none()
-                {
-                    deployment
-                        .queued_message_service()
-                        .enqueue_front(session.id, data);
-                }
-                // The script may have finished between the guard and enqueue.
+                // A terminal script can still be connecting its next action.
+                // The idle drain also respects that finalizer's ownership.
+                deployment
+                    .queued_message_service()
+                    .enqueue_front(session.id, data);
+                // A manual send supersedes a scheduled automatic resume.
+                let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
                 if let Err(error) = drain_idle_queue(&deployment, &session).await {
                     tracing::warn!(%error, "Queued steer could not start yet");
                 }
@@ -373,33 +370,16 @@ async fn steer_queued_message(
             spawn_steer_kill(deployment.clone(), session.clone(), workspace, proc);
         }
         None => {
-            // A steer kill may still be in flight; just ensure this message
-            // drains next rather than starting a duplicate turn. Truly idle →
-            // pull it out of the queue and run it immediately.
-            if deployment.queued_message_service().is_steering(session.id)
-                || ExecutionProcess::has_running_non_dev_server_processes_for_session(
-                    pool, session.id,
-                )
-                .await?
+            // Keep the message queued while a script or finalizer owns the
+            // session, even in the gap before a chained action gets its row.
+            if deployment
+                .queued_message_service()
+                .promote_to_front(session.id, message_id)
             {
-                deployment
-                    .queued_message_service()
-                    .promote_to_front(session.id, message_id);
+                let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
                 if let Err(error) = drain_idle_queue(&deployment, &session).await {
                     tracing::warn!(%error, "Promoted message could not start yet");
                 }
-            } else if let Some(msg) = deployment
-                .queued_message_service()
-                .cancel_message(session.id, message_id)
-            {
-                // The message is now out of the queue. If starting it fails
-                // (e.g. executor mismatch) it goes back to the front with the
-                // reason instead of being dropped: unlike `steer_message`, this
-                // was a message the user had safely queued.
-                deployment
-                    .container()
-                    .start_queued_followup(&session, &workspace, msg)
-                    .await?;
             }
         }
     }

@@ -5009,6 +5009,150 @@ done
         }
     }
 
+    #[tokio::test]
+    async fn send_now_during_script_finalization_waits_for_the_original_chain() {
+        use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let next = finished_turn(&session, &workspace, ExecutionProcessStatus::Completed)
+            .execution_process
+            .executor_action()
+            .unwrap()
+            .clone();
+        let script = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "true".into(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::SetupScript,
+                working_dir: None,
+            }),
+            Some(Box::new(next.clone())),
+        );
+        let record = container
+            .create_execution_record(
+                &workspace,
+                &session,
+                &script,
+                &ExecutionProcessRunReason::SetupScript,
+            )
+            .await
+            .unwrap();
+        // The metadata barrier is ready, but the script's finalizer still
+        // owns the chain until it has registered the original coding request.
+        let finishing = container.queued_message_service.hold_drain(session.id);
+        ExecutionProcess::update_completion(
+            &container.db.pool,
+            record.id,
+            ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !ExecutionProcess::has_running_non_dev_server_processes_for_session(
+                &container.db.pool,
+                session.id,
+            )
+            .await
+            .unwrap()
+        );
+        let message = container.queued_message_service.enqueue_front(
+            session.id,
+            follow_up("send now", BaseCodingAgent::ClaudeCode),
+        );
+        assert!(
+            container
+                .drain_queue_if_idle(&session, &workspace)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // The queued-message route must also wait without removing its target.
+        assert!(
+            container
+                .queued_message_service
+                .promote_to_front(session.id, message.id)
+        );
+        assert!(
+            container
+                .drain_queue_if_idle(&session, &workspace)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(turn_prompts(&container, session.id).await.is_empty());
+
+        let initial = container
+            .create_execution_record(
+                &workspace,
+                &session,
+                &next,
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await
+            .unwrap();
+        drop(finishing);
+        assert!(
+            container
+                .drain_queue_if_idle(&session, &workspace)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(turn_prompts(&container, session.id).await, ["turn"]);
+        ExecutionProcess::update_completion(
+            &container.db.pool,
+            initial.id,
+            ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+        PendingRateLimitResume::upsert(
+            &container.db.pool,
+            session.id,
+            initial.id,
+            Utc::now() + chrono::Duration::minutes(5),
+            "automatic resume",
+        )
+        .await
+        .unwrap();
+        assert!(
+            container
+                .drain_queue_if_idle(&session, &workspace)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // Explicit send-now can supersede a scheduled automatic resume.
+        assert!(
+            container
+                .queued_message_service
+                .promote_to_front(session.id, message.id)
+        );
+        PendingRateLimitResume::delete_by_session_id(&container.db.pool, session.id)
+            .await
+            .unwrap();
+        // No real agent is launched: the fixture has no worktree. A failed
+        // queued start still records which prompt was attempted, and keeps it.
+        assert!(
+            container
+                .drain_queue_if_idle(&session, &workspace)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            turn_prompts(&container, session.id).await,
+            ["turn", "send now"]
+        );
+        let queued = container.queued_message_service.get_queued(session.id);
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].id, message.id);
+        assert!(queued[0].start_error.is_some());
+    }
+
     const MISMATCH: &str = "Executor mismatch";
 
     /// The failed message is back in front under its own id with the reason,
@@ -5501,6 +5645,112 @@ done
             assert!(container.queued_message_service.has_queued(sibling.id));
             assert!(!container.has_live_child(record.id).await);
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn graceful_stop_returns_before_slow_output_drain_without_losing_logs() {
+        use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+
+        let (container, session, mut workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let dir = tempfile::tempdir().unwrap();
+        workspace.container_ref = Some(dir.path().to_string_lossy().into_owned());
+        let script = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "sleep 60".into(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::ToolInstallScript,
+                working_dir: None,
+            }),
+            None,
+        );
+        let record = container
+            .create_execution_record(
+                &workspace,
+                &session,
+                &script,
+                &ExecutionProcessRunReason::SetupScript,
+            )
+            .await
+            .unwrap();
+        container
+            .finish_execution_spawn(&workspace, &session, &record, &script)
+            .await
+            .unwrap();
+        let store = container.get_msg_store_by_id(&record.id).await.unwrap();
+        let pgid = container
+            .get_child_from_store(&record.id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .id()
+            .unwrap();
+        let cancel = CancellationToken::new();
+        container
+            .add_cancellation_token(record.id, cancel.clone())
+            .await;
+        let cooperative_exit = tokio::spawn(async move {
+            cancel.cancelled().await;
+            nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(pgid as i32),
+                nix::sys::signal::Signal::SIGTERM,
+            )
+            .unwrap();
+        });
+        let forwarder = container.take_forwarder_handle(&record.id).await.unwrap();
+        let (release, drain) = tokio::sync::oneshot::channel();
+        let late_store = store.clone();
+        container
+            .add_forwarder_handle(
+                record.id,
+                tokio::spawn(async move {
+                    forwarder.await.unwrap();
+                    drain.await.unwrap();
+                    late_store.push(LogMsg::Stdout("late output".into()));
+                }),
+            )
+            .await;
+
+        // A slow forwarder still owns the final logs when stop returns.
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(3),
+            container.stop_execution(&record, ExecutionProcessStatus::Killed),
+        )
+        .await;
+        let still_draining = container.get_msg_store_by_id(&record.id).await.is_some();
+        release.send(()).unwrap();
+        cooperative_exit.await.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            container.session_finalization.wait_until_ready(session.id),
+        )
+        .await
+        .unwrap();
+
+        stopped
+            .expect("stop waited for the slow output drain")
+            .unwrap();
+        assert!(
+            still_draining,
+            "stop removed the output store before the finalizer drained it"
+        );
+        let history = store.get_history();
+        let late = history
+            .iter()
+            .position(|msg| matches!(msg, LogMsg::Stdout(text) if text == "late output"))
+            .unwrap();
+        let finished = history
+            .iter()
+            .position(|msg| matches!(msg, LogMsg::StorageFinished))
+            .unwrap();
+        assert!(
+            late < finished,
+            "late output arrived after storage shut down"
+        );
+        assert!(!container.has_live_child(record.id).await);
     }
 
     #[tokio::test]
