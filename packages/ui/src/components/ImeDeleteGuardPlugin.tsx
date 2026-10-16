@@ -162,9 +162,9 @@ export function ImeDeleteGuardPlugin() {
       };
 
       /**
-       * Apply an `insertReplacementText` using the replacement string the IME
-       * provides in `event.dataTransfer` (falling back to `event.data`), over
-       * the event's target range.
+       * Apply an `insertReplacementText` (or a ranged `insertText`) using the
+       * replacement string the IME provides in `event.dataTransfer` (falling
+       * back to `event.data`), over the event's target range.
        *
        * On desktop macOS Safari, Hangul/CJK input in this Lexical
        * contentEditable never surfaces composition events; instead every
@@ -217,6 +217,26 @@ export function ImeDeleteGuardPlugin() {
         ) {
           if (applyReplacementText(event)) {
             logImeDebug('beforeinput:apply-replacement', { data: event.data });
+            event.preventDefault();
+            stopLexicalEvent(event);
+          }
+          return;
+        }
+
+        if (
+          event.inputType === 'insertText' &&
+          event.data &&
+          !event.data.includes('\n') &&
+          event.getTargetRanges?.()[0]?.collapsed === false &&
+          !isComposing(event)
+        ) {
+          // Dictation revises words it already inserted with an `insertText`
+          // whose target range covers those words, while the DOM selection can
+          // still be a different range. Lexical only honors the target range
+          // for a collapsed selection, so it overwrote the stale selection and
+          // words vanished when iOS dictation finalized (facebook/lexical#6940).
+          if (applyReplacementText(event)) {
+            logImeDebug('beforeinput:apply-target-range', { data: event.data });
             event.preventDefault();
             stopLexicalEvent(event);
           }
