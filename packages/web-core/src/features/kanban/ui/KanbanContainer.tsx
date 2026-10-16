@@ -42,10 +42,7 @@ import {
   useKanbanFilters,
   PRIORITY_ORDER,
 } from '../model/hooks/useKanbanFilters';
-import {
-  bulkUpdateIssues,
-  type BulkUpdateIssueItem,
-} from '@/shared/lib/remoteApi';
+import type { BulkUpdateIssueItem } from '@/shared/lib/remoteApi';
 import {
   PlusIcon,
   DotsThreeIcon,
@@ -236,6 +233,7 @@ export function KanbanContainer() {
     getRelationshipsForIssue,
     issuesById,
     insertIssue,
+    updateIssues,
     insertIssueAssignee,
     insertIssueTag,
     removeIssueTag,
@@ -546,9 +544,6 @@ export function KanbanContainer() {
     clearViewSwitcher,
   ]);
 
-  // Track when drag-drop sync is in progress to prevent flicker
-  const isSyncingRef = useRef(false);
-
   // Ordered status groups shown by the active view. `groupStatusIds` picks an
   // explicit ordered subset; otherwise fall back to the default grouping
   // (kanban: non-hidden columns; table: every status).
@@ -719,7 +714,7 @@ export function KanbanContainer() {
   // a shape message that leaves the filtered issues alone (workspaces, pull
   // requests, GitHub links, …) never re-sorts the columns.
   const { sortField, sortDirection } = kanbanFilters;
-  const groupedItems = useMemo(() => {
+  const items = useMemo(() => {
     const grouped: Record<string, string[]> = {};
 
     for (const status of statuses) {
@@ -758,22 +753,6 @@ export function KanbanContainer() {
     }
     return grouped;
   }, [filteredIssues, statuses, sortField, sortDirection]);
-
-  // A drag-drop reorder is shown from local state until the bulk update has
-  // synced back; the derived order takes over on the next data change after
-  // that (deferred while the sync is in flight to prevent flicker).
-  const [dragItems, setDragItems] = useState<Record<string, string[]> | null>(
-    null
-  );
-  const dropDragItemsAfterSyncRef = useRef(false);
-  useEffect(() => {
-    if (isSyncingRef.current) {
-      dropDragItemsAfterSyncRef.current = true;
-      return;
-    }
-    setDragItems(null);
-  }, [groupedItems]);
-  const items = dragItems ?? groupedItems;
 
   // Create a lookup map for issue data
   const issueMap = useMemo(() => {
@@ -1019,7 +998,7 @@ export function KanbanContainer() {
 
   // Simple onDragEnd handler - the library handles all visual movement
   const handleDragEnd = useCallback(
-    (result: DropResult) => {
+    async (result: DropResult) => {
       const { source, destination } = result;
 
       // Dropped outside a valid droppable
@@ -1064,8 +1043,6 @@ export function KanbanContainer() {
           [destId]: destItems,
         };
       }
-      setDragItems(newItems);
-
       // Build bulk updates for all issues in affected columns
       const updates: BulkUpdateIssueItem[] = [];
 
@@ -1094,24 +1071,20 @@ export function KanbanContainer() {
         });
       }
 
-      // Perform bulk update
-      isSyncingRef.current = true;
-      bulkUpdateIssues(updates)
-        .catch((err) => {
-          console.error('Failed to bulk update sort order:', err);
-        })
-        .finally(() => {
-          // Keep the local order until Electric has had a chance to sync
-          setTimeout(() => {
-            isSyncingRef.current = false;
-            if (dropDragItemsAfterSyncRef.current) {
-              dropDragItemsAfterSyncRef.current = false;
-              setDragItems(null);
-            }
-          }, 500);
+      // The collection keeps the optimistic move until sync confirms it.
+      try {
+        await updateIssues(updates).persisted;
+      } catch (err) {
+        console.error('Failed to bulk update sort order:', err);
+        void ConfirmDialog.show({
+          title: t('error'),
+          message: err instanceof Error ? err.message : String(err),
+          confirmText: t('ok'),
+          showCancelButton: false,
         });
+      }
     },
-    [kanbanFilters.sortField, calculateSortOrder, items]
+    [kanbanFilters.sortField, calculateSortOrder, items, updateIssues, t]
   );
 
   // Multi-select support

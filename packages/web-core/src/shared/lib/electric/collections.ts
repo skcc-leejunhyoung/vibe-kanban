@@ -25,6 +25,7 @@ type SourceRuntime = {
   fallbackLockedAt: number | null;
   pendingConfirmations: number;
   fallbackMutationVersion: number;
+  pendingMutations: Set<Promise<unknown>>;
   refreshers: Set<(afterMutation?: boolean) => Promise<void>>;
   fallbackSwitchers: Set<() => void>;
   /** Sessions currently on the fallback that can probe Electric on demand. */
@@ -33,6 +34,7 @@ type SourceRuntime = {
 
 type MutationFnParams = {
   transaction: {
+    isPersisted: { promise: Promise<unknown> };
     mutations: Array<{
       modified?: unknown;
       original?: unknown;
@@ -272,6 +274,7 @@ function getOrCreateSourceRuntime(sourceKey: string): SourceRuntime {
     fallbackLockedAt: null,
     pendingConfirmations: 0,
     fallbackMutationVersion: 0,
+    pendingMutations: new Set(),
     refreshers: new Set(),
     fallbackSwitchers: new Set(),
     probeTriggers: new Set(),
@@ -807,7 +810,7 @@ function createHybridSync(args: {
 
     const startProbe = () => {
       if (isCleanedUp || !usingFallback || probe) return;
-      if (!isPageVisible()) {
+      if (!isPageVisible() || runtime.pendingMutations.size > 0) {
         scheduleProbe();
         return;
       }
@@ -826,6 +829,7 @@ function createHybridSync(args: {
         // A probe must not cancel the REST read confirming an accepted write.
         if (
           runtime.pendingConfirmations > 0 ||
+          runtime.pendingMutations.size > 0 ||
           mutationVersionAtStart !== runtime.fallbackMutationVersion
         ) {
           discardProbe();
@@ -968,11 +972,12 @@ function isSourceFallbackLocked(sourceKey: string): boolean {
 
 async function maybeRefreshFallbackAfterMutation(
   sourceKey: string
-): Promise<void> {
-  if (!isSourceFallbackLocked(sourceKey)) return;
+): Promise<boolean> {
+  if (!isSourceFallbackLocked(sourceKey)) return false;
   getOrCreateSourceRuntime(sourceKey).fallbackMutationVersion += 1;
   invalidateFallbackCache(sourceKey);
   await refreshFallbackSource(sourceKey, true);
+  return true;
 }
 
 function confirmFromFallback<T extends MutationFnParams>(
@@ -1038,10 +1043,29 @@ function buildMutationHandlers(
     return slot.current;
   };
 
+  const persist =
+    (write: (params: MutationFnParams) => Promise<{ txid: number[] }>) =>
+    async (params: MutationFnParams): Promise<{ txid: number[] } | void> => {
+      const runtime = getOrCreateSourceRuntime(sourceKey);
+      // Do not replace fallback while a write or its confirming GET is pending.
+      const precedingMutations = Array.from(runtime.pendingMutations);
+      const persisted = params.transaction.isPersisted.promise;
+      runtime.pendingMutations.add(persisted);
+      const release = () => {
+        runtime.pendingMutations.delete(persisted);
+      };
+      void persisted.then(release, release);
+      const result = await write(params);
+      if (await maybeRefreshFallbackAfterMutation(sourceKey)) {
+        // Release older overlays first, even when their PATCH replies arrive later.
+        await Promise.allSettled(precedingMutations);
+        return;
+      }
+      return result;
+    };
+
   return {
-    onInsert: async ({
-      transaction,
-    }: MutationFnParams): Promise<{ txid: number[] } | void> => {
+    onInsert: persist(async ({ transaction }) => {
       const mutation = requireMutation();
       const txids = await Promise.all(
         transaction.mutations.map(async (mutationItem) => {
@@ -1064,18 +1088,10 @@ function buildMutationHandlers(
         })
       );
 
-      await maybeRefreshFallbackAfterMutation(sourceKey);
-
-      if (isSourceFallbackLocked(sourceKey)) {
-        return;
-      }
-
       return { txid: txids };
-    },
+    }),
 
-    onUpdate: async ({
-      transaction,
-    }: MutationFnParams): Promise<{ txid: number[] } | void> => {
+    onUpdate: persist(async ({ transaction }) => {
       const mutation = requireMutation();
       let txids: number[] = [];
 
@@ -1132,18 +1148,10 @@ function buildMutationHandlers(
         txids = [result.txid];
       }
 
-      await maybeRefreshFallbackAfterMutation(sourceKey);
-
-      if (isSourceFallbackLocked(sourceKey)) {
-        return;
-      }
-
       return { txid: txids };
-    },
+    }),
 
-    onDelete: async ({
-      transaction,
-    }: MutationFnParams): Promise<{ txid: number[] } | void> => {
+    onDelete: persist(async ({ transaction }) => {
       const mutation = requireMutation();
       const txids = await Promise.all(
         transaction.mutations.map(async (mutationItem) => {
@@ -1167,14 +1175,8 @@ function buildMutationHandlers(
         })
       );
 
-      await maybeRefreshFallbackAfterMutation(sourceKey);
-
-      if (isSourceFallbackLocked(sourceKey)) {
-        return;
-      }
-
       return { txid: txids };
-    },
+    }),
   };
 }
 

@@ -38,7 +38,10 @@ vi.mock('@/shared/lib/remoteApi', () => ({
 }));
 
 type MutationHandler = (params: {
-  transaction: { mutations: Array<{ key: string; changes: unknown }> };
+  transaction: {
+    isPersisted: { promise: Promise<unknown> };
+    mutations: Array<{ key: string; changes: unknown }>;
+  };
 }) => Promise<unknown>;
 
 const row = (id: string) => ({ id, project_id: 'x', title: id });
@@ -91,7 +94,12 @@ describe('collection cache', () => {
     // The handler resolves the definition registered by the mutating caller.
     const onUpdate = readOnly.config.onUpdate as MutationHandler;
     await expect(
-      onUpdate({ transaction: { mutations: [{ key: 'a', changes: {} }] } })
+      onUpdate({
+        transaction: {
+          isPersisted: { promise: Promise.resolve() },
+          mutations: [{ key: 'a', changes: {} }],
+        },
+      })
     ).resolves.toEqual({ txid: [7] });
     expect(makeRequest).toHaveBeenCalledWith(
       '/v1/issues/a',
@@ -333,7 +341,10 @@ describe('fallback recovery', () => {
     const onUpdate = collection.config.onUpdate as MutationHandler;
     await expect(
       onUpdate({
-        transaction: { mutations: [{ key: 'fallback', changes: {} }] },
+        transaction: {
+          isPersisted: { promise: Promise.resolve() },
+          mutations: [{ key: 'fallback', changes: {} }],
+        },
       })
     ).resolves.toBeUndefined();
 
@@ -356,7 +367,12 @@ describe('fallback recovery', () => {
     await vi.advanceTimersByTimeAsync(FALLBACK_REFRESH_INTERVAL_MS * 2);
     expect(vi.mocked(makeRequest).mock.calls.length).toBe(fallbackCalls);
     await expect(
-      onUpdate({ transaction: { mutations: [{ key: 'live', changes: {} }] } })
+      onUpdate({
+        transaction: {
+          isPersisted: { promise: Promise.resolve() },
+          mutations: [{ key: 'live', changes: {} }],
+        },
+      })
     ).resolves.toEqual({ txid: [7] });
 
     // The probe session is now the live stream.
@@ -570,6 +586,61 @@ describe('fallback mutations', () => {
     expect(seen.every((status) => status === 'done')).toBe(true);
   });
 
+  it.each(['success', 'failure'] as const)(
+    'keeps the latest change when an earlier PATCH reports %s after the later one',
+    async (earlierResult) => {
+      const { collection, gets, writes, seen } = await setup();
+      const first = collection.update('issue', (draft) => {
+        draft.status_id = 'in-review';
+      });
+      const second = collection.update('issue', (draft) => {
+        draft.status_id = 'done';
+      });
+      const firstSettled = first.isPersisted.promise.catch(
+        (error: Error) => error
+      );
+      seen.length = 0;
+      writes[1].resolve(json({ txid: 8 }));
+      await vi.advanceTimersByTimeAsync(0);
+      gets[0].resolve(json({ issues: [issue('done')] }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(collection.get('issue')?.status_id).toBe('done');
+      expect(second.state).toBe('persisting');
+      writes[0].resolve(
+        earlierResult === 'success'
+          ? json({ txid: 7 })
+          : new Response(JSON.stringify({ message: 'denied' }), { status: 403 })
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      if (earlierResult === 'success')
+        gets[1].resolve(json({ issues: [issue('done')] }));
+      await second.isPersisted.promise;
+      const firstResult = await firstSettled;
+      if (earlierResult === 'failure')
+        expect(firstResult).toBeInstanceOf(Error);
+      expect(seen.every((status) => status === 'done')).toBe(true);
+    }
+  );
+
+  it('settles three overlapping changes in order when PATCH replies arrive in reverse', async () => {
+    const { collection, gets, writes, seen } = await setup();
+    const transactions = ['in-review', 'done', 'closed'].map((status) =>
+      collection.update('issue', (draft) => {
+        draft.status_id = status;
+      })
+    );
+    seen.length = 0;
+    for (const index of [2, 1, 0]) {
+      writes[index].resolve(json({ txid: 7 + index }));
+      await vi.advanceTimersByTimeAsync(0);
+      gets.at(-1)!.resolve(json({ issues: [issue('closed')] }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(collection.get('issue')?.status_id).toBe('closed');
+    }
+    await Promise.all(transactions.map((tx) => tx.isPersisted.promise));
+    expect(seen.every((status) => status === 'closed')).toBe(true);
+  });
+
   it('rolls back only the failed second change to the saved first change', async () => {
     const { collection, gets, writes } = await setup();
     const first = collection.update('issue', (draft) => {
@@ -634,19 +705,49 @@ describe('fallback mutations', () => {
     expect(collection.get('issue')?.status_id).toBe('in-review');
   });
 
-  it('lets a fresh Electric probe complete a pending fallback mutation', async () => {
+  it('defers Electric recovery until the saved fallback snapshot is applied', async () => {
     const { collection, gets, writes, projectId } = await setup();
+    const sessionCount = sessionsFor(`issues-${projectId}`).length;
     const tx = collection.update('issue', (draft) => {
       draft.status_id = 'in-review';
     });
+    retryShapeSource(collection);
+    expect(sessionsFor(`issues-${projectId}`)).toHaveLength(sessionCount);
     writes[0].resolve(json({ txid: 7 }));
     await vi.advanceTimersByTimeAsync(0);
     retryShapeSource(collection);
-    emitSnapshot(lastSessionFor(`issues-${projectId}`), [issue('in-review')]);
+    expect(sessionsFor(`issues-${projectId}`)).toHaveLength(sessionCount);
+    expect(tx.state).toBe('persisting');
+    gets[0].resolve(json({ issues: [issue('in-review')] }));
     await tx.isPersisted.promise;
-    gets[0].resolve(json({ issues: [issue()] }));
+    retryShapeSource(collection);
+    expect(sessionsFor(`issues-${projectId}`)).toHaveLength(sessionCount + 1);
+    emitSnapshot(lastSessionFor(`issues-${projectId}`), [issue('in-review')]);
     await vi.advanceTimersByTimeAsync(0);
     expect(collection.get('issue')?.status_id).toBe('in-review');
+  });
+
+  it('rejects a ready probe while PATCH is pending and recovers after PATCH failure', async () => {
+    const { collection, writes, projectId } = await setup();
+    retryShapeSource(collection);
+    const probe = lastSessionFor(`issues-${projectId}`);
+    const tx = collection.update('issue', (draft) => {
+      draft.status_id = 'in-review';
+    });
+    emitSnapshot(probe, [issue()]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(probe.cleanup).toHaveBeenCalledTimes(1);
+    expect(collection.get('issue')?.status_id).toBe('in-review');
+    const failed = expect(tx.isPersisted.promise).rejects.toThrow('denied');
+    writes[0].resolve(
+      new Response(JSON.stringify({ message: 'denied' }), { status: 403 })
+    );
+    await failed;
+    retryShapeSource(collection);
+    expect(lastSessionFor(`issues-${projectId}`)).not.toBe(probe);
+    emitSnapshot(lastSessionFor(`issues-${projectId}`), [issue()]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(collection.get('issue')?.status_id).toBe('in-progress');
   });
 
   it('settles pending mutations on cleanup and ignores late responses in a new session', async () => {

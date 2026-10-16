@@ -1,7 +1,16 @@
-import { act, useState, type ReactNode } from 'react';
+import { act, Children, isValidElement, useState, type ReactNode } from 'react';
+import type { DropResult } from '@vibe/ui/components/KanbanBoard';
+import { makeRequest } from '@/shared/lib/remoteApi';
+import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
+import {
+  ELECTRIC_READY_TIMEOUT_MS,
+  FALLBACK_REFRESH_INTERVAL_MS,
+} from '@/shared/lib/electric/collections';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   configureTestAuthRuntime,
+  electricSessions,
+  emitSnapshot,
   emitChange,
   emitError,
   emitSnapshotsByTable,
@@ -152,10 +161,31 @@ vi.mock('@/shared/hooks/useCurrentKanbanRouteState', () => ({
 vi.mock('@/shared/lib/openInSplitPane', () => ({
   useOpenInSplitPane: () => noop,
 }));
+const boardUi = vi.hoisted(() => ({
+  onDragEnd: null as ((result: DropResult) => void) | null,
+  columns: new Map<string, string[]>(),
+}));
 vi.mock('@vibe/ui/components/KanbanBoard', () => ({
-  KanbanProvider: passthrough,
+  KanbanProvider: ({
+    children,
+    onDragEnd,
+  }: {
+    children?: ReactNode;
+    onDragEnd: (result: DropResult) => void;
+  }) => {
+    boardUi.onDragEnd = onDragEnd;
+    return children ?? null;
+  },
   KanbanBoard: passthrough,
-  KanbanCards: passthrough,
+  KanbanCards: ({ id, children }: { id: string; children?: ReactNode }) => {
+    boardUi.columns.set(
+      id,
+      Children.toArray(children)
+        .filter(isValidElement<{ issue: { id: string } }>)
+        .map((child) => child.props.issue.id)
+    );
+    return children ?? null;
+  },
   KanbanHeader: passthrough,
   KanbanCard: passthrough,
 }));
@@ -202,6 +232,9 @@ let projectCounter = 0;
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.mocked(makeRequest).mockReset();
+  boardUi.columns.clear();
+  vi.mocked(ConfirmDialog.show).mockClear();
   contentRenders.mockClear();
   refreshButtons.mockClear();
   vi.mocked(makeRequest).mockReset();
@@ -252,6 +285,15 @@ function seedRows(p: string): Record<string, Record<string, unknown>[]> {
   return {
     issues: [issue('i1', 1), issue('i2', 2)],
     project_statuses: [
+      {
+        id: 's2',
+        project_id: p,
+        name: 'Review',
+        color: '0 0% 50%',
+        sort_order: 2,
+        hidden: false,
+        created_at: '2026-09-01T00:00:00Z',
+      },
       {
         id: 's1',
         project_id: p,
@@ -329,7 +371,11 @@ function seedRows(p: string): Record<string, Record<string, unknown>[]> {
   };
 }
 
-async function renderBoard(setup?: (projectId: string) => void, load = true) {
+async function renderBoard(
+  setup?: (projectId: string) => void,
+  load = true,
+  fallback = false
+) {
   const projectId = `p${++projectCounter}`;
   route.projectId = projectId;
   setup?.(projectId);
@@ -361,7 +407,23 @@ async function renderBoard(setup?: (projectId: string) => void, load = true) {
     );
   }
   await dom.render(<Host />);
-  if (load) await act(async () => emitSnapshotsByTable(seedRows(projectId)));
+  if (fallback) {
+    const rows = seedRows(projectId);
+    vi.mocked(makeRequest).mockResolvedValueOnce(
+      new Response(JSON.stringify({ issues: rows.issues }))
+    );
+    await act(() => {
+      for (const session of electricSessions) {
+        const table = session.id.slice(0, session.id.lastIndexOf('-'));
+        if (table !== 'issues') emitSnapshot(session, rows[table] ?? []);
+      }
+    });
+    await act(() =>
+      vi.advanceTimersByTimeAsync(ELECTRIC_READY_TIMEOUT_MS + 10)
+    );
+  } else if (load) {
+    await act(() => emitSnapshotsByTable(seedRows(projectId)));
+  }
   await act(() => vi.advanceTimersByTimeAsync(0));
 
   return {
@@ -593,5 +655,173 @@ describe('KanbanContainer create defaults', () => {
       statusId: 's1',
       tagIds: ['t1'],
     });
+  });
+});
+
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function drop(source: string, destination: string, index = 0) {
+  return act(() => {
+    boardUi.onDragEnd!({
+      draggableId: 'i1',
+      type: 'DEFAULT',
+      reason: 'DROP',
+      mode: 'FLUID',
+      combine: null,
+      source: { droppableId: source, index: 0 },
+      destination: { droppableId: destination, index },
+    });
+  });
+}
+
+async function setupFallbackBoard() {
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+  const board = await renderBoard(undefined, true, true);
+  const gets: ReturnType<typeof deferredResponse>[] = [];
+  const writes: ReturnType<typeof deferredResponse>[] = [];
+  vi.mocked(makeRequest).mockImplementation((_path, init) => {
+    const request = deferredResponse();
+    (init?.method === 'GET' ? gets : writes).push(request);
+    return request.promise;
+  });
+  const snapshot = (status = 's2') =>
+    new Response(
+      JSON.stringify({
+        issues: seedRows(board.projectId).issues.map((row) =>
+          row.id === 'i1'
+            ? { ...row, status_id: status }
+            : { ...row, title: 'Changed by a teammate' }
+        ),
+      })
+    );
+  return { ...board, gets, writes, snapshot };
+}
+
+const saved = () => new Response(JSON.stringify({ txid: 7 }));
+
+describe('KanbanContainer fallback drag mutations', () => {
+  it.each(['before', 'after'] as const)(
+    'ignores a pre-save poll resolving %s the confirming GET',
+    async (order) => {
+      const { gets, writes, snapshot } = await setupFallbackBoard();
+      await act(() =>
+        vi.advanceTimersByTimeAsync(FALLBACK_REFRESH_INTERVAL_MS)
+      );
+      await drop('s1', 's2');
+      expect(boardUi.columns.get('s2')).toContain('i1');
+      expect(makeRequest).toHaveBeenLastCalledWith(
+        '/v1/issues/bulk',
+        expect.objectContaining({ method: 'POST' })
+      );
+      await act(async () => {
+        writes[0].resolve(saved());
+        await vi.advanceTimersByTimeAsync(501);
+      });
+      expect(gets).toHaveLength(2);
+      if (order === 'before') {
+        await act(async () => {
+          gets[0].resolve(snapshot('s1'));
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        expect(boardUi.columns.get('s2')).toContain('i1');
+      }
+      await act(async () => {
+        gets[1].resolve(snapshot());
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      if (order === 'after') {
+        await act(async () => {
+          gets[0].resolve(snapshot('s1'));
+          await vi.advanceTimersByTimeAsync(0);
+        });
+      }
+      expect(boardUi.columns.get('s2')).toContain('i1');
+    }
+  );
+
+  it('retains a saved move through GET failure until a poll succeeds', async () => {
+    const { gets, writes, snapshot } = await setupFallbackBoard();
+    await drop('s1', 's2');
+    await act(async () => {
+      writes[0].resolve(saved());
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      gets[0].resolve(new Response('offline', { status: 503 }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(boardUi.columns.get('s2')).toContain('i1');
+    await act(() => vi.advanceTimersByTimeAsync(FALLBACK_REFRESH_INTERVAL_MS));
+    await act(async () => {
+      gets[1].resolve(snapshot());
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(boardUi.columns.get('s2')).toContain('i1');
+    expect(writes).toHaveLength(1);
+    expect(ConfirmDialog.show).not.toHaveBeenCalled();
+  });
+
+  it('rolls back a rejected save instead of leaving a moved card', async () => {
+    const { gets, writes } = await setupFallbackBoard();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await drop('s1', 's2');
+    await act(async () => {
+      writes[0].resolve(new Response('denied', { status: 403 }));
+      await vi.advanceTimersByTimeAsync(501);
+    });
+    expect(boardUi.columns.get('s1')).toContain('i1');
+    expect(boardUi.columns.get('s2')).not.toContain('i1');
+    expect(gets).toHaveLength(0);
+    expect(error).toHaveBeenCalledWith(
+      'Failed to bulk update sort order:',
+      expect.any(Error)
+    );
+    expect(ConfirmDialog.show).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'error', showCancelButton: false })
+    );
+    error.mockRestore();
+  });
+
+  it('keeps the latest of two drags when confirming GETs finish out of order', async () => {
+    const { gets, writes, snapshot } = await setupFallbackBoard();
+    await drop('s1', 's2');
+    await act(async () => {
+      writes[0].resolve(saved());
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await drop('s2', 's1');
+    await act(async () => {
+      writes[1].resolve(saved());
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      gets[1].resolve(snapshot('s1'));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      gets[0].resolve(snapshot());
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(boardUi.columns.get('s1')).toContain('i1');
+    expect(boardUi.columns.get('s2')).not.toContain('i1');
+  });
+
+  it('optimistically reorders within a column and rolls back on save failure', async () => {
+    const { writes } = await setupFallbackBoard();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await drop('s1', 's1', 1);
+    expect(boardUi.columns.get('s1')).toEqual(['i2', 'i1']);
+    await act(async () => {
+      writes[0].resolve(new Response('denied', { status: 403 }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(boardUi.columns.get('s1')).toEqual(['i1', 'i2']);
+    error.mockRestore();
   });
 });
