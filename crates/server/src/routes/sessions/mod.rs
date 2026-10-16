@@ -513,9 +513,8 @@ async fn follow_up_inner(
     // resend; MCP / automation get a clear error, not someone else's turn).
     let starting = deployment.container().lock_session_start(session.id).await;
     if payload.retry_process_id.is_none()
-        && ExecutionProcess::find_running_coding_agent_for_session(pool, session.id)
+        && ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
             .await?
-            .is_some()
     {
         return Err(ApiError::Conflict(
             "Another turn started in this session just now; queue the message or send it again when it finishes"

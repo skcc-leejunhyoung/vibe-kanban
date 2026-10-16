@@ -87,6 +87,7 @@ interface ActionsProps {
   onQueue: () => void;
   /** "Send now" / steer: interrupt the running turn and run this message now */
   onSteer: () => void;
+  canSteer?: boolean;
   onCancelQueue: () => void;
   onStop: () => void;
   onPasteFiles: (files: File[]) => void;
@@ -461,6 +462,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   const handleShiftCmdEnter = () => {
     const canSteer =
       isRunning &&
+      actions.canSteer !== false &&
       canSend &&
       !isInFeedbackMode &&
       !isInEditMode &&
@@ -766,7 +768,7 @@ export function SessionChatBox<TExecutor extends string = string>({
               icon={LightningIcon}
               label={t('conversation.actions.sendNow')}
               onClick={actions.onSteer}
-              disabled={!canSend}
+              disabled={!canSend || actions.canSteer === false}
             />
             <ChatActionButton
               icon={ArrowUpIcon}

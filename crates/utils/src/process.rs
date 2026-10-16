@@ -14,6 +14,7 @@ pub async fn kill_process_group(child: &mut AsyncGroupChild) -> std::io::Result<
         // with the pgid captured at spawn time. This works even after the
         // group leader has exited, unlike getpgid() which would fail.
         use command_group::{Signal, UnixChildExt};
+        let pgid = child.id().map(|id| nix::unistd::Pid::from_raw(id as i32));
 
         for sig in [Signal::SIGINT, Signal::SIGTERM, Signal::SIGKILL] {
             tracing::info!("Sending {:?} to process group", sig);
@@ -24,10 +25,7 @@ pub async fn kill_process_group(child: &mut AsyncGroupChild) -> std::io::Result<
                 }
                 tracing::warn!("Failed to send signal {:?} to process group: {}", sig, e);
             }
-            // Escalate only while the leader is still alive: a process that
-            // honours the signal is gone in milliseconds, not after a fixed
-            // sleep.
-            if sig != Signal::SIGKILL && wait_for_exit(child, SIGNAL_GRACE).await {
+            if sig != Signal::SIGKILL && wait_for_exit(child, pgid, SIGNAL_GRACE).await {
                 break;
             }
         }
@@ -47,14 +45,21 @@ pub async fn kill_process_group(child: &mut AsyncGroupChild) -> std::io::Result<
     }
 }
 
-/// Polls the group leader for up to `grace`; true once it has exited (or can
-/// no longer be waited on). `try_wait` caches the status on the child, so the
-/// exit watcher and the final `wait` above still observe it.
+/// Reap the leader, but give surviving descendants their own signal grace.
+/// If the leader was already reaped and its PGID is unavailable, keep the
+/// bounded grace rather than assuming the whole group has exited.
 #[cfg(unix)]
-async fn wait_for_exit(child: &mut AsyncGroupChild, grace: Duration) -> bool {
+async fn wait_for_exit(
+    child: &mut AsyncGroupChild,
+    pgid: Option<nix::unistd::Pid>,
+    grace: Duration,
+) -> bool {
     let deadline = tokio::time::Instant::now() + grace;
     loop {
-        if !matches!(child.try_wait(), Ok(None)) {
+        let _ = child.try_wait();
+        if pgid.is_some_and(|pgid| {
+            nix::sys::signal::killpg(pgid, None) == Err(nix::errno::Errno::ESRCH)
+        }) {
             return true;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -139,7 +144,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ready.trim(), "ready");
-        assert!(wait_for_exit(&mut child, Duration::from_secs(2)).await);
+        tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
 
         let started = Instant::now();
         kill_process_group(&mut child).await.unwrap();
@@ -148,6 +156,52 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() >= SIGNAL_GRACE * 2);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn surviving_descendant_gets_sigterm_and_time_to_clean_up() {
+        for leader_already_exited in [false, true] {
+            let worker = "sh -c 'trap \"\" INT; trap \"sleep 0.15; echo cleaned; exit 0\" TERM; echo ready; while :; do sleep 0.05; done' &";
+            let script = if leader_already_exited {
+                worker.to_string()
+            } else {
+                format!("trap 'exit 0' INT; {worker} wait")
+            };
+            let mut child = Command::new("sh")
+                .args(["-c", &script])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .group_spawn()
+                .unwrap();
+            let mut output = BufReader::new(child.inner().stdout.take().unwrap());
+            let mut ready = String::new();
+            tokio::time::timeout(Duration::from_secs(5), output.read_line(&mut ready))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(ready.trim(), "ready");
+            if leader_already_exited {
+                tokio::time::timeout(Duration::from_secs(2), child.wait())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(10), kill_process_group(&mut child))
+                .await
+                .unwrap()
+                .unwrap();
+            let mut rest = String::new();
+            tokio::time::timeout(Duration::from_secs(2), output.read_to_string(&mut rest))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                rest.trim(),
+                "cleaned",
+                "leader_already_exited={leader_already_exited}"
+            );
+        }
     }
 }

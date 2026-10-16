@@ -106,6 +106,15 @@ impl QueuedMessageService {
         queued
     }
 
+    /// Return an interrupted attempt to dequeue without changing its identity.
+    pub fn requeue_front(&self, mut msg: QueuedMessage) {
+        msg.start_error = None;
+        self.queue
+            .entry(msg.session_id)
+            .or_default()
+            .push_front(msg);
+    }
+
     /// Put a message that was taken off the queue but failed to start back at
     /// the front, keeping its id and recording why. The queue then stops
     /// draining on its own until the user acts on it, so the failure is neither

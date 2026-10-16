@@ -330,16 +330,16 @@ async fn process_one(
     // double-spawn. `finish_execution_spawn` itself marks the row as Failed on
     // spawn errors, so leaving the pending row would risk repeated retries on
     // a permanently-broken executor_action.
-    PendingExecutionStart::delete_by_process_id(pool, row.execution_process_id).await?;
+    if PendingExecutionStart::delete_by_process_id(pool, row.execution_process_id).await? == 0 {
+        // Cancellation or another watcher claimed this exact start first.
+        return Ok(());
+    }
 
     // A user may have stopped this waiting session between the blocker check and
     // now: `stop_execution` cancels the deferred start and marks the process
     // Killed. Re-read the status right before spawning and bail if we positively
-    // observe it is no longer Running, otherwise we'd spawn an unsupervised
-    // orphan agent whose exit would overwrite the Killed status. On a read error
-    // we fall through to spawn to avoid stranding the session on a transient DB
-    // hiccup. This narrows — but does not fully close — the resume/stop race; a
-    // complete fix needs per-process serialization of the two paths.
+    // observe it is no longer Running. A later user stop is also checked by
+    // `finish_execution_spawn` before and after child registration.
     if let Ok(Some(p)) = ExecutionProcess::find_by_id(pool, row.execution_process_id).await
         && p.status != ExecutionProcessStatus::Running
     {

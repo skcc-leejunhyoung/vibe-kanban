@@ -1,4 +1,7 @@
-use std::collections::{HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    future::Future,
+};
 
 use api_types::IssueRelationshipType;
 use axum::{
@@ -250,6 +253,19 @@ pub async fn stop_workspace_execution(
         None => None,
     };
 
+    // Fix the cancellation set before stopping or awaiting any cloud request.
+    // A newly queued/restarted dependent must not belong to this stop.
+    let pending = if workspace.task_id.is_some() && deployment.remote_client().is_ok() {
+        PendingExecutionStart::find_all(pool)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "Failed to snapshot deferred starts for cascade stop");
+                Vec::new()
+            })
+    } else {
+        Vec::new()
+    };
+
     deployment
         .container()
         .try_stop(&workspace, false, only_session)
@@ -266,37 +282,51 @@ pub async fn stop_workspace_execution(
     {
         // Best-effort cloud round trips: don't hold the stop response on them.
         let deployment = deployment.clone();
-        tokio::spawn(async move { cascade_stop_blocked_dependents(&deployment, task_id).await });
+        tokio::spawn(async move {
+            cascade_stop_blocked_dependents(&deployment, task_id, pending).await
+        });
     }
 
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
-/// Pure BFS deciding which waiting workspaces a cascade cancels, extracted from
-/// [`cascade_stop_blocked_dependents`] so the graph-walk logic is unit testable
-/// without the cloud relationship store or the local DB.
-///
-/// `blocks[t]` lists the tasks that `t` directly blocks; `waiting` holds the
-/// tasks that currently have a deferred (waiting) workspace. Starting at `root`,
-/// each dependent is visited once and the walk only descends past a dependent
-/// that was itself waiting — a non-waiting dependent (already running/finished,
-/// e.g. its blocker resolved) ends that branch. Returns the tasks to cancel, in
-/// cancellation order.
-fn cascade_order(
+/// Walk only through starts this stop actually cancelled. Loading relationships
+/// may take arbitrarily long; all candidates retain their original process IDs.
+async fn cascade_pending_starts<Load, Loaded, Cancel, Cancelled>(
     root: Uuid,
-    blocks: &std::collections::HashMap<Uuid, Vec<Uuid>>,
-    waiting: &HashSet<Uuid>,
-) -> Vec<Uuid> {
-    let mut visited: HashSet<Uuid> = HashSet::from([root]);
-    let mut queue: VecDeque<Uuid> = VecDeque::from([root]);
-    let mut cancelled: Vec<Uuid> = Vec::new();
-
+    pending: Vec<PendingExecutionStart>,
+    mut load: Load,
+    mut cancel: Cancel,
+) -> Vec<Uuid>
+where
+    Load: FnMut(Uuid) -> Loaded,
+    Loaded: Future<Output = Vec<Uuid>>,
+    Cancel: FnMut(PendingExecutionStart) -> Cancelled,
+    Cancelled: Future<Output = bool>,
+{
+    let mut waiting: HashMap<Uuid, Vec<PendingExecutionStart>> = HashMap::new();
+    for start in pending {
+        waiting.entry(start.task_id).or_default().push(start);
+    }
+    let mut visited = HashSet::from([root]);
+    let mut queue = VecDeque::from([root]);
+    let mut cancelled = Vec::new();
     while let Some(task) = queue.pop_front() {
-        for &dependent in blocks.get(&task).into_iter().flatten() {
+        if waiting.is_empty() {
+            break;
+        }
+        for dependent in load(task).await {
             if !visited.insert(dependent) {
                 continue;
             }
-            if waiting.contains(&dependent) {
+            let Some(starts) = waiting.remove(&dependent) else {
+                continue;
+            };
+            let mut stopped = false;
+            for start in starts {
+                stopped |= cancel(start).await;
+            }
+            if stopped {
                 cancelled.push(dependent);
                 queue.push_back(dependent);
             }
@@ -305,126 +335,55 @@ fn cascade_order(
     cancelled
 }
 
-/// Cancels every workspace queued behind `root_task_id` via a `blocking` issue
-/// relationship, transitively. When a vibe session is stopped, the issues it was
-/// blocking can no longer become unblocked by it, so their deferred ("waiting")
-/// starts are cancelled too, cascading down the dependency graph.
-///
-/// Only deferred (blocker-gated) starts are stopped — `try_stop` skips processes
-/// that are not `Running`, and a deferred start carries a `pending_execution_starts`
-/// row, so an already-finished or genuinely-running dependent is left as-is.
-/// Best-effort: the relationship graph lives in the cloud, so this no-ops when no
-/// remote client is configured, and individual failures are logged, not raised.
-async fn cascade_stop_blocked_dependents(deployment: &DeploymentImpl, root_task_id: Uuid) {
+/// Best-effort cloud traversal; cancellation claims only an original pending
+/// row, never a session's replacement or already-resumed execution.
+async fn cascade_stop_blocked_dependents(
+    deployment: &DeploymentImpl,
+    root_task_id: Uuid,
+    pending: Vec<PendingExecutionStart>,
+) {
     let client = match deployment.remote_client() {
         Ok(c) => c,
         Err(_) => return,
     };
-    let pool = &deployment.db().pool;
-
-    // 1. Load the reachable "blocks" subgraph and the waiting workspace(s) per
-    //    task, keeping it as plain data so the cancellation decision below can
-    //    run as pure, unit-tested logic (`cascade_order`).
-    let mut blocks: std::collections::HashMap<Uuid, Vec<Uuid>> = std::collections::HashMap::new();
-    let mut waiting: HashSet<Uuid> = HashSet::new();
-    // (workspace, session) of each waiting start — the session so the cascade
-    // cancels only the deferred conversation, not a sibling one that happens to
-    // be running in the same dependent workspace.
-    let mut waiting_workspaces: std::collections::HashMap<Uuid, Vec<(Uuid, Uuid)>> =
-        std::collections::HashMap::new();
-    let mut to_load: VecDeque<Uuid> = VecDeque::from([root_task_id]);
-    let mut loaded: HashSet<Uuid> = HashSet::from([root_task_id]);
-
-    while let Some(task_id) = to_load.pop_front() {
-        // Issues that `task_id` blocks (outgoing `blocking` relationships).
-        let dependents: Vec<Uuid> = match client.list_issue_relationships(task_id).await {
-            Ok(r) => r
-                .issue_relationships
-                .into_iter()
-                .filter(|rel| matches!(rel.relationship_type, IssueRelationshipType::Blocking))
-                .map(|rel| rel.related_issue_id)
-                .collect(),
-            Err(e) => {
-                tracing::warn!(
-                    "cascade stop: failed to list relationships for issue {}: {}",
-                    task_id,
-                    e
-                );
-                Vec::new()
+    let client = &client;
+    cascade_pending_starts(
+        root_task_id,
+        pending,
+        |task_id| async move {
+            match client.list_issue_relationships(task_id).await {
+                Ok(r) => r
+                    .issue_relationships
+                    .into_iter()
+                    .filter(|rel| matches!(rel.relationship_type, IssueRelationshipType::Blocking))
+                    .map(|rel| rel.related_issue_id)
+                    .collect(),
+                Err(error) => {
+                    tracing::warn!(%task_id, %error, "Cascade stop could not load relationships");
+                    Vec::new()
+                }
             }
-        };
-
-        for &dependent in &dependents {
-            if loaded.insert(dependent) {
-                to_load.push_back(dependent);
-            }
-            if let std::collections::hash_map::Entry::Vacant(slot) =
-                waiting_workspaces.entry(dependent)
+        },
+        |start| async move {
+            match deployment
+                .container()
+                .complete_pending_execution(
+                    start.execution_process_id,
+                    start.session_id,
+                    ExecutionProcessStatus::Killed,
+                )
+                .await
             {
-                match PendingExecutionStart::find_by_task_id(pool, dependent).await {
-                    Ok(pendings) if !pendings.is_empty() => {
-                        waiting.insert(dependent);
-                        slot.insert(
-                            pendings
-                                .into_iter()
-                                .map(|p| (p.workspace_id, p.session_id))
-                                .collect(),
-                        );
-                    }
-                    Ok(_) => {
-                        slot.insert(Vec::new());
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "cascade stop: failed to find pending starts for issue {}: {}",
-                            dependent,
-                            e
-                        );
-                        slot.insert(Vec::new());
-                    }
+                Ok(cancelled) => cancelled,
+                Err(error) => {
+                    tracing::warn!(execution_process_id = %start.execution_process_id, %error,
+                    "Cascade stop could not cancel deferred start");
+                    false
                 }
             }
-        }
-        blocks.insert(task_id, dependents);
-    }
-
-    // 2. Decide the cancellation set/order with pure logic.
-    let targets = cascade_order(root_task_id, &blocks, &waiting);
-
-    // 3. Cancel each target's waiting workspace(s).
-    for target in targets {
-        for (workspace_id, session_id) in waiting_workspaces.get(&target).into_iter().flatten() {
-            match Workspace::find_by_id(pool, *workspace_id).await {
-                Ok(Some(dependent_ws)) => {
-                    tracing::info!(
-                        "cascade stop: cancelling session {} of workspace {} waiting on \
-                         stopped blocker (issue {})",
-                        session_id,
-                        dependent_ws.id,
-                        target
-                    );
-                    if let Err(error) = deployment
-                        .container()
-                        .try_stop(&dependent_ws, false, Some(*session_id))
-                        .await
-                    {
-                        tracing::warn!(
-                            "cascade stop: failed to stop session {} of workspace {}: {}",
-                            session_id,
-                            dependent_ws.id,
-                            error
-                        );
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => tracing::warn!(
-                    "cascade stop: failed to load workspace {}: {}",
-                    workspace_id,
-                    e
-                ),
-            }
-        }
-    }
+        },
+    )
+    .await;
 }
 
 #[axum::debug_handler]
@@ -523,36 +482,62 @@ mod cascade_tests {
 
     use uuid::Uuid;
 
-    use super::cascade_order;
+    use super::{PendingExecutionStart, cascade_pending_starts};
+
+    fn pending(task_id: Uuid) -> PendingExecutionStart {
+        PendingExecutionStart {
+            id: Uuid::new_v4(),
+            execution_process_id: Uuid::new_v4(),
+            workspace_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            task_id,
+            created_at: chrono::Utc::now(),
+            last_checked_at: None,
+        }
+    }
+
+    async fn cascade_order(
+        root: Uuid,
+        blocks: &HashMap<Uuid, Vec<Uuid>>,
+        waiting: &HashSet<Uuid>,
+    ) -> Vec<Uuid> {
+        cascade_pending_starts(
+            root,
+            waiting.iter().copied().map(pending).collect(),
+            |task| std::future::ready(blocks.get(&task).cloned().unwrap_or_default()),
+            |_| std::future::ready(true),
+        )
+        .await
+    }
 
     fn id(n: u128) -> Uuid {
         Uuid::from_u128(n)
     }
 
-    #[test]
-    fn chain_root_stop_cancels_all_downstream() {
+    #[tokio::test]
+    async fn chain_root_stop_cancels_all_downstream() {
         // 1→2→3→4, all waiting. Stopping the root cancels the whole chain.
         let (a, b, c, d) = (id(1), id(2), id(3), id(4));
         let blocks = HashMap::from([(a, vec![b]), (b, vec![c]), (c, vec![d])]);
         let waiting = HashSet::from([a, b, c, d]);
-        assert_eq!(cascade_order(a, &blocks, &waiting), vec![b, c, d]);
+        assert_eq!(cascade_order(a, &blocks, &waiting).await, vec![b, c, d]);
     }
 
-    #[test]
-    fn chain_middle_stop_cancels_downstream() {
+    #[tokio::test]
+    async fn chain_middle_stop_cancels_downstream() {
         // The reported scenario: 1→2→3→4, with 1 running and 2/3/4 waiting.
         // Stopping the MIDDLE node (2) must recursively cancel 3 and 4, and must
         // never walk back up to the untouched blocker 1.
         let (a, b, c, d) = (id(1), id(2), id(3), id(4));
         let blocks = HashMap::from([(a, vec![b]), (b, vec![c]), (c, vec![d])]);
         let waiting = HashSet::from([b, c, d]); // 1 is running, not waiting
-        let cancelled = cascade_order(b, &blocks, &waiting);
+        let cancelled = cascade_order(b, &blocks, &waiting).await;
         assert_eq!(cancelled, vec![c, d]);
         assert!(!cancelled.contains(&a), "must not touch the blocker above");
     }
 
-    #[test]
-    fn non_waiting_intermediate_halts_propagation() {
+    #[tokio::test]
+    async fn non_waiting_intermediate_halts_propagation() {
         // 1→2→3, with 2 already running (not waiting) and 3 waiting. The
         // "descend only past a waiting dependent" guard ends the branch at the
         // non-waiting 2, so 3 is left waiting. This documents the guard — if the
@@ -560,55 +545,133 @@ mod cascade_tests {
         let (a, b, c) = (id(1), id(2), id(3));
         let blocks = HashMap::from([(a, vec![b]), (b, vec![c])]);
         let waiting = HashSet::from([c]); // only 3 waiting
-        assert_eq!(cascade_order(a, &blocks, &waiting), Vec::<Uuid>::new());
+        assert_eq!(
+            cascade_order(a, &blocks, &waiting).await,
+            Vec::<Uuid>::new()
+        );
     }
 
-    #[test]
-    fn non_waiting_intermediate_reachable_when_directly_blocked() {
+    #[tokio::test]
+    async fn non_waiting_intermediate_reachable_when_directly_blocked() {
         // Same graph but 1 *also* directly blocks 3 (1→2, 1→3, 2→3), 2 running.
         // 3 is reached directly from 1, so it is still cancelled even though the
         // 1→2→3 branch is cut at the non-waiting 2.
         let (a, b, c) = (id(1), id(2), id(3));
         let blocks = HashMap::from([(a, vec![b, c]), (b, vec![c])]);
         let waiting = HashSet::from([c]); // 2 running, 3 waiting
-        assert_eq!(cascade_order(a, &blocks, &waiting), vec![c]);
+        assert_eq!(cascade_order(a, &blocks, &waiting).await, vec![c]);
     }
 
-    #[test]
-    fn fan_out_cancels_all_direct_dependents() {
+    #[tokio::test]
+    async fn fan_out_cancels_all_direct_dependents() {
         // 1 blocks 2, 3, 4 directly. Stopping 1 cancels all three.
         let (a, b, c, d) = (id(1), id(2), id(3), id(4));
         let blocks = HashMap::from([(a, vec![b, c, d])]);
         let waiting = HashSet::from([b, c, d]);
-        let mut got = cascade_order(a, &blocks, &waiting);
+        let mut got = cascade_order(a, &blocks, &waiting).await;
         got.sort();
         let mut want = vec![b, c, d];
         want.sort();
         assert_eq!(got, want);
     }
 
-    #[test]
-    fn cycle_terminates_without_rerunning_root() {
+    #[tokio::test]
+    async fn cycle_terminates_without_rerunning_root() {
         // 1→2→3→1. Must terminate; the root is never re-cancelled.
         let (a, b, c) = (id(1), id(2), id(3));
         let blocks = HashMap::from([(a, vec![b]), (b, vec![c]), (c, vec![a])]);
         let waiting = HashSet::from([a, b, c]);
-        assert_eq!(cascade_order(a, &blocks, &waiting), vec![b, c]);
+        assert_eq!(cascade_order(a, &blocks, &waiting).await, vec![b, c]);
     }
 
-    #[test]
-    fn diamond_join_cancelled_once() {
+    #[tokio::test]
+    async fn diamond_join_cancelled_once() {
         // 1→2, 1→3, 2→4, 3→4. The join (4) is cancelled exactly once.
         let (a, b, c, d) = (id(1), id(2), id(3), id(4));
         let blocks = HashMap::from([(a, vec![b, c]), (b, vec![d]), (c, vec![d])]);
         let waiting = HashSet::from([b, c, d]);
-        let cancelled = cascade_order(a, &blocks, &waiting);
+        let cancelled = cascade_order(a, &blocks, &waiting).await;
         assert_eq!(cancelled, vec![b, c, d]);
         assert_eq!(
             cancelled.iter().filter(|&&t| t == d).count(),
             1,
             "join node cancelled exactly once"
         );
+    }
+    #[tokio::test]
+    async fn delayed_relationship_lookup_never_cancels_new_or_resumed_starts() {
+        use std::sync::{Arc, Mutex};
+
+        use tokio::sync::oneshot;
+
+        for resumed in [false, true] {
+            let (a, b, c, d) = (id(1), id(2), id(3), id(4));
+            let old_b = pending(b);
+            let old_c = pending(c);
+            let new_b = pending(b);
+            let new_d = pending(d);
+            let active = Arc::new(Mutex::new(HashSet::from([
+                old_b.execution_process_id,
+                old_c.execution_process_id,
+            ])));
+            let (entered_tx, entered_rx) = oneshot::channel();
+            let (release_tx, release_rx) = oneshot::channel();
+            let mut entered = Some(entered_tx);
+            let mut release = Some(release_rx);
+            let snapshot = vec![old_b.clone(), old_c.clone()];
+            let worker_active = active.clone();
+            let cascade = tokio::spawn(async move {
+                cascade_pending_starts(
+                    a,
+                    snapshot,
+                    move |task| {
+                        let gate = release.take();
+                        let entered = entered.take();
+                        async move {
+                            if let Some(entered) = entered {
+                                entered.send(()).unwrap();
+                            }
+                            if let Some(gate) = gate {
+                                gate.await.unwrap();
+                            }
+                            if task == a {
+                                vec![b, d]
+                            } else if task == b {
+                                vec![c]
+                            } else {
+                                vec![]
+                            }
+                        }
+                    },
+                    move |start| {
+                        std::future::ready(
+                            worker_active
+                                .lock()
+                                .unwrap()
+                                .remove(&start.execution_process_id),
+                        )
+                    },
+                )
+                .await
+            });
+            entered_rx.await.unwrap();
+            {
+                let mut active = active.lock().unwrap();
+                if resumed {
+                    active.remove(&old_b.execution_process_id);
+                }
+                // These starts arrived after the stop response, while cloud IO waited.
+                active.insert(new_b.execution_process_id);
+                active.insert(new_d.execution_process_id);
+            }
+            release_tx.send(()).unwrap();
+            let cancelled = cascade.await.unwrap();
+            assert_eq!(cancelled, if resumed { vec![] } else { vec![b, c] });
+            let active = active.lock().unwrap();
+            assert!(active.contains(&new_b.execution_process_id));
+            assert!(active.contains(&new_d.execution_process_id));
+            assert_eq!(active.contains(&old_c.execution_process_id), resumed);
+        }
     }
 }
 

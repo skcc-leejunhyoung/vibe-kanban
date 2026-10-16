@@ -4,6 +4,8 @@ use sqlx::{FromRow, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
 
+use super::execution_process::{ExecutionProcess, ExecutionProcessStatus};
+
 #[derive(Debug, Error)]
 pub enum PendingExecutionStartError {
     #[error(transparent)]
@@ -26,6 +28,36 @@ pub struct PendingExecutionStart {
 }
 
 impl PendingExecutionStart {
+    /// Competes atomically with the watcher's deletion/claim of the pending row.
+    /// Once claimed for spawn, this must never stop that now-running execution.
+    pub async fn complete_if_pending(
+        pool: &SqlitePool,
+        execution_process_id: Uuid,
+        status: ExecutionProcessStatus,
+    ) -> Result<Option<ExecutionProcess>, PendingExecutionStartError> {
+        let mut tx = pool.begin().await?;
+        let completed = sqlx::query_as::<_, ExecutionProcess>(
+            "UPDATE execution_processes SET status = ?, exit_code = NULL, completed_at = ? \
+             WHERE id = ? AND status = 'running' \
+             AND EXISTS (SELECT 1 FROM pending_execution_starts WHERE execution_process_id = ?) \
+             RETURNING *",
+        )
+        .bind(status)
+        .bind(Utc::now())
+        .bind(execution_process_id)
+        .bind(execution_process_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if completed.is_some() {
+            sqlx::query("DELETE FROM pending_execution_starts WHERE execution_process_id = ?")
+                .bind(execution_process_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(completed)
+    }
+
     pub async fn create(
         pool: &SqlitePool,
         execution_process_id: Uuid,

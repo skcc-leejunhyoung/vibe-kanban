@@ -199,10 +199,20 @@ async fn steer_message(
                     .queued_message_service()
                     .enqueue(session.id, data);
             } else {
-                deployment
+                if deployment
                     .container()
                     .start_followup_for_session(&session, &workspace, &data)
-                    .await?;
+                    .await?
+                    .is_none()
+                {
+                    deployment
+                        .queued_message_service()
+                        .enqueue_front(session.id, data);
+                }
+                // The script may have finished between the guard and enqueue.
+                if let Err(error) = drain_idle_queue(&deployment, &session).await {
+                    tracing::warn!(%error, "Queued steer could not start yet");
+                }
             }
         }
     }
@@ -366,10 +376,18 @@ async fn steer_queued_message(
             // A steer kill may still be in flight; just ensure this message
             // drains next rather than starting a duplicate turn. Truly idle →
             // pull it out of the queue and run it immediately.
-            if deployment.queued_message_service().is_steering(session.id) {
+            if deployment.queued_message_service().is_steering(session.id)
+                || ExecutionProcess::has_running_non_dev_server_processes_for_session(
+                    pool, session.id,
+                )
+                .await?
+            {
                 deployment
                     .queued_message_service()
                     .promote_to_front(session.id, message_id);
+                if let Err(error) = drain_idle_queue(&deployment, &session).await {
+                    tracing::warn!(%error, "Promoted message could not start yet");
+                }
             } else if let Some(msg) = deployment
                 .queued_message_service()
                 .cancel_message(session.id, message_id)

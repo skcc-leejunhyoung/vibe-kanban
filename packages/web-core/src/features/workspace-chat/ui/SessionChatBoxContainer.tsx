@@ -467,6 +467,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Execution state
   const { isAttemptRunning, stopExecution, isStopping, processes } =
     useWorkspaceExecution(workspaceId, sessionId);
+  const isCodingAgentRunning = processes.some(
+    (p) => p.run_reason === 'codingagent' && p.status === 'running'
+  );
 
   // Inject the follow-up process (returned by the send POST) so its turn shows
   // immediately, without waiting for the WS stream to deliver it.
@@ -1665,6 +1668,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       await handleSend();
       return;
     }
+    if (!isCodingAgentRunning) {
+      await handleQueueMessage();
+      return;
+    }
     if ((!localMessage.trim() && !reviewMarkdown) || !executorConfig) return;
     if (!sessionId || !workspaceId) return;
 
@@ -1755,7 +1762,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     }
   }, [
     isAttemptRunning,
+    isCodingAgentRunning,
     handleSend,
+    handleQueueMessage,
     sessionId,
     workspaceId,
     localMessage,
@@ -2321,6 +2330,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onSend: handleSend,
         onQueue: handleQueueMessage,
         onSteer: handleSteer,
+        canSteer: isCodingAgentRunning,
         onCancelQueue: handleCancelQueue,
         onStop: handleStop,
         onPasteFiles: uploadFiles,
@@ -2338,7 +2348,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           startError: m.start_error,
         }))}
       onRemoveQueued={handleRemoveQueued}
-      onSteerQueued={pendingSend ? undefined : handleSteerQueued}
+      onSteerQueued={
+        pendingSend || (isAttemptRunning && !isCodingAgentRunning)
+          ? undefined
+          : handleSteerQueued
+      }
       onEditQueued={handleEditQueued}
       editingQueuedId={editingQueuedId}
       onReorderQueued={handleReorderQueued}

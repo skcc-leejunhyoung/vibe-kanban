@@ -18,6 +18,7 @@ use db::{
         execution_process_repo_state::{
             CreateExecutionProcessRepoState, ExecutionProcessRepoState,
         },
+        pending_execution_start::PendingExecutionStart,
         pending_rate_limit_resume::PendingRateLimitResume,
         repo::Repo,
         scratch::{DraftFollowUpData, Scratch, ScratchType},
@@ -831,6 +832,46 @@ pub trait ContainerService {
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
 
         Ok(())
+    }
+
+    /// Finish only a still-deferred execution, without touching a newer turn.
+    async fn complete_pending_execution(
+        &self,
+        execution_process_id: Uuid,
+        session_id: Uuid,
+        status: ExecutionProcessStatus,
+    ) -> Result<bool, ContainerError> {
+        let _starting = self.lock_session_start(session_id).await;
+        let Some(completed) = PendingExecutionStart::complete_if_pending(
+            &self.db().pool,
+            execution_process_id,
+            status,
+        )
+        .await
+        .map_err(|e| ContainerError::Other(anyhow!(e)))?
+        else {
+            return Ok(false);
+        };
+        if let Err(error) = self
+            .events()
+            .publish_execution_process_update(&completed)
+            .await
+        {
+            tracing::error!(%execution_process_id, %error, "Failed to publish deferred execution completion");
+        }
+        if completed.status == ExecutionProcessStatus::Killed {
+            self.discard_queue_for_unstarted_turn(&completed);
+        }
+        if let Some(msg) = self
+            .msg_stores()
+            .write()
+            .await
+            .remove(&execution_process_id)
+        {
+            msg.push_finished();
+            msg.push(LogMsg::StorageFinished);
+        }
+        Ok(true)
     }
 
     /// Stop the workspace's running processes. `only_session` narrows the kill to
@@ -1651,31 +1692,26 @@ pub trait ContainerService {
     /// payload (a queued message, or a "send now"/steer message). Resumes the
     /// latest agent turn when one exists, otherwise starts an initial request.
     /// Shared by the queue-drain finalize path and the steer route's
-    /// no-running-execution fallback.
+    /// no-running-execution fallback. `None` means another process still owns
+    /// the session; the caller must retain its message in the queue.
     async fn start_followup_for_session(
         &self,
         session: &Session,
         workspace: &Workspace,
         data: &DraftFollowUpData,
-    ) -> Result<ExecutionProcess, ContainerError> {
+    ) -> Result<Option<ExecutionProcess>, ContainerError> {
         self.wait_for_session_ready(session.id).await;
         let starting = self.lock_session_start(session.id).await;
 
-        // Concurrency guard: never start a second coding-agent turn for a session
-        // that already has one running. A steer kill's fallback path (when
-        // `stop_execution` returns child-not-found) and the natural-completion
-        // exit monitor can briefly race to drain the queue; without this they
-        // could both reach here and start two turns on the same session at once.
-        // If a turn is already running, push this message back to the front of
-        // the queue so the in-flight turn's finalize drains it in order, and
-        // return that running process instead of starting a new one.
-        if let Some(running) =
-            ExecutionProcess::find_running_coding_agent_for_session(&self.db().pool, session.id)
-                .await?
+        // The current agent or script owns the queue until its chain ends.
+        // In particular, "send now" must not bypass a sequential setup.
+        if ExecutionProcess::has_running_non_dev_server_processes_for_session(
+            &self.db().pool,
+            session.id,
+        )
+        .await?
         {
-            self.queued_message_service()
-                .enqueue_front(session.id, data.clone());
-            return Ok(running);
+            return Ok(None);
         }
 
         let (record, action) = self
@@ -1685,7 +1721,7 @@ pub trait ContainerService {
         drop(starting);
         self.finish_execution_spawn(workspace, session, &record, &action)
             .await?;
-        Ok(record)
+        Ok(Some(record))
     }
 
     /// Start the session's next queued message unless someone else will: a
@@ -1839,7 +1875,7 @@ pub trait ContainerService {
         session: &Session,
         workspace: &Workspace,
         msg: QueuedMessage,
-    ) -> Result<ExecutionProcess, ContainerError> {
+    ) -> Result<Option<ExecutionProcess>, ContainerError> {
         // Held until the message is back in front on failure, so nothing
         // queued meanwhile starts ahead of it and a turn that fails to spawn
         // leaves the queue alone (see `fail_execution_start`).
@@ -1848,8 +1884,14 @@ pub trait ContainerService {
         let result = self
             .start_followup_for_session(session, workspace, &msg.data)
             .await;
-        if let Err(e) = &result {
-            queue.restore_failed(msg, e.to_string());
+        match &result {
+            Ok(None) => {
+                queue.requeue_front(msg);
+            }
+            Err(e) => {
+                queue.restore_failed(msg, e.to_string());
+            }
+            Ok(Some(_)) => {}
         }
         drop(hold);
         if let Err(e) = self.drain_queue_if_idle(session, workspace).await {

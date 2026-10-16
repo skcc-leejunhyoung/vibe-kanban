@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   SessionChatBox,
   type ExecutionStatus,
@@ -9,7 +9,7 @@ import {
 // editor must stay usable (queueing), stop must be offered, and "send now"
 // must be withheld (no server process to interrupt yet). `creating` keeps the
 // old locked behaviour for new-session / handoff requests.
-function render(status: ExecutionStatus, queued = false) {
+function render(status: ExecutionStatus, queued = false, canSteer = true) {
   return renderToStaticMarkup(
     <SessionChatBox
       status={status}
@@ -21,6 +21,7 @@ function render(status: ExecutionStatus, queued = false) {
         onSend: () => {},
         onQueue: () => {},
         onSteer: () => {},
+        canSteer,
         onCancelQueue: () => {},
         onStop: () => {},
         onPasteFiles: () => {},
@@ -42,6 +43,52 @@ const button = (html: string, label: string) => {
 };
 
 describe('SessionChatBox while a follow-up send is pending', () => {
+  it('offers stop and queue while scripts run, with send now disabled', () => {
+    const html = render('running', true, false);
+    expect(button(html, 'conversation.actions.stop')).toEqual({
+      disabled: false,
+    });
+    expect(button(html, 'conversation.actions.queue')).toEqual({
+      disabled: false,
+    });
+    expect(button(html, 'conversation.actions.sendNow')).toEqual({
+      disabled: true,
+    });
+    expect(button(render('running'), 'conversation.actions.sendNow')).toEqual({
+      disabled: false,
+    });
+  });
+
+  it('queues the send-now keyboard shortcut when only a script is running', () => {
+    const onQueue = vi.fn();
+    const onSteer = vi.fn();
+    let shortcut: (() => void) | undefined;
+    renderToStaticMarkup(
+      <SessionChatBox
+        status="running"
+        editor={{ value: 'next message', onChange: () => {} }}
+        renderEditor={({ onShiftCmdEnter }) => {
+          shortcut = onShiftCmdEnter;
+          return null;
+        }}
+        actions={{
+          onSend: () => {},
+          onQueue,
+          onSteer,
+          canSteer: false,
+          onCancelQueue: () => {},
+          onStop: () => {},
+          onPasteFiles: () => {},
+        }}
+        session={{ sessions: [], onSelectSession: () => {} }}
+      />
+    );
+    expect(shortcut).toBeDefined();
+    shortcut!();
+    expect(onQueue).toHaveBeenCalledOnce();
+    expect(onSteer).not.toHaveBeenCalled();
+  });
+
   it('keeps the editor enabled and offers stop + queue, not send now', () => {
     const html = render('sending');
     expect(html).toContain('<textarea data-editor="1">');

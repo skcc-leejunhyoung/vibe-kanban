@@ -20,7 +20,6 @@ use db::{
         execution_process_logs::ExecutionProcessLogs,
         execution_process_repo_state::ExecutionProcessRepoState,
         merge::{Merge, MergeStatus},
-        pending_execution_start::PendingExecutionStart,
         pending_rate_limit_resume::PendingRateLimitResume,
         repo::Repo,
         scratch::{Scratch, ScratchType},
@@ -3791,49 +3790,16 @@ impl ContainerService for LocalContainerService {
         execution_process: &ExecutionProcess,
         status: ExecutionProcessStatus,
     ) -> Result<(), ContainerError> {
-        // Blocker-gated deferred execution: the row exists with status=Running but
-        // no child was ever spawned (the spawn was deferred until the linked
-        // issue's blockers resolve, see `blocker_watcher`). Cancel the pending
-        // start and mark the process finished instead of failing on the missing
-        // child — this is how a user "stops" a waiting vibe session.
-        if PendingExecutionStart::find_by_process_id(&self.db.pool, execution_process.id)
-            .await
-            .ok()
-            .flatten()
-            .is_some()
-        {
-            PendingExecutionStart::delete_by_process_id(&self.db.pool, execution_process.id)
-                .await
-                .map_err(|e| ContainerError::Other(anyhow!(e)))?;
-            let completed_process = ExecutionProcess::update_completion(
-                &self.db.pool,
+        // If the watcher already claimed it, fall through to the normal stop
+        // path, including its late-child registration guard.
+        if self
+            .complete_pending_execution(
                 execution_process.id,
-                status,
-                None,
+                execution_process.session_id,
+                status.clone(),
             )
-            .await?;
-            if let Err(error) = self
-                .events
-                .publish_execution_process_update(&completed_process)
-                .await
-            {
-                tracing::error!(
-                    execution_process_id = %execution_process.id,
-                    %error,
-                    "Failed to publish deferred execution cancellation"
-                );
-            }
-            if completed_process.status == ExecutionProcessStatus::Killed {
-                self.discard_queue_for_unstarted_turn(execution_process);
-            }
-            if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
-                msg.push_finished();
-                msg.push(LogMsg::StorageFinished);
-            }
-            tracing::info!(
-                "Cancelled deferred (blocker-gated) execution {}",
-                execution_process.id
-            );
+            .await?
+        {
             return Ok(());
         }
 
@@ -5534,6 +5500,254 @@ done
             assert!(!container.queued_message_service.has_queued(session.id));
             assert!(container.queued_message_service.has_queued(sibling.id));
             assert!(!container.has_live_child(record.id).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn followups_wait_for_scripts_without_bypassing_sequential_setup() {
+        use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+
+        for reason in [
+            ExecutionProcessRunReason::SetupScript,
+            ExecutionProcessRunReason::CleanupScript,
+            ExecutionProcessRunReason::ArchiveScript,
+        ] {
+            let (container, session, workspace) = queue_test_container().await;
+            add_test_repo(&container, &workspace).await;
+            let _logs = SessionLogDir(session.id);
+            let dir = tempfile::tempdir().unwrap();
+            let mut script_workspace = workspace.clone();
+            script_workspace.container_ref = Some(dir.path().to_string_lossy().into_owned());
+            let next = (reason == ExecutionProcessRunReason::SetupScript).then(|| {
+                Box::new(
+                    finished_turn(&session, &workspace, ExecutionProcessStatus::Completed)
+                        .execution_process
+                        .executor_action()
+                        .unwrap()
+                        .clone(),
+                )
+            });
+            let script = ExecutorAction::new(
+                ExecutorActionType::ScriptRequest(ScriptRequest {
+                    script: "sleep 60".into(),
+                    language: ScriptRequestLanguage::Bash,
+                    context: ScriptContext::ToolInstallScript,
+                    working_dir: None,
+                }),
+                next,
+            );
+            let record = container
+                .create_execution_record(&script_workspace, &session, &script, &reason)
+                .await
+                .unwrap();
+            container
+                .finish_execution_spawn(&script_workspace, &session, &record, &script)
+                .await
+                .unwrap();
+            let message = container
+                .queued_message_service
+                .enqueue(session.id, follow_up("next", BaseCodingAgent::ClaudeCode));
+            let dequeued = container
+                .queued_message_service
+                .take_next(session.id)
+                .unwrap();
+            let result = container
+                .start_queued_followup(&session, &workspace, dequeued)
+                .await;
+            let early_turns = turn_prompts(&container, session.id).await;
+            let queued = container.queued_message_service.get_queued(session.id);
+            container
+                .try_stop(&script_workspace, false, Some(session.id))
+                .await
+                .unwrap();
+            let monitor = container
+                .take_exit_monitor_handle(&record.id)
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(15), monitor)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(result.unwrap().is_none());
+            assert!(
+                early_turns.is_empty(),
+                "{reason:?} must finish before a new turn"
+            );
+            assert_eq!(queued.len(), 1);
+            assert_eq!(queued[0].id, message.id);
+            assert_eq!(queued[0].data.message, "next");
+            assert!(
+                turn_prompts(&container, session.id).await.is_empty(),
+                "stop must also cancel the chain"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dev_server_does_not_block_followups() {
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let action = finished_turn(&session, &workspace, ExecutionProcessStatus::Completed)
+            .execution_process
+            .executor_action()
+            .unwrap()
+            .clone();
+        container
+            .create_execution_record(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::DevServer,
+            )
+            .await
+            .unwrap();
+        // The deliberately missing worktree prevents launching an actual agent.
+        assert!(
+            container
+                .start_followup_for_session(
+                    &session,
+                    &workspace,
+                    &follow_up("next", BaseCodingAgent::ClaudeCode)
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            turn_prompts(&container, session.id)
+                .await
+                .contains(&"next".to_string())
+        );
+        assert!(!container.queued_message_service.has_queued(session.id));
+    }
+
+    #[tokio::test]
+    async fn pending_cancel_and_resume_claim_have_only_one_winner() {
+        use db::models::pending_execution_start::PendingExecutionStart;
+
+        for watcher_first in [false, true] {
+            let (container, session, workspace) = queue_test_container().await;
+            add_test_repo(&container, &workspace).await;
+            let action = finished_turn(&session, &workspace, ExecutionProcessStatus::Completed)
+                .execution_process
+                .executor_action()
+                .unwrap()
+                .clone();
+            let record = container
+                .create_execution_record(
+                    &workspace,
+                    &session,
+                    &action,
+                    &ExecutionProcessRunReason::CodingAgent,
+                )
+                .await
+                .unwrap();
+            let pool = &container.db.pool;
+            PendingExecutionStart::create(
+                pool,
+                record.id,
+                workspace.id,
+                session.id,
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+            container
+                .queued_message_service
+                .enqueue(session.id, follow_up("queued", BaseCodingAgent::ClaudeCode));
+            if watcher_first {
+                assert_eq!(
+                    PendingExecutionStart::delete_by_process_id(pool, record.id)
+                        .await
+                        .unwrap(),
+                    1
+                );
+            }
+            let cancelled = container
+                .complete_pending_execution(record.id, session.id, ExecutionProcessStatus::Killed)
+                .await
+                .unwrap();
+            assert_eq!(cancelled, !watcher_first);
+            assert_eq!(
+                PendingExecutionStart::delete_by_process_id(pool, record.id)
+                    .await
+                    .unwrap(),
+                0
+            );
+            let actual = ExecutionProcess::find_by_id(pool, record.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                actual.status,
+                if watcher_first {
+                    ExecutionProcessStatus::Running
+                } else {
+                    ExecutionProcessStatus::Killed
+                }
+            );
+            assert_eq!(
+                container.queued_message_service.has_queued(session.id),
+                watcher_first
+            );
+            assert_eq!(
+                container.msg_stores.read().await.contains_key(&record.id),
+                watcher_first
+            );
+
+            // A delayed second cancellation must leave a replacement and its queue alone.
+            let replacement = container
+                .create_execution_record(
+                    &workspace,
+                    &session,
+                    &action,
+                    &ExecutionProcessRunReason::CodingAgent,
+                )
+                .await
+                .unwrap();
+            PendingExecutionStart::create(
+                pool,
+                replacement.id,
+                workspace.id,
+                session.id,
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+            let fresh = container
+                .queued_message_service
+                .enqueue(session.id, follow_up("fresh", BaseCodingAgent::ClaudeCode));
+            assert!(
+                !container
+                    .complete_pending_execution(
+                        record.id,
+                        session.id,
+                        ExecutionProcessStatus::Killed
+                    )
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                ExecutionProcess::find_by_id(pool, replacement.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                ExecutionProcessStatus::Running
+            );
+            assert!(
+                PendingExecutionStart::find_by_process_id(pool, replacement.id)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                container
+                    .queued_message_service
+                    .get_queued(session.id)
+                    .iter()
+                    .any(|m| m.id == fresh.id)
+            );
         }
     }
 
