@@ -202,7 +202,7 @@ impl CodingAgentTurn {
                  AND seen = 1"#,
         )
         .bind(now)
-        .bind(execution_process_id.to_string())
+        .bind(execution_process_id)
         .execute(pool)
         .await?;
 

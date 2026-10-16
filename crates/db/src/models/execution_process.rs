@@ -125,6 +125,21 @@ pub struct MissingBeforeContext {
 }
 
 impl ExecutionProcess {
+    pub async fn has_newer_coding_agent_process(
+        pool: &SqlitePool,
+        execution_process_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM execution_processes newer \
+             JOIN execution_processes completed ON newer.session_id = completed.session_id \
+             WHERE completed.id = ? AND newer.run_reason = 'codingagent' \
+             AND newer.rowid > completed.rowid)",
+        )
+        .bind(execution_process_id)
+        .fetch_one(pool)
+        .await
+    }
+
     /// Find execution process by ID
     pub async fn find_by_id(pool: &SqlitePool, id: Uuid) -> Result<Option<Self>, sqlx::Error> {
         sqlx::query_as!(

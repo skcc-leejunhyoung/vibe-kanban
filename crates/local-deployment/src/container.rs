@@ -674,6 +674,7 @@ pub struct LocalContainerService {
     exit_monitor_handles: Arc<RwLock<HashMap<Uuid, JoinHandle<()>>>>,
     output_pipeline: Arc<OutputPipelineBarrier>,
     session_finalization: Arc<SessionFinalizationBarrier>,
+    deferred_finalizations: Arc<RwLock<HashMap<Uuid, DeferredFinalization>>>,
     workspace_touch_times: Arc<RwLock<HashMap<Uuid, Instant>>>,
     container_locks: ContainerLocks,
     session_start_locks: ContainerLocks,
@@ -699,6 +700,13 @@ struct PostCompletionPlan {
     /// draining any queued follow-up. `None` => leave finalization to a later
     /// execution in the chain.
     finalize_with_queue: Option<bool>,
+}
+
+#[derive(Clone, Copy)]
+struct DeferredFinalization {
+    execution_process_id: Uuid,
+    has_chained_follow_up: bool,
+    keep_queue: bool,
 }
 
 impl LocalContainerService {
@@ -744,6 +752,7 @@ impl LocalContainerService {
             exit_monitor_handles,
             output_pipeline,
             session_finalization,
+            deferred_finalizations: Default::default(),
             workspace_touch_times,
             container_locks,
             session_start_locks,
@@ -1691,6 +1700,9 @@ impl LocalContainerService {
                 // nobody else to start it.
                 if let Some(hold) = drain_hold {
                     drop(hold);
+                    if let Err(e) = container.resume_deferred_finalization(session_id).await {
+                        tracing::error!("Failed to resume deferred finalization: {e}");
+                    }
                     if let Err(e) = container
                         .drain_queue_if_idle(&ctx.session, &ctx.workspace)
                         .await
@@ -2248,7 +2260,11 @@ impl LocalContainerService {
                 .start_queued_followup(&ctx.session, &ctx.workspace, queued_msg)
                 .await
             {
-                Ok(_) => return Ok(()),
+                Ok(Some(_)) => return Ok(()),
+                Ok(None) => {
+                    self.defer_finalization(ctx, false, true).await;
+                    return Ok(());
+                }
                 Err(e) => {
                     tracing::error!(
                         "Failed to start steered follow-up for session {}: {}; falling back to normal completion handling",
@@ -2366,6 +2382,77 @@ impl LocalContainerService {
         )
     }
 
+    async fn defer_finalization(
+        &self,
+        ctx: &ExecutionContext,
+        has_chained_follow_up: bool,
+        keep_queue: bool,
+    ) {
+        self.deferred_finalizations.write().await.insert(
+            ctx.session.id,
+            DeferredFinalization {
+                execution_process_id: ctx.execution_process.id,
+                has_chained_follow_up,
+                keep_queue,
+            },
+        );
+    }
+
+    async fn resume_deferred_finalization(&self, session_id: Uuid) -> Result<(), ContainerError> {
+        if !self
+            .deferred_finalizations
+            .read()
+            .await
+            .contains_key(&session_id)
+        {
+            return Ok(());
+        }
+        let starting = self.lock_session_start(session_id).await;
+        if self.queued_message_service.is_drain_held(session_id)
+            || ExecutionProcess::has_running_non_dev_server_processes_for_session(
+                &self.db.pool,
+                session_id,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+        let Some(pending) = self
+            .deferred_finalizations
+            .read()
+            .await
+            .get(&session_id)
+            .copied()
+        else {
+            return Ok(());
+        };
+        // A newer coding turn owns completion, even if it already ended.
+        if ExecutionProcess::has_newer_coding_agent_process(
+            &self.db.pool,
+            pending.execution_process_id,
+        )
+        .await?
+        {
+            self.deferred_finalizations
+                .write()
+                .await
+                .remove(&session_id);
+            return Ok(());
+        }
+        let ctx =
+            ExecutionProcess::load_context(&self.db.pool, pending.execution_process_id).await?;
+        self.deferred_finalizations
+            .write()
+            .await
+            .remove(&session_id);
+        let hold = self.queued_message_service.hold_drain(session_id);
+        drop(starting);
+        self.finalize_with_queued_followup(&ctx, pending.has_chained_follow_up, pending.keep_queue)
+            .await;
+        drop(hold);
+        Ok(())
+    }
+
     /// Terminal handling for a completed execution: consume the session's
     /// queued follow-up message if one is present (and the execution wasn't
     /// failed/killed), otherwise finalize the task. Also re-marks the coding
@@ -2435,17 +2522,23 @@ impl LocalContainerService {
             }
 
             // Execute the queued follow-up
-            if let Err(e) = self
+            match self
                 .start_queued_followup(&ctx.session, &ctx.workspace, queued_msg)
                 .await
             {
-                tracing::error!("Failed to start queued follow-up: {}", e);
-                // The message is back in the queue, waiting for the user;
-                // finalize this turn.
-                self.finalize_task(ctx).await;
-                self.vibe_on_finalize(ctx).await;
-            } else {
-                started_queued_follow_up = true;
+                Ok(Some(_)) => started_queued_follow_up = true,
+                Ok(None) => {
+                    self.defer_finalization(ctx, has_chained_follow_up, keep_queue)
+                        .await;
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to start queued follow-up: {}", e);
+                    // The message is back in the queue, waiting for the user;
+                    // finalize this turn.
+                    self.finalize_task(ctx).await;
+                    self.vibe_on_finalize(ctx).await;
+                }
             }
         } else {
             self.finalize_task(ctx).await;
@@ -3517,6 +3610,7 @@ impl ContainerService for LocalContainerService {
             .handle_execution_post_completion(&ctx, ctx.execution_process.exit_code)
             .await;
         drop(drain_hold);
+        self.resume_deferred_finalization(ctx.session.id).await?;
         if let Err(e) = self.drain_queue_if_idle(&ctx.session, &ctx.workspace).await {
             tracing::error!("Failed to start queued follow-up: {}", e);
         }
@@ -4967,6 +5061,7 @@ done
             exit_monitor_handles: Default::default(),
             output_pipeline: Default::default(),
             session_finalization: Default::default(),
+            deferred_finalizations: Default::default(),
             workspace_touch_times: Default::default(),
             container_locks: Default::default(),
             session_start_locks: Default::default(),
@@ -5345,6 +5440,170 @@ done
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn deferred_followup_finalizes_after_parallel_setup_unless_a_new_turn_owns_completion() {
+        use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+        use services::services::notification::{PushNotifier, set_global_push_notifier};
+
+        struct Notifications(Arc<std::sync::Mutex<Vec<Uuid>>>);
+        #[async_trait]
+        impl PushNotifier for Notifications {
+            async fn send(&self, _: &str, _: &str, workspace_id: Option<Uuid>) {
+                if let Some(id) = workspace_id {
+                    self.0.lock().unwrap().push(id);
+                }
+            }
+        }
+        let notifications = Arc::new(std::sync::Mutex::new(Vec::new()));
+        set_global_push_notifier(Arc::new(Notifications(notifications.clone())));
+
+        for scenario in ["cancelled", "held after start failure", "superseded"] {
+            let (container, session, workspace) = queue_test_container().await;
+            container.config.write().await.notifications.push_enabled = true;
+            add_test_repo(&container, &workspace).await;
+            let _logs = SessionLogDir(session.id);
+            let turn = finished_turn(&session, &workspace, ExecutionProcessStatus::Completed);
+            let action = turn.execution_process.executor_action().unwrap().clone();
+            let script = ExecutorAction::new(
+                ExecutorActionType::ScriptRequest(ScriptRequest {
+                    script: "true".into(),
+                    language: ScriptRequestLanguage::Bash,
+                    context: ScriptContext::SetupScript,
+                    working_dir: None,
+                }),
+                None,
+            );
+            let setup = container
+                .create_execution_record(
+                    &workspace,
+                    &session,
+                    &script,
+                    &ExecutionProcessRunReason::SetupScript,
+                )
+                .await
+                .unwrap();
+            let record = container
+                .create_execution_record(
+                    &workspace,
+                    &session,
+                    &action,
+                    &ExecutionProcessRunReason::CodingAgent,
+                )
+                .await
+                .unwrap();
+            ExecutionProcess::update_completion(
+                &container.db.pool,
+                record.id,
+                ExecutionProcessStatus::Completed,
+                Some(0),
+            )
+            .await
+            .unwrap();
+            let ctx = ExecutionProcess::load_context(&container.db.pool, record.id)
+                .await
+                .unwrap();
+            CodingAgentTurn::mark_seen_by_workspace_id(&container.db.pool, workspace.id)
+                .await
+                .unwrap();
+            let queue = &container.queued_message_service;
+            let queued = queue.enqueue(session.id, follow_up("next", BaseCodingAgent::Codex));
+            container
+                .finalize_with_queued_followup(&ctx, false, false)
+                .await;
+            assert!(
+                container
+                    .deferred_finalizations
+                    .read()
+                    .await
+                    .contains_key(&session.id)
+            );
+            container
+                .resume_deferred_finalization(session.id)
+                .await
+                .unwrap();
+            assert!(
+                !notifications.lock().unwrap().contains(&workspace.id),
+                "{scenario}: finalized before setup ended"
+            );
+            if scenario != "held after start failure" {
+                queue.cancel_message(session.id, queued.id).unwrap();
+            }
+            if scenario == "superseded" {
+                let newer = container
+                    .create_execution_record(
+                        &workspace,
+                        &session,
+                        &action,
+                        &ExecutionProcessRunReason::CodingAgent,
+                    )
+                    .await
+                    .unwrap();
+                ExecutionProcess::update_completion(
+                    &container.db.pool,
+                    newer.id,
+                    ExecutionProcessStatus::Completed,
+                    Some(0),
+                )
+                .await
+                .unwrap();
+            }
+            container.output_pipeline.mark_ready(setup.id).await;
+            let (exit, exited) = tokio::sync::oneshot::channel();
+            let monitor = container.spawn_exit_monitor(
+                &setup.id,
+                session.id,
+                Some(exited),
+                Some(queue.hold_drain(session.id)),
+            );
+            exit.send(ExecutorExitResult::Success).unwrap();
+            tokio::time::timeout(Duration::from_secs(15), monitor)
+                .await
+                .unwrap()
+                .unwrap();
+            container
+                .resume_deferred_finalization(session.id)
+                .await
+                .unwrap();
+            assert!(
+                !container
+                    .deferred_finalizations
+                    .read()
+                    .await
+                    .contains_key(&session.id)
+            );
+            assert_eq!(
+                notifications
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|id| **id == workspace.id)
+                    .count(),
+                usize::from(scenario != "superseded"),
+                "{scenario}: completion must be delivered exactly once"
+            );
+            let turn = CodingAgentTurn::find_by_execution_process_id(&container.db.pool, record.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                turn.seen,
+                scenario == "superseded",
+                "{scenario}: terminal turn becomes unread"
+            );
+            if scenario == "held after start failure" {
+                let remaining = queue.get_queued(session.id);
+                assert_eq!(remaining[0].id, queued.id);
+                assert!(
+                    remaining[0]
+                        .start_error
+                        .as_deref()
+                        .unwrap()
+                        .contains(MISMATCH)
+                );
+            }
+        }
     }
 
     #[tokio::test]
