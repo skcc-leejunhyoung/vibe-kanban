@@ -13,14 +13,14 @@ vi.mock('@/shared/lib/remoteApi', () => ({
 
 const row = { id: 'issue-1', project_id: 'project', title: 'before' };
 const json = (body: unknown) => new Response(JSON.stringify(body));
-const snapshot = (title: string) =>
+const snapshotRows = (rows: Array<Record<string, unknown>>) =>
   new Response(
     JSON.stringify([
-      {
-        key: row.id,
-        value: { ...row, title },
+      ...rows.map((value) => ({
+        key: value.id,
+        value,
         headers: { operation: 'insert' },
-      },
+      })),
       { headers: { control: 'up-to-date' } },
     ]),
     {
@@ -36,6 +36,7 @@ const snapshot = (title: string) =>
       },
     }
   );
+const snapshot = (title: string) => snapshotRows([{ ...row, title }]);
 
 let counter = 0;
 let fetcher: ReturnType<typeof vi.fn>;
@@ -225,4 +226,140 @@ it('reads again after a write when refresh was already in flight', async () => {
   expect(readCount).toBe(2);
   expect(persisted).toHaveBeenCalledOnce();
   expect(collection.toArray[0].title).toBe('saved');
+});
+
+it.each(['insert', 'update', 'delete'] as const)(
+  'confirms a saved %s when Electric reconnects before the REST poll completes',
+  async (operation) => {
+    const created = { ...row, id: 'created', title: 'new' };
+    const savedRows =
+      operation === 'insert'
+        ? [row, created]
+        : operation === 'update'
+          ? [{ ...row, title: 'saved' }]
+          : [];
+    let reads = 0;
+    vi.mocked(makeRequest).mockImplementation(async (path) => {
+      if (!path.startsWith('/v1/fallback/')) return json({ txid: 987 });
+      if (++reads === 1) return new Promise<Response>(() => {});
+      return json({ issues: savedRows });
+    });
+    const transaction =
+      operation === 'insert'
+        ? collection.insert(created)
+        : operation === 'delete'
+          ? collection.delete(row.id)
+          : collection.update(row.id, (draft) => {
+              draft.title = 'saved';
+            });
+    const persisted = vi.fn();
+    const failed = vi.fn();
+    void transaction.isPersisted.promise.then(persisted, failed);
+    await vi.advanceTimersByTimeAsync(0);
+
+    fetcher.mockImplementationOnce(async () => snapshotRows(savedRows));
+    retryShapeSource(collection);
+    await vi.advanceTimersByTimeAsync(5001);
+
+    expect(failed).not.toHaveBeenCalled();
+    expect(persisted).toHaveBeenCalledOnce();
+    expect(collection.toArray).toEqual(savedRows);
+  }
+);
+
+it.each([
+  ['2026-10-16T00:00:00Z', true],
+  ['2026-10-16T09:00:00+09:00', true],
+  ['2026-10-17T00:00:00Z', false],
+] as const)(
+  'confirms date writes by their instant when REST returns %s',
+  async (storedDate, matches) => {
+    vi.mocked(makeRequest).mockImplementation(async (path) =>
+      path.startsWith('/v1/fallback/')
+        ? json({ issues: [{ ...row, start_date: storedDate }] })
+        : json({ txid: 987 })
+    );
+    const transaction = collection.update(row.id, (draft) => {
+      draft.start_date = '2026-10-16T00:00:00.000Z';
+    });
+    const persisted = vi.fn();
+    const failed = vi.fn();
+    void transaction.isPersisted.promise.then(persisted, failed);
+    await vi.advanceTimersByTimeAsync(0);
+    retryShapeSource(collection);
+    await vi.advanceTimersByTimeAsync(5001);
+
+    expect(persisted).toHaveBeenCalledTimes(matches ? 1 : 0);
+    expect(failed).toHaveBeenCalledTimes(matches ? 0 : 1);
+  }
+);
+
+it.each([true, false])(
+  'keeps a confirming REST read alive and resumes probes after confirmation (saved: %s)',
+  async (saved) => {
+    let resolveRead!: (response: Response) => void;
+    let resolveProbe!: (response: Response) => void;
+    let readSignal!: AbortSignal;
+    let reads = 0;
+    vi.mocked(makeRequest).mockImplementation(async (path, init) => {
+      if (!path.startsWith('/v1/fallback/')) return json({ txid: 987 });
+      if (++reads === 1) {
+        readSignal = init!.signal!;
+        return new Promise<Response>((resolve) => {
+          resolveRead = resolve;
+        });
+      }
+      return json({ issues: [{ ...row, title: 'saved' }] });
+    });
+    fetcher.mockImplementationOnce(
+      () => new Promise<Response>((resolve) => (resolveProbe = resolve))
+    );
+    const transaction = collection.update(row.id, (draft) => {
+      draft.title = 'saved';
+    });
+    const persisted = vi.fn();
+    const failed = vi.fn();
+    void transaction.isPersisted.promise.then(persisted, failed);
+    await vi.advanceTimersByTimeAsync(0);
+    retryShapeSource(collection);
+    await vi.advanceTimersByTimeAsync(5001);
+
+    resolveProbe(snapshot('before'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readSignal.aborted).toBe(false);
+    expect(persisted).not.toHaveBeenCalled();
+    expect(failed).not.toHaveBeenCalled();
+    resolveRead(
+      json({ issues: [{ ...row, title: saved ? 'saved' : 'before' }] })
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(persisted).toHaveBeenCalledTimes(saved ? 1 : 0);
+    expect(failed).toHaveBeenCalledTimes(saved ? 0 : 1);
+    expect(collection.toArray[0].title).toBe(saved ? 'saved' : 'before');
+
+    fetcher.mockImplementationOnce(async () => snapshot('reconnected'));
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(collection.toArray[0].title).toBe('reconnected');
+    const requests = vi.mocked(makeRequest).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_001);
+    expect(makeRequest).toHaveBeenCalledTimes(requests);
+  }
+);
+
+it('does not normalize date-looking text when confirming an ordinary string field', async () => {
+  vi.mocked(makeRequest).mockImplementation(async (path) =>
+    path.startsWith('/v1/fallback/')
+      ? json({ issues: [{ ...row, title: '2026-10-16T00:00:00Z' }] })
+      : json({ txid: 987 })
+  );
+  const transaction = collection.update(row.id, (draft) => {
+    draft.title = '2026-10-16T00:00:00.000Z';
+  });
+  const failure = expect(transaction.isPersisted.promise).rejects.toThrow(
+    'Timeout waiting for txId'
+  );
+  await vi.advanceTimersByTimeAsync(0);
+  retryShapeSource(collection);
+  await vi.advanceTimersByTimeAsync(5001);
+  await failure;
 });

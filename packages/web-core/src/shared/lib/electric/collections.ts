@@ -23,6 +23,7 @@ type SourceRuntime = {
   mode: SourceMode;
   fallbackLocked: boolean;
   fallbackLockedAt: number | null;
+  pendingConfirmations: number;
   refreshers: Set<(afterMutation?: boolean) => Promise<void>>;
   fallbackSwitchers: Set<() => void>;
   /** Sessions currently on the fallback that can probe Electric on demand. */
@@ -268,6 +269,7 @@ function getOrCreateSourceRuntime(sourceKey: string): SourceRuntime {
     mode: 'electric',
     fallbackLocked: false,
     fallbackLockedAt: null,
+    pendingConfirmations: 0,
     refreshers: new Set(),
     fallbackSwitchers: new Set(),
     probeTriggers: new Set(),
@@ -802,6 +804,12 @@ function createHybridSync(args: {
         // is trusted to take over from the fallback.
         if (isCleanedUp || probe !== state) return;
         if (args.errors.streamErrorCount !== errorsAtStart) return;
+        // A probe must not cancel the REST read confirming an accepted write.
+        if (runtime.pendingConfirmations > 0) {
+          discardProbe();
+          scheduleProbe();
+          return;
+        }
 
         state.adopted = true;
         probe = null;
@@ -957,22 +965,38 @@ function confirmFromFallback<T extends MutationFnParams>(
       // A txid timeout happens after the API accepted the write. A refresh
       // can replace its stream, so accept a REST snapshot proving the result.
       if (!(error instanceof TimeoutWaitingForTxIdError)) throw error;
-      await refreshFallbackSource(sourceKey);
-      const rows = fallbackSnapshotCache.get(sourceKey);
-      if (!rows) throw error;
-      const byKey = new Map(rows.map((row) => [getRowKey(row), row]));
-      const confirmed = params.transaction.mutations.every((mutation) => {
-        const row = byKey.get(String(mutation.key));
-        if (operation === 'delete') return !row;
-        if (!row) return false;
-        const expected = (
-          operation === 'insert' ? mutation.modified : mutation.changes
-        ) as Record<string, unknown>;
-        return Object.entries(expected).every(
-          ([key, value]) => value === undefined || isEqual(row[key], value)
-        );
-      });
-      if (!confirmed) throw error;
+      const runtime = getOrCreateSourceRuntime(sourceKey);
+      runtime.pendingConfirmations += 1;
+      try {
+        invalidateFallbackCache(sourceKey);
+        lockSourceToFallback(sourceKey);
+        await refreshFallbackSource(sourceKey);
+        const rows = fallbackSnapshotCache.get(sourceKey);
+        if (!rows) throw error;
+        const byKey = new Map(rows.map((row) => [getRowKey(row), row]));
+        const confirmed = params.transaction.mutations.every((mutation) => {
+          const row = byKey.get(String(mutation.key));
+          if (operation === 'delete') return !row;
+          if (!row) return false;
+          const expected = (
+            operation === 'insert' ? mutation.modified : mutation.changes
+          ) as Record<string, unknown>;
+          return Object.entries(expected).every(([key, value]) => {
+            const actual = row[key];
+            if (value === undefined || isEqual(actual, value)) return true;
+            return (
+              /_(date|at)$/.test(key) &&
+              typeof value === 'string' &&
+              typeof actual === 'string' &&
+              Number.isFinite(Date.parse(value)) &&
+              Date.parse(value) === Date.parse(actual)
+            );
+          });
+        });
+        if (!confirmed) throw error;
+      } finally {
+        runtime.pendingConfirmations -= 1;
+      }
     }
   };
 }
