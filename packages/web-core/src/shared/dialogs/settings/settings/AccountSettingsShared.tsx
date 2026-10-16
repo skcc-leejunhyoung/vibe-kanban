@@ -167,12 +167,12 @@ export async function registerLocalAccountHost(
   const replace =
     replaceGeneration !== undefined &&
     current.registration?.generation === replaceGeneration;
-  if (activated && !replace) {
-    // A lost success response must not replace the completed registration again.
+  if (activated && !replace && current.relay_started) {
+    // Activation can commit before config save and relay startup complete.
     resetLocalSelfHost();
     return current;
   }
-  // Resume a persisted transition instead of issuing another credential on retry.
+  // Resume unfinished local startup without issuing another credential on retry.
   return localHostRegistration('POST', replace && activated);
 }
 

@@ -14,7 +14,11 @@ export type ReportPreviewPortsRequest = { ports: Array<number>, };
 
 export type AuthorizeHostPreviewRequest = { preview_id: string, port: number, };
 
-export type AccountHostStatus = { account_mode: boolean, api_base: string | null, registration: AccountHostRegistration | null, };
+export type AccountHostStatus = { account_mode: boolean,
+/**
+ * The local relay session has started; this does not imply it is online.
+ */
+relay_started: boolean, api_base: string | null, registration: AccountHostRegistration | null, };
 
 export type RegisterAccountHostRequest = { request_id: string,
 /**

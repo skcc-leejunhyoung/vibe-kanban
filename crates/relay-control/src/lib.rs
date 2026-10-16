@@ -42,11 +42,45 @@ impl RelayControl {
         token
     }
 
+    /// Whether the relay session was started, including while it reconnects.
+    pub async fn is_running(&self) -> bool {
+        self.shutdown
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|token| !token.is_cancelled())
+    }
+
     /// Cancel the current relay session if one is running.
     pub async fn stop(&self) {
         let mut guard = self.shutdown.write().await;
         if let Some(token) = guard.take() {
             token.cancel();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn running_state_tracks_start_stop_and_cancelled_sessions() {
+        let control = RelayControl::new();
+        assert!(!control.is_running().await);
+
+        let first = control.reset().await;
+        assert!(control.is_running().await);
+        let second = control.reset().await;
+        assert!(first.is_cancelled());
+        assert!(control.is_running().await);
+
+        second.cancel();
+        assert!(!control.is_running().await);
+        let third = control.reset().await;
+        assert!(control.is_running().await);
+        control.stop().await;
+        assert!(third.is_cancelled());
+        assert!(!control.is_running().await);
     }
 }

@@ -131,6 +131,7 @@ function render(node: ReactNode) {
 }
 const registration: AccountHostStatus = {
   account_mode: true,
+  relay_started: true,
   api_base: 'https://central.test',
   registration: {
     host_id: 'self',

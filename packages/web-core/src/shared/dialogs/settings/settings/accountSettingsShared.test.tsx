@@ -177,6 +177,7 @@ describe('registration retry and ownership', () => {
   function localStatus(mode: string | null, owner = 'alice') {
     return {
       account_mode: true,
+      relay_started: mode === 'account',
       registration: mode
         ? {
             host_id: 'host',
@@ -286,6 +287,93 @@ describe('registration retry and ownership', () => {
       fetch.mock.calls.filter(([, init]) => init.method === 'POST')
     ).toHaveLength(1);
     expect(resetLocalSelfHost).toHaveBeenCalledTimes(2);
+  });
+  it.each([undefined, 3])(
+    'resumes the relay after activation commits but config save fails (generation %s)',
+    async (replacement) => {
+      let generation = 3;
+      let activated = replacement !== undefined;
+      let relayStarted = replacement !== undefined;
+      let configSaveFails = true;
+      const fetch = vi.fn(async (url: string, init: RequestInit) => {
+        const status = () => {
+          const result = {
+            ...localStatus(activated ? 'account' : null),
+            relay_started: relayStarted,
+          };
+          if (result.registration) result.registration.generation = generation;
+          return respond(result);
+        };
+        if (init.method === 'GET') return status();
+        relayStarted = false;
+        if (url.endsWith('?replace=true')) generation++;
+        activated = true;
+        // The route persists activation before saving config and starting relay.
+        if (configSaveFails) {
+          configSaveFails = false;
+          return new Response(
+            JSON.stringify({ success: false, message: 'config save failed' }),
+            { status: 500 }
+          );
+        }
+        relayStarted = true;
+        return status();
+      });
+      vi.stubGlobal('fetch', fetch);
+      await expect(
+        registrationAction.register(replacement, () => true)
+      ).rejects.toThrow('config save failed');
+      const activatedGeneration = generation;
+      const result = await registrationAction.register(generation, () => true);
+      expect(result.registration?.generation).toBe(activatedGeneration);
+      expect(generation).toBe(activatedGeneration);
+      expect(relayStarted).toBe(true);
+      expect(fetch.mock.calls[3]).toEqual([
+        '/api/relay-auth/account/registration',
+        { method: 'POST' },
+      ]);
+    }
+  );
+  it('keeps local startup failures explicit on subsequent manual retries', async () => {
+    const fetch = vi.fn(async (_url: string, init: RequestInit) =>
+      init.method === 'GET'
+        ? respond({ ...localStatus('account'), relay_started: false })
+        : new Response(
+            JSON.stringify({ success: false, message: 'config save failed' }),
+            { status: 500 }
+          )
+    );
+    vi.stubGlobal('fetch', fetch);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(
+        registrationAction.register(undefined, () => true)
+      ).rejects.toThrow('config save failed');
+    }
+    expect(fetch.mock.calls.map(([url, init]) => [url, init.method])).toEqual([
+      ['/api/relay-auth/account/registration', 'GET'],
+      ['/api/relay-auth/account/registration', 'POST'],
+      ['/api/relay-auth/account/registration', 'GET'],
+      ['/api/relay-auth/account/registration', 'POST'],
+    ]);
+  });
+  it('finishes startup conservatively when an older backend omits its state', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            success: true,
+            data: { ...localStatus('account'), relay_started: undefined },
+          })
+        )
+      )
+      .mockResolvedValueOnce(respond(localStatus('account')));
+    vi.stubGlobal('fetch', fetch);
+    await registerLocalAccountHost('alice', undefined, () => true);
+    expect(fetch.mock.calls[1]).toEqual([
+      '/api/relay-auth/account/registration',
+      { method: 'POST' },
+    ]);
   });
   it('still permits a fresh explicit recovery of the reconciled generation', async () => {
     const current = localStatus('account');

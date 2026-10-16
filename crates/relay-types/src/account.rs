@@ -32,6 +32,9 @@ pub struct AuthorizeHostPreviewRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct AccountHostStatus {
     pub account_mode: bool,
+    /// The local relay session has started; this does not imply it is online.
+    #[serde(default)]
+    pub relay_started: bool,
     pub api_base: Option<String>,
     pub registration: Option<AccountHostRegistration>,
 }

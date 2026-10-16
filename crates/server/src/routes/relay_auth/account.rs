@@ -38,6 +38,7 @@ async fn status(
     let state = account_registration::read(&account_host_registration_path())?;
     Ok(Json(ApiResponse::success(AccountHostStatus {
         account_mode: deployment.relay_signing().account_mode(),
+        relay_started: deployment.relay_control().is_running().await,
         api_base: state
             .as_ref()
             .map(|s| s.api_base.clone())
@@ -70,6 +71,7 @@ async fn register(
     relay_registration::spawn_relay(&deployment).await;
     Ok(Json(ApiResponse::success(AccountHostStatus {
         account_mode: true,
+        relay_started: deployment.relay_control().is_running().await,
         api_base: deployment.remote_info().get_api_base(),
         registration: Some(registration),
     })))
