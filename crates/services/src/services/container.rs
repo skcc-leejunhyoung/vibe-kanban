@@ -1724,6 +1724,10 @@ pub trait ContainerService {
         Ok(Some(record))
     }
 
+    async fn resume_deferred_finalization(&self, _session_id: Uuid) -> Result<(), ContainerError> {
+        Ok(())
+    }
+
     /// Start the session's next queued message unless someone else will: a
     /// running or finishing process drains the queue when it ends, a steer
     /// runs its own message, and a pending usage-limit resume runs before the
@@ -1759,12 +1763,12 @@ pub trait ContainerService {
         // Hold the drain until the start settles, as `start_queued_followup`
         // does.
         let hold = queue.hold_drain(session.id);
-        let started = match self
+        let created = self
             .create_followup_record(session, workspace, &queued.data)
-            .await
-        {
+            .await;
+        drop(starting);
+        let started = match created {
             Ok((record, action)) => {
-                drop(starting);
                 if let Err(e) = Scratch::delete(pool, session.id, &ScratchType::DraftFollowUp).await
                 {
                     tracing::warn!("Failed to delete scratch after consuming queued message: {e}");
@@ -1779,6 +1783,9 @@ pub trait ContainerService {
             queue.restore_failed(queued, e.to_string());
         }
         drop(hold);
+        if let Err(e) = self.resume_deferred_finalization(session.id).await {
+            tracing::error!("Failed to resume deferred completion: {e}");
+        }
         let record = started?;
         // The new turn holds the drain now, unless it already ended.
         if let Err(e) = self.drain_queue_if_idle(session, workspace).await {
@@ -1894,6 +1901,9 @@ pub trait ContainerService {
             Ok(Some(_)) => {}
         }
         drop(hold);
+        if let Err(e) = self.resume_deferred_finalization(session.id).await {
+            tracing::error!("Failed to resume deferred completion: {e}");
+        }
         if let Err(e) = self.drain_queue_if_idle(session, workspace).await {
             tracing::error!("Failed to start queued follow-up: {e}");
         }

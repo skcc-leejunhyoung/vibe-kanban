@@ -2426,13 +2426,20 @@ impl LocalContainerService {
         else {
             return Ok(());
         };
-        // A newer coding turn owns completion, even if it already ended.
-        if ExecutionProcess::has_newer_coding_agent_process(
+        let newer = ExecutionProcess::find_newer_coding_agent_processes(
             &self.db.pool,
             pending.execution_process_id,
         )
-        .await?
-        {
+        .await?;
+        let monitors = self.exit_monitor_handles.read().await;
+        // A failed spawn has no monitor to take over completion.
+        let superseded = newer.iter().any(|(id, status, exit_code)| {
+            *status != ExecutionProcessStatus::Failed
+                || exit_code.is_some()
+                || monitors.contains_key(id)
+        });
+        drop(monitors);
+        if superseded {
             self.deferred_finalizations
                 .write()
                 .await
@@ -3469,6 +3476,10 @@ fn failure_exit_status() -> std::process::ExitStatus {
 
 #[async_trait]
 impl ContainerService for LocalContainerService {
+    async fn resume_deferred_finalization(&self, session_id: Uuid) -> Result<(), ContainerError> {
+        LocalContainerService::resume_deferred_finalization(self, session_id).await
+    }
+
     fn msg_stores(&self) -> &Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>> {
         &self.msg_stores
     }
@@ -5459,7 +5470,15 @@ done
         let notifications = Arc::new(std::sync::Mutex::new(Vec::new()));
         set_global_push_notifier(Arc::new(Notifications(notifications.clone())));
 
-        for scenario in ["cancelled", "held after start failure", "superseded"] {
+        for scenario in [
+            "cancelled",
+            "held after start failure",
+            "superseded",
+            "failed before spawn",
+            "monitored failure",
+            "failed drain releases last hold",
+            "failed start releases last hold",
+        ] {
             let (container, session, workspace) = queue_test_container().await;
             container.config.write().await.notifications.push_enabled = true;
             add_test_repo(&container, &workspace).await;
@@ -5508,7 +5527,7 @@ done
                 .await
                 .unwrap();
             let queue = &container.queued_message_service;
-            let queued = queue.enqueue(session.id, follow_up("next", BaseCodingAgent::Codex));
+            let mut queued = queue.enqueue(session.id, follow_up("next", BaseCodingAgent::Codex));
             container
                 .finalize_with_queued_followup(&ctx, false, false)
                 .await;
@@ -5530,7 +5549,8 @@ done
             if scenario != "held after start failure" {
                 queue.cancel_message(session.id, queued.id).unwrap();
             }
-            if scenario == "superseded" {
+            let superseded = matches!(scenario, "superseded" | "monitored failure");
+            if superseded {
                 let newer = container
                     .create_execution_record(
                         &workspace,
@@ -5543,12 +5563,55 @@ done
                 ExecutionProcess::update_completion(
                     &container.db.pool,
                     newer.id,
+                    if scenario == "monitored failure" {
+                        ExecutionProcessStatus::Failed
+                    } else {
+                        ExecutionProcessStatus::Completed
+                    },
+                    if scenario == "monitored failure" {
+                        None
+                    } else {
+                        Some(0)
+                    },
+                )
+                .await
+                .unwrap();
+                if scenario == "monitored failure" {
+                    container
+                        .add_exit_monitor_handle(newer.id, tokio::spawn(async {}))
+                        .await;
+                }
+            }
+            if scenario == "failed before spawn" {
+                ExecutionProcess::update_completion(
+                    &container.db.pool,
+                    setup.id,
                     ExecutionProcessStatus::Completed,
                     Some(0),
                 )
                 .await
                 .unwrap();
+                queued = queue.enqueue(session.id, follow_up("next", BaseCodingAgent::ClaudeCode));
+                assert!(
+                    container
+                        .drain_queue_if_idle(&session, &workspace)
+                        .await
+                        .is_err()
+                );
+                let attempts =
+                    ExecutionProcess::find_by_session_id(&container.db.pool, session.id, false)
+                        .await
+                        .unwrap();
+                assert!(
+                    attempts
+                        .iter()
+                        .any(|p| p.run_reason == ExecutionProcessRunReason::CodingAgent
+                            && p.status == ExecutionProcessStatus::Failed
+                            && p.exit_code.is_none())
+                );
             }
+            let delayed_drain = scenario.ends_with("releases last hold");
+            let hold = delayed_drain.then(|| queue.hold_drain(session.id));
             container.output_pipeline.mark_ready(setup.id).await;
             let (exit, exited) = tokio::sync::oneshot::channel();
             let monitor = container.spawn_exit_monitor(
@@ -5562,6 +5625,36 @@ done
                 .await
                 .unwrap()
                 .unwrap();
+            if delayed_drain {
+                assert!(
+                    container
+                        .deferred_finalizations
+                        .read()
+                        .await
+                        .contains_key(&session.id)
+                );
+                drop(hold);
+                queued = queue.enqueue(session.id, follow_up("next", BaseCodingAgent::Codex));
+                let result = if scenario == "failed drain releases last hold" {
+                    container.drain_queue_if_idle(&session, &workspace).await
+                } else {
+                    let message = queue.take_next(session.id).unwrap();
+                    container
+                        .start_queued_followup(&session, &workspace, message)
+                        .await
+                };
+                assert!(result.is_err());
+                assert_eq!(
+                    notifications
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|id| **id == workspace.id)
+                        .count(),
+                    1,
+                    "{scenario}: releasing the last hold must resume completion"
+                );
+            }
             container
                 .resume_deferred_finalization(session.id)
                 .await
@@ -5580,7 +5673,7 @@ done
                     .iter()
                     .filter(|id| **id == workspace.id)
                     .count(),
-                usize::from(scenario != "superseded"),
+                usize::from(!superseded),
                 "{scenario}: completion must be delivered exactly once"
             );
             let turn = CodingAgentTurn::find_by_execution_process_id(&container.db.pool, record.id)
@@ -5588,20 +5681,21 @@ done
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                turn.seen,
-                scenario == "superseded",
+                turn.seen, superseded,
                 "{scenario}: terminal turn becomes unread"
             );
-            if scenario == "held after start failure" {
+            if matches!(scenario, "held after start failure" | "failed before spawn")
+                || delayed_drain
+            {
                 let remaining = queue.get_queued(session.id);
                 assert_eq!(remaining[0].id, queued.id);
-                assert!(
-                    remaining[0]
-                        .start_error
-                        .as_deref()
-                        .unwrap()
-                        .contains(MISMATCH)
-                );
+                assert!(remaining[0].start_error.as_deref().unwrap().contains(
+                    if scenario == "failed before spawn" {
+                        "Container ref not found"
+                    } else {
+                        MISMATCH
+                    }
+                ));
             }
         }
     }
