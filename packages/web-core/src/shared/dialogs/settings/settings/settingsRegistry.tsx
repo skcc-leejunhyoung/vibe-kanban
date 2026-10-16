@@ -10,6 +10,7 @@ import {
   KeyboardIcon,
   RobotIcon,
   DownloadSimpleIcon,
+  UserCircleIcon,
 } from '@phosphor-icons/react';
 import type { Icon } from '@phosphor-icons/react';
 import { GeneralSettingsSection } from './GeneralSettingsSection';
@@ -23,11 +24,13 @@ import { AccountNotificationsSettingsSection } from './AccountNotificationsSetti
 import { KeyboardShortcutsSettingsSection } from './KeyboardShortcutsSettingsSection';
 import { AutomationSettingsSection } from './AutomationSettingsSection';
 import { ExportPageContainer } from '@/pages/export/ExportPage';
+import { AccountSettingsSection } from './AccountSettingsSection';
 
 export type SettingsSectionType =
   | 'general'
   | 'repos'
   | 'organizations'
+  | 'account'
   | 'notifications'
   | 'remote-projects'
   | 'agents'
@@ -43,13 +46,14 @@ export type SettingsSectionInitialState = {
   general: undefined;
   repos: { repoId?: string } | undefined;
   organizations: { organizationId?: string } | undefined;
+  account: undefined;
   notifications: undefined;
   'remote-projects':
     | { organizationId?: string; projectId?: string }
     | undefined;
   agents: { executor?: string; variant?: string } | undefined;
   mcp: undefined;
-  relay: { hostId?: string } | undefined;
+  relay: { hostId?: string; accountId?: string } | undefined;
   'keyboard-shortcuts': undefined;
   automation: undefined;
   export: undefined;
@@ -68,6 +72,7 @@ export const SETTINGS_SECTION_DEFINITIONS: SettingsSectionDefinition[] = [
   { id: 'mcp', icon: PlugIcon, group: 'host' },
   { id: 'automation', icon: RobotIcon, group: 'host' },
   { id: 'organizations', icon: BuildingsIcon, group: 'universal' },
+  { id: 'account', icon: UserCircleIcon, group: 'universal' },
   { id: 'notifications', icon: BellIcon, group: 'universal' },
   { id: 'keyboard-shortcuts', icon: KeyboardIcon, group: 'universal' },
   { id: 'remote-projects', icon: CloudIcon, group: 'universal' },
@@ -87,7 +92,8 @@ export function isHostSpecificSettingsSection(
 export function renderSettingsSection(
   type: SettingsSectionType,
   initialState?: SettingsSectionInitialState[SettingsSectionType],
-  onClose?: () => void
+  onClose?: () => void,
+  onNavigate?: (section: SettingsSectionType) => void
 ) {
   switch (type) {
     case 'general':
@@ -100,6 +106,8 @@ export function renderSettingsSection(
       );
     case 'organizations':
       return <OrganizationsSettingsSection />;
+    case 'account':
+      return <AccountSettingsSection />;
     case 'notifications':
       return <AccountNotificationsSettingsSection />;
     case 'remote-projects':
@@ -119,6 +127,7 @@ export function renderSettingsSection(
         <RelaySettingsSectionContent
           initialState={initialState as SettingsSectionInitialState['relay']}
           onClose={onClose}
+          onOpenAccount={onNavigate ? () => onNavigate('account') : undefined}
         />
       );
     case 'keyboard-shortcuts':

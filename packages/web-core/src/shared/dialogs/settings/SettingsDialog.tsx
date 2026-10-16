@@ -460,6 +460,7 @@ function SettingsDialogContent({
                         type={activeSection}
                         onClose={handleCloseWithConfirmation}
                         initialState={initialState}
+                        onNavigate={handleSectionSelect}
                       />
                     </SettingsRemoteUserSystemProvider>
                   ) : selectedHost ? (
@@ -468,6 +469,7 @@ function SettingsDialogContent({
                         type={activeSection}
                         onClose={handleCloseWithConfirmation}
                         initialState={initialState}
+                        onNavigate={handleSectionSelect}
                       />
                     </SettingsMachineUserSystemProvider>
                   ) : !hostsResolved ? (
@@ -488,6 +490,7 @@ function SettingsDialogContent({
                     type={activeSection}
                     onClose={handleCloseWithConfirmation}
                     initialState={initialState}
+                    onNavigate={handleSectionSelect}
                   />
                 )}
               </div>

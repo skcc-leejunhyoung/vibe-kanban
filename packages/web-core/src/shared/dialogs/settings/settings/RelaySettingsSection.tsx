@@ -40,6 +40,7 @@ const RELAY_REMOTE_CONTROL_DOCS_URL =
 
 interface RelaySettingsSectionInitialState {
   hostId?: string;
+  accountId?: string;
 }
 
 type RelayRole = 'host' | 'client';
@@ -47,16 +48,20 @@ type RelayRole = 'host' | 'client';
 export function RelaySettingsSectionContent({
   initialState,
   onClose,
+  onOpenAccount,
 }: {
   initialState?: RelaySettingsSectionInitialState;
   onClose?: () => void;
+  onOpenAccount?: () => void;
 }) {
   const runtime = useAppRuntime();
 
   if (runtime === 'local') {
     return (
       <AccountHostSettings
+        onOpenAccount={onOpenAccount}
         initialHostId={initialState?.hostId}
+        initialAccountId={initialState?.accountId}
         legacy={<LocalRelaySettingsSectionContent onClose={onClose} />}
       />
     );
@@ -64,7 +69,9 @@ export function RelaySettingsSectionContent({
 
   return (
     <AccountHostSettings
+      onOpenAccount={onOpenAccount}
       initialHostId={initialState?.hostId}
+      initialAccountId={initialState?.accountId}
       legacy={
         <RemoteRelaySettingsSectionContent
           initialState={initialState}

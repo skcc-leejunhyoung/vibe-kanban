@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { OrganizationWithRole } from 'shared/types';
 import { AppBarUserPopover } from '@vibe/ui/components/AppBarUserPopover';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
@@ -7,6 +7,7 @@ import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
 import { useActions } from '@/shared/hooks/useActions';
 import { Actions } from '@/shared/actions';
+import { takeRemoteAccessDraft } from '@/shared/dialogs/settings/settings/remoteAccessDraft';
 
 interface AppBarUserPopoverContainerProps {
   organizations: OrganizationWithRole[];
@@ -25,6 +26,15 @@ export function AppBarUserPopoverContainer({
   const setSelectedOrgId = useOrganizationStore((s) => s.setSelectedOrgId);
   const [open, setOpen] = useState(false);
   const [avatarError, setAvatarError] = useState(false);
+  useEffect(() => {
+    if (!isSignedIn || !userId) return;
+    const draft = takeRemoteAccessDraft(userId);
+    if (draft)
+      void SettingsDialog.show({
+        initialSection: 'relay',
+        initialState: draft,
+      });
+  }, [isSignedIn, userId]);
 
   // Extract avatar URL from first provider
   const avatarUrl =
@@ -56,7 +66,7 @@ export function AppBarUserPopoverContainer({
       accountId={userId}
       onLoginSessions={() => {
         setOpen(false);
-        void SettingsDialog.show({ initialSection: 'relay' });
+        void SettingsDialog.show({ initialSection: 'account' });
       }}
       avatarUrl={avatarUrl}
       avatarError={avatarError}

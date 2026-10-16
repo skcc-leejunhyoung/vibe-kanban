@@ -98,10 +98,10 @@ i18n
   .init({
     resources,
     fallbackLng: {
-      'zh-TW': ['zh-Hant'],
-      'zh-HK': ['zh-Hant'],
-      'zh-MO': ['zh-Hant'],
-      zh: ['zh-Hans'], // Map generic Chinese to Simplified Chinese
+      'zh-TW': ['zh-Hant', 'en'],
+      'zh-HK': ['zh-Hant', 'en'],
+      'zh-MO': ['zh-Hant', 'en'],
+      zh: ['zh-Hans', 'en'], // Map generic Chinese to Simplified Chinese
       default: ['en'],
     },
     defaultNS: 'common',

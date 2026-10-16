@@ -1,9 +1,10 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import type { OrganizationWithRole } from "shared/types";
 import { AppBarUserPopover } from "@vibe/ui/components/AppBarUserPopover";
 import { logout } from "@remote/shared/lib/api";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
+import { takeRemoteAccessDraft } from "@/shared/dialogs/settings/settings/remoteAccessDraft";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useUserSystem } from "@/shared/hooks/useUserSystem";
 import { clearLocalStorageScratchForUser } from "@/shared/hooks/useLocalStorageScratch";
@@ -40,6 +41,15 @@ export function RemoteAppBarUserPopoverContainer({
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const [avatarError, setAvatarError] = useState(false);
+  useEffect(() => {
+    if (!isSignedIn || !userId) return;
+    const draft = takeRemoteAccessDraft(userId);
+    if (draft)
+      void SettingsDialog.show({
+        initialSection: "relay",
+        initialState: draft,
+      });
+  }, [isSignedIn, userId]);
 
   const handleSignIn = useCallback(() => {
     const next = toNextPath(location);
@@ -89,7 +99,7 @@ export function RemoteAppBarUserPopoverContainer({
       accountId={userId}
       onLoginSessions={() => {
         setOpen(false);
-        void SettingsDialog.show({ initialSection: "relay" });
+        void SettingsDialog.show({ initialSection: "account" });
       }}
       avatarUrl={avatarUrl}
       avatarError={avatarError}

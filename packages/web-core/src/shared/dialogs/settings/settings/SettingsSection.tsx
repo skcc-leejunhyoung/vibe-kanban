@@ -12,12 +12,14 @@ interface SettingsSectionProps {
   type: SettingsSectionType;
   onClose?: () => void;
   initialState?: SettingsSectionInitialState[SettingsSectionType];
+  onNavigate?: (section: SettingsSectionType) => void;
 }
 
 export function SettingsSection({
   type,
   onClose,
   initialState,
+  onNavigate,
 }: SettingsSectionProps) {
   const { t } = useTranslation('settings');
 
@@ -41,7 +43,7 @@ export function SettingsSection({
       </div>
 
       <div className="space-y-6 px-6 pt-4 overflow-y-auto">
-        {renderSettingsSection(type, initialState, onClose)}
+        {renderSettingsSection(type, initialState, onClose, onNavigate)}
       </div>
     </div>
   );
