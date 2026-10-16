@@ -272,10 +272,7 @@ function WorkspaceSessionPanel({
 
       const action = resolveUnfocusedChatKeyAction(event);
       if (action?.type === 'scroll') {
-        const scrollElement = conversationListRef.current?.getScrollElement();
-        if (!scrollElement) return;
-
-        scrollElement.scrollTop += action.delta;
+        if (!conversationListRef.current?.scrollBy(action.delta)) return;
         // Take precedence over kanban board arrow navigation while the workspace
         // panel is open: capture the event and stop it before the board's
         // document-level hotkey listener can also act on the same key.

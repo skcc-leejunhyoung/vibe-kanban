@@ -84,7 +84,6 @@ function VSCodeChatBox({
 export function VSCodeWorkspacePage() {
   const { t } = useTranslation('common');
   const setTheme = useStyleOverrideThemeSetter();
-  const mainContainerRef = useRef<HTMLElement>(null);
   const conversationListRef = useRef<ConversationListHandle>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
 
@@ -143,10 +142,7 @@ export function VSCodeWorkspacePage() {
       <div className="h-dvh flex flex-col bg-primary">
         <WebviewContextMenu />
 
-        <main
-          ref={mainContainerRef}
-          className="relative flex flex-1 flex-col h-full min-h-0"
-        >
+        <main className="relative flex flex-1 flex-col h-full min-h-0">
           <ApprovalFeedbackProvider>
             <EntriesProvider
               key={

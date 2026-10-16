@@ -91,6 +91,8 @@ interface ConversationListProps {
 export interface ConversationListHandle {
   scrollToPreviousUserMessage: () => void;
   scrollToBottom: (behavior?: 'auto' | 'smooth') => void;
+  /** Scroll by `delta` px for the reader (unfocused arrow keys). */
+  scrollBy: (delta: number) => boolean;
   getScrollElement: () => HTMLDivElement | null;
   scrollToEntryByPatchKey: (patchKey: string) => void;
   /**
@@ -1092,6 +1094,9 @@ export const ConversationList = forwardRef<
       );
 
       if (targetNode) {
+        // Landing on a row (plan reveal) leaves the bottom on purpose, and
+        // the lock only lets go by itself for the reader's gestures.
+        conversationVirtualizer.releaseBottomLock();
         // Content-space top via rects: virtualized rows are positioned with
         // translateY, which offsetTop does not see.
         const nodeTop =
@@ -1112,7 +1117,6 @@ export const ConversationList = forwardRef<
         const deficit = requestedTop - maxScrollable;
 
         if (deficit > 1 && align === 'start' && planRevealSpacerRef.current) {
-          conversationVirtualizer.releaseBottomLock();
           planRevealSpacerRef.current.style.height = `${Math.ceil(deficit)}px`;
           maxScrollable = scrollEl.scrollHeight - scrollEl.clientHeight;
         }
@@ -1510,6 +1514,15 @@ export const ConversationList = forwardRef<
       scrollToBottom: (behavior = 'smooth') => {
         scrollToBottomAndClearSpacer(behavior);
       },
+      scrollBy: (delta) => {
+        const scrollElement = tanstackScrollRef.current;
+        if (!scrollElement) return false;
+        // Key scrolls come from a window listener, not a gesture on the
+        // scroller, so the bottom lock would not let go by itself.
+        if (delta < 0) conversationVirtualizer.releaseBottomLock();
+        scrollElement.scrollTop += delta;
+        return true;
+      },
       getScrollElement: () => tanstackScrollRef.current,
       scrollToEntryByPatchKey: (patchKey: string) => {
         const row = prevRowsRef.current.find(
@@ -1537,6 +1550,7 @@ export const ConversationList = forwardRef<
     }),
     [
       beginNavigation,
+      conversationVirtualizer,
       scrollRowToTop,
       scrollToBottomAndClearSpacer,
       scrollToPreviousUserMessage,

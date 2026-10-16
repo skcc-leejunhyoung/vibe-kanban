@@ -220,12 +220,8 @@ export const WorkspacesMainContainer = forwardRef<
       scrollToBottom: (behavior = 'smooth') => {
         conversationListRef.current?.scrollToBottom(behavior);
       },
-      scrollConversationBy: (delta) => {
-        const scrollElement = conversationListRef.current?.getScrollElement();
-        if (!scrollElement) return false;
-        scrollElement.scrollTop += delta;
-        return true;
-      },
+      scrollConversationBy: (delta) =>
+        conversationListRef.current?.scrollBy(delta) ?? false,
       focusComposer: () => {
         const editor = containerRef.current?.querySelector<HTMLElement>(
           '[data-chatbox-container="true"] [contenteditable="true"]'
