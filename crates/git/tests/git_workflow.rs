@@ -20,8 +20,8 @@ fn get_commit_author(repo_path: &Path, commit_sha: &str) -> (Option<String>, Opt
     let commit = repo.find_commit(oid).unwrap();
     let author = commit.author();
     (
-        author.name().map(|s| s.to_string()),
-        author.email().map(|s| s.to_string()),
+        author.name().ok().map(|s| s.to_string()),
+        author.email().ok().map(|s| s.to_string()),
     )
 }
 
@@ -32,8 +32,8 @@ fn get_head_author(repo_path: &Path) -> (Option<String>, Option<String>) {
     let commit = repo.find_commit(oid).unwrap();
     let author = commit.author();
     (
-        author.name().map(|s| s.to_string()),
-        author.email().map(|s| s.to_string()),
+        author.name().ok().map(|s| s.to_string()),
+        author.email().ok().map(|s| s.to_string()),
     )
 }
 

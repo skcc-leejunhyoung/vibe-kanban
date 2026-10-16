@@ -23,13 +23,15 @@ describe('playSound', () => {
     const resume = vi.fn(async () => undefined);
     vi.stubGlobal(
       'AudioContext',
-      vi.fn(() => ({
-        close,
-        resume,
-        createBufferSource: () => source,
-        decodeAudioData: vi.fn(async () => ({ duration: 1 })),
-        destination: {},
-      }))
+      vi.fn(function () {
+        return {
+          close,
+          resume,
+          createBufferSource: () => source,
+          decodeAudioData: vi.fn(async () => ({ duration: 1 })),
+          destination: {},
+        };
+      })
     );
     const audioElement = vi.fn();
     vi.stubGlobal('Audio', audioElement);
@@ -52,10 +54,12 @@ describe('playSound', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal(
       'AudioContext',
-      vi.fn(() => ({
-        close,
-        resume: vi.fn(() => new Promise<void>(() => {})),
-      }))
+      vi.fn(function () {
+        return {
+          close,
+          resume: vi.fn(() => new Promise<void>(() => {})),
+        };
+      })
     );
     vi.stubGlobal('fetch', fetchMock);
 
@@ -80,13 +84,15 @@ describe('playSound', () => {
     };
     vi.stubGlobal(
       'AudioContext',
-      vi.fn(() => ({
-        close,
-        resume: vi.fn(async () => undefined),
-        createBufferSource: () => source,
-        decodeAudioData: vi.fn(async () => ({ duration: 0 })),
-        destination: {},
-      }))
+      vi.fn(function () {
+        return {
+          close,
+          resume: vi.fn(async () => undefined),
+          createBufferSource: () => source,
+          decodeAudioData: vi.fn(async () => ({ duration: 0 })),
+          destination: {},
+        };
+      })
     );
     vi.stubGlobal(
       'fetch',

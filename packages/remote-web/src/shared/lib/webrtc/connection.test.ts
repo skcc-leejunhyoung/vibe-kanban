@@ -143,7 +143,7 @@ class FakePeerConnection {
 
 let conn: WebRtcConnection;
 let dc: FakeDataChannel;
-let disconnected: ReturnType<typeof vi.fn>;
+let disconnected: ReturnType<typeof vi.fn<() => void>>;
 const flush = () => vi.advanceTimersByTimeAsync(0);
 const frame = (connId: string, text: string): WsFrame => ({
   conn_id: connId,

@@ -87,5 +87,5 @@ fn fork_local_branch_from_remote_only_branch_is_not_detached() {
         head.is_branch(),
         "worktree HEAD should be a branch, not detached"
     );
-    assert_eq!(head.name(), Some("refs/heads/feature"));
+    assert_eq!(head.name().unwrap(), "refs/heads/feature");
 }

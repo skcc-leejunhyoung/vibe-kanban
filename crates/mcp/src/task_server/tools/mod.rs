@@ -6,7 +6,7 @@ use executors::executors::BaseCodingAgent;
 use regex::Regex;
 use rmcp::{
     ErrorData,
-    model::{CallToolResult, Content},
+    model::{CallToolResult, ContentBlock},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
@@ -89,7 +89,7 @@ impl McpServer {
     }
 
     fn success<T: Serialize>(data: &T) -> ToolCallResult {
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string_pretty(data)
                 .unwrap_or_else(|_| "Failed to serialize response".to_string()),
         )]))
@@ -108,7 +108,7 @@ impl McpServer {
             value["details"] = serde_json::json!(details);
         }
 
-        CallToolResult::error(vec![Content::text(
+        CallToolResult::error(vec![ContentBlock::text(
             serde_json::to_string_pretty(&value)
                 .unwrap_or_else(|_| "Failed to serialize error".to_string()),
         )])

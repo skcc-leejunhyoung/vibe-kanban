@@ -48,7 +48,7 @@ walkdir = "2"
 rand = "0.8"
 base64 = "0.22"
 jsonc-parser = { version = "0.29", features = ["cst", "serde"] }
-lru = "0.12"
+lru = "0.18.2"
 async-stream = "0.3"
 
 [dev-dependencies]

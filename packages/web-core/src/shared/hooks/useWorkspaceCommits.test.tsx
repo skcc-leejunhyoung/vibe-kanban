@@ -40,6 +40,7 @@ let queryClient: QueryClient;
 let branchStatus: RepoBranchStatus[];
 
 beforeEach(() => {
+  vi.clearAllMocks();
   branchStatus = [status('aaa', 1)];
   api.getBranchStatus.mockImplementation(async () => branchStatus);
   api.getCommits.mockImplementation(async () => []);

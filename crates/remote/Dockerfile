@@ -37,7 +37,8 @@ COPY assets/sounds/ assets/sounds/
 # Bust cache for the frontend build only (not pnpm install / cargo build) by
 # passing --build-arg CACHEBUST=$(date +%s) when iterating on UI code.
 ARG CACHEBUST=0
-RUN echo "cachebust=${CACHEBUST}" >/dev/null && pnpm -C packages/remote-web build
+RUN echo "cachebust=${CACHEBUST}" >/dev/null \
+    && NODE_OPTIONS=--max-old-space-size=4096 pnpm -C packages/remote-web build
 
 FROM rust:1.93-slim-bookworm AS builder
 ARG APP_NAME

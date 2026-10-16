@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 relay-control = { path = "../relay-control" }
-russh = { version = "0.60.3", default-features = false, features = ["ring"] }
+russh = { version = "0.63.2", default-features = false, features = ["ring"] }
 russh-sftp = "2.0"
 ed25519-dalek = "2.2.0"
 tokio = { workspace = true }

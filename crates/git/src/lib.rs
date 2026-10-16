@@ -464,8 +464,14 @@ impl GitService {
     fn commit_to_info(commit: &git2::Commit) -> CommitInfo {
         let sha = commit.id().to_string();
         let short_sha = sha.chars().take(8).collect::<String>();
-        let subject = commit.summary().unwrap_or("").to_string();
-        let description = commit.body().unwrap_or("").trim().to_string();
+        let subject = commit.summary().ok().flatten().unwrap_or("").to_string();
+        let description = commit
+            .body()
+            .ok()
+            .flatten()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let author = commit
             .author()
             .name()
@@ -544,7 +550,7 @@ impl GitService {
 
         // Read blob content for one side, flagging oversized blobs as omitted.
         let read_blob = |id: git2::Oid| -> (Option<String>, bool) {
-            if id == git2::Oid::zero() {
+            if id == git2::Oid::ZERO_SHA1 {
                 return (None, false);
             }
             match repo.find_blob(id) {
@@ -1099,9 +1105,8 @@ impl GitService {
                         | git2::Status::WT_DELETED
                         | git2::Status::WT_RENAMED
                         | git2::Status::WT_TYPECHANGE,
-                ) && let Some(path) = entry.path()
-                {
-                    dirty_files.push(path.to_string());
+                ) {
+                    dirty_files.push(entry.path()?.to_string());
                 }
             }
 
@@ -1109,7 +1114,7 @@ impl GitService {
                 let branch_name = repo
                     .head()
                     .ok()
-                    .and_then(|h| h.shorthand().map(|s| s.to_string()))
+                    .and_then(|h| h.shorthand().ok().map(|s| s.to_string()))
                     .unwrap_or_else(|| "unknown branch".to_string());
                 return Err(GitServiceError::WorktreeDirty(
                     branch_name,
@@ -1144,7 +1149,7 @@ impl GitService {
         let repo = self.open_repo(repo_path)?;
         let head = repo.head()?;
 
-        let branch = if let Some(branch_name) = head.shorthand() {
+        let branch = if let Ok(branch_name) = head.shorthand() {
             branch_name.to_string()
         } else {
             "HEAD".to_string()
@@ -1447,7 +1452,7 @@ impl GitService {
                     let attempt_branch = worktree_repo
                         .head()
                         .ok()
-                        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+                        .and_then(|h| h.shorthand().ok().map(|s| s.to_string()))
                         .unwrap_or_else(|| "(unknown)".to_string());
                     // List conflicted files (best-effort)
                     let conflicted_files =
@@ -2128,7 +2133,7 @@ impl GitService {
             GitServiceError::InvalidRepository("remote branch name is not valid UTF-8".to_string())
         })?;
         let remote = self.get_remote_from_branch_ref(repo, remote_branch.get())?;
-        let remote_name = match remote.name() {
+        let remote_name = match remote.name()? {
             Some(name) => name.to_string(),
             // Only resolve the default remote when the branch's remote is unnamed
             // (rare) — avoids an eager `git remote` lookup on the common path.
@@ -2183,7 +2188,7 @@ impl GitService {
         let head_is_target = |r: &Repository| -> bool {
             r.head()
                 .ok()
-                .and_then(|h| h.name().map(|n| n == target))
+                .and_then(|h| h.name().ok().map(|n| n == target))
                 .unwrap_or(false)
         };
 
@@ -2191,7 +2196,8 @@ impl GitService {
             return Ok(true);
         }
         if let Ok(names) = repo.worktrees() {
-            for name in names.iter().flatten() {
+            for name in names.iter() {
+                let Some(name) = name? else { continue };
                 if let Ok(worktree) = repo.find_worktree(name)
                     && let Ok(wt_repo) = Repository::open_from_worktree(&worktree)
                     && head_is_target(&wt_repo)
@@ -2342,16 +2348,12 @@ impl GitService {
         let repo = Repository::open(repo_path)?;
         let branch_ref = Self::find_branch(&repo, branch_name)?.into_reference();
         let remote = self.get_remote_from_branch_ref(&repo, &branch_ref)?;
-        let name = remote.name().map(|name| name.to_string()).ok_or_else(|| {
+        let name = remote.name()?.map(|name| name.to_string()).ok_or_else(|| {
             GitServiceError::InvalidRepository(format!(
                 "Remote for branch '{branch_name}' has no name"
             ))
         })?;
-        let url = remote.url().map(|url| url.to_string()).ok_or_else(|| {
-            GitServiceError::InvalidRepository(format!(
-                "Remote for branch '{branch_name}' has no URL"
-            ))
-        })?;
+        let url = remote.url()?.to_string();
         Ok(GitRemote { name, url })
     }
 
@@ -2406,10 +2408,7 @@ impl GitService {
         repo: &'a Repository,
         branch_ref: &Reference,
     ) -> Result<Remote<'a>, GitServiceError> {
-        let branch_name = branch_ref
-            .name()
-            .map(|name| name.to_string())
-            .ok_or_else(|| GitServiceError::InvalidRepository("Invalid branch ref".into()))?;
+        let branch_name = branch_ref.name()?.to_string();
         let remote_name_buf = repo.branch_remote_name(&branch_name)?;
 
         let remote_name = str::from_utf8(&remote_name_buf)
@@ -2494,9 +2493,7 @@ impl GitService {
         let repo = Repository::open(repo_path)?;
         let remote_url = {
             let remote = repo.find_remote(remote_name)?;
-            remote.url().map(|url| url.to_string()).ok_or_else(|| {
-                GitServiceError::InvalidRepository(format!("Remote '{remote_name}' has no URL"))
-            })?
+            remote.url()?.to_string()
         };
 
         let git_cli = GitCli::new();
@@ -2651,9 +2648,7 @@ impl GitService {
         refspec: &str,
     ) -> Result<(), GitServiceError> {
         // Get the remote
-        let remote_url = remote
-            .url()
-            .ok_or_else(|| GitServiceError::InvalidRepository("Remote has no URL".to_string()))?;
+        let remote_url = remote.url()?;
 
         let git_cli = GitCli::new();
         if let Err(e) = git_cli.fetch_with_refspec(repo.path(), remote_url, refspec) {
@@ -2671,10 +2666,8 @@ impl GitService {
     ) -> Result<(), GitServiceError> {
         let remote = self.get_remote_from_branch_ref(repo, branch)?;
         let default_remote = self.default_remote(repo, repo.path())?;
-        let remote_name = remote.name().unwrap_or(&default_remote.name);
-        let dest_ref = branch
-            .name()
-            .ok_or_else(|| GitServiceError::InvalidRepository("Invalid branch ref".into()))?;
+        let remote_name = remote.name()?.unwrap_or(&default_remote.name);
+        let dest_ref = branch.name()?;
         let remote_prefix = format!("refs/remotes/{remote_name}/");
         let src_ref = dest_ref.replacen(&remote_prefix, "refs/heads/", 1);
         let refspec = format!("+{src_ref}:{dest_ref}");
@@ -2688,7 +2681,7 @@ impl GitService {
         remote: &Remote,
     ) -> Result<(), GitServiceError> {
         let default_remote = self.default_remote(repo, repo.path())?;
-        let remote_name = remote.name().unwrap_or(&default_remote.name);
+        let remote_name = remote.name()?.unwrap_or(&default_remote.name);
         let refspec = format!("+refs/heads/*:refs/remotes/{remote_name}/*");
         self.fetch_from_remote(repo, remote, &refspec)
     }

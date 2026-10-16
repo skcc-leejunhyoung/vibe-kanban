@@ -9,7 +9,7 @@ use relay_control::signing::RelaySigningService;
 use russh::{
     Channel, ChannelId, Pty,
     keys::PublicKey,
-    server::{Auth, Msg, Session},
+    server::{Auth, ChannelOpenHandle, Msg, Session},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -240,8 +240,9 @@ impl russh::server::Handler for SshSessionHandler {
     async fn channel_open_session(
         &mut self,
         channel: Channel<Msg>,
+        reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<(), Self::Error> {
         let id = channel.id();
         self.channels.insert(
             id,
@@ -250,7 +251,8 @@ impl russh::server::Handler for SshSessionHandler {
                 env: HashMap::new(),
             },
         );
-        Ok(true)
+        reply.accept().await;
+        Ok(())
     }
 
     async fn pty_request(
@@ -276,8 +278,9 @@ impl russh::server::Handler for SshSessionHandler {
         port_to_connect: u32,
         originator_address: &str,
         originator_port: u32,
+        reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<(), Self::Error> {
         if port_to_connect == 0 || port_to_connect > u16::MAX as u32 {
             tracing::warn!(
                 %host_to_connect,
@@ -286,7 +289,7 @@ impl russh::server::Handler for SshSessionHandler {
                 originator_port,
                 "direct-tcpip denied: invalid target port"
             );
-            return Ok(false);
+            return Ok(());
         }
 
         if !Self::is_loopback_target(host_to_connect) {
@@ -297,7 +300,7 @@ impl russh::server::Handler for SshSessionHandler {
                 originator_port,
                 "direct-tcpip denied: non-loopback target"
             );
-            return Ok(false);
+            return Ok(());
         }
 
         let port = port_to_connect as u16;
@@ -310,6 +313,7 @@ impl russh::server::Handler for SshSessionHandler {
             "direct-tcpip accepted"
         );
 
+        reply.accept().await;
         tokio::spawn(async move {
             let mut ssh_stream = channel.into_stream();
             match tokio::net::TcpStream::connect((target_host.as_str(), port)).await {
@@ -328,7 +332,7 @@ impl russh::server::Handler for SshSessionHandler {
             let _ = ssh_stream.shutdown().await;
         });
 
-        Ok(true)
+        Ok(())
     }
 
     async fn tcpip_forward(

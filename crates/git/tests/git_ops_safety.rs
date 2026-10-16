@@ -591,7 +591,7 @@ fn reset_branch_checkout_to_remote_updates_an_unchecked_target_ref() {
         remote_oid
     );
     assert_eq!(local_repo.head().unwrap().target().unwrap(), holding_oid);
-    assert_eq!(local_repo.head().unwrap().shorthand(), Some("holding"));
+    assert_eq!(local_repo.head().unwrap().shorthand().ok(), Some("holding"));
 }
 
 #[test]
@@ -680,7 +680,7 @@ fn merge_remote_into_branch_checkout_aborts_hidden_target_conflicts() {
 
     let repo_after = Repository::open(&local_path).unwrap();
     assert_eq!(repo_after.head().unwrap().target().unwrap(), local_oid);
-    assert_eq!(repo_after.head().unwrap().shorthand(), Some("holding"));
+    assert_eq!(repo_after.head().unwrap().shorthand().ok(), Some("holding"));
     assert!(
         !GitCli::new().is_merge_in_progress(&local_path).unwrap(),
         "the target checkout must not be left in a hidden merge"

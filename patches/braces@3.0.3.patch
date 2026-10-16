@@ -1,0 +1,15 @@
+diff --git a/lib/parse.js b/lib/parse.js
+index 3a6988e629f52aee6609dc5ec290a5e9ff47cecb..ed8e1cd4e442ba740e1f238eaa851ed9290fc5e4 100644
+--- a/lib/parse.js
++++ b/lib/parse.js
+@@ -74,6 +74,10 @@ const parse = (input, options = {}) => {
+   push({ type: 'bos' });
+ 
+   while (index < length) {
++    // Bound AST depth before the recursive walkers see the pattern.
++    if (stack.length > 128) {
++      throw new SyntaxError('Brace pattern nesting exceeds 128 levels');
++    }
+     block = stack[stack.length - 1];
+     value = advance();
+ 

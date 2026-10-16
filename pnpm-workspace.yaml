@@ -7,3 +7,4 @@ onlyBuiltDependencies:
 
 patchedDependencies:
   '@pierre/diffs@1.1.4': patches/@pierre__diffs@1.1.4.patch
+  'braces@3.0.3': patches/braces@3.0.3.patch
