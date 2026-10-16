@@ -24,6 +24,7 @@ import { MessageEditProvider } from '@/features/workspace-chat/model/contexts/Me
 import { CreateModeProvider } from '@/features/create-mode/model/CreateModeProvider';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { SessionChatBoxContainer } from '@/features/workspace-chat/ui/SessionChatBoxContainer';
+import { WorkspaceStatusStripContainer } from '@/features/workspace-chat/ui/WorkspaceStatusStripContainer';
 import { CreateChatBoxContainer } from '@/shared/components/CreateChatBoxContainer';
 import { KanbanIssuePanelContainer } from './KanbanIssuePanelContainer';
 import {
@@ -371,19 +372,27 @@ function WorkspaceSessionPanel({
                 </div>
 
                 {workspaceWithSession ? (
-                  <div className="flex flex-1 min-h-0 overflow-hidden justify-center">
-                    <div className="w-chat max-w-full h-full">
-                      <RetryUiProvider workspaceId={workspaceWithSession.id}>
-                        <ConversationList
-                          key={`${workspaceId}-${selectedSessionId ?? 'new'}`}
-                          ref={conversationListRef}
-                          attempt={workspaceWithSession}
-                          onAtBottomChange={handleAtBottomChange}
-                          sessionScopeId={selectedSessionId}
-                        />
-                      </RetryUiProvider>
+                  <>
+                    <div className="shrink-0">
+                      <WorkspaceStatusStripContainer
+                        workspaceId={workspaceWithSession.id}
+                        sessionId={selectedSessionId}
+                      />
                     </div>
-                  </div>
+                    <div className="flex flex-1 min-h-0 overflow-hidden justify-center">
+                      <div className="w-chat max-w-full h-full">
+                        <RetryUiProvider workspaceId={workspaceWithSession.id}>
+                          <ConversationList
+                            key={`${workspaceId}-${selectedSessionId ?? 'new'}`}
+                            ref={conversationListRef}
+                            attempt={workspaceWithSession}
+                            onAtBottomChange={handleAtBottomChange}
+                            sessionScopeId={selectedSessionId}
+                          />
+                        </RetryUiProvider>
+                      </div>
+                    </div>
+                  </>
                 ) : (
                   <div className="flex-1" />
                 )}

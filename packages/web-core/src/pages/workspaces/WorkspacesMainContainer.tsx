@@ -1,7 +1,6 @@
 import {
   forwardRef,
   useCallback,
-  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -158,9 +157,7 @@ export const WorkspacesMainContainer = forwardRef<
   }, []);
 
   const [isAtBottom, setIsAtBottom] = useState(true);
-  const isAtBottomRef = useRef(isAtBottom);
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
-    isAtBottomRef.current = atBottom;
     setIsAtBottom(atBottom);
   }, []);
 
@@ -170,59 +167,6 @@ export const WorkspacesMainContainer = forwardRef<
     },
     []
   );
-
-  const { session } = workspaceWithSession ?? {};
-
-  useEffect(() => {
-    isAtBottomRef.current = isAtBottom;
-  }, [isAtBottom]);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || typeof ResizeObserver === 'undefined') return;
-
-    // The chat box below and the status strip above both squeeze the
-    // conversation; either growing must keep the bottom in view.
-    const targets = [
-      container.querySelector<HTMLElement>('[data-chatbox-container="true"]'),
-      container.querySelector<HTMLElement>(
-        '[data-workspace-status-slot="true"]'
-      ),
-    ].filter((element): element is HTMLElement => element !== null);
-    if (targets.length === 0) return;
-
-    const previousHeights = new Map(
-      targets.map((element) => [
-        element,
-        element.getBoundingClientRect().height,
-      ])
-    );
-
-    const observer = new ResizeObserver((entries) => {
-      let heightDelta = 0;
-      for (const entry of entries) {
-        const element = entry.target as HTMLElement;
-        const nextHeight = entry.contentRect.height;
-        const previousHeight = previousHeights.get(element) ?? nextHeight;
-        if (Math.abs(nextHeight - previousHeight) < 0.5) continue;
-        heightDelta += nextHeight - previousHeight;
-        previousHeights.set(element, nextHeight);
-      }
-      if (heightDelta === 0 || !isAtBottomRef.current) return;
-
-      requestAnimationFrame(() => {
-        if (!isAtBottomRef.current) return;
-        conversationListRef.current?.adjustScrollBy(heightDelta);
-      });
-    });
-
-    for (const element of targets) observer.observe(element);
-
-    return () => {
-      observer.disconnect();
-    };
-    // The slots only exist once loading ends; observe them from then on.
-  }, [workspaceWithSession?.id, session?.id, isLoading]);
 
   const entriesProviderKey = workspaceWithSession
     ? `${workspaceWithSession.id}-${selectedSessionId ?? 'new'}`
@@ -247,6 +191,8 @@ export const WorkspacesMainContainer = forwardRef<
       </div>
     </div>
   ) : null;
+
+  const { session } = workspaceWithSession ?? {};
 
   const chatBoxContent = (
     <ChatBoxWithDiffStats

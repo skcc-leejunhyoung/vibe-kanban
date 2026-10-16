@@ -91,7 +91,6 @@ interface ConversationListProps {
 export interface ConversationListHandle {
   scrollToPreviousUserMessage: () => void;
   scrollToBottom: (behavior?: 'auto' | 'smooth') => void;
-  adjustScrollBy: (delta: number) => void;
   getScrollElement: () => HTMLDivElement | null;
   scrollToEntryByPatchKey: (patchKey: string) => void;
   /**
@@ -1510,12 +1509,6 @@ export const ConversationList = forwardRef<
       },
       scrollToBottom: (behavior = 'smooth') => {
         scrollToBottomAndClearSpacer(behavior);
-      },
-      adjustScrollBy: (delta) => {
-        if (Math.abs(delta) < 0.5) return;
-        const scrollElement = tanstackScrollRef.current;
-        if (!scrollElement) return;
-        scrollElement.scrollTop += delta;
       },
       getScrollElement: () => tanstackScrollRef.current,
       scrollToEntryByPatchKey: (patchKey: string) => {

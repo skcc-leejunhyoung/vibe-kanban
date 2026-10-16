@@ -27,7 +27,9 @@ import {
 } from './conversation-row-model';
 import {
   NEAR_BOTTOM_THRESHOLD_PX,
+  USER_SCROLL_WINDOW_MS,
   isNearBottom,
+  shouldReleaseBottomLock,
 } from './conversation-scroll-commands';
 
 // TanStack Virtual's ScrollBehavior ('auto' | 'smooth' | 'instant') shadows
@@ -165,6 +167,10 @@ export function useConversationVirtualizer({
 }: ConversationVirtualizerOptions): ConversationVirtualizerResult {
   const bottomLockedRef = useRef(false);
   const smoothScrollDeadlineRef = useRef(0);
+  // Until when the reader's last gesture (wheel, touch, scrollbar drag, scroll
+  // keys) can explain a scroll event. Scrolls outside this window are the
+  // app's own and must never release the bottom lock.
+  const userScrollUntilRef = useRef(0);
 
   const isBottomScrollCorrectionActive = useCallback(
     () => bottomLockedRef.current,
@@ -274,24 +280,24 @@ export function useConversationVirtualizer({
     const handleScroll = () => {
       const currentScrollTop = el.scrollTop;
 
-      // Release bottom lock on any user-initiated upward scroll.
-      // Guards prevent false positives from programmatic scroll sources:
-      // - smoothScrollDeadlineRef: set during scrollToBottom('smooth')
-      // - shouldSuppressSizeAdjustment: set during interaction anchor corrections
-      // - 5px threshold: filters input-resize micro-adjustments
-      // - isNearBottom: critically, when content SHRINKS (e.g. a row estimated
-      //   `tall` measures smaller, common right after entering a workspace) the
-      //   browser clamps scrollTop down to the new max, firing a scroll event
-      //   that looks like an upward scroll even though we're still pinned to the
-      //   bottom. Requiring the new position to be away from the bottom keeps
-      //   the lock engaged through that settle, so the initial auto-scroll
-      //   sticks instead of stranding the view mid-conversation.
+      // Release the bottom lock only for the reader's own upward scroll: an
+      // input gesture must explain the event (userScrollUntilRef), it must
+      // move away from the bottom (content that SHRINKS makes the browser
+      // clamp scrollTop down while still at the bottom), and no animation or
+      // correction may own the viewport. Everything else the app does to the
+      // scroll position keeps the lock.
       if (
         bottomLockedRef.current &&
-        prevScrollTopRef.current - currentScrollTop > 5 &&
-        !isNearBottom(currentScrollTop, el.clientHeight, el.scrollHeight) &&
-        performance.now() > smoothScrollDeadlineRef.current &&
-        !shouldSuppressSizeAdjustment?.()
+        shouldReleaseBottomLock({
+          previousScrollTop: prevScrollTopRef.current,
+          scrollTop: currentScrollTop,
+          clientHeight: el.clientHeight,
+          scrollHeight: el.scrollHeight,
+          userScrollUntil: userScrollUntilRef.current,
+          now: performance.now(),
+          smoothScrollDeadline: smoothScrollDeadlineRef.current,
+          suppressed: shouldSuppressSizeAdjustment?.() ?? false,
+        })
       ) {
         bottomLockedRef.current = false;
       }
@@ -307,6 +313,59 @@ export function useConversationVirtualizer({
       el.removeEventListener('scroll', handleScroll);
     };
   }, [scrollContainerRef, shouldSuppressSizeAdjustment, syncIsAtBottom]);
+
+  // Input gestures that can scroll the list. Wheel and touch are taken from
+  // the window: shells forward wheel events from outside the scroller, and a
+  // nested scrollable passes them up. Pointer presses (scrollbar drags) and
+  // scroll keys are taken from the container itself.
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const extend = (ms: number) => {
+      userScrollUntilRef.current = Math.max(
+        userScrollUntilRef.current,
+        performance.now() + ms
+      );
+    };
+    const onWheel = () => extend(USER_SCROLL_WINDOW_MS.pointer);
+    const onTouch = () => extend(USER_SCROLL_WINDOW_MS.touch);
+    const onPointerDown = () => {
+      userScrollUntilRef.current = Number.POSITIVE_INFINITY;
+    };
+    const onPointerUp = () => {
+      if (userScrollUntilRef.current === Number.POSITIVE_INFINITY) {
+        userScrollUntilRef.current = 0;
+        extend(USER_SCROLL_WINDOW_MS.pointer);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        /^(Arrow(Up|Down)|Page(Up|Down)|Home|End| )$/.test(event.key) &&
+        !(event.target instanceof HTMLElement && event.target.isContentEditable)
+      ) {
+        extend(USER_SCROLL_WINDOW_MS.pointer);
+      }
+    };
+    const options = { capture: true, passive: true } as const;
+    window.addEventListener('wheel', onWheel, options);
+    window.addEventListener('touchstart', onTouch, options);
+    window.addEventListener('touchmove', onTouch, options);
+    window.addEventListener('touchend', onTouch, options);
+    el.addEventListener('pointerdown', onPointerDown, options);
+    window.addEventListener('pointerup', onPointerUp, options);
+    window.addEventListener('pointercancel', onPointerUp, options);
+    el.addEventListener('keydown', onKeyDown, options);
+    return () => {
+      window.removeEventListener('wheel', onWheel, options);
+      window.removeEventListener('touchstart', onTouch, options);
+      window.removeEventListener('touchmove', onTouch, options);
+      window.removeEventListener('touchend', onTouch, options);
+      el.removeEventListener('pointerdown', onPointerDown, options);
+      window.removeEventListener('pointerup', onPointerUp, options);
+      window.removeEventListener('pointercancel', onPointerUp, options);
+      el.removeEventListener('keydown', onKeyDown, options);
+    };
+  }, [scrollContainerRef]);
 
   // -------------------------------------------------------------------------
   // Derived state
@@ -361,6 +420,31 @@ export function useConversationVirtualizer({
       observer.disconnect();
     };
   }, [contentRef, pinToBottomIfLocked]);
+
+  // The container itself resizes when the chat box or the summary strip above
+  // it grows or shrinks. A reader at the bottom stays at the bottom through
+  // that: pin again, never scroll back by the difference (growing room at the
+  // bottom is already clamped by the browser; scrolling up from there would
+  // leave the view above the last message).
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+
+    const observer = new ResizeObserver(() => {
+      if (!bottomLockedRef.current && !lastAtBottomRef.current) return;
+      if (performance.now() < smoothScrollDeadlineRef.current) return;
+      if (shouldSuppressSizeAdjustment?.()) return;
+      const maxScroll = el.scrollHeight - el.clientHeight;
+      if (maxScroll > 0 && Math.abs(maxScroll - el.scrollTop) > 1) {
+        el.scrollTop = maxScroll;
+      }
+    });
+    observer.observe(el);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [scrollContainerRef, shouldSuppressSizeAdjustment]);
 
   // -------------------------------------------------------------------------
   // Imperative helpers

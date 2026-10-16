@@ -212,6 +212,61 @@ export function isNearBottom(
 }
 
 // ---------------------------------------------------------------------------
+// Bottom-Lock Release
+// ---------------------------------------------------------------------------
+
+/**
+ * How long after an input gesture a scroll may still be attributed to it.
+ * Wheel ticks keep scrolling for a few frames; touch inertia for much longer.
+ */
+export const USER_SCROLL_WINDOW_MS = { pointer: 600, touch: 1500 } as const;
+
+export interface BottomLockReleaseInput {
+  readonly previousScrollTop: number;
+  readonly scrollTop: number;
+  readonly clientHeight: number;
+  readonly scrollHeight: number;
+  /** Until when (performance.now() clock) a user gesture explains scrolling. */
+  readonly userScrollUntil: number;
+  readonly now: number;
+  /** A smooth scroll-to-bottom animation is still in flight. */
+  readonly smoothScrollDeadline: number;
+  /** A programmatic correction (navigation, anchor hold) owns the viewport. */
+  readonly suppressed: boolean;
+}
+
+/**
+ * Whether a scroll event means the reader left the bottom on purpose.
+ *
+ * The lock only ever lets go for an upward move that lands away from the
+ * bottom AND follows a real input gesture. Everything the app does on its
+ * own (chat box or summary strip resizing the container, content settling
+ * to a smaller measurement, corrections) never releases it, so the view
+ * stays pinned until the reader scrolls.
+ */
+export function shouldReleaseBottomLock(
+  input: BottomLockReleaseInput
+): boolean {
+  const {
+    previousScrollTop,
+    scrollTop,
+    clientHeight,
+    scrollHeight,
+    userScrollUntil,
+    now,
+    smoothScrollDeadline,
+    suppressed,
+  } = input;
+  return (
+    previousScrollTop - scrollTop > 5 &&
+    !isNearBottom(scrollTop, clientHeight, scrollHeight) &&
+    now > smoothScrollDeadline &&
+    !suppressed &&
+    now < userScrollUntil
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Intent Equality (for deduplication)
 // ---------------------------------------------------------------------------
 

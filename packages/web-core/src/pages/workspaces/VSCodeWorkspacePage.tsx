@@ -11,6 +11,7 @@ import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useDiffStats } from '@/shared/stores/useWorkspaceDiffStore';
 import { usePageTitle } from '@/shared/hooks/usePageTitle';
 import { SessionChatBoxContainer } from '@/features/workspace-chat/ui/SessionChatBoxContainer';
+import { WorkspaceStatusStripContainer } from '@/features/workspace-chat/ui/WorkspaceStatusStripContainer';
 import {
   ConversationList,
   type ConversationListHandle,
@@ -86,7 +87,6 @@ export function VSCodeWorkspacePage() {
   const mainContainerRef = useRef<HTMLElement>(null);
   const conversationListRef = useRef<ConversationListHandle>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
-  const isAtBottomRef = useRef(isAtBottom);
 
   useEffect(() => installVSCodeIframeKeyboardBridge(), []);
 
@@ -135,48 +135,8 @@ export function VSCodeWorkspacePage() {
   );
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
-    isAtBottomRef.current = atBottom;
     setIsAtBottom(atBottom);
   }, []);
-
-  useEffect(() => {
-    isAtBottomRef.current = isAtBottom;
-  }, [isAtBottom]);
-
-  useEffect(() => {
-    const container = mainContainerRef.current;
-    if (!container || typeof ResizeObserver === 'undefined') return;
-
-    const chatBoxContainer = container.querySelector<HTMLElement>(
-      '[data-chatbox-container="true"]'
-    );
-    if (!chatBoxContainer) return;
-
-    let previousHeight = chatBoxContainer.getBoundingClientRect().height;
-
-    const observer = new ResizeObserver((entries) => {
-      const nextHeight =
-        entries[0]?.contentRect.height ??
-        chatBoxContainer.getBoundingClientRect().height;
-
-      if (Math.abs(nextHeight - previousHeight) < 0.5) return;
-      const heightDelta = nextHeight - previousHeight;
-      previousHeight = nextHeight;
-
-      if (!isAtBottomRef.current) return;
-
-      requestAnimationFrame(() => {
-        if (!isAtBottomRef.current) return;
-        conversationListRef.current?.adjustScrollBy(heightDelta);
-      });
-    });
-
-    observer.observe(chatBoxContainer);
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [workspaceWithSession?.id, selectedSession?.id]);
 
   return (
     <AppWithStyleOverride setTheme={setTheme}>
@@ -206,25 +166,35 @@ export function VSCodeWorkspacePage() {
                       <p className="text-low">{t('workspaces.notFound')}</p>
                     </div>
                   ) : (
-                    <div
-                      className="flex-1 min-h-0 overflow-hidden flex justify-center"
-                      onWheel={(e) =>
-                        forwardWheelToScroller(e, conversationListRef)
-                      }
-                    >
-                      <div className="w-chat max-w-full h-full">
-                        <RetryUiProvider workspaceId={workspaceWithSession.id}>
-                          <ConversationList
-                            key={`${workspaceWithSession.id}-${selectedSessionId ?? 'new'}`}
-                            ref={conversationListRef}
-                            attempt={workspaceWithSession}
-                            repos={repos}
-                            onAtBottomChange={handleAtBottomChange}
-                            sessionScopeId={selectedSessionId}
-                          />
-                        </RetryUiProvider>
+                    <>
+                      <div className="shrink-0">
+                        <WorkspaceStatusStripContainer
+                          workspaceId={workspaceWithSession.id}
+                          sessionId={selectedSessionId}
+                        />
                       </div>
-                    </div>
+                      <div
+                        className="flex-1 min-h-0 overflow-hidden flex justify-center"
+                        onWheel={(e) =>
+                          forwardWheelToScroller(e, conversationListRef)
+                        }
+                      >
+                        <div className="w-chat max-w-full h-full">
+                          <RetryUiProvider
+                            workspaceId={workspaceWithSession.id}
+                          >
+                            <ConversationList
+                              key={`${workspaceWithSession.id}-${selectedSessionId ?? 'new'}`}
+                              ref={conversationListRef}
+                              attempt={workspaceWithSession}
+                              repos={repos}
+                              onAtBottomChange={handleAtBottomChange}
+                              sessionScopeId={selectedSessionId}
+                            />
+                          </RetryUiProvider>
+                        </div>
+                      </div>
+                    </>
                   )}
 
                   {workspaceWithSession && !isAtBottom && (
