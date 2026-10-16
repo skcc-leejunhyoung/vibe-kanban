@@ -582,6 +582,10 @@ const FORWARDER_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 // per-session hang.
 const SESSION_READY_WAIT_TIMEOUT: Duration = Duration::from_secs(120);
 
+// How long a stop lets the executor wind the agent down itself (Claude:
+// interrupt → final result → exit) before the process group is signalled.
+const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Default)]
 struct SessionFinalizationBarrier {
     active: RwLock<HashMap<Uuid, HashSet<Uuid>>>,
@@ -3923,20 +3927,25 @@ impl ContainerService for LocalContainerService {
         // Try graceful cancellation first, then force kill
         if let Some(cancel) = self.take_cancellation_token(&execution_process.id).await {
             cancel.cancel();
+            // The exit monitor keeps running detached; drop its handle.
+            self.take_exit_monitor_handle(&execution_process.id).await;
 
-            // Wait for exit monitor to finish gracefully
-            if let Some(monitor_handle) = self.take_exit_monitor_handle(&execution_process.id).await
-            {
-                match tokio::time::timeout(Duration::from_secs(5), monitor_handle).await {
-                    Ok(_) => {
-                        tracing::debug!("Process {} exited gracefully", execution_process.id);
-                    }
-                    Err(_) => {
-                        tracing::debug!(
-                            "Graceful shutdown timed out for process {}, force killing",
-                            execution_process.id
-                        );
-                    }
+            // The monitor also drains logs and finalizes the turn; only wait
+            // for process exit here so that work cannot delay the stop response.
+            let exited = async {
+                while matches!(child.write().await.try_wait(), Ok(None)) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            };
+            match tokio::time::timeout(GRACEFUL_STOP_TIMEOUT, exited).await {
+                Ok(()) => {
+                    tracing::debug!("Process {} exited gracefully", execution_process.id);
+                }
+                Err(_) => {
+                    tracing::debug!(
+                        "Graceful shutdown timed out for process {}, force killing",
+                        execution_process.id
+                    );
                 }
             }
         }
@@ -5449,6 +5458,83 @@ done
             queue_state(&container, session.id),
             (vec!["m1".to_string()], true)
         );
+    }
+
+    #[tokio::test]
+    async fn stopping_scripts_discards_their_queue_without_affecting_sibling_sessions() {
+        use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+
+        for reason in [
+            ExecutionProcessRunReason::SetupScript,
+            ExecutionProcessRunReason::CleanupScript,
+        ] {
+            let (container, session, mut workspace) = queue_test_container().await;
+            add_test_repo(&container, &workspace).await;
+            let _logs = SessionLogDir(session.id);
+            let dir = tempfile::tempdir().unwrap();
+            workspace.container_ref = Some(dir.path().to_string_lossy().into_owned());
+            let script = ExecutorAction::new(
+                ExecutorActionType::ScriptRequest(ScriptRequest {
+                    script: "sleep 60".into(),
+                    language: ScriptRequestLanguage::Bash,
+                    // Avoid background QoS starving the test on a loaded host.
+                    context: ScriptContext::ToolInstallScript,
+                    working_dir: None,
+                }),
+                None,
+            );
+            let record = container
+                .create_execution_record(&workspace, &session, &script, &reason)
+                .await
+                .unwrap();
+            container
+                .finish_execution_spawn(&workspace, &session, &record, &script)
+                .await
+                .unwrap();
+            let sibling = Session::create(
+                &container.db.pool,
+                &CreateSession {
+                    executor: None,
+                    variant: None,
+                    name: None,
+                },
+                Uuid::new_v4(),
+                workspace.id,
+            )
+            .await
+            .unwrap();
+            for id in [session.id, sibling.id] {
+                container
+                    .queued_message_service
+                    .enqueue(id, follow_up("queued", BaseCodingAgent::Codex));
+            }
+
+            container
+                .try_stop(&workspace, false, Some(session.id))
+                .await
+                .unwrap();
+            let monitor = container
+                .take_exit_monitor_handle(&record.id)
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(15), monitor)
+                .await
+                .expect("stopped script did not finalize")
+                .unwrap();
+
+            let rows = ExecutionProcess::find_by_session_id(&container.db.pool, session.id, false)
+                .await
+                .unwrap();
+            assert_eq!(
+                rows.len(),
+                1,
+                "stopping a script must not start a queued turn"
+            );
+            assert_eq!(rows[0].status, ExecutionProcessStatus::Killed);
+            assert!(!container.queued_message_service.has_queued(session.id));
+            assert!(container.queued_message_service.has_queued(sibling.id));
+            assert!(!container.has_live_child(record.id).await);
+        }
     }
 
     /// Logs of the failed starts land under the real `dev_assets/sessions/`.

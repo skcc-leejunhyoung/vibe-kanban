@@ -28,7 +28,7 @@ import {
   createPendingProcess,
   matchArrivedProcess,
 } from '@/shared/providers/executionProcessScope';
-import { isCodingAgent } from '@/shared/constants/processes';
+import { PROCESS_RUN_REASONS } from '@/shared/constants/processes';
 import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
@@ -478,8 +478,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     reconcile: reconcileExecutionProcesses,
   } = useExecutionProcessesContext();
 
-  // Stop, reflected immediately: mark the running coding-agent turn(s) killed so
-  // the loading indicator clears and the box flips to idle before the WS stream
+  // Stop, reflected immediately: mark the running turn(s) — agent, setup or
+  // cleanup script alike, everything the server's stop kills — killed so the
+  // loading indicator clears and the box flips to idle before the WS stream
   // delivers the terminal status. Superseded by the stream; reverted if the stop
   // request fails.
   const handleStop = useCallback(async () => {
@@ -554,7 +555,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     }
     const patchedIds: string[] = [];
     for (const p of processes) {
-      if (isCodingAgent(p.run_reason) && p.status === 'running') {
+      if (
+        p.run_reason !== PROCESS_RUN_REASONS.DEV_SERVER &&
+        p.status === 'running'
+      ) {
         patchOptimisticProcess(p.id, {
           status: ExecutionProcessStatus.killed,
         });

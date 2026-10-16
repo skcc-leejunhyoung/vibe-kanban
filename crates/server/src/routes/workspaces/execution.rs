@@ -264,7 +264,9 @@ pub async fn stop_workspace_execution(
         && !ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
             .await?
     {
-        cascade_stop_blocked_dependents(&deployment, task_id).await;
+        // Best-effort cloud round trips: don't hold the stop response on them.
+        let deployment = deployment.clone();
+        tokio::spawn(async move { cascade_stop_blocked_dependents(&deployment, task_id).await });
     }
 
     Ok(ResponseJson(ApiResponse::success(())))

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyPatch, type Operation } from 'rfc6902';
 import { apply as applyOperation } from 'rfc6902/patch';
 import { produce } from 'immer';
-import type { ExecutionProcess } from 'shared/types';
+import { ExecutionProcessStatus, type ExecutionProcess } from 'shared/types';
 import { setLocalApiTransport } from '@/shared/lib/localApiTransport';
 import {
   clearWsSnapshots,
@@ -351,6 +351,80 @@ describe('execution process memoization', () => {
     await flushFrame();
     expect(onRender).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('stoppable execution processes', () => {
+  it.each(['codingagent', 'setupscript', 'cleanupscript', 'archivescript'])(
+    'shows %s as running and restores it if an optimistic stop fails',
+    async (runReason) => {
+      let context: ReturnType<typeof useExecutionProcessesContext>;
+      function Consumer() {
+        context = useExecutionProcessesContext();
+        return null;
+      }
+      await render(
+        <ExecutionProcessesProvider sessionId="session-a">
+          <Consumer />
+        </ExecutionProcessesProvider>
+      );
+      const ws = FakeWebSocket.instances[0];
+      await act(() => {
+        ws.open();
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'replace',
+              path: '/execution_processes',
+              value: {
+                script: {
+                  ...process('script'),
+                  run_reason: runReason,
+                  status: 'running',
+                },
+                dev: {
+                  ...process('dev'),
+                  run_reason: 'devserver',
+                  status: 'running',
+                },
+              },
+            },
+          ],
+        });
+        ws.message({ Ready: true });
+      });
+      await flushFrame();
+      expect(context!.isAttemptRunningVisible).toBe(true);
+      expect(context!.isAttemptRunningAll).toBe(true);
+
+      await act(() =>
+        context!.patchOptimisticProcess('script', {
+          status: ExecutionProcessStatus.killed,
+        })
+      );
+      expect(context!.isAttemptRunningVisible).toBe(false);
+      expect(context!.isAttemptRunningAll).toBe(false);
+      expect(context!.executionProcessesByIdVisible.dev.status).toBe('running');
+
+      await act(() => context!.clearOptimisticProcess('script'));
+      expect(context!.isAttemptRunningVisible).toBe(true);
+      expect(context!.isAttemptRunningAll).toBe(true);
+
+      await act(() =>
+        ws.message({
+          JsonPatch: [
+            {
+              op: 'replace',
+              path: '/execution_processes/script/status',
+              value: 'killed',
+            },
+          ],
+        })
+      );
+      await flushFrame();
+      expect(context!.isAttemptRunningVisible).toBe(false);
+      expect(context!.executionProcessesByIdVisible.dev.status).toBe('running');
+    }
+  );
 });
 
 describe('frame batching', () => {
@@ -1124,7 +1198,7 @@ describe('execution control across batch boundaries', () => {
   );
 
   it('preserves completion reconciliation when a short process is removed in the same frame', async () => {
-    const hook = await renderHook(() => useExecutionProcesses('session-a'));
+    await renderHook(() => useExecutionProcesses('session-a'));
     const ws = FakeWebSocket.instances[0];
     await act(() => {
       ws.open();

@@ -851,8 +851,11 @@ pub trait ContainerService {
             if only_session.is_some_and(|id| id != session.id) {
                 continue;
             }
+            // A parallel setup has no finalizer to discard its queue on stop.
+            let _drain_hold = self.queued_message_service().hold_drain(session.id);
             let processes =
                 ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await?;
+            self.queued_message_service().clear_queue(session.id);
             for process in processes {
                 // Skip dev server processes unless explicitly included
                 if !include_dev_server && process.run_reason == ExecutionProcessRunReason::DevServer
