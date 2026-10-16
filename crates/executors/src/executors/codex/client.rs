@@ -1734,6 +1734,7 @@ mod tests {
             spend_control_reached: None,
             plan_type: None,
             rate_limit_reached_type,
+            normal_model_slug: None,
         }
     }
 

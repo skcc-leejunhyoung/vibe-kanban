@@ -151,6 +151,91 @@ mod tests {
     }
 
     #[test]
+    fn image_references_preserve_legacy_and_paginated_history() {
+        use codex_app_server_protocol::{
+            ServerNotification, ThreadItemsListResponse, ThreadReadResponse,
+        };
+
+        let items = serde_json::json!([
+            {
+                "type": "userMessage", "id": "user-images",
+                "content": [
+                    {"type": "text", "text": "Before the images"},
+                    {"type": "image", "url": "https://example.test/input.png"},
+                    {"type": "image", "fileId": "file-user-image"},
+                    {"type": "text", "text": "After the images"}
+                ]
+            },
+            {
+                "type": "functionCallOutput", "id": "tool-images", "name": "image_tool",
+                "output": [
+                    {"type": "input_image", "image_url": "https://example.test/output.png"},
+                    {"type": "input_image", "file_id": "file-tool-image"}
+                ]
+            },
+            {"type": "agentMessage", "id": "answer", "text": "Images reviewed"}
+        ]);
+        for (method, timestamp) in [
+            ("item/started", "startedAtMs"),
+            ("item/completed", "completedAtMs"),
+        ] {
+            for item in items.as_array().unwrap() {
+                serde_json::from_value::<ServerNotification>(serde_json::json!({
+                    "method": method,
+                    "params": {
+                        "threadId": "thread-1", "turnId": "turn-1", "item": item,
+                        (timestamp): 0,
+                    }
+                }))
+                .expect("live notifications must accept both image reference formats");
+            }
+        }
+        let mut thread = serde_json::to_value(thread_with_items(vec![])).unwrap();
+        thread["turns"][0]["items"] = items.clone();
+        let legacy: ThreadReadResponse =
+            serde_json::from_value(serde_json::json!({"thread": thread}))
+                .expect("thread/read must accept URL and file ID image references");
+        let paginated: ThreadItemsListResponse = serde_json::from_value(serde_json::json!({
+            "data": items.as_array().unwrap().iter().map(|item| {
+                serde_json::json!({"turnId": "turn-1", "item": item})
+            }).collect::<Vec<_>>(),
+            "nextCursor": null,
+        }))
+        .expect("thread/items/list must accept URL and file ID image references");
+
+        let hydrated =
+            thread_with_items(paginated.data.into_iter().map(|entry| entry.item).collect());
+        for thread in [legacy.thread, hydrated] {
+            let serialized = serde_json::to_value(&thread.turns[0].items).unwrap();
+            assert_eq!(
+                serialized[0]["content"][1]["url"],
+                "https://example.test/input.png"
+            );
+            assert_eq!(serialized[0]["content"][2]["fileId"], "file-user-image");
+            assert_eq!(
+                serialized[1]["output"][0]["image_url"],
+                "https://example.test/output.png"
+            );
+            assert_eq!(serialized[1]["output"][1]["file_id"], "file-tool-image");
+            let markdown = thread_transcript_markdown(&thread);
+            assert!(markdown.contains("Before the images"));
+            assert!(markdown.contains("After the images"));
+            assert!(markdown.contains("Images reviewed"));
+            let entries = thread_transcript_entries(&thread, "/");
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.content.contains("Before the images"))
+            );
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.content == "Images reviewed")
+            );
+        }
+    }
+
+    #[test]
     fn flattens_and_normalizes_messages_commands_and_reasoning() {
         let items: Vec<ThreadItem> = vec![
             serde_json::from_value(serde_json::json!({
