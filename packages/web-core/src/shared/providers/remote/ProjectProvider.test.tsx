@@ -14,7 +14,11 @@ import {
   type ProjectContextValue,
 } from '@/shared/hooks/useProjectContext';
 import { useShape } from '@/shared/integrations/electric/hooks';
-import { createShapeCollection } from '@/shared/lib/electric/collections';
+import {
+  createShapeCollection,
+  ELECTRIC_READY_TIMEOUT_MS,
+} from '@/shared/lib/electric/collections';
+import { makeRequest } from '@/shared/lib/remoteApi';
 import { PROJECT_ISSUES_SHAPE } from 'shared/remote-types';
 import { ProjectProvider } from './ProjectProvider';
 
@@ -38,6 +42,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   resetElectricSessions();
   configureTestAuthRuntime();
+  vi.mocked(makeRequest).mockReset();
   dom = installDomlessReact();
 });
 
@@ -90,7 +95,12 @@ function seedRows(
   };
 }
 
-async function renderProvider(options: { withReadOnlyReader?: boolean } = {}) {
+async function renderProvider(
+  options: {
+    withReadOnlyReader?: boolean;
+    fallbackIssues?: boolean;
+  } = {}
+) {
   const projectId = `p${++projectCounter}`;
   const values: ProjectContextValue[] = [];
   let bump: () => void = () => {};
@@ -123,9 +133,19 @@ async function renderProvider(options: { withReadOnlyReader?: boolean } = {}) {
       // Collection ids are `<table>-<project id>` (legacy: `…-mut` suffix).
       const base = session.id.replace(/-mut$/, '');
       const table = base.slice(0, base.lastIndexOf('-'));
+      if (options.fallbackIssues && table === 'issues') continue;
       emitSnapshot(session, rows[table] ?? []);
     }
   });
+
+  if (options.fallbackIssues) {
+    vi.mocked(makeRequest).mockResolvedValueOnce(
+      new Response(JSON.stringify({ issues: rows.issues }))
+    );
+    await act(() =>
+      vi.advanceTimersByTimeAsync(ELECTRIC_READY_TIMEOUT_MS + 10)
+    );
+  }
 
   return {
     projectId,
@@ -156,6 +176,64 @@ describe('ProjectProvider streams', () => {
     const subscription = raw.subscribeChanges(() => {});
     expect(streams()).toHaveLength(12);
     subscription.unsubscribe();
+  });
+});
+
+describe('ProjectProvider fallback mutations shared by local and remote boards', () => {
+  it('keeps status selectors in sync throughout a delayed post-save GET', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => null });
+    const provider = await renderProvider({
+      fallbackIssues: true,
+      withReadOnlyReader: true,
+    });
+    let completeGet!: (response: Response) => void;
+    const get = new Promise<Response>((resolve) => {
+      completeGet = resolve;
+    });
+    vi.mocked(makeRequest)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ txid: 7 })))
+      .mockReturnValueOnce(get);
+    let persisted!: Promise<unknown>;
+    await act(() => {
+      persisted = provider
+        .latest()
+        .updateIssue('i1', { status_id: 's2' }).persisted;
+    });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(provider.latest().getIssue('i1')?.status_id).toBe('s2');
+    expect(
+      provider
+        .latest()
+        .getIssuesForStatus('s1')
+        .map((issue) => issue.id)
+    ).toEqual(['i2']);
+    expect(
+      provider
+        .latest()
+        .getIssuesForStatus('s2')
+        .map((issue) => issue.id)
+    ).toEqual(['i1']);
+
+    await act(async () => {
+      const rows = seedRows(provider.projectId).issues;
+      completeGet(
+        new Response(
+          JSON.stringify({
+            issues: rows.map((issue) =>
+              issue.id === 'i1' ? { ...issue, status_id: 's2' } : issue
+            ),
+          })
+        )
+      );
+      await persisted;
+    });
+    expect(provider.latest().getIssue('i1')?.status_id).toBe('s2');
+    expect(
+      provider
+        .latest()
+        .getIssuesForStatus('s2')
+        .map((issue) => issue.id)
+    ).toEqual(['i1']);
   });
 });
 

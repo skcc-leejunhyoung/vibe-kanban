@@ -24,6 +24,7 @@ type SourceRuntime = {
   fallbackLocked: boolean;
   fallbackLockedAt: number | null;
   pendingConfirmations: number;
+  fallbackMutationVersion: number;
   refreshers: Set<(afterMutation?: boolean) => Promise<void>>;
   fallbackSwitchers: Set<() => void>;
   /** Sessions currently on the fallback that can probe Electric on demand. */
@@ -270,6 +271,7 @@ function getOrCreateSourceRuntime(sourceKey: string): SourceRuntime {
     fallbackLocked: false,
     fallbackLockedAt: null,
     pendingConfirmations: 0,
+    fallbackMutationVersion: 0,
     refreshers: new Set(),
     fallbackSwitchers: new Set(),
     probeTriggers: new Set(),
@@ -593,17 +595,22 @@ function createFallbackSync(args: {
     let isCleanedUp = false;
     let refreshPromise: Promise<void> | null = null;
     let requestController: AbortController | null = null;
+    let refreshVersion = 0;
+    const pendingMutations = new Set<() => void>();
+    const finishPendingMutations = () => {
+      for (const resolve of pendingMutations) resolve();
+      pendingMutations.clear();
+    };
 
     const refreshNow = async (afterMutation = false): Promise<void> => {
       if (isCleanedUp) return;
-      if (refreshPromise) {
-        if (!afterMutation) return refreshPromise;
-        // A read started before the write cannot confirm it. Keep the
-        // optimistic transaction until a read started after the write finishes.
-        await refreshPromise;
-        return refreshNow();
+      if (refreshPromise && !afterMutation) {
+        return refreshPromise;
       }
 
+      // Only a read started after the write can confirm it.
+      const version = ++refreshVersion;
+      requestController?.abort();
       refreshPromise = (async () => {
         const controller = new AbortController();
         requestController = controller;
@@ -636,21 +643,25 @@ function createFallbackSync(args: {
             }),
           ]);
 
-          if (!isCleanedUp) {
+          if (!isCleanedUp && version === refreshVersion) {
             fallbackSnapshotCache.set(args.sourceKey, rows);
             applySnapshot(syncParams, rows);
+            finishPendingMutations();
             args.onRecover();
           }
         } catch (error) {
-          if (isCleanedUp || isAbortError(error)) return;
+          if (isCleanedUp || version !== refreshVersion || isAbortError(error))
+            return;
 
           const message =
             error instanceof Error ? error.message : 'Fallback fetch failed';
           args.reportError({ message });
         } finally {
           if (timeoutId) globalThis.clearTimeout(timeoutId);
-          requestController = null;
-          refreshPromise = null;
+          if (version === refreshVersion) {
+            requestController = null;
+            refreshPromise = null;
+          }
         }
       })();
 
@@ -659,7 +670,13 @@ function createFallbackSync(args: {
 
     const unregisterRefresher = registerFallbackRefresher(
       args.sourceKey,
-      refreshNow
+      (afterMutation = false) =>
+        afterMutation
+          ? new Promise<void>((resolve) => {
+              pendingMutations.add(resolve);
+              void refreshNow(true);
+            })
+          : refreshNow()
     );
 
     const cachedRows = fallbackSnapshotCache.get(args.sourceKey);
@@ -679,6 +696,7 @@ function createFallbackSync(args: {
         requestController?.abort();
         globalThis.clearInterval(intervalId);
         unregisterRefresher();
+        finishPendingMutations();
       },
       loadSubset: () => true,
     };
@@ -796,6 +814,7 @@ function createHybridSync(args: {
 
       args.errors.silent = true;
       const errorsAtStart = args.errors.streamErrorCount;
+      const mutationVersionAtStart = runtime.fallbackMutationVersion;
       const state: ProbeState = { sync: {}, timeoutId: null, adopted: false };
       probe = state;
 
@@ -805,7 +824,10 @@ function createHybridSync(args: {
         if (isCleanedUp || probe !== state) return;
         if (args.errors.streamErrorCount !== errorsAtStart) return;
         // A probe must not cancel the REST read confirming an accepted write.
-        if (runtime.pendingConfirmations > 0) {
+        if (
+          runtime.pendingConfirmations > 0 ||
+          mutationVersionAtStart !== runtime.fallbackMutationVersion
+        ) {
           discardProbe();
           scheduleProbe();
           return;
@@ -948,6 +970,7 @@ async function maybeRefreshFallbackAfterMutation(
   sourceKey: string
 ): Promise<void> {
   if (!isSourceFallbackLocked(sourceKey)) return;
+  getOrCreateSourceRuntime(sourceKey).fallbackMutationVersion += 1;
   invalidateFallbackCache(sourceKey);
   await refreshFallbackSource(sourceKey, true);
 }

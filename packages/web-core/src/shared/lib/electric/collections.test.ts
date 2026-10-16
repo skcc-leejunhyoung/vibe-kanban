@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Collection } from '@tanstack/react-db';
 import {
   ISSUE_MUTATION,
   PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
@@ -396,4 +397,302 @@ describe('fallback recovery', () => {
 
     subscription.unsubscribe();
   });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+describe('fallback mutations', () => {
+  const issue = (status = 'in-progress', id = 'issue') => ({
+    ...row(id),
+    status_id: status,
+  });
+  type IssueCollection = Collection<ReturnType<typeof issue>, string>;
+  const collections: IssueCollection[] = [];
+
+  afterEach(async () => {
+    await Promise.all(collections.splice(0).map((c) => c.cleanup()));
+  });
+
+  async function setup() {
+    const gets: ReturnType<typeof deferred<Response>>[] = [];
+    const writes: ReturnType<typeof deferred<Response>>[] = [];
+    let initial = true;
+    vi.mocked(makeRequest).mockImplementation(async (_path, init) => {
+      if (init?.method === 'GET' && initial) {
+        initial = false;
+        return json({ issues: [issue()] });
+      }
+      const request = deferred<Response>();
+      (init?.method === 'GET' ? gets : writes).push(request);
+      return request.promise;
+    });
+    const p = params();
+    const collection = createShapeCollection(
+      PROJECT_ISSUES_SHAPE,
+      p,
+      undefined,
+      ISSUE_MUTATION
+    ) as unknown as IssueCollection;
+    collections.push(collection);
+    const seen: unknown[] = [];
+    collection.subscribeChanges(() => {
+      seen.push(collection.get('issue')?.status_id);
+    });
+    await vi.advanceTimersByTimeAsync(ELECTRIC_READY_TIMEOUT_MS + 10);
+    expect(collection.get('issue')?.status_id).toBe('in-progress');
+    seen.length = 0;
+    return { collection, gets, writes, seen, projectId: p.project_id };
+  }
+
+  it('keeps the optimistic status until the post-save GET is applied', async () => {
+    const { collection, gets, writes, seen } = await setup();
+    const tx = collection.update('issue', (draft) => {
+      draft.status_id = 'in-review';
+    });
+    expect(collection.get('issue')?.status_id).toBe('in-review');
+    writes[0].resolve(json({ txid: 7 }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(gets).toHaveLength(1);
+    expect(tx.state).toBe('persisting');
+    expect(collection.get('issue')?.status_id).toBe('in-review');
+    gets[0].resolve(json({ issues: [issue('in-review')] }));
+    await tx.isPersisted.promise;
+    expect(collection.get('issue')?.status_id).toBe('in-review');
+    expect(seen).not.toContain('in-progress');
+  });
+
+  it.each(['before', 'after'] as const)(
+    'ignores a pre-save GET resolving %s the post-save GET',
+    async (order) => {
+      const { collection, gets, writes, seen } = await setup();
+      await vi.advanceTimersByTimeAsync(FALLBACK_REFRESH_INTERVAL_MS);
+      expect(gets).toHaveLength(1);
+      const tx = collection.update('issue', (draft) => {
+        draft.status_id = 'in-review';
+      });
+      writes[0].resolve(json({ txid: 7 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(gets).toHaveLength(2);
+      if (order === 'before') {
+        gets[0].resolve(json({ issues: [issue()] }));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(tx.state).toBe('persisting');
+      }
+      gets[1].resolve(json({ issues: [issue('in-review')] }));
+      await tx.isPersisted.promise;
+      if (order === 'after') {
+        gets[0].resolve(json({ issues: [issue()] }));
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(collection.get('issue')?.status_id).toBe('in-review');
+      expect(seen).not.toContain('in-progress');
+    }
+  );
+
+  it.each(['http', 'network', 'invalid-payload', 'abort'] as const)(
+    'retains a saved status on GET %s failure and completes on the next poll',
+    async (failure) => {
+      const { collection, gets, writes, seen } = await setup();
+      const onError = vi.fn();
+      subscribeShapeErrors(collection, { onError });
+      const tx = collection.update('issue', (draft) => {
+        draft.status_id = 'in-review';
+      });
+      writes[0].resolve(json({ txid: 7 }));
+      await vi.advanceTimersByTimeAsync(0);
+      if (failure === 'http') {
+        gets[0].resolve(new Response('unavailable', { status: 503 }));
+      } else if (failure === 'invalid-payload') {
+        gets[0].resolve(json({}));
+      } else {
+        gets[0].reject(
+          failure === 'abort'
+            ? new DOMException('cancelled', 'AbortError')
+            : new Error('offline')
+        );
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tx.state).toBe('persisting');
+      expect(collection.get('issue')?.status_id).toBe('in-review');
+      if (failure !== 'abort') expect(onError).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(FALLBACK_REFRESH_INTERVAL_MS);
+      gets[1].resolve(json({ issues: [issue('in-review')] }));
+      await tx.isPersisted.promise;
+      expect(tx.state).toBe('completed');
+      expect(seen).not.toContain('in-progress');
+      expect(writes).toHaveLength(1);
+    }
+  );
+
+  it('rolls back and rejects an actual PATCH failure', async () => {
+    const { collection, gets, writes } = await setup();
+    const tx = collection.update('issue', (draft) => {
+      draft.status_id = 'in-review';
+    });
+    const failed = expect(tx.isPersisted.promise).rejects.toThrow('denied');
+    writes[0].resolve(
+      new Response(JSON.stringify({ message: 'denied' }), { status: 403 })
+    );
+    await failed;
+    expect(collection.get('issue')?.status_id).toBe('in-progress');
+    expect(gets).toHaveLength(0);
+  });
+
+  it('keeps the latest of consecutive status changes when GETs finish out of order', async () => {
+    const { collection, gets, writes, seen } = await setup();
+    const first = collection.update('issue', (draft) => {
+      draft.status_id = 'in-review';
+    });
+    writes[0].resolve(json({ txid: 7 }));
+    await vi.advanceTimersByTimeAsync(0);
+    const second = collection.update('issue', (draft) => {
+      draft.status_id = 'done';
+    });
+    seen.length = 0;
+    writes[1].resolve(json({ txid: 8 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(gets).toHaveLength(2);
+    gets[1].resolve(json({ issues: [issue('done')] }));
+    await Promise.all([first.isPersisted.promise, second.isPersisted.promise]);
+    gets[0].resolve(json({ issues: [issue('in-review')] }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(collection.get('issue')?.status_id).toBe('done');
+    expect(seen.every((status) => status === 'done')).toBe(true);
+  });
+
+  it('rolls back only the failed second change to the saved first change', async () => {
+    const { collection, gets, writes } = await setup();
+    const first = collection.update('issue', (draft) => {
+      draft.status_id = 'in-review';
+    });
+    writes[0].resolve(json({ txid: 7 }));
+    await vi.advanceTimersByTimeAsync(0);
+    const second = collection.update('issue', (draft) => {
+      draft.status_id = 'done';
+    });
+    gets[0].resolve(json({ issues: [issue('in-review')] }));
+    await first.isPersisted.promise;
+    expect(collection.get('issue')?.status_id).toBe('done');
+    const failed = expect(second.isPersisted.promise).rejects.toThrow('denied');
+    writes[1].resolve(
+      new Response(JSON.stringify({ message: 'denied' }), { status: 403 })
+    );
+    await failed;
+    expect(collection.get('issue')?.status_id).toBe('in-review');
+  });
+
+  it('waits for a fresh snapshot after a bulk update', async () => {
+    const { collection, gets, writes } = await setup();
+    await vi.advanceTimersByTimeAsync(FALLBACK_REFRESH_INTERVAL_MS);
+    gets[0].resolve(json({ issues: [issue(), issue('in-progress', 'other')] }));
+    await vi.advanceTimersByTimeAsync(0);
+    const tx = collection.update(['issue', 'other'], (drafts) => {
+      for (const draft of drafts) draft.status_id = 'in-review';
+    });
+    expect(makeRequest).toHaveBeenLastCalledWith(
+      '/v1/issues/bulk',
+      expect.objectContaining({ method: 'POST' })
+    );
+    writes[0].resolve(json({ txid: 7 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tx.state).toBe('persisting');
+    gets[1].resolve(
+      json({ issues: [issue('in-review'), issue('in-review', 'other')] })
+    );
+    await tx.isPersisted.promise;
+    expect(collection.toArray.map((row) => row.status_id)).toEqual([
+      'in-review',
+      'in-review',
+    ]);
+  });
+
+  it('discards an Electric probe started before the save', async () => {
+    const { collection, gets, writes, projectId } = await setup();
+    retryShapeSource(collection);
+    const staleProbe = lastSessionFor(`issues-${projectId}`);
+    const tx = collection.update('issue', (draft) => {
+      draft.status_id = 'in-review';
+    });
+    writes[0].resolve(json({ txid: 7 }));
+    await vi.advanceTimersByTimeAsync(0);
+    emitSnapshot(staleProbe, [issue()]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(staleProbe.cleanup).toHaveBeenCalledTimes(1);
+    expect(tx.state).toBe('persisting');
+    gets[0].resolve(json({ issues: [issue('in-review')] }));
+    await tx.isPersisted.promise;
+    expect(collection.get('issue')?.status_id).toBe('in-review');
+  });
+
+  it('lets a fresh Electric probe complete a pending fallback mutation', async () => {
+    const { collection, gets, writes, projectId } = await setup();
+    const tx = collection.update('issue', (draft) => {
+      draft.status_id = 'in-review';
+    });
+    writes[0].resolve(json({ txid: 7 }));
+    await vi.advanceTimersByTimeAsync(0);
+    retryShapeSource(collection);
+    emitSnapshot(lastSessionFor(`issues-${projectId}`), [issue('in-review')]);
+    await tx.isPersisted.promise;
+    gets[0].resolve(json({ issues: [issue()] }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(collection.get('issue')?.status_id).toBe('in-review');
+  });
+
+  it('settles pending mutations on cleanup and ignores late responses in a new session', async () => {
+    const { collection, gets, writes, projectId } = await setup();
+    const tx = collection.update('issue', (draft) => {
+      draft.status_id = 'in-review';
+    });
+    writes[0].resolve(json({ txid: 7 }));
+    await vi.advanceTimersByTimeAsync(0);
+    await collection.cleanup();
+    await tx.isPersisted.promise;
+    gets[0].resolve(json({ issues: [issue()] }));
+    await vi.advanceTimersByTimeAsync(0);
+    const next = createShapeCollection(PROJECT_ISSUES_SHAPE, {
+      project_id: projectId,
+    }) as unknown as IssueCollection;
+    collections.push(next);
+    next.subscribeChanges(() => {});
+    expect(ids(next)).toEqual([]);
+    gets[1].resolve(json({ issues: [issue('in-review')] }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(next.get('issue')?.status_id).toBe('in-review');
+  });
+
+  it.each(['insert', 'delete'] as const)(
+    'holds an optimistic %s until the fallback snapshot confirms it',
+    async (operation) => {
+      const { collection, gets, writes } = await setup();
+      const tx =
+        operation === 'insert'
+          ? collection.insert(issue('in-review', 'new'))
+          : collection.delete('issue');
+      const expected = operation === 'insert' ? ['issue', 'new'] : [];
+      expect(ids(collection)).toEqual(expected);
+      writes[0].resolve(json({ txid: 7 }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ids(collection)).toEqual(expected);
+      expect(tx.state).toBe('persisting');
+      gets[0].resolve(
+        json({
+          issues:
+            operation === 'insert' ? [issue(), issue('in-review', 'new')] : [],
+        })
+      );
+      await tx.isPersisted.promise;
+      expect(ids(collection)).toEqual(expected);
+    }
+  );
 });
