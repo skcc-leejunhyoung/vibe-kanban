@@ -742,3 +742,20 @@ textarea:focus,
     background-color: #212121;
   }
 }
+
+/* iOS/iPadOS 26+ installed web apps blur the status-bar strip unless a
+   full-width fixed element (>10px tall) sits at the top-centre probe point.
+   WebKit reads its computed background-color; background-clip: text keeps it
+   invisible. Must exist from first paint: iPad latches the blur on a miss. */
+.vk-top-edge {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 11px;
+  z-index: 2147483647;
+  pointer-events: none;
+  background-color: hsl(var(--bg-secondary));
+  -webkit-background-clip: text;
+  background-clip: text;
+}
