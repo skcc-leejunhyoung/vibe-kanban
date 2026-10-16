@@ -886,11 +886,6 @@ impl LocalContainerService {
         map.remove(id)
     }
 
-    async fn add_exit_monitor_handle(&self, id: Uuid, handle: JoinHandle<()>) {
-        let mut map = self.exit_monitor_handles.write().await;
-        map.insert(id, handle);
-    }
-
     async fn take_exit_monitor_handle(&self, id: &Uuid) -> Option<JoinHandle<()>> {
         let mut map = self.exit_monitor_handles.write().await;
         map.remove(id)
@@ -3891,13 +3886,15 @@ impl ContainerService for LocalContainerService {
                 self.queued_message_service
                     .hold_drain(execution_process.session_id)
             });
+        // Publish ownership before a fast monitor can resume deferred completion.
+        let mut monitors = self.exit_monitor_handles.write().await;
         let hn = self.spawn_exit_monitor(
             &execution_process.id,
             execution_process.session_id,
             spawned.exit_signal,
             drain_hold,
         );
-        self.add_exit_monitor_handle(execution_process.id, hn).await;
+        monitors.insert(execution_process.id, hn);
 
         Ok(())
     }
@@ -5578,8 +5575,10 @@ done
                 .unwrap();
                 if scenario == "monitored failure" {
                     container
-                        .add_exit_monitor_handle(newer.id, tokio::spawn(async {}))
-                        .await;
+                        .exit_monitor_handles
+                        .write()
+                        .await
+                        .insert(newer.id, tokio::spawn(async {}));
                 }
             }
             if scenario == "failed before spawn" {
