@@ -68,7 +68,7 @@ async function renderProvider() {
     );
   }
   await dom.render(<Host />);
-  await act(() =>
+  await act(async () =>
     emitSnapshotsByTable({
       projects: [{ id: 'pr1', organization_id: organizationId, name: 'P' }],
     })

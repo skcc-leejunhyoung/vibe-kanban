@@ -405,6 +405,8 @@
     "noCommands": "No commands available for this agent."
   },
   "kanban": {
+    "refreshProject": "Refresh project",
+    "syncFailed": "Could not update project data. Retrying automatically; you can also refresh this panel.",
     "noVisibleStatuses": "All statuses are hidden. Use display settings or switch to another tab to view issues.",
     "noProjectFound": "No project found",
     "unassigned": "Unassigned",

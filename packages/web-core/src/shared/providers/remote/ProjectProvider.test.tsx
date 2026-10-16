@@ -118,7 +118,7 @@ async function renderProvider(options: { withReadOnlyReader?: boolean } = {}) {
   await dom.render(<Host />);
 
   const rows = seedRows(projectId);
-  await act(() => {
+  await act(async () => {
     for (const session of electricSessions) {
       // Collection ids are `<table>-<project id>` (legacy: `…-mut` suffix).
       const base = session.id.replace(/-mut$/, '');

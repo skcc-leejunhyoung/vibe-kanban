@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   configureTestAuthRuntime,
   emitChange,
+  emitError,
   emitSnapshotsByTable,
   installFakeDomReact,
   lastSessionFor,
@@ -10,6 +11,10 @@ import {
 } from '@/shared/lib/electric/electricTestKit';
 import { OrgContext, type OrgContextValue } from '@/shared/hooks/useOrgContext';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
+import {
+  useProjectContext,
+  type ProjectContextValue,
+} from '@/shared/hooks/useProjectContext';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import {
   DEFAULT_KANBAN_FILTER_STATE,
@@ -17,6 +22,7 @@ import {
   type KanbanFilterState,
 } from '@/shared/stores/useUiPreferencesStore';
 import { newGroup } from '@/shared/filters/filterTree';
+import { makeRequest } from '@/shared/lib/remoteApi';
 import { KanbanContainer } from './KanbanContainer';
 
 /**
@@ -28,6 +34,7 @@ import { KanbanContainer } from './KanbanContainer';
 // Shared by the hoisted vi.mock factories below, so hoisted with them.
 const {
   contentRenders,
+  refreshButtons,
   setDefaultCreateOptions,
   passthrough,
   nothing,
@@ -40,6 +47,7 @@ const {
   t,
 } = vi.hoisted(() => ({
   contentRenders: vi.fn<(displayId: string) => void>(),
+  refreshButtons: vi.fn<(onClick: () => void) => void>(),
   setDefaultCreateOptions: vi.fn(),
   passthrough: ({ children }: { children?: ReactNode }) => children ?? null,
   nothing: () => null,
@@ -76,6 +84,20 @@ vi.mock('react-hotkeys-hook', () => ({ useHotkeys: noop }));
 vi.mock('@phosphor-icons/react', () => ({
   PlusIcon: nothing,
   DotsThreeIcon: nothing,
+  ArrowClockwiseIcon: nothing,
+  SpinnerIcon: nothing,
+}));
+vi.mock('@vibe/ui/components/IconButton', () => ({
+  IconButton: (props: { onClick: () => void }) => {
+    refreshButtons(props.onClick);
+    return null;
+  },
+}));
+vi.mock('@vibe/ui/components/PrimaryButton', () => ({
+  PrimaryButton: (props: { onClick: () => void }) => {
+    refreshButtons(props.onClick);
+    return null;
+  },
 }));
 vi.mock('@/shared/actions', () => ({
   Actions: { ProjectsGuide: {}, ProjectSettings: {} },
@@ -181,6 +203,8 @@ let projectCounter = 0;
 beforeEach(() => {
   vi.useFakeTimers();
   contentRenders.mockClear();
+  refreshButtons.mockClear();
+  vi.mocked(makeRequest).mockReset();
   setDefaultCreateOptions.mockClear();
   pane.active = true;
   useIssueSelectionStore.getState().clearSelection();
@@ -305,7 +329,7 @@ function seedRows(p: string): Record<string, Record<string, unknown>[]> {
   };
 }
 
-async function renderBoard(setup?: (projectId: string) => void) {
+async function renderBoard(setup?: (projectId: string) => void, load = true) {
   const projectId = `p${++projectCounter}`;
   route.projectId = projectId;
   setup?.(projectId);
@@ -318,23 +342,30 @@ async function renderBoard(setup?: (projectId: string) => void) {
   } as unknown as OrgContextValue;
 
   let bump: () => void = () => {};
+  let projectContext!: ProjectContextValue;
+  function Probe() {
+    projectContext = useProjectContext();
+    return null;
+  }
   function Host() {
     const [, setTick] = useState(0);
     bump = () => setTick((tick) => tick + 1);
     return (
       <OrgContext.Provider value={orgValue}>
         <ProjectProvider projectId={projectId}>
+          <Probe />
           <KanbanContainer />
         </ProjectProvider>
       </OrgContext.Provider>
     );
   }
   await dom.render(<Host />);
-  await act(() => emitSnapshotsByTable(seedRows(projectId)));
+  if (load) await act(async () => emitSnapshotsByTable(seedRows(projectId)));
   await act(() => vi.advanceTimersByTimeAsync(0));
 
   return {
     projectId,
+    context: () => projectContext,
     rerenderHost: () => act(() => bump()),
     change: (table: string, type: 'insert' | 'update', row: object) =>
       act(() =>
@@ -347,6 +378,66 @@ async function renderBoard(setup?: (projectId: string) => void) {
       contentRenders.mock.calls.filter(([id]) => id === displayId).length,
   };
 }
+
+describe('KanbanContainer project refresh', () => {
+  it.each([true, false])(
+    'refreshes only this project without remounting the board (loaded: %s)',
+    async (load) => {
+      const board = await renderBoard(undefined, load);
+      const preferences = useUiPreferencesStore.getState().projectViewsById;
+      vi.mocked(makeRequest).mockImplementation(async (path) => {
+        const endpoint = /\/fallback\/(\w+)/.exec(path)?.[1] ?? '';
+        const table =
+          endpoint === 'project_workspaces' ? 'workspaces' : endpoint;
+        return new Response(
+          JSON.stringify({ [table]: seedRows(board.projectId)[table] ?? [] })
+        );
+      });
+      expect(refreshButtons).toHaveBeenCalled();
+
+      await act(async () => refreshButtons.mock.calls.at(-1)![0]());
+      await act(() => vi.advanceTimersByTimeAsync(0));
+
+      expect(makeRequest).toHaveBeenCalledTimes(12);
+      for (const [path] of vi.mocked(makeRequest).mock.calls) {
+        expect(
+          new URL(path, 'http://api.test').searchParams.get('project_id')
+        ).toBe(board.projectId);
+      }
+      expect(board.rendersOf('VK-1')).toBeGreaterThan(0);
+      expect(board.context().error).toBeNull();
+      expect(useUiPreferencesStore.getState().projectViewsById).toBe(
+        preferences
+      );
+    }
+  );
+
+  it('offers refresh after a failed initial load and recovers the cards', async () => {
+    const board = await renderBoard(undefined, false);
+    vi.mocked(makeRequest).mockRejectedValueOnce(new Error('Offline'));
+    await act(async () =>
+      emitError(lastSessionFor(`issues-${board.projectId}`), {
+        message: 'Cancelled',
+      })
+    );
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(contentRenders).not.toHaveBeenCalled();
+    expect(refreshButtons).toHaveBeenCalled();
+
+    vi.mocked(makeRequest).mockImplementation(async (path) => {
+      const endpoint = /\/fallback\/(\w+)/.exec(path)?.[1] ?? '';
+      const table = endpoint === 'project_workspaces' ? 'workspaces' : endpoint;
+      return new Response(
+        JSON.stringify({ [table]: seedRows(board.projectId)[table] ?? [] })
+      );
+    });
+    await act(async () => refreshButtons.mock.calls.at(-1)![0]());
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(board.rendersOf('VK-1')).toBeGreaterThan(0);
+    expect(board.rendersOf('VK-2')).toBeGreaterThan(0);
+    expect(board.context().error).toBeNull();
+  });
+});
 
 describe('KanbanContainer card re-renders', () => {
   it('renders each card once on load', async () => {

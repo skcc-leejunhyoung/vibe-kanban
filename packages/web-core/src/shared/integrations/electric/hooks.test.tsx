@@ -72,7 +72,7 @@ async function renderShape(options?: { mutation?: typeof ISSUE_MUTATION }) {
 describe('useShape result identity', () => {
   it('returns the same object across parent re-renders when data is unchanged', async () => {
     const shape = await renderShape();
-    await act(() => emitSnapshot(shape.session(), [issue('a')]));
+    await act(async () => emitSnapshot(shape.session(), [issue('a')]));
     const settled = shape.latest();
     expect(settled.isLoading).toBe(false);
     expect(settled.data).toHaveLength(1);
@@ -86,7 +86,7 @@ describe('useShape result identity', () => {
 
   it('keeps mutation helpers stable while data stays the same', async () => {
     const shape = await renderShape({ mutation: ISSUE_MUTATION });
-    await act(() => emitSnapshot(shape.session(), [issue('a')]));
+    await act(async () => emitSnapshot(shape.session(), [issue('a')]));
     const settled = shape.latest() as ReturnType<typeof useShape> & {
       insert: unknown;
       update: unknown;
@@ -104,7 +104,7 @@ describe('useShape result identity', () => {
 
   it('returns a new object only when the synced data changes', async () => {
     const shape = await renderShape();
-    await act(() => emitSnapshot(shape.session(), [issue('a')]));
+    await act(async () => emitSnapshot(shape.session(), [issue('a')]));
     const before = shape.latest();
 
     await act(() =>
@@ -120,7 +120,9 @@ describe('useShape result identity', () => {
 
   it('keeps untouched rows referentially stable when another row changes', async () => {
     const shape = await renderShape();
-    await act(() => emitSnapshot(shape.session(), [issue('a'), issue('b')]));
+    await act(async () =>
+      emitSnapshot(shape.session(), [issue('a'), issue('b')])
+    );
     const rowB = shape.latest().data.find((row) => row.id === 'b');
 
     await act(() =>

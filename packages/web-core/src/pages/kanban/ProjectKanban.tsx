@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Group, Layout, Panel, Separator } from 'react-resizable-panels';
 import { OrgProvider } from '@/shared/providers/remote/OrgProvider';
@@ -8,6 +8,7 @@ import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { useActions } from '@/shared/hooks/useActions';
 import { usePageTitle } from '@/shared/hooks/usePageTitle';
 import { KanbanContainer } from '@/features/kanban/ui/KanbanContainer';
+import { ProjectLoadingState } from '@/features/kanban/ui/ProjectLoadingState';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import {
   PaneWidthProvider,
@@ -246,16 +247,12 @@ function ProjectKanbanLayout({ projectName }: { projectName: string }) {
  */
 function ProjectKanbanInner({ projectId }: { projectId: string }) {
   const { t } = useTranslation('common');
-  const { projects, isLoading } = useOrgContext();
+  const { projects, isLoading, error, retry } = useOrgContext();
 
   const project = projects.find((p) => p.id === projectId);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full w-full">
-        <p className="text-low">{t('states.loading')}</p>
-      </div>
-    );
+  if (isLoading || (error && !project)) {
+    return <ProjectLoadingState hasError={!!error} onRetry={retry} />;
   }
 
   if (!project) {
@@ -280,15 +277,29 @@ function ProjectKanbanInner({ projectId }: { projectId: string }) {
  */
 function useFindProjectById(projectId: string | undefined) {
   const { isLoaded: authLoaded } = useAuth();
-  const { data: orgsData, isLoading: orgsLoading } = useUserOrganizations();
+  const {
+    data: orgsData,
+    isLoading: orgsLoading,
+    error: orgsError,
+    refetch: refetchOrgs,
+  } = useUserOrganizations();
   const selectedOrgId = useOrganizationStore((s) => s.selectedOrgId);
   const organizations = orgsData?.organizations ?? [];
 
   // Use stored org ID, or fall back to first org
   const orgIdToUse = selectedOrgId ?? organizations[0]?.id ?? null;
 
-  const { data: projects = [], isLoading: projectsLoading } =
-    useOrganizationProjects(orgIdToUse);
+  const {
+    data: projects = [],
+    isLoading: projectsLoading,
+    error,
+    retry,
+  } = useOrganizationProjects(orgIdToUse);
+
+  const refresh = useCallback(() => {
+    retry();
+    void refetchOrgs();
+  }, [retry, refetchOrgs]);
 
   const project = useMemo(() => {
     if (!projectId) return undefined;
@@ -300,6 +311,8 @@ function useFindProjectById(projectId: string | undefined) {
     organizationId: project?.organization_id ?? selectedOrgId,
     // Include auth loading state - we can't determine project access until auth loads
     isLoading: !authLoaded || orgsLoading || projectsLoading,
+    error: error || orgsError,
+    retry: refresh,
   };
 }
 
@@ -352,12 +365,12 @@ export function ProjectKanban() {
   }, [projectId, hasInvalidWorkspaceCreateDraftId, appNavigation]);
 
   // Find the project and get its organization
-  const { organizationId, isLoading } = useFindProjectById(
+  const { organizationId, isLoading, error, retry } = useFindProjectById(
     projectId ?? undefined
   );
 
   // Show loading while auth state is being determined
-  if (!authLoaded || isLoading) {
+  if (!authLoaded) {
     return (
       <div className="flex items-center justify-center h-full w-full">
         <p className="text-low">{t('states.loading')}</p>
@@ -377,6 +390,10 @@ export function ProjectKanban() {
         />
       </div>
     );
+  }
+
+  if (isLoading || (error && !organizationId)) {
+    return <ProjectLoadingState hasError={!!error} onRetry={retry} />;
   }
 
   if (!projectId || !organizationId) {

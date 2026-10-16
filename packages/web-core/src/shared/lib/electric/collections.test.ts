@@ -9,6 +9,7 @@ import {
   configureTestAuthRuntime,
   electricSessions,
   emitChange,
+  emitError,
   emitSnapshot,
   lastSessionFor,
   resetElectricSessions,
@@ -17,9 +18,11 @@ import {
 import {
   createShapeCollection,
   retryShapeSource,
+  subscribeShapeErrors,
   ELECTRIC_PROBE_BASE_DELAY_MS,
   ELECTRIC_READY_TIMEOUT_MS,
   FALLBACK_REFRESH_INTERVAL_MS,
+  FALLBACK_REQUEST_TIMEOUT_MS,
   GITHUB_ISSUE_LINK_COLUMNS,
   SHAPE_GC_TIME_MS,
 } from './collections';
@@ -101,6 +104,7 @@ describe('collection cache', () => {
     const subscription = first.subscribeChanges(() => {});
     const session = lastSessionFor(`issues-${p.project_id}`);
     emitSnapshot(session, [row('a')]);
+    await vi.advanceTimersByTimeAsync(0);
     expect(first.status).toBe('ready');
     expect(auth.registerShape).toHaveBeenCalledTimes(1);
 
@@ -128,6 +132,182 @@ describe('collection cache', () => {
 });
 
 describe('fallback recovery', () => {
+  it.each([
+    { message: 'Load cancelled' },
+    { name: 'AbortError', message: 'Aborted' },
+    { status: 401, message: 'Unauthorized' },
+    { status: 403, message: 'Forbidden' },
+  ])(
+    'recovers an initial stream error without accepting an empty snapshot: %j',
+    async (error) => {
+      const p = params();
+      let resolve!: (response: Response) => void;
+      vi.mocked(makeRequest).mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          })
+      );
+      const collection = createShapeCollection(PROJECT_ISSUES_SHAPE, p);
+      const subscription = collection.subscribeChanges(() => {});
+
+      emitError(lastSessionFor(`issues-${p.project_id}`), error);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(collection.isReady()).toBe(false);
+      expect(makeRequest).toHaveBeenCalledTimes(1);
+
+      resolve(json({ issues: [row('recovered')] }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(collection.isReady()).toBe(true);
+      expect(ids(collection)).toEqual(['recovered']);
+      subscription.unsubscribe();
+    }
+  );
+
+  it('refreshes a ready stream immediately, preserving rows until the response arrives', async () => {
+    const p = params();
+    const collection = createShapeCollection(PROJECT_ISSUES_SHAPE, p);
+    const subscription = collection.subscribeChanges(() => {});
+    const initial = lastSessionFor(`issues-${p.project_id}`);
+    emitSnapshot(initial, [row('old')]);
+    await vi.advanceTimersByTimeAsync(0);
+    let resolve!: (response: Response) => void;
+    vi.mocked(makeRequest).mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        })
+    );
+
+    retryShapeSource(collection);
+    expect(makeRequest).toHaveBeenCalledTimes(1);
+    expect(ids(collection)).toEqual(['old']);
+    expect(initial.cleanup).toHaveBeenCalledTimes(1);
+
+    resolve(json({ issues: [row('fresh')] }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ids(collection)).toEqual(['fresh']);
+    subscription.unsubscribe();
+  });
+
+  it('recovers when the initial stream stops halfway through a snapshot', async () => {
+    const p = params();
+    const collection = createShapeCollection(PROJECT_ISSUES_SHAPE, p);
+    const subscription = collection.subscribeChanges(() => {});
+    const initial = lastSessionFor(`issues-${p.project_id}`);
+    initial.params.begin();
+    initial.params.write({ type: 'insert', value: row('partial') });
+    emitError(initial, { message: 'Cancelled' });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ids(collection)).toEqual(['fallback']);
+    expect(collection.isReady()).toBe(true);
+    subscription.unsubscribe();
+  });
+
+  it('keeps a failed first REST load pending and clears the error after retry succeeds', async () => {
+    const p = params();
+    const collection = createShapeCollection(PROJECT_ISSUES_SHAPE, p);
+    const subscription = collection.subscribeChanges(() => {});
+    vi.mocked(makeRequest).mockRejectedValueOnce(new Error('Offline'));
+    await vi.advanceTimersByTimeAsync(ELECTRIC_READY_TIMEOUT_MS + 10);
+    expect(collection.isReady()).toBe(false);
+
+    const listener = { onError: vi.fn(), onRecover: vi.fn() };
+    const unsubscribeError = subscribeShapeErrors(collection, listener);
+    expect(listener.onError).toHaveBeenCalledWith({ message: 'Offline' });
+
+    retryShapeSource(collection);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ids(collection)).toEqual(['fallback']);
+    expect(listener.onRecover).toHaveBeenCalledTimes(1);
+
+    // A recurrence after recovery must not be hidden by error debouncing.
+    vi.mocked(makeRequest).mockRejectedValueOnce(new Error('Offline'));
+    retryShapeSource(collection);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listener.onError).toHaveBeenCalledTimes(2);
+    expect(ids(collection)).toEqual(['fallback']);
+    unsubscribeError();
+    subscription.unsubscribe();
+  });
+
+  it('releases a hung REST request so a manual retry can recover', async () => {
+    const p = params();
+    const collection = createShapeCollection(PROJECT_ISSUES_SHAPE, p);
+    const subscription = collection.subscribeChanges(() => {});
+    vi.mocked(makeRequest).mockImplementationOnce(() => new Promise(() => {}));
+    retryShapeSource(collection);
+    const signal = vi.mocked(makeRequest).mock.calls[0][1]?.signal;
+
+    await vi.advanceTimersByTimeAsync(FALLBACK_REQUEST_TIMEOUT_MS + 1);
+    expect(signal?.aborted).toBe(true);
+    expect(collection.isReady()).toBe(false);
+    const listener = { onError: vi.fn() };
+    const stop = subscribeShapeErrors(collection, listener);
+    expect(listener.onError).toHaveBeenCalledWith({
+      message: 'Loading issues timed out',
+    });
+
+    retryShapeSource(collection);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ids(collection)).toEqual(['fallback']);
+    stop();
+    subscription.unsubscribe();
+  });
+
+  it('does not replace loaded rows with an errored probe and reports REST failure during the probe', async () => {
+    const p = params();
+    const { collection, subscription } = await enterFallback(p);
+    const listener = { onError: vi.fn() };
+    const stop = subscribeShapeErrors(collection, listener);
+    vi.mocked(makeRequest).mockRejectedValueOnce(new Error('Still offline'));
+    retryShapeSource(collection);
+    emitError(lastSessionFor(`issues-${p.project_id}`), {
+      status: 503,
+      message: 'Unavailable',
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(ids(collection)).toEqual(['fallback']);
+    expect(listener.onError).toHaveBeenCalledWith({ message: 'Still offline' });
+    stop();
+    subscription.unsubscribe();
+  });
+
+  it('accepts a genuinely empty snapshot as successfully loaded', async () => {
+    const collection = createShapeCollection(PROJECT_ISSUES_SHAPE, params());
+    const subscription = collection.subscribeChanges(() => {});
+    emitSnapshot(electricSessions[electricSessions.length - 1], []);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(collection.isReady()).toBe(true);
+    expect(ids(collection)).toEqual([]);
+    expect(makeRequest).not.toHaveBeenCalled();
+    subscription.unsubscribe();
+  });
+
+  it('ignores an old REST response after Electric has recovered', async () => {
+    const p = params();
+    const { collection, subscription } = await enterFallback(p);
+    let resolve!: (response: Response) => void;
+    vi.mocked(makeRequest).mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        })
+    );
+    retryShapeSource(collection);
+    const signal = vi.mocked(makeRequest).mock.calls.at(-1)?.[1]?.signal;
+    emitSnapshot(lastSessionFor(`issues-${p.project_id}`), [row('live')]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(signal?.aborted).toBe(true);
+
+    resolve(json({ issues: [row('stale')] }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ids(collection)).toEqual(['live']);
+    subscription.unsubscribe();
+  });
+
   async function enterFallback(p: { project_id: string }) {
     const collection = createShapeCollection(
       PROJECT_ISSUES_SHAPE,

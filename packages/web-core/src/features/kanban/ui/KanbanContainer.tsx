@@ -46,7 +46,12 @@ import {
   bulkUpdateIssues,
   type BulkUpdateIssueItem,
 } from '@/shared/lib/remoteApi';
-import { PlusIcon, DotsThreeIcon } from '@phosphor-icons/react';
+import {
+  PlusIcon,
+  DotsThreeIcon,
+  ArrowClockwiseIcon,
+} from '@phosphor-icons/react';
+import { IconButton } from '@vibe/ui/components/IconButton';
 import { Actions } from '@/shared/actions';
 import {
   buildKanbanIssueComposerKey,
@@ -98,6 +103,7 @@ import {
 } from '@/shared/keyboard';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
 import { KanbanIssueCard } from './KanbanIssueCard';
+import { ProjectLoadingState } from './ProjectLoadingState';
 import { shouldStartBoardNavigation } from '../model/shouldStartBoardNavigation';
 import { isWorkspaceVisibleOnIssueCard } from '../model/isWorkspaceVisibleOnIssueCard';
 import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
@@ -194,15 +200,6 @@ const areKanbanFiltersEqual = (
   return (left.overdue ?? false) === (right.overdue ?? false);
 };
 
-function LoadingState() {
-  const { t } = useTranslation('common');
-  return (
-    <div className="flex items-center justify-center h-full">
-      <p className="text-low">{t('states.loading')}</p>
-    </div>
-  );
-}
-
 /**
  * KanbanContainer displays the kanban board using data from ProjectContext and OrgContext.
  * Must be rendered within both OrgProvider and ProjectProvider.
@@ -246,6 +243,8 @@ export function KanbanContainer() {
     pullRequests,
     githubIssueLinks,
     isLoading: projectLoading,
+    error: projectError,
+    retry: retryProject,
   } = useProjectContext();
 
   const {
@@ -1764,7 +1763,9 @@ export function KanbanContainer() {
   const isLoading = projectLoading || orgLoading;
 
   if (isLoading) {
-    return <LoadingState />;
+    return (
+      <ProjectLoadingState hasError={!!projectError} onRetry={retryProject} />
+    );
   }
 
   return (
@@ -1779,6 +1780,13 @@ export function KanbanContainer() {
           <h2 className={cn('text-2xl font-medium', isMobile && 'text-lg')}>
             {projectName}
           </h2>
+
+          <IconButton
+            icon={ArrowClockwiseIcon}
+            onClick={retryProject}
+            aria-label={t('kanban.refreshProject')}
+            title={t('kanban.refreshProject')}
+          />
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1858,6 +1866,12 @@ export function KanbanContainer() {
           />
         </div>
       </div>
+
+      {projectError && (
+        <p role="alert" className="px-double text-error">
+          {t('kanban.syncFailed')}
+        </p>
+      )}
 
       {kanbanViewMode === 'kanban' ? (
         visibleStatuses.length === 0 ? (

@@ -373,6 +373,8 @@
     "noCommands": "此代理沒有可用的指令。"
   },
   "kanban": {
+    "refreshProject": "重新整理專案",
+    "syncFailed": "無法載入專案資料。系統將自動重試，你也可以重新整理此面板。",
     "noVisibleStatuses": "所有狀態已隱藏。請使用顯示設定或切換到其他標籤頁查看問題。",
     "noProjectFound": "找不到專案",
     "unassigned": "未指派",

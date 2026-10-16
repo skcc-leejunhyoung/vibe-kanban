@@ -373,6 +373,8 @@
     "noCommands": "No hay comandos disponibles para este agente."
   },
   "kanban": {
+    "refreshProject": "Actualizar proyecto",
+    "syncFailed": "No se pudieron cargar los datos del proyecto. Se reintentará automáticamente; también puedes actualizar este panel.",
     "noVisibleStatuses": "Todos los estados están ocultos. Usa la configuración de visualización o cambia a otra pestaña para ver los problemas.",
     "noProjectFound": "No se encontró el proyecto",
     "unassigned": "Sin asignar",

@@ -373,6 +373,8 @@
     "noCommands": "Aucune commande disponible pour cet agent."
   },
   "kanban": {
+    "refreshProject": "Actualiser le projet",
+    "syncFailed": "Impossible de charger les données du projet. Une nouvelle tentative est automatique ; vous pouvez aussi actualiser ce panneau.",
     "noVisibleStatuses": "Tous les statuts sont masqués. Utilisez les paramètres d'affichage ou changez d'onglet pour voir les problèmes.",
     "noProjectFound": "Aucun projet trouvé",
     "unassigned": "Non assigné",

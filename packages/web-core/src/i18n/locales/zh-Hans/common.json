@@ -373,6 +373,8 @@
     "noCommands": "此代理没有可用的命令。"
   },
   "kanban": {
+    "refreshProject": "刷新项目",
+    "syncFailed": "无法加载项目数据。系统将自动重试，你也可以刷新此面板。",
     "noVisibleStatuses": "所有状态已隐藏。请使用显示设置或切换到其他标签页查看问题。",
     "noProjectFound": "未找到项目",
     "unassigned": "未分配",

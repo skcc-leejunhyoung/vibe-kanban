@@ -57,7 +57,7 @@ async function renderProvider() {
     );
   }
   await dom.render(<Host />);
-  await act(() =>
+  await act(async () =>
     emitSnapshotsByTable({
       issue_comments: [{ id: 'c1', issue_id: issueId, message: 'hi' }],
       issue_comment_reactions: [

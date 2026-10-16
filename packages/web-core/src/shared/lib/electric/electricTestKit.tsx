@@ -34,11 +34,16 @@ export interface FakeElectricSession {
 }
 
 export const electricSessions: FakeElectricSession[] = [];
+type TestShapeOptions = {
+  params?: Record<string, unknown>;
+  onError?: (error: {
+    status?: number;
+    message?: string;
+    name?: string;
+  }) => void;
+};
 /** ShapeStream options handed to Electric, keyed by collection id. */
-export const shapeOptionsById = new Map<
-  string,
-  { params?: Record<string, unknown> }
->();
+export const shapeOptionsById = new Map<string, TestShapeOptions>();
 
 export function resetElectricSessions(): void {
   electricSessions.length = 0;
@@ -49,7 +54,7 @@ export function fakeElectricCollectionOptions(config: {
   id: string;
   getKey: (item: Record<string, unknown>) => string;
   gcTime?: number;
-  shapeOptions?: { params?: Record<string, unknown> };
+  shapeOptions?: TestShapeOptions;
   onInsert?: unknown;
   onUpdate?: unknown;
   onDelete?: unknown;
@@ -112,6 +117,15 @@ export function emitChange(
   session.params.begin();
   session.params.write({ type, value: row, metadata: {} });
   session.params.commit();
+}
+
+/** Electric marks ready before forwarding errors, even without a snapshot. */
+export function emitError(
+  session: FakeElectricSession,
+  error: Parameters<NonNullable<TestShapeOptions['onError']>>[0]
+): void {
+  session.params.markReady();
+  shapeOptionsById.get(session.id)?.onError?.(error);
 }
 
 /**

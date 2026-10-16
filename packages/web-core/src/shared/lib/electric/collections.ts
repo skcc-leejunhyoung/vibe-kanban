@@ -92,11 +92,12 @@ type MutationSlot = {
 
 export type ShapeErrorListener = {
   onError: (error: SyncError) => void;
-  /** Electric is streaming again after a fallback period. */
+  /** Fresh data arrived through Electric or REST. */
   onRecover?: () => void;
 };
 
 type ErrorChannel = {
+  currentError: SyncError | null;
   report: (error: SyncError) => void;
   recovered: () => void;
   /** Bumped on every stream error, even ones that are not reported. */
@@ -116,6 +117,7 @@ export const SHAPE_GC_TIME_MS = 30 * 1000;
 // ready-processing of a healthy stream, so keep this generous.
 export const ELECTRIC_READY_TIMEOUT_MS = 10_000;
 export const FALLBACK_REFRESH_INTERVAL_MS = 30 * 1000;
+export const FALLBACK_REQUEST_TIMEOUT_MS = 15 * 1000;
 // A fallback-locked source retries Electric on the next sync session once
 // this cooldown has passed, instead of staying degraded for the whole tab.
 const FALLBACK_RETRY_COOLDOWN_MS = 60 * 1000;
@@ -157,6 +159,7 @@ const mutationSlots = new Map<string, MutationSlot>();
 const sourceRuntimes = new Map<string, SourceRuntime>();
 const fallbackSnapshotCache = new Map<string, ElectricRow[]>();
 const errorListeners = new WeakMap<object, Set<ShapeErrorListener>>();
+const collectionErrors = new WeakMap<object, ErrorChannel>();
 const collectionSourceKeys = new WeakMap<object, string>();
 
 class ErrorHandler {
@@ -379,14 +382,16 @@ function createErrorChannel(
   }
 
   const channel: ErrorChannel = {
+    currentError: null,
     silent: false,
     streamErrorCount: 0,
     noteStreamError: () => {
       channel.streamErrorCount += 1;
     },
     report: (error: SyncError) => {
-      if (channel.silent) return;
-      if (!handler.shouldReport(error.message)) return;
+      const hadError = channel.currentError !== null;
+      channel.currentError = error;
+      if (!handler.shouldReport(error.message) && hadError) return;
 
       if (isPageVisible()) {
         console.error('Shape sync error:', error);
@@ -396,6 +401,8 @@ function createErrorChannel(
       }
     },
     recovered: () => {
+      if (!channel.currentError) return;
+      channel.currentError = null;
       for (const listener of listeners) {
         listener.onRecover?.();
       }
@@ -444,6 +451,9 @@ function createElectricShapeOptions(args: {
   onElectricUnavailable: () => void;
 }) {
   const authRuntime = getAuthRuntime();
+  const reportStreamError = (error: SyncError) => {
+    if (!args.errors.silent) args.errors.report(error);
+  };
   let isPaused = false;
   const pauseable = {
     pause: () => {
@@ -476,13 +486,15 @@ function createElectricShapeOptions(args: {
       timestamptz: (value: string) => value,
     },
     fetchClient: createErrorHandlingFetch({
-      onError: args.errors.report,
+      onError: reportStreamError,
       onStreamError: args.errors.noteStreamError,
       onElectricUnavailable: args.onElectricUnavailable,
       isPaused: () => isPaused,
     }),
     onError: (error: { status?: number; message?: string; name?: string }) => {
       args.errors.noteStreamError();
+      // Returning from onError stops Electric, including cancelled/auth errors.
+      args.onElectricUnavailable();
       if (isPaused) return;
       if (isTransientElectricShapeError(error)) return;
 
@@ -491,16 +503,12 @@ function createElectricShapeOptions(args: {
 
       if (status === 401) {
         authRuntime.triggerRefresh().catch(() => {
-          args.errors.report({ status, message });
+          reportStreamError({ status, message });
         });
         return;
       }
 
-      args.errors.report({ status, message });
-
-      if (status === undefined || status >= 500) {
-        args.onElectricUnavailable();
-      }
+      reportStreamError({ status, message });
     },
   };
 
@@ -564,6 +572,7 @@ function createFallbackSync(args: {
   shape: ShapeDefinition<unknown>;
   params: Record<string, string>;
   reportError: (error: SyncError) => void;
+  onRecover: () => void;
 }) {
   return (syncParams: SyncParams): SyncResult => {
     const runtime = getOrCreateSourceRuntime(args.sourceKey);
@@ -572,45 +581,60 @@ function createFallbackSync(args: {
 
     let isCleanedUp = false;
     let refreshPromise: Promise<void> | null = null;
+    let requestController: AbortController | null = null;
 
     const refreshNow = async () => {
+      if (isCleanedUp) return;
       if (refreshPromise) {
         return refreshPromise;
       }
 
       refreshPromise = (async () => {
+        const controller = new AbortController();
+        requestController = controller;
+        let timeoutId: TimeoutId | undefined;
         try {
-          const response = await makeRequest(
-            buildFallbackRequestPath(args.shape.fallbackUrl, args.params),
-            { method: 'GET', cache: 'no-store' }
-          );
-
-          if (!response.ok) {
-            const message = await parseResponseError(
-              response,
-              `Failed to fetch fallback ${args.shape.table}`
-            );
-            throw new Error(message);
-          }
-
-          const payload = (await response.json()) as unknown;
-          const rows = extractFallbackRows(payload, args.shape.table);
-          fallbackSnapshotCache.set(args.sourceKey, rows);
+          const rows = await Promise.race([
+            (async () => {
+              const response = await makeRequest(
+                buildFallbackRequestPath(args.shape.fallbackUrl, args.params),
+                { method: 'GET', cache: 'no-store', signal: controller.signal }
+              );
+              if (!response.ok) {
+                throw new Error(
+                  await parseResponseError(
+                    response,
+                    `Failed to fetch fallback ${args.shape.table}`
+                  )
+                );
+              }
+              return extractFallbackRows(
+                await response.json(),
+                args.shape.table
+              );
+            })(),
+            new Promise<never>((_, reject) => {
+              timeoutId = globalThis.setTimeout(() => {
+                reject(new Error(`Loading ${args.shape.table} timed out`));
+                controller.abort();
+              }, FALLBACK_REQUEST_TIMEOUT_MS);
+            }),
+          ]);
 
           if (!isCleanedUp) {
+            fallbackSnapshotCache.set(args.sourceKey, rows);
             applySnapshot(syncParams, rows);
+            args.onRecover();
           }
         } catch (error) {
-          if (isAbortError(error)) return;
+          if (isCleanedUp || isAbortError(error)) return;
 
           const message =
             error instanceof Error ? error.message : 'Fallback fetch failed';
           args.reportError({ message });
-
-          if (!isCleanedUp && !syncParams.collection.isReady()) {
-            syncParams.markReady();
-          }
         } finally {
+          if (timeoutId) globalThis.clearTimeout(timeoutId);
+          requestController = null;
           refreshPromise = null;
         }
       })();
@@ -637,6 +661,7 @@ function createFallbackSync(args: {
     return {
       cleanup: () => {
         isCleanedUp = true;
+        requestController?.abort();
         globalThis.clearInterval(intervalId);
         unregisterRefresher();
       },
@@ -711,6 +736,7 @@ function createHybridSync(args: {
     shape: args.shape,
     params: args.params,
     reportError: args.errors.report,
+    onRecover: args.errors.recovered,
   });
 
   return (syncParams: SyncParams): SyncResult => {
@@ -829,7 +855,25 @@ function createHybridSync(args: {
 
     if (!runtime.fallbackLocked) {
       runtime.mode = 'electric';
-      activeSync = normalizeSyncResult(args.electricSync(syncParams));
+      activeSync = normalizeSyncResult(
+        args.electricSync({
+          ...syncParams,
+          markReady: () => {
+            const errorsAtReady = args.errors.streamErrorCount;
+            // Electric calls markReady before onError even without any data.
+            queueMicrotask(() => {
+              if (
+                isCleanedUp ||
+                usingFallback ||
+                errorsAtReady !== args.errors.streamErrorCount
+              )
+                return;
+              syncParams.markReady();
+              args.errors.recovered();
+            });
+          },
+        })
+      );
       scheduleReadyTimeout();
       syncParams.collection.onFirstReady(() => {
         if (!usingFallback && readyTimeoutId) {
@@ -1050,15 +1094,21 @@ export function subscribeShapeErrors(
   const listeners = errorListeners.get(collection);
   if (!listeners) return () => {};
   listeners.add(listener);
+  const error = collectionErrors.get(collection)?.currentError;
+  if (error) listener.onError(error);
+  else listener.onRecover?.();
   return () => {
     listeners.delete(listener);
   };
 }
 
-/** Manual retry: a source polling the fallback probes Electric right away. */
+/** Refresh this source through REST while reconnecting its Electric stream. */
 export function retryShapeSource(collection: object): void {
   const sourceKey = collectionSourceKeys.get(collection);
   if (!sourceKey) return;
+  invalidateFallbackCache(sourceKey);
+  lockSourceToFallback(sourceKey);
+  refreshFallbackSource(sourceKey);
   for (const trigger of getOrCreateSourceRuntime(sourceKey).probeTriggers) {
     trigger();
   }
@@ -1127,6 +1177,7 @@ export function createShapeCollection<TRow extends ElectricRow>(
   ) as unknown as ShapeCollection & { __rowType?: TRow };
 
   errorListeners.set(collection, listeners);
+  collectionErrors.set(collection, errors);
   collectionSourceKeys.set(collection, collectionId);
   collectionCache.set(collectionId, collection);
 

@@ -26,7 +26,7 @@ export interface UseShapeResult<TRow> {
   isLoading: boolean;
   /** Sync error if one occurred */
   error: SyncError | null;
-  /** Function to retry after an error */
+  /** Refresh the data and reconnect the sync stream. */
   retry: () => void;
 }
 
@@ -139,7 +139,6 @@ export function useShape<
   }, [collection]);
 
   const retry = useCallback(() => {
-    setError(null);
     if (collection) retryShapeSource(collection);
   }, [collection]);
 
