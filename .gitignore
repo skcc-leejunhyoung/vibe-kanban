@@ -110,3 +110,6 @@ scripts/vibe-kanban-host-runner.sh
 
 # local docs (generated from source, not committed)
 docs/local
+
+# Local planning, review, and preview deliverables
+/artifacts/

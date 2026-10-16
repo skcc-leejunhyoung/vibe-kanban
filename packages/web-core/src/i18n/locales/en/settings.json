@@ -1011,7 +1011,18 @@
         "host_connection_denied": "Remote connection request",
         "host_preview_denied": "Preview request"
       },
-      "auditTarget": "Target account: {{account}}"
+      "auditTarget": "Target account: {{account}}",
+      "registrationMissingTitle": "This computer needs registration again",
+      "reregister": "Register this computer again",
+      "reregisterDescription": "This computer is no longer in the central registration list. Confirm its name and owner to register it again. Local files and running work are kept.",
+      "offlineHelpTitle": "This computer is offline",
+      "offlineCheckPower": "Check that this computer is turned on.",
+      "offlineCheckApp": "Check that Vibe Kanban is running on this computer.",
+      "offlineCheckInternet": "Check its internet connection. The status updates automatically when it reconnects.",
+      "offlineKeepsSignIn": "You do not need to sign in again, pair this browser, or recover authentication for ordinary offline status.",
+      "pausedHelpTitle": "Remote access is paused",
+      "pausedOwnerHelp": "Turn remote access back on in This computer settings or the computer management Settings tab.",
+      "pausedMemberHelp": "Ask the owner to turn remote access back on. Signing in again or pairing this browser will not enable it."
     }
   },
   "integrations": {

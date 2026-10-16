@@ -7,8 +7,9 @@ import { resetLocalSelfHost } from '@/shared/lib/accountHostTransport';
 import {
   accountDeviceLabel,
   localHostRegistration,
+  registerLocalAccountHost,
   useAccountSettingsAction,
-} from './accountSettingsShared';
+} from './AccountSettingsShared';
 
 const auth = vi.hoisted(() => ({ userId: 'alice' }));
 vi.mock('@/shared/hooks/auth/useAuth', () => ({ useAuth: () => auth }));
@@ -142,6 +143,127 @@ describe('settings mutations', () => {
     expect(mutation).toHaveBeenCalledOnce();
     expect(action.error).toMatchObject({ code: 'REAUTHENTICATION_REQUIRED' });
     expect(action.status).toBe('');
+  });
+  it('stops follow-up work when the account changes while success reconciliation is pending', async () => {
+    let release!: () => void;
+    const nextWrite = vi.fn();
+    let pending!: Promise<boolean>;
+    await act(async () => {
+      pending = action.run(
+        async () => 'registered',
+        '',
+        async (_, isCurrent) => {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          if (isCurrent()) nextWrite();
+        }
+      );
+    });
+    auth.userId = 'bob';
+    await act(() => root.render(tree('bob')));
+    await act(async () => {
+      release();
+      expect(await pending).toBe(false);
+    });
+    expect(nextWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('registration retry and ownership', () => {
+  function localStatus(mode: string | null, owner = 'alice') {
+    return {
+      account_mode: true,
+      registration: mode
+        ? {
+            host_id: 'host',
+            owner_user_id: owner,
+            generation: 3,
+            transition_request_id: 'persisted-request',
+            auth_mode: mode,
+          }
+        : null,
+    };
+  }
+  function respond(status: ReturnType<typeof localStatus>) {
+    return new Response(JSON.stringify({ success: true, data: status }));
+  }
+  it('registers an installation with no completed registration', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus(null)))
+      .mockResolvedValueOnce(respond(localStatus('account')));
+    vi.stubGlobal('fetch', fetch);
+    await registerLocalAccountHost('alice', false, () => true);
+    expect(fetch.mock.calls.map((call) => [call[0], call[1].method])).toEqual([
+      ['/api/relay-auth/account/registration', 'GET'],
+      ['/api/relay-auth/account/registration', 'POST'],
+    ]);
+  });
+  it('explicitly replaces the old credential when registering a removed account host again', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus('account')))
+      .mockResolvedValueOnce(respond(localStatus('account')));
+    vi.stubGlobal('fetch', fetch);
+    await registerLocalAccountHost('alice', true, () => true);
+    expect(fetch.mock.calls[1]).toEqual([
+      '/api/relay-auth/account/registration?replace=true',
+      { method: 'POST' },
+    ]);
+  });
+  it('resumes a persisted transition instead of rotating a second time after partial failure', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus('migrating')))
+      .mockResolvedValueOnce(respond(localStatus('account')));
+    vi.stubGlobal('fetch', fetch);
+    await registerLocalAccountHost('alice', true, () => true);
+    expect(fetch.mock.calls[1]).toEqual([
+      '/api/relay-auth/account/registration',
+      { method: 'POST' },
+    ]);
+  });
+  it('keeps a completed registration when retrying a failed name save', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus('account')));
+    vi.stubGlobal('fetch', fetch);
+    const result = await registerLocalAccountHost('alice', false, () => true);
+    expect(result.registration?.host_id).toBe('host');
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(resetLocalSelfHost).not.toHaveBeenCalled();
+  });
+  it('rejects a new owner discovered by the preflight without changing registration', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus('account', 'bob')));
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      registerLocalAccountHost('alice', true, () => true)
+    ).rejects.toMatchObject({ code: 'HOST_NOT_FOUND' });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('sends no follow-up write if the initiating view is no longer current', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus('account')));
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      registerLocalAccountHost('alice', true, () => false)
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('does not replay a registration whose result was lost', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(respond(localStatus('account')))
+      .mockRejectedValueOnce(new Error('response lost'));
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      registerLocalAccountHost('alice', true, () => true)
+    ).rejects.toThrow('response lost');
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });
 

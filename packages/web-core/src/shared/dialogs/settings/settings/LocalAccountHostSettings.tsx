@@ -21,12 +21,13 @@ import { hostAccountApi } from '@/shared/lib/hostAccountApi';
 import { cn } from '@/shared/lib/utils';
 import {
   AccountActionFeedback,
+  HostConnectionHelp,
   HostStatus,
   accountButton,
   accountInput,
-  localHostRegistration,
+  registerLocalAccountHost,
   useAccountSettingsAction,
-} from './accountSettingsShared';
+} from './AccountSettingsShared';
 
 export function RegisterComputerGuide({
   dialog = false,
@@ -109,6 +110,8 @@ export function LocalAccountHostSettings({
   );
   const registration = state.data?.registration;
   const owner = registration?.owner_user_id === userId;
+  const registrationMissing =
+    owner && registration?.auth_mode === 'account' && hostsReady && !host;
   const profile =
     loginStatus?.status === 'loggedin' ? loginStatus.profile : null;
   const accountName =
@@ -116,15 +119,14 @@ export function LocalAccountHostSettings({
   async function register() {
     if (!name.trim()) return;
     await action.run(
-      () =>
-        state.data?.registration?.auth_mode === 'account'
-          ? Promise.resolve(state.data)
-          : localHostRegistration('POST'),
+      (isCurrent) =>
+        registerLocalAccountHost(userId, registrationMissing, isCurrent),
       t('settings.remoteAccess.registeredWaiting'),
-      async (registered) => {
+      async (registered, isCurrent) => {
         client.setQueryData(['account-host-registration', userId], registered);
         // Registration has already committed even if the separate name update fails.
-        void client.invalidateQueries({ queryKey: ['account-hosts', userId] });
+        await client.invalidateQueries({ queryKey: ['account-hosts', userId] });
+        if (!isCurrent()) return;
         if (registered?.registration) {
           try {
             await updateRelayHost(registered.registration.host_id, {
@@ -134,7 +136,7 @@ export function LocalAccountHostSettings({
             throw new Error(t('settings.remoteAccess.registeredNameFailed'));
           }
         }
-        onRegistrationOpenChange(false);
+        if (isCurrent()) onRegistrationOpenChange(false);
       }
     );
   }
@@ -175,7 +177,7 @@ export function LocalAccountHostSettings({
     )
       return;
     await action.run(
-      () => localHostRegistration('POST', true),
+      (isCurrent) => registerLocalAccountHost(userId, true, isCurrent),
       t('settings.remoteAccess.repaired')
     );
   }
@@ -220,11 +222,16 @@ export function LocalAccountHostSettings({
                     <HostStatus host={host} />
                   ) : (
                     <p className="text-sm text-low">
-                      {t('settings.remoteAccess.registeredWaiting')}
+                      {t(
+                        registrationMissing
+                          ? 'settings.remoteAccess.registrationMissingTitle'
+                          : 'settings.remoteAccess.registeredWaiting'
+                      )}
                     </p>
                   )}
                 </div>
               </div>
+              {host && <HostConnectionHelp host={host} />}
               {!owner && (
                 <p className="rounded-sm bg-secondary p-base text-low">
                   {t('settings.remoteAccess.otherOwner')}
@@ -272,22 +279,32 @@ export function LocalAccountHostSettings({
                   </button>
                 </div>
               )}
-              {registration.auth_mode !== 'account' && owner && (
-                <div className="space-y-base">
-                  <p className="text-low">
-                    {t('settings.remoteAccess.migrationHint')}
-                  </p>
-                  <button
-                    type="button"
-                    className={accountButton}
-                    disabled={action.busy}
-                    onClick={() => onRegistrationOpenChange(true)}
-                  >
-                    {t('settings.remoteAccess.resumeRegistration')}
-                  </button>
-                </div>
-              )}
-              {hostsReady && !host && (
+              {owner &&
+                (registration.auth_mode !== 'account' ||
+                  registrationMissing) && (
+                  <div className="space-y-base">
+                    <p className="text-low">
+                      {t(
+                        registrationMissing
+                          ? 'settings.remoteAccess.reregisterDescription'
+                          : 'settings.remoteAccess.migrationHint'
+                      )}
+                    </p>
+                    <button
+                      type="button"
+                      className={accountButton}
+                      disabled={action.busy}
+                      onClick={() => onRegistrationOpenChange(true)}
+                    >
+                      {t(
+                        registrationMissing
+                          ? 'settings.remoteAccess.reregister'
+                          : 'settings.remoteAccess.resumeRegistration'
+                      )}
+                    </button>
+                  </div>
+                )}
+              {hostsReady && !host && !registrationMissing && (
                 <p role="status" className="text-low">
                   {t(
                     owner
@@ -321,24 +338,26 @@ export function LocalAccountHostSettings({
                     {owner ? accountName || userId : registration.owner_user_id}
                   </code>
                 </div>
-                {owner && registration.auth_mode === 'account' && (
-                  <div className="space-y-base border-t border-border pt-base">
-                    <h4 className="font-medium text-high">
-                      {t('settings.remoteAccess.repairTitle')}
-                    </h4>
-                    <p className="text-sm text-low">
-                      {t('settings.remoteAccess.repairHint')}
-                    </p>
-                    <button
-                      type="button"
-                      className={accountButton}
-                      disabled={action.busy}
-                      onClick={() => void repair()}
-                    >
-                      {t('settings.remoteAccess.repair')}
-                    </button>
-                  </div>
-                )}
+                {owner &&
+                  registration.auth_mode === 'account' &&
+                  !registrationMissing && (
+                    <div className="space-y-base border-t border-border pt-base">
+                      <h4 className="font-medium text-high">
+                        {t('settings.remoteAccess.repairTitle')}
+                      </h4>
+                      <p className="text-sm text-low">
+                        {t('settings.remoteAccess.repairHint')}
+                      </p>
+                      <button
+                        type="button"
+                        className={accountButton}
+                        disabled={action.busy}
+                        onClick={() => void repair()}
+                      >
+                        {t('settings.remoteAccess.repair')}
+                      </button>
+                    </div>
+                  )}
               </div>
             </details>
           </>
@@ -369,9 +388,19 @@ export function LocalAccountHostSettings({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t('settings.remoteAccess.registerThis')}</DialogTitle>
+            <DialogTitle>
+              {t(
+                registrationMissing
+                  ? 'settings.remoteAccess.reregister'
+                  : 'settings.remoteAccess.registerThis'
+              )}
+            </DialogTitle>
             <DialogDescription>
-              {t('settings.remoteAccess.registerDescription')}
+              {t(
+                registrationMissing
+                  ? 'settings.remoteAccess.reregisterDescription'
+                  : 'settings.remoteAccess.registerDescription'
+              )}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -440,7 +469,11 @@ export function LocalAccountHostSettings({
               {action.busy && (
                 <SpinnerIcon className="size-icon-sm animate-spin" />
               )}
-              {t('settings.remoteAccess.registerThis')}
+              {t(
+                registrationMissing
+                  ? 'settings.remoteAccess.reregister'
+                  : 'settings.remoteAccess.registerThis'
+              )}
             </button>
           </DialogFooter>
         </DialogContent>

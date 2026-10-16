@@ -21,11 +21,11 @@ import {
   useRemoteCloudHostsState,
   type RemoteCloudHost,
 } from '@/shared/hooks/useRemoteCloudHosts';
-import { listPairedRelayHosts } from '@/shared/lib/relayPairingStorage';
 import {
-  RELAY_REMOTE_HOSTS_QUERY_KEY,
-  RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
-} from '@/shared/lib/relayHostQueryKeys';
+  buildRelayHostOptions,
+  usePairedRelayHostsQuery,
+} from '@/shared/hooks/useWorkspaceHostOptions';
+import { RELAY_REMOTE_HOSTS_QUERY_KEY } from '@/shared/lib/relayHostQueryKeys';
 
 export type SettingsHostTargetId = 'local' | string;
 
@@ -136,7 +136,9 @@ export function SettingsHostProvider({
   const runtime = useAppRuntime();
   const routeHostId = useHostId();
   const { isSignedIn } = useAuth();
-  const { data: localRemoteHosts } = useRemoteCloudHostsState();
+  const { data: localRemoteHosts } = useRemoteCloudHostsState({
+    enabled: runtime === 'local',
+  });
   const { data: relayHosts = [], isLoading: relayHostsLoading } = useQuery({
     queryKey: RELAY_REMOTE_HOSTS_QUERY_KEY,
     queryFn: listRelayHosts,
@@ -144,18 +146,7 @@ export function SettingsHostProvider({
     staleTime: 30_000,
   });
   const { data: pairedRelayHosts = [], isLoading: pairedRelayHostsLoading } =
-    useQuery({
-      queryKey: RELAY_REMOTE_PAIRED_HOSTS_QUERY_KEY,
-      queryFn: async () => {
-        try {
-          return await listPairedRelayHosts();
-        } catch {
-          return [];
-        }
-      },
-      enabled: runtime === 'remote' && isSignedIn,
-      staleTime: 5_000,
-    });
+    usePairedRelayHostsQuery(runtime === 'remote' && isSignedIn);
   const hostsResolved = useMemo(() => {
     if (runtime === 'local') {
       return true;
@@ -165,8 +156,18 @@ export function SettingsHostProvider({
       return true;
     }
 
-    return !relayHostsLoading && !pairedRelayHostsLoading;
-  }, [isSignedIn, pairedRelayHostsLoading, relayHostsLoading, runtime]);
+    return (
+      !relayHostsLoading &&
+      (!pairedRelayHostsLoading ||
+        relayHosts.some((host) => host.auth_mode === 'account'))
+    );
+  }, [
+    isSignedIn,
+    pairedRelayHostsLoading,
+    relayHostsLoading,
+    relayHosts,
+    runtime,
+  ]);
 
   const availableHosts = useMemo<SettingsHostTarget[]>(() => {
     if (runtime === 'local') {
@@ -186,22 +187,19 @@ export function SettingsHostProvider({
       ),
     };
 
-    const pairedHostIds = new Set(pairedRelayHosts.map((host) => host.host_id));
-    const machineTargets = relayHosts
-      .filter((host) => pairedHostIds.has(host.id))
-      .map(
-        (host): SettingsHostTarget => ({
-          id: host.id,
-          apiHostId: host.id,
-          label: host.name,
-          description: t('settings.hostPicker.remoteHost', 'Remote host'),
-          status:
-            host.status === 'online'
-              ? ('online' as const)
-              : ('offline' as const),
-          kind: 'remote',
-        })
-      );
+    const machineTargets = buildRelayHostOptions(
+      relayHosts,
+      pairedRelayHosts
+    ).map(
+      (host): SettingsHostTarget => ({
+        id: host.id,
+        apiHostId: host.id,
+        label: host.name,
+        description: t('settings.hostPicker.remoteHost', 'Remote host'),
+        status: host.status === 'online' ? 'online' : 'offline',
+        kind: 'remote',
+      })
+    );
     return [remoteSharedTarget, ...machineTargets];
   }, [localRemoteHosts?.hosts, pairedRelayHosts, relayHosts, runtime, t]);
 

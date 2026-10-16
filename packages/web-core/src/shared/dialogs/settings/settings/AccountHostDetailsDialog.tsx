@@ -32,13 +32,14 @@ import { cn } from '@/shared/lib/utils';
 import {
   AccountActionFeedback,
   AccountSettingsTabs,
+  HostConnectionHelp,
   HostStatus,
   accountButton,
   accountInput,
   shortAccountId,
   useAccountSettingsAction,
   signInToAccount,
-} from './accountSettingsShared';
+} from './AccountSettingsShared';
 
 type DetailTab = 'access' | 'connections' | 'activity' | 'settings';
 
@@ -232,6 +233,7 @@ export function AccountHostDetailsDialog({
           </div>
         </DialogHeader>
         <div className="min-h-0 space-y-double overflow-y-auto p-base sm:p-double">
+          <HostConnectionHelp host={host} />
           <AccountSettingsTabs
             label={t('settings.remoteAccess.detailsLabel')}
             value={activeTab}

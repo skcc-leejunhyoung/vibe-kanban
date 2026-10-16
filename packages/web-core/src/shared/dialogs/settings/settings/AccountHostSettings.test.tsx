@@ -227,6 +227,81 @@ describe('remote access settings information architecture', () => {
     expect(html).toContain('Registered · checking');
     expect(html).not.toContain('>Online<');
   });
+  it('offers explicit registration again when the central record is missing', () => {
+    const html = render(
+      <LocalAccountHostSettings
+        state={
+          {
+            data: registration,
+            isSuccess: true,
+            isPending: false,
+            isError: false,
+          } as never
+        }
+        hostsReady
+        registrationOpen={false}
+        onRegistrationOpenChange={vi.fn()}
+        onManage={vi.fn()}
+      />
+    );
+    expect(html).toContain('Register this computer again');
+    expect(html).toContain('needs registration again');
+    expect(html).not.toContain('Registered · checking');
+    expect(html).not.toContain('>Recover host authentication</button>');
+  });
+  it('does not infer a missing registration before the central lookup succeeds', () => {
+    const html = render(
+      <LocalAccountHostSettings
+        state={
+          {
+            data: registration,
+            isSuccess: true,
+            isPending: false,
+            isError: false,
+          } as never
+        }
+        hostsReady={false}
+        registrationOpen={false}
+        onRegistrationOpenChange={vi.fn()}
+        onManage={vi.fn()}
+      />
+    );
+    expect(html).not.toContain('Register this computer again');
+    expect(html).toContain('Registered · checking');
+  });
+  it('shows power, app, and internet checks to shared users of offline computers', () => {
+    const html = render(
+      <AccountHostDetailsDialog
+        host={host('shared', 'member', { status: 'offline' })}
+        onClose={vi.fn()}
+      />
+    );
+    expect(html).toContain('turned on');
+    expect(html).toContain('Vibe Kanban is running');
+    expect(html).toContain('internet connection');
+    expect(html).toContain('do not need to sign in again');
+    expect(html).not.toContain('>Recover host authentication</button>');
+  });
+  it('explains owner action instead of offline troubleshooting for paused sharing', () => {
+    const html = render(
+      <AccountHostDetailsDialog
+        host={host('shared', 'member', {
+          status: 'offline',
+          remote_access_enabled: false,
+        })}
+        onClose={vi.fn()}
+      />
+    );
+    expect(html).toContain('Ask the owner to turn remote access back on');
+    expect(html).not.toContain('Vibe Kanban is running');
+  });
+  it('shows no connection troubleshooting for an online computer', () => {
+    const html = render(
+      <AccountHostDetailsDialog host={host('self')} onClose={vi.fn()} />
+    );
+    expect(html).not.toContain('Check that this computer is turned on');
+    expect(html).not.toContain('Ask the owner to turn remote access back on');
+  });
   it('keeps owner controls out of shared-computer details', () => {
     client.setQueryData(['host-connections', 'alice', 'shared'], []);
     const html = render(

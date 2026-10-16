@@ -89,6 +89,47 @@ export function HostStatus({ host }: { host: RelayHost }) {
   );
 }
 
+export function HostConnectionHelp({ host }: { host: RelayHost }) {
+  const { t } = useTranslation('settings');
+  if (
+    host.auth_mode !== 'account' ||
+    (host.remote_access_enabled && host.status === 'online')
+  )
+    return null;
+  const paused = !host.remote_access_enabled;
+  return (
+    <section className="space-y-base rounded-sm border border-border bg-secondary/30 p-base">
+      <h3 className="font-medium text-high">
+        {t(
+          paused
+            ? 'settings.remoteAccess.pausedHelpTitle'
+            : 'settings.remoteAccess.offlineHelpTitle'
+        )}
+      </h3>
+      {paused ? (
+        <p className="text-sm text-low">
+          {t(
+            host.access_role === 'owner'
+              ? 'settings.remoteAccess.pausedOwnerHelp'
+              : 'settings.remoteAccess.pausedMemberHelp'
+          )}
+        </p>
+      ) : (
+        <>
+          <ol className="list-decimal space-y-half pl-double text-sm text-low">
+            <li>{t('settings.remoteAccess.offlineCheckPower')}</li>
+            <li>{t('settings.remoteAccess.offlineCheckApp')}</li>
+            <li>{t('settings.remoteAccess.offlineCheckInternet')}</li>
+          </ol>
+          <p className="text-sm text-low">
+            {t('settings.remoteAccess.offlineKeepsSignIn')}
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
 export async function localHostRegistration(
   method: 'GET' | 'POST',
   replace = false
@@ -108,6 +149,24 @@ export async function localHostRegistration(
     );
   if (method === 'POST') resetLocalSelfHost();
   return result.data;
+}
+
+export async function registerLocalAccountHost(
+  userId: string | null,
+  replace: boolean,
+  isCurrent: () => boolean
+): Promise<AccountHostStatus> {
+  const current = await localHostRegistration('GET');
+  if (!isCurrent()) throw new DOMException('Account changed', 'AbortError');
+  if (
+    !userId ||
+    (current.registration && current.registration.owner_user_id !== userId)
+  )
+    throw new HostAccountError(403, 'HOST_NOT_FOUND', 'Host owner changed');
+  const activated = current.registration?.auth_mode === 'account';
+  if (activated && !replace) return current;
+  // Resume a persisted transition instead of issuing another credential on retry.
+  return localHostRegistration('POST', replace && activated);
 }
 
 export async function signInToAccount(reauthenticate = false) {
@@ -136,9 +195,9 @@ export function useAccountSettingsAction() {
     };
   }, []);
   async function run<T>(
-    action: () => Promise<T>,
+    action: (isCurrent: () => boolean) => Promise<T>,
     message: string,
-    onSuccess?: (value: T) => void | Promise<void>
+    onSuccess?: (value: T, isCurrent: () => boolean) => void | Promise<void>
   ): Promise<boolean> {
     if (inFlight.current || !mounted.current) return false;
     inFlight.current = true;
@@ -148,9 +207,9 @@ export function useAccountSettingsAction() {
     const actor = identity.current;
     const current = () => mounted.current && identity.current === actor;
     try {
-      const value = await action();
+      const value = await action(current);
       if (!current()) return false;
-      await onSuccess?.(value);
+      await onSuccess?.(value, current);
       if (!current()) return false;
       setStatus(message);
       await client.invalidateQueries({

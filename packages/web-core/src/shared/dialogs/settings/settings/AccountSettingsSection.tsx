@@ -13,7 +13,7 @@ import {
   accountButton,
   accountDeviceLabel,
   useAccountSettingsAction,
-} from './accountSettingsShared';
+} from './AccountSettingsShared';
 
 export function AccountSettingsSection() {
   const { isSignedIn, userId } = useAuth();

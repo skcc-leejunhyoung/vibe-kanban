@@ -22,7 +22,7 @@ import {
   HostStatus,
   accountButton,
   localHostRegistration,
-} from './accountSettingsShared';
+} from './AccountSettingsShared';
 
 export function AccountHostSettings({
   legacy,
@@ -87,8 +87,14 @@ function SignedInHostSettings({
     hosts.data?.filter((host) => host.access_role === 'owner') ?? [];
   const shared =
     hosts.data?.filter((host) => host.access_role !== 'owner') ?? [];
+  const canRegisterThisComputer =
+    local.isSuccess &&
+    (!local.data.registration ||
+      (local.data.registration.owner_user_id === userId &&
+        (local.data.registration.auth_mode !== 'account' ||
+          (hosts.isSuccess && !self))));
   const addComputer = () => {
-    if (runtime === 'local' && local.isSuccess && !local.data.registration) {
+    if (runtime === 'local' && canRegisterThisComputer) {
       setTab('this');
       setShowRegistration(true);
     } else setShowGuide(true);
@@ -241,12 +247,7 @@ function SignedInHostSettings({
                   className={accountButton}
                   onClick={() => {
                     setTab('this');
-                    if (
-                      runtime === 'local' &&
-                      (!local.data?.registration ||
-                        (local.data.registration.owner_user_id === userId &&
-                          local.data.registration.auth_mode !== 'account'))
-                    )
+                    if (runtime === 'local' && canRegisterThisComputer)
                       setShowRegistration(true);
                   }}
                 >
