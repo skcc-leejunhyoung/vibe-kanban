@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime},
 };
@@ -31,6 +31,7 @@ use uuid::Uuid;
 use crate::services::filesystem_watcher::{self, FilesystemWatcherError};
 
 type SentFileStats = Arc<std::sync::RwLock<HashMap<String, (SystemTime, u64)>>>;
+type WatcherGuard = Arc<std::sync::Mutex<Debouncer<RecommendedWatcher, RecommendedCache>>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct DiffStats {
@@ -45,6 +46,26 @@ pub async fn compute_diff_stats(
     git: &GitService,
     workspace: &Workspace,
 ) -> Option<DiffStats> {
+    compute_diff_stats_inner(pool, git, workspace, None).await
+}
+
+/// Like [`compute_diff_stats`], but reuses each worktree's last result from
+/// `cache` while its files and branch tips are unchanged.
+pub async fn compute_diff_stats_cached(
+    pool: &SqlitePool,
+    git: &GitService,
+    workspace: &Workspace,
+    cache: &DiffStatsCache,
+) -> Option<DiffStats> {
+    compute_diff_stats_inner(pool, git, workspace, Some(cache)).await
+}
+
+async fn compute_diff_stats_inner(
+    pool: &SqlitePool,
+    git: &GitService,
+    workspace: &Workspace,
+    cache: Option<&DiffStatsCache>,
+) -> Option<DiffStats> {
     let container_ref = workspace.container_ref.as_ref()?;
 
     let workspace_repos =
@@ -55,38 +76,206 @@ pub async fn compute_diff_stats(
     let mut stats = DiffStats::default();
 
     for repo_with_branch in workspace_repos {
-        let worktree_path = PathBuf::from(container_ref).join(&repo_with_branch.repo.name);
+        // In-place ("quick chat") workspaces run in the repo root itself.
+        let worktree_path = if workspace.in_place {
+            PathBuf::from(container_ref)
+        } else {
+            PathBuf::from(container_ref).join(&repo_with_branch.repo.name)
+        };
+        // A removed worktree would only fail after the merge-base walk.
+        if !tokio::fs::try_exists(&worktree_path).await.unwrap_or(false) {
+            // Its watcher may be dead (inotify); a recreated one needs a new one.
+            if let Some(cache) = cache {
+                cache.retain(|path| path != worktree_path);
+            }
+            continue;
+        }
         let repo_path = repo_with_branch.repo.path.clone();
-
-        let base_commit_result = tokio::task::spawn_blocking({
-            let git = git.clone();
-            let repo_path = repo_path.clone();
-            let workspace_branch = workspace.branch.clone();
-            let target_branch = repo_with_branch.target_branch.clone();
-            move || git.get_base_commit(&repo_path, &workspace_branch, &target_branch)
-        })
-        .await;
-
-        let base_commit = match base_commit_result {
-            Ok(Ok(commit)) => commit,
-            _ => continue,
+        let target_branch = repo_with_branch.target_branch.clone();
+        let compute = || {
+            worktree_diff_stats(
+                git,
+                &repo_path,
+                &workspace.branch,
+                &target_branch,
+                &worktree_path,
+            )
         };
 
-        let stats_result = tokio::task::spawn_blocking({
-            let git = git.clone();
-            let worktree = worktree_path.clone();
-            move || git.get_diff_stats(&worktree, &base_commit)
-        })
-        .await;
+        let repo_stats = match cache {
+            Some(cache) => {
+                let tips = tokio::task::spawn_blocking({
+                    let git = git.clone();
+                    let repo_path = repo_path.clone();
+                    let workspace_branch = workspace.branch.clone();
+                    let target_branch = target_branch.clone();
+                    move || branch_tips_key(&git, &repo_path, &workspace_branch, &target_branch)
+                })
+                .await;
+                let Ok(Ok(tips)) = tips else { continue };
+                cache.get_or_compute(&worktree_path, tips, compute).await
+            }
+            None => compute().await,
+        };
 
-        if let Ok(Ok((files_changed, lines_added, lines_removed))) = stats_result {
-            stats.files_changed += files_changed;
-            stats.lines_added += lines_added;
-            stats.lines_removed += lines_removed;
+        if let Some(repo_stats) = repo_stats {
+            stats.files_changed += repo_stats.files_changed;
+            stats.lines_added += repo_stats.lines_added;
+            stats.lines_removed += repo_stats.lines_removed;
         }
     }
 
     Some(stats)
+}
+
+/// The merge-base is a function of both branch tips, and resolving two refs
+/// is far cheaper than the merge-base walk (~65ms on large histories).
+fn branch_tips_key(
+    git: &GitService,
+    repo_path: &Path,
+    workspace_branch: &str,
+    target_branch: &str,
+) -> Result<String, GitServiceError> {
+    Ok(format!(
+        "{}..{}",
+        git.get_branch_oid(repo_path, target_branch)?,
+        git.get_branch_oid(repo_path, workspace_branch)?
+    ))
+}
+
+async fn worktree_diff_stats(
+    git: &GitService,
+    repo_path: &Path,
+    workspace_branch: &str,
+    target_branch: &str,
+    worktree_path: &Path,
+) -> Option<DiffStats> {
+    let git = git.clone();
+    let repo_path = repo_path.to_path_buf();
+    let workspace_branch = workspace_branch.to_string();
+    let target_branch = target_branch.to_string();
+    let worktree_path = worktree_path.to_path_buf();
+    let (files_changed, lines_added, lines_removed) = tokio::task::spawn_blocking(move || {
+        let base_commit = git.get_base_commit(&repo_path, &workspace_branch, &target_branch)?;
+        git.get_diff_stats(&worktree_path, &base_commit)
+    })
+    .await
+    .ok()?
+    .ok()?;
+    Some(DiffStats {
+        files_changed,
+        lines_added,
+        lines_removed,
+    })
+}
+
+/// Per-worktree diff stats for the workspace summaries poll, keyed by the
+/// branch tips that pin the merge-base. A gitignore-aware filesystem watcher
+/// marks an entry dirty, so a hit costs two ref lookups instead of the
+/// merge-base walk plus `git status` and diff.
+#[derive(Default)]
+pub struct DiffStatsCache {
+    entries: std::sync::Mutex<HashMap<PathBuf, Arc<DiffStatsCacheEntry>>>,
+    /// Watcher setup walks the worktree and restarts the FSEvents stream per
+    /// watched directory (~1s on large repos); parallel setups contend badly.
+    setup_turn: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Default)]
+struct DiffStatsCacheEntry {
+    dirty: Arc<AtomicBool>,
+    setup_started: AtomicBool,
+    /// Held across the computation so concurrent polls compute once.
+    state: tokio::sync::Mutex<DiffStatsCacheState>,
+}
+
+#[derive(Default)]
+struct DiffStatsCacheState {
+    /// Until the watcher is up nothing is cached (computes every time).
+    watcher: Option<WatcherGuard>,
+    cached: Option<(String, DiffStats)>,
+}
+
+impl DiffStatsCache {
+    pub async fn get_or_compute<F, Fut>(
+        &self,
+        worktree_path: &Path,
+        key: String,
+        compute: F,
+    ) -> Option<DiffStats>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Option<DiffStats>>,
+    {
+        let entry = self
+            .entries
+            .lock()
+            .unwrap()
+            .entry(worktree_path.to_path_buf())
+            .or_default()
+            .clone();
+        if !entry.setup_started.swap(true, Ordering::SeqCst) {
+            // Polls never wait for the watcher.
+            tokio::spawn(start_watching(
+                entry.clone(),
+                worktree_path.to_path_buf(),
+                self.setup_turn.clone(),
+            ));
+        }
+
+        let mut state = entry.state.lock().await;
+        if !entry.dirty.load(Ordering::SeqCst)
+            && let Some((cached_key, stats)) = &state.cached
+            && *cached_key == key
+        {
+            return Some(stats.clone());
+        }
+
+        // Clear before computing so edits made during the run re-dirty it.
+        entry.dirty.store(false, Ordering::SeqCst);
+        let stats = compute().await;
+        state.cached = match &stats {
+            Some(stats) if state.watcher.is_some() => Some((key, stats.clone())),
+            _ => None,
+        };
+        stats
+    }
+
+    /// Drops entries (and their watchers) for worktrees `keep` rejects.
+    pub fn retain(&self, keep: impl Fn(&Path) -> bool) {
+        self.entries.lock().unwrap().retain(|path, _| keep(path));
+    }
+}
+
+async fn start_watching(
+    entry: Arc<DiffStatsCacheEntry>,
+    worktree_path: PathBuf,
+    setup_turn: Arc<tokio::sync::Mutex<()>>,
+) {
+    let _turn = setup_turn.lock().await;
+    let watcher = watch_for_changes(&worktree_path, &entry.dirty).await;
+    if watcher.is_none() {
+        // Retry on a later poll.
+        entry.setup_started.store(false, Ordering::SeqCst);
+    }
+    entry.state.lock().await.watcher = watcher;
+}
+
+async fn watch_for_changes(worktree_path: &Path, dirty: &Arc<AtomicBool>) -> Option<WatcherGuard> {
+    let root = worktree_path.to_path_buf();
+    let (debouncer, mut rx, _) =
+        tokio::task::spawn_blocking(move || filesystem_watcher::async_watcher(root))
+            .await
+            .ok()?
+            .ok()?;
+    let dirty = dirty.clone();
+    // Ends when the entry (and so the debouncer feeding `rx`) is dropped.
+    tokio::spawn(async move {
+        while rx.next().await.is_some() {
+            dirty.store(true, Ordering::SeqCst);
+        }
+    });
+    Some(debouncer)
 }
 
 /// Maximum cumulative diff bytes to stream before omitting content (200MB)
@@ -951,5 +1140,117 @@ mod tests {
         // The run loop breaks on this, and reconcile can no longer succeed.
         assert!(manager.worktree_removed().await);
         assert!(manager.handle_reconcile().await.is_err());
+    }
+
+    /// Runs the real summaries computation for the `feature` worktree against
+    /// `main` through the cache, counting how often it actually ran.
+    async fn cached_stats(
+        cache: &DiffStatsCache,
+        repo_path: &Path,
+        worktree_path: &Path,
+        runs: &AtomicUsize,
+    ) -> DiffStats {
+        let git_service = GitService::new();
+        let key = branch_tips_key(&git_service, repo_path, "feature", "main").unwrap();
+        cache
+            .get_or_compute(worktree_path, key, || {
+                runs.fetch_add(1, Ordering::SeqCst);
+                worktree_diff_stats(&git_service, repo_path, "feature", "main", worktree_path)
+            })
+            .await
+            .expect("diff stats")
+    }
+
+    /// Lets watcher events from setup (FSEvents can replay recent writes)
+    /// land, so later assertions only see the changes the test makes.
+    async fn settle(
+        cache: &DiffStatsCache,
+        repo_path: &Path,
+        worktree_path: &Path,
+        runs: &AtomicUsize,
+    ) {
+        cached_stats(cache, repo_path, worktree_path, runs).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        cached_stats(cache, repo_path, worktree_path, runs).await;
+    }
+
+    #[tokio::test]
+    async fn diff_stats_cache_hits_until_a_file_changes() {
+        let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
+        let cache = DiffStatsCache::default();
+        let runs = AtomicUsize::new(0);
+
+        std::fs::write(worktree_path.join("a.txt"), "hello\nworld\n").unwrap();
+        settle(&cache, &repo_path, &worktree_path, &runs).await;
+
+        let before = runs.load(Ordering::SeqCst);
+        let stats = cached_stats(&cache, &repo_path, &worktree_path, &runs).await;
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            before,
+            "unchanged worktree hits"
+        );
+        assert_eq!((stats.files_changed, stats.lines_added), (1, 1));
+
+        std::fs::write(worktree_path.join("a.txt"), "hello\nworld\nagain\n").unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let stats = cached_stats(&cache, &repo_path, &worktree_path, &runs).await;
+            if stats.lines_added == 2 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "edit never invalidated"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn diff_stats_cache_ignores_gitignored_writes() {
+        let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
+        std::fs::write(worktree_path.join(".gitignore"), "build/\n").unwrap();
+        std::fs::create_dir(worktree_path.join("build")).unwrap();
+        let cache = DiffStatsCache::default();
+        let runs = AtomicUsize::new(0);
+        settle(&cache, &repo_path, &worktree_path, &runs).await;
+
+        let before = runs.load(Ordering::SeqCst);
+        std::fs::write(worktree_path.join("build/out.txt"), "artifact\n").unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        cached_stats(&cache, &repo_path, &worktree_path, &runs).await;
+        assert_eq!(runs.load(Ordering::SeqCst), before);
+    }
+
+    #[tokio::test]
+    async fn diff_stats_cache_misses_when_a_branch_moves_and_computes_once() {
+        let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
+        let cache = DiffStatsCache::default();
+        let runs = AtomicUsize::new(0);
+        settle(&cache, &repo_path, &worktree_path, &runs).await;
+
+        std::fs::write(repo_path.join("b.txt"), "main\n").unwrap();
+        git(&repo_path, &["add", "."]);
+        git(&repo_path, &["commit", "-m", "main moves"]);
+
+        // Two concurrent polls after the target moved share one computation.
+        let before = runs.load(Ordering::SeqCst);
+        tokio::join!(
+            cached_stats(&cache, &repo_path, &worktree_path, &runs),
+            cached_stats(&cache, &repo_path, &worktree_path, &runs),
+        );
+        assert_eq!(runs.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[tokio::test]
+    async fn diff_stats_cache_retain_drops_entries() {
+        let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
+        let cache = DiffStatsCache::default();
+        let runs = AtomicUsize::new(0);
+        cached_stats(&cache, &repo_path, &worktree_path, &runs).await;
+
+        cache.retain(|path| path != worktree_path);
+        assert!(cache.entries.lock().unwrap().is_empty());
     }
 }

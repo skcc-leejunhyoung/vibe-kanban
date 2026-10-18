@@ -1,4 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::LazyLock,
+};
 
 use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
@@ -12,12 +16,15 @@ use db::models::{
 use deployment::Deployment;
 use executors::logs::{TodoProgress, todo_progress_from_logs};
 use serde::{Deserialize, Serialize};
-use services::services::container::ContainerService;
+use services::services::{container::ContainerService, diff_stream::DiffStatsCache};
 use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
 use crate::{DeploymentImpl, error::ApiError};
+
+/// Diff stats reused across summaries polls until a worktree changes.
+static DIFF_STATS_CACHE: LazyLock<DiffStatsCache> = LazyLock::new(DiffStatsCache::default);
 
 /// Request for fetching workspace summaries
 #[derive(Debug, Deserialize, Serialize, TS)]
@@ -220,6 +227,13 @@ async fn summaries_by_archived(
     let diff_stats: HashMap<Uuid, DiffStats> = if archived {
         HashMap::new()
     } else {
+        // Release watchers for worktrees no longer behind an active workspace.
+        let roots: Vec<&Path> = workspaces
+            .iter()
+            .filter_map(|ws| ws.container_ref.as_deref().map(Path::new))
+            .collect();
+        DIFF_STATS_CACHE.retain(|worktree| roots.iter().any(|root| worktree.starts_with(root)));
+
         let diff_futures: Vec<_> = workspaces
             .iter()
             .map(|ws| {
@@ -294,15 +308,16 @@ async fn summaries_by_archived(
     Ok(summaries)
 }
 
-/// Compute diff stats for a workspace.
+/// Compute diff stats for a workspace, reusing cached per-worktree results.
 pub async fn compute_workspace_diff_stats(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
 ) -> Option<DiffStats> {
-    let stats = services::services::diff_stream::compute_diff_stats(
+    let stats = services::services::diff_stream::compute_diff_stats_cached(
         &deployment.db().pool,
         deployment.git(),
         workspace,
+        &DIFF_STATS_CACHE,
     )
     .await?;
 

@@ -60,6 +60,7 @@ fn platform_supports_native_recursive() -> bool {
 
 fn build_gitignore_set(root: &Path) -> Result<Gitignore, FilesystemWatcherError> {
     let mut builder = GitignoreBuilder::new(root);
+    let mut gitignore_files = Vec::new();
 
     // Walk once to collect all .gitignore files under root
     // Use git_ignore(true) to avoid walking into gitignored directories
@@ -91,7 +92,7 @@ fn build_gitignore_set(root: &Path) -> Result<Gitignore, FilesystemWatcherError>
             match result {
                 Ok(dir_entry) => {
                     if !dir_entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                        builder.add(dir_entry.path());
+                        gitignore_files.push(dir_entry.into_path());
                     }
                     Ok(())
                 }
@@ -108,6 +109,12 @@ fn build_gitignore_set(root: &Path) -> Result<Gitignore, FilesystemWatcherError>
             }
         })?;
 
+    // Parents first: the last matching glob wins, so deeper files override.
+    gitignore_files.sort_by_key(|path| path.components().count());
+    for file in gitignore_files {
+        add_scoped_gitignore(&mut builder, root, &file);
+    }
+
     // Optionally include repo-local excludes
     let info_exclude = root.join(".git/info/exclude");
     if info_exclude.exists() {
@@ -115,6 +122,42 @@ fn build_gitignore_set(root: &Path) -> Result<Gitignore, FilesystemWatcherError>
     }
 
     Ok(builder.build()?)
+}
+
+/// `GitignoreBuilder` matches every glob against the builder root, so a
+/// nested `.gitignore` holding `*` would ignore the whole tree. Rewrite its
+/// patterns relative to the root, as git scopes them to their directory.
+fn add_scoped_gitignore(builder: &mut GitignoreBuilder, root: &Path, file: &Path) {
+    let dir = file
+        .parent()
+        .and_then(|dir| dir.strip_prefix(root).ok())
+        .map(|dir| dir.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    if dir.is_empty() {
+        builder.add(file);
+        return;
+    }
+    let Ok(content) = std::fs::read_to_string(file) else {
+        return;
+    };
+    for line in content.lines() {
+        let line = line.trim_start_matches('\u{feff}').trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (negation, pattern) = match line.strip_prefix('!') {
+            Some(pattern) => ("!", pattern),
+            None => ("", line),
+        };
+        // A slash before the end anchors to this directory; otherwise the
+        // pattern matches at any depth below it.
+        let scoped = if pattern.trim_end_matches('/').contains('/') {
+            format!("{negation}{dir}/{}", pattern.trim_start_matches('/'))
+        } else {
+            format!("{negation}{dir}/**/{pattern}")
+        };
+        let _ = builder.add_line(Some(file.to_path_buf()), &scoped);
+    }
 }
 
 fn path_allowed(path: &Path, gi: &Gitignore, canonical_root: &Path) -> bool {
@@ -701,4 +744,34 @@ fn async_watcher_with_policy(
     });
 
     Ok((debouncer, filtered_rx, canonical_root))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_gitignore_patterns_stay_in_their_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        for dir in ["sub", "other/deep"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        std::fs::write(root.join("sub/.gitignore"), "# output\n*\n!keep.txt\n").unwrap();
+        std::fs::write(root.join("other/.gitignore"), "/only-here\nbuild/\n").unwrap();
+
+        let gi = build_gitignore_set(root).unwrap();
+        let ignored = |path: &str| gi.matched_path_or_any_parents(path, false).is_ignore();
+
+        assert!(!ignored("a.txt"));
+        assert!(ignored("a.log"));
+        assert!(ignored("sub/x.txt"));
+        assert!(!ignored("sub/keep.txt"));
+        assert!(ignored("other/only-here"));
+        assert!(!ignored("only-here"));
+        assert!(!ignored("other/deep/only-here"));
+        assert!(ignored("other/deep/build/out.js"));
+        assert!(!ignored("build/out.js"));
+    }
 }

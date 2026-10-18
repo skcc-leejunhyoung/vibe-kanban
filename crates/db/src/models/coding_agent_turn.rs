@@ -239,11 +239,13 @@ impl CodingAgentTurn {
         archived: bool,
     ) -> Result<std::collections::HashSet<Uuid>, sqlx::Error> {
         let result: Vec<Uuid> = sqlx::query_scalar!(
+            // CROSS JOIN pins the join order: SQLite otherwise scans every
+            // session before filtering by archived (~20ms vs <1ms).
             r#"SELECT DISTINCT s.workspace_id as "workspace_id!: Uuid"
-               FROM coding_agent_turns cat
-               JOIN execution_processes ep ON cat.execution_process_id = ep.id
-               JOIN sessions s ON ep.session_id = s.id
-               JOIN workspaces w ON s.workspace_id = w.id
+               FROM workspaces w
+               CROSS JOIN sessions s ON s.workspace_id = w.id
+               CROSS JOIN execution_processes ep ON ep.session_id = s.id
+               CROSS JOIN coding_agent_turns cat ON cat.execution_process_id = ep.id
                WHERE cat.seen = 0 AND w.archived = $1"#,
             archived
         )
@@ -260,6 +262,7 @@ impl CodingAgentTurn {
         pool: &SqlitePool,
         archived: bool,
     ) -> Result<std::collections::HashMap<Uuid, String>, sqlx::Error> {
+        // Join order pinned as in `find_workspaces_with_unseen`.
         let rows = sqlx::query!(
             r#"SELECT workspace_id as "workspace_id!: Uuid", prompt as "prompt!"
                FROM (
@@ -269,10 +272,10 @@ impl CodingAgentTurn {
                               PARTITION BY s.workspace_id
                               ORDER BY cat.created_at DESC, cat.id DESC
                           ) AS rn
-                   FROM coding_agent_turns cat
-                   JOIN execution_processes ep ON cat.execution_process_id = ep.id
-                   JOIN sessions s ON ep.session_id = s.id
-                   JOIN workspaces w ON s.workspace_id = w.id
+                   FROM workspaces w
+                   CROSS JOIN sessions s ON s.workspace_id = w.id
+                   CROSS JOIN execution_processes ep ON ep.session_id = s.id
+                   CROSS JOIN coding_agent_turns cat ON cat.execution_process_id = ep.id
                    WHERE w.archived = $1
                      AND cat.prompt IS NOT NULL
                      AND TRIM(cat.prompt) <> ''
