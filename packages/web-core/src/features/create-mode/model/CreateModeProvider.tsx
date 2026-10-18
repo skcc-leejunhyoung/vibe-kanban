@@ -23,8 +23,12 @@ export function CreateModeProvider({
   const {
     workspaces: activeWorkspaces,
     archivedWorkspaces,
-    isLoading: localWorkspacesLoading,
+    isLoading,
+    isArchivedLoading,
   } = useWorkspaces();
+  // Defaults latch once resolved, and the issue's latest workspace is often
+  // archived, so wait for the archive too.
+  const localWorkspacesLoading = isLoading || isArchivedLoading;
   const { workspaces: remoteWorkspaces, isLoading: remoteWorkspacesLoading } =
     useUserContext();
   const mostRecentWorkspace = activeWorkspaces[0] ?? archivedWorkspaces[0];

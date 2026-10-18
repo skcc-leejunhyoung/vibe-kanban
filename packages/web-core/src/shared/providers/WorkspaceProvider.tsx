@@ -296,19 +296,25 @@ function WorkspaceProviderContent({
         // any in-flight summaries fetch first — its response predates
         // markSeen and would clobber the patch, resurrecting the unseen
         // badge on the workspace being viewed.
-        await queryClient
-          .cancelQueries({ queryKey: workspaceSummaryKeys.all })
-          .catch(() => {});
-        queryClient.setQueryData<Map<string, WorkspaceSummary>>(
+        const keys = [
           workspaceSummaryKeys.byHost(hostId),
-          (old) => {
-            const current = old?.get(workspaceId);
-            if (!old || !current?.has_unseen_turns) return old;
-            const next = new Map(old);
-            next.set(workspaceId, { ...current, has_unseen_turns: false });
-            return next;
-          }
-        );
+          workspaceSummaryKeys.archivedByHost(hostId),
+        ];
+        await Promise.all(
+          keys.map((queryKey) => queryClient.cancelQueries({ queryKey }))
+        ).catch(() => {});
+        for (const queryKey of keys) {
+          queryClient.setQueryData<Map<string, WorkspaceSummary>>(
+            queryKey,
+            (old) => {
+              const current = old?.get(workspaceId);
+              if (!old || !current?.has_unseen_turns) return old;
+              const next = new Map(old);
+              next.set(workspaceId, { ...current, has_unseen_turns: false });
+              return next;
+            }
+          );
+        }
       })
       .catch((error) => {
         console.warn('Failed to mark workspace as seen:', error);

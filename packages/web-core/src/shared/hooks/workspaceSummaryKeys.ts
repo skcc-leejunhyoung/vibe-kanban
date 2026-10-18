@@ -6,6 +6,14 @@ export const workspaceSummaryKeys = {
     [
       'workspace-summaries',
       getHostRequestScopeQueryKey(hostId),
-      'all',
+      'active',
+    ] as const,
+  // Outside `all` on purpose: approvals, dev servers and creates invalidate
+  // `all`, and none of them touches an archived row.
+  archived: ['workspace-summaries-archived'] as const,
+  archivedByHost: (hostId: string | null = null) =>
+    [
+      'workspace-summaries-archived',
+      getHostRequestScopeQueryKey(hostId),
     ] as const,
 };

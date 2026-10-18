@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -99,7 +100,14 @@ export interface UseWorkspacesResult {
    * record query while its fetch is in flight.
    */
   workspaceRecordsById: Record<string, WorkspaceWithStatus>;
+  /** The active list has nothing to show yet. */
   isLoading: boolean;
+  /**
+   * The archive loads after the active list, so `archivedWorkspaces` can be
+   * empty while `isLoading` is already false. Wait on this before treating
+   * the lists as the complete set of this host's workspaces.
+   */
+  isArchivedLoading: boolean;
   isConnected: boolean;
   error: string | null;
 }
@@ -122,6 +130,7 @@ const EMPTY_UNIFIED_WORKSPACES: UseWorkspacesResult = {
   archivedWorkspaces: [],
   workspaceRecordsById: {},
   isLoading: false,
+  isArchivedLoading: false,
   isConnected: false,
   error: null,
 };
@@ -259,10 +268,14 @@ export const workspaceKeys = {
 
 // workspaceSummaryKeys is imported from @/shared/hooks/workspaceSummaryKeys
 
-// Fetch active and archived summaries together; consumers still look up by id.
+// `archived: null` fetches active and archived summaries in one request;
+// consumers still look up by id.
 export async function fetchWorkspaceSummaries(
   hostId: string | null,
-  includeLatestPrompt = true
+  {
+    archived = null,
+    includeLatestPrompt = true,
+  }: { archived?: boolean | null; includeLatestPrompt?: boolean } = {}
 ): Promise<Map<string, WorkspaceSummary>> {
   const fetchByArchived = async (
     archived: boolean | null
@@ -309,22 +322,31 @@ export async function fetchWorkspaceSummaries(
       return new Map();
     }
   };
-  return fetchByArchived(null);
+  return fetchByArchived(archived);
 }
 
 export function useWorkspaces(enabled = true): UseWorkspacesResult {
-  const hostId = useHostId();
+  return useHostWorkspaces(useHostId(), enabled);
+}
 
-  // Two separate WebSocket connections: one for active, one for archived
-  // No limit param - we fetch all and slice on frontend so backfill works when archiving
+const ARCHIVED_SUMMARIES_REFRESH_MS = 5 * 60_000;
+
+/**
+ * One host's active and archived lists. They are separate streams so the list
+ * can render from the small active snapshot; the archive (100x larger on a
+ * long-lived host) only opens once the active list has data. No limit param:
+ * we fetch all and slice on the frontend so backfill works when archiving.
+ */
+function useHostWorkspaces(
+  hostId: string | null,
+  enabled: boolean
+): UseWorkspacesResult {
   const apiBasePath = hostId ? `/api/host/${hostId}` : '/api';
-  const activeEndpoint = `${apiBasePath}/workspaces/streams/ws?archived=false`;
-  const archivedEndpoint = `${apiBasePath}/workspaces/streams/ws?archived=true`;
-
   const initialData = useCallback(
     (): WorkspacesState => ({ workspaces: {} }),
     []
   );
+  const streamOptions = { keepSnapshotForEndpoint: true, targetHostId: hostId };
 
   const {
     data: activeData,
@@ -332,12 +354,10 @@ export function useWorkspaces(enabled = true): UseWorkspacesResult {
     isInitialized: activeIsInitialized,
     error: activeError,
   } = useJsonPatchWsStream<WorkspacesState>(
-    activeEndpoint,
+    `${apiBasePath}/workspaces/streams/ws?archived=false`,
     enabled,
     initialData,
-    {
-      keepSnapshotForEndpoint: true,
-    }
+    streamOptions
   );
 
   const {
@@ -346,25 +366,58 @@ export function useWorkspaces(enabled = true): UseWorkspacesResult {
     isInitialized: archivedIsInitialized,
     error: archivedError,
   } = useJsonPatchWsStream<WorkspacesState>(
-    archivedEndpoint,
-    enabled,
+    `${apiBasePath}/workspaces/streams/ws?archived=true`,
+    // `activeData` survives reconnects (cached snapshot), so the archive
+    // doesn't drop and re-download when the active stream blips.
+    enabled && (activeIsInitialized || !!activeData),
     initialData,
-    { keepSnapshotForEndpoint: true }
+    streamOptions
   );
 
-  // Either stream can start the shared summary poll.
   const { data: activeSummaries = EMPTY_WORKSPACE_SUMMARIES } = useQuery({
     queryKey: workspaceSummaryKeys.byHost(hostId),
-    queryFn: () => fetchWorkspaceSummaries(hostId),
-    enabled: enabled && (activeIsInitialized || archivedIsInitialized),
+    queryFn: () => fetchWorkspaceSummaries(hostId, { archived: false }),
+    enabled: enabled && activeIsInitialized,
     staleTime: 1000,
-    refetchInterval: 15000,
+    refetchInterval: 15_000,
     refetchOnWindowFocus: false,
     refetchOnMount: 'always',
     placeholderData: keepPreviousData,
   });
 
-  const archivedSummaries = activeSummaries;
+  // Archived rows rarely change: fetch when the archive attaches, when ids are
+  // archived into it, and on a slow interval. No archived row shows its latest
+  // prompt, which is most of this response's weight.
+  const {
+    data: archivedSummaries = EMPTY_WORKSPACE_SUMMARIES,
+    refetch: refetchArchivedSummaries,
+  } = useQuery({
+    queryKey: workspaceSummaryKeys.archivedByHost(hostId),
+    queryFn: () =>
+      fetchWorkspaceSummaries(hostId, {
+        archived: true,
+        includeLatestPrompt: false,
+      }),
+    enabled: enabled && archivedIsInitialized,
+    staleTime: ARCHIVED_SUMMARIES_REFRESH_MS,
+    refetchInterval: ARCHIVED_SUMMARIES_REFRESH_MS,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
+  });
+
+  const seenArchivedIds = useRef<{
+    hostId: string | null;
+    ids: ReadonlySet<string>;
+  } | null>(null);
+  useEffect(() => {
+    if (!archivedIsInitialized) return;
+    const ids = Object.keys(archivedData?.workspaces ?? {});
+    const seen = seenArchivedIds.current;
+    seenArchivedIds.current = { hostId, ids: new Set(ids) };
+    if (seen?.hostId === hostId && ids.some((id) => !seen.ids.has(id))) {
+      void refetchArchivedSummaries();
+    }
+  }, [archivedData, archivedIsInitialized, hostId, refetchArchivedSummaries]);
 
   const [selectActive] = useState(createSidebarWorkspaceList);
   const [selectArchived] = useState(createSidebarWorkspaceList);
@@ -390,27 +443,34 @@ export function useWorkspaces(enabled = true): UseWorkspacesResult {
     return byId;
   }, [activeData, archivedData, hostId]);
 
-  // isLoading is true when we have nothing to show for a stream yet — neither
-  // its initial replay nor a cached snapshot from a previous connection.
-  const isLoading =
-    enabled &&
-    ((!activeIsInitialized && !activeData) ||
-      (!archivedIsInitialized && !archivedData));
-
-  // Combined connection status
+  // Loading means nothing to show for a stream yet — neither its initial
+  // replay nor a cached snapshot from a previous connection.
+  const isLoading = enabled && !activeIsInitialized && !activeData;
+  const isArchivedLoading = enabled && !archivedIsInitialized && !archivedData;
   const isConnected = activeIsConnected && archivedIsConnected;
-
-  // Combined error (show first error if any)
   const error = activeError || archivedError;
 
-  return {
-    workspaces,
-    archivedWorkspaces,
-    workspaceRecordsById,
-    isLoading,
-    isConnected,
-    error,
-  };
+  // Stable identity: the remote provider publishes this object to state.
+  return useMemo(
+    () => ({
+      workspaces,
+      archivedWorkspaces,
+      workspaceRecordsById,
+      isLoading,
+      isArchivedLoading,
+      isConnected,
+      error,
+    }),
+    [
+      workspaces,
+      archivedWorkspaces,
+      workspaceRecordsById,
+      isLoading,
+      isArchivedLoading,
+      isConnected,
+      error,
+    ]
+  );
 }
 
 type HostWorkspaceSnapshot = {
@@ -419,73 +479,6 @@ type HostWorkspaceSnapshot = {
 };
 
 type RemoteHostWorkspaceStream = UseWorkspacesResult;
-
-type MaterializedHost = Pick<
-  UseWorkspacesResult,
-  'workspaces' | 'archivedWorkspaces' | 'workspaceRecordsById'
->;
-
-// One entry per mounted host selector; immutable records/summaries invalidate it.
-const hostMaterializations = new WeakMap<
-  ReturnType<typeof createSidebarWorkspaceList>,
-  {
-    records: Record<string, WorkspaceWithStatus>;
-    active: ReadonlyMap<string, WorkspaceSummary>;
-    archived: ReadonlyMap<string, WorkspaceSummary>;
-    hostId: string;
-    result: MaterializedHost;
-  }
->();
-
-export function materializeHostWorkspaceStream(
-  recordsById: Record<string, WorkspaceWithStatus>,
-  activeSummaries: ReadonlyMap<string, WorkspaceSummary>,
-  archivedSummaries: ReadonlyMap<string, WorkspaceSummary>,
-  hostId: string,
-  selectWorkspaces = createSidebarWorkspaceList()
-): Pick<
-  UseWorkspacesResult,
-  'workspaces' | 'archivedWorkspaces' | 'workspaceRecordsById'
-> {
-  const cached = hostMaterializations.get(selectWorkspaces);
-  if (
-    cached?.records === recordsById &&
-    cached.active === activeSummaries &&
-    cached.archived === archivedSummaries &&
-    cached.hostId === hostId
-  )
-    return cached.result;
-
-  const summaries = new Map<string, WorkspaceSummary>();
-  // Active and archived streams can briefly contain the same id during an
-  // archive transition; select the summary using the authoritative raw row.
-  for (const workspace of Object.values(recordsById)) {
-    const summary = (
-      workspace.archived ? archivedSummaries : activeSummaries
-    ).get(workspace.id);
-    if (summary) summaries.set(workspace.id, summary);
-  }
-  const records = selectWorkspaces(recordsById, summaries, hostId);
-  const workspaces: SidebarWorkspace[] = [];
-  const archivedWorkspaces: SidebarWorkspace[] = [];
-  const workspaceRecordsById: Record<string, WorkspaceWithStatus> = {};
-
-  for (const workspace of records) {
-    workspaceRecordsById[getHostWorkspaceKey(workspace.id, hostId)] =
-      recordsById[workspace.id];
-    (workspace.isArchived ? archivedWorkspaces : workspaces).push(workspace);
-  }
-
-  const result = { workspaces, archivedWorkspaces, workspaceRecordsById };
-  hostMaterializations.set(selectWorkspaces, {
-    records: recordsById,
-    active: activeSummaries,
-    archived: archivedSummaries,
-    hostId,
-    result,
-  });
-  return result;
-}
 
 const combinedStreamCache = new WeakMap<
   ReadonlyMap<string, RemoteHostWorkspaceStream>,
@@ -526,6 +519,10 @@ export function combineRemoteWorkspaceStreams(
       onlineHostIds.length > 0 &&
       (results.length < onlineHostIds.length ||
         results.some((result) => result.isLoading)),
+    isArchivedLoading:
+      onlineHostIds.length > 0 &&
+      (results.length < onlineHostIds.length ||
+        results.some((result) => result.isArchivedLoading)),
     isConnected:
       results.length > 0 && results.every((result) => result.isConnected),
     error: results.find((result) => result.error)?.error ?? null,
@@ -538,59 +535,6 @@ const RemoteWorkspaceStreamsContext = createContext<
   ReadonlyMap<string, RemoteHostWorkspaceStream> | undefined
 >(undefined);
 
-function useRemoteHostWorkspaceStream(
-  hostId: string
-): RemoteHostWorkspaceStream {
-  const [selectWorkspaces] = useState(createSidebarWorkspaceList);
-  const endpoint = `/api/host/${hostId}/workspaces/streams/ws`;
-  const initialData = useCallback(
-    (): WorkspacesState => ({ workspaces: {} }),
-    []
-  );
-  const { data, isConnected, isInitialized, error } =
-    useJsonPatchWsStream<WorkspacesState>(endpoint, true, initialData, {
-      keepSnapshotForEndpoint: true,
-      targetHostId: hostId,
-    });
-
-  const { data: activeSummaries = EMPTY_WORKSPACE_SUMMARIES } = useQuery({
-    queryKey: workspaceSummaryKeys.byHost(hostId),
-    queryFn: () => fetchWorkspaceSummaries(hostId),
-    enabled: isInitialized,
-    staleTime: 1000,
-    refetchInterval: 15_000,
-    refetchOnWindowFocus: false,
-    placeholderData: keepPreviousData,
-  });
-  const archivedSummaries = activeSummaries;
-
-  return useMemo(() => {
-    const materialized = materializeHostWorkspaceStream(
-      data?.workspaces ?? {},
-      activeSummaries,
-      archivedSummaries,
-      hostId,
-      selectWorkspaces
-    );
-
-    return {
-      ...materialized,
-      isLoading: !isInitialized && !data,
-      isConnected,
-      error,
-    };
-  }, [
-    data,
-    activeSummaries,
-    archivedSummaries,
-    hostId,
-    selectWorkspaces,
-    isInitialized,
-    isConnected,
-    error,
-  ]);
-}
-
 function RemoteHostWorkspaceStreamSource({
   hostId,
   onUpdate,
@@ -600,7 +544,7 @@ function RemoteHostWorkspaceStreamSource({
   onUpdate: (hostId: string, result: RemoteHostWorkspaceStream) => void;
   onRemove: (hostId: string) => void;
 }) {
-  const result = useRemoteHostWorkspaceStream(hostId);
+  const result = useHostWorkspaces(hostId, true);
 
   useEffect(() => {
     onUpdate(hostId, result);
@@ -714,7 +658,7 @@ async function fetchHostWorkspaceSnapshot(
 ): Promise<HostWorkspaceSnapshot> {
   const [records, summaries] = await Promise.all([
     workspacesApi.getAllWorkspaces(hostId),
-    fetchWorkspaceSummaries(hostId, false),
+    fetchWorkspaceSummaries(hostId, { includeLatestPrompt: false }),
   ]);
 
   const active: SidebarWorkspace[] = [];
@@ -753,6 +697,7 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
     archivedWorkspaces,
     workspaceRecordsById,
     isLoading,
+    isArchivedLoading,
     isConnected,
     error,
   } = useWorkspaces(enabled && runtime !== 'remote');
@@ -788,6 +733,7 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
       archivedWorkspaces: [...archivedWorkspaces, ...snapshots.archived],
       workspaceRecordsById,
       isLoading,
+      isArchivedLoading,
       isConnected,
       error,
     };
@@ -796,6 +742,7 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
     archivedWorkspaces,
     workspaceRecordsById,
     isLoading,
+    isArchivedLoading,
     isConnected,
     error,
     enabled,

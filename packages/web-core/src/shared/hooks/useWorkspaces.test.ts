@@ -1,14 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { act, createElement } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceSummary, WorkspaceWithStatus } from 'shared/types';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
+import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
 import { workspaceSummaryKeys } from './workspaceSummaryKeys';
 import {
   combineRemoteWorkspaceStreams,
   fetchWorkspaceSummaries,
   getHostWorkspaceKey,
-  materializeHostWorkspaceStream,
   resolveOnlineWorkspaceStreamHostIds,
   resolveSnapshotHostIds,
+  useWorkspaces,
   type SidebarWorkspace,
   type UseWorkspacesResult,
 } from './useWorkspaces';
@@ -16,55 +20,47 @@ import {
 vi.mock('@/shared/lib/localApiTransport', () => ({
   makeLocalApiRequest: vi.fn(),
 }));
+vi.mock('@/shared/hooks/useJsonPatchWsStream', () => ({
+  useJsonPatchWsStream: vi.fn(),
+}));
 
 describe('combined workspace summaries', () => {
-  it.each([null, 'remote-host'])(
-    'fetches both lists in one request for host %s',
-    async (hostId) => {
-      const request = vi.mocked(makeLocalApiRequest);
-      request.mockReset();
-      const summaries = [
-        { workspace_id: 'active', todo_total: 3, todo_completed: 1 },
-        { workspace_id: 'archived', has_unseen_turns: true },
-      ] as WorkspaceSummary[];
-      request.mockResolvedValue(
-        new Response(JSON.stringify({ success: true, data: { summaries } }))
-      );
+  it.each([
+    [{}, { archived: null, include_latest_prompt: true }],
+    [{ archived: false }, { archived: false, include_latest_prompt: true }],
+    [
+      { archived: true, includeLatestPrompt: false },
+      { archived: true, include_latest_prompt: false },
+    ],
+  ] as const)('sends filter %o as %o', async (options, body) => {
+    const request = vi.mocked(makeLocalApiRequest);
+    request.mockReset();
+    const summaries = [
+      { workspace_id: 'active', todo_total: 3 },
+    ] as WorkspaceSummary[];
+    request.mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: { summaries } }))
+    );
 
-      const map = await fetchWorkspaceSummaries(hostId, false);
-      expect(request).toHaveBeenCalledTimes(1);
-      expect(request).toHaveBeenCalledWith(
-        '/api/workspaces/summaries',
-        expect.objectContaining({
-          body: JSON.stringify({
-            archived: null,
-            include_latest_prompt: false,
-          }),
-          hostScope: 'explicit',
-          hostId,
-          relayHostId: hostId,
-        })
-      );
-      const result = materializeHostWorkspaceStream(
-        {
-          active: { id: 'active', archived: false } as WorkspaceWithStatus,
-          archived: { id: 'archived', archived: true } as WorkspaceWithStatus,
-        },
-        map,
-        map,
-        hostId ?? 'local'
-      );
-      expect(result.workspaces).toMatchObject([
-        { id: 'active', todoTotal: 3, todoCompleted: 1 },
-      ]);
-      expect(result.archivedWorkspaces).toMatchObject([
-        { id: 'archived', hasUnseenActivity: true },
-      ]);
-      expect(workspaceSummaryKeys.byHost('host-a')).not.toEqual(
-        workspaceSummaryKeys.byHost('host-b')
-      );
-    }
-  );
+    const map = await fetchWorkspaceSummaries('remote-host', options);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      '/api/workspaces/summaries',
+      expect.objectContaining({
+        body: JSON.stringify(body),
+        hostScope: 'explicit',
+        hostId: 'remote-host',
+        relayHostId: 'remote-host',
+      })
+    );
+    expect(map.get('active')?.todo_total).toBe(3);
+    expect(workspaceSummaryKeys.byHost('host-a')).not.toEqual(
+      workspaceSummaryKeys.byHost('host-b')
+    );
+    expect(workspaceSummaryKeys.archivedByHost('host-a')).not.toEqual(
+      workspaceSummaryKeys.byHost('host-a')
+    );
+  });
 
   it.each([null, 'legacy-host'])(
     'falls back to boolean filters only for an older host %s',
@@ -93,7 +89,9 @@ describe('combined workspace summaries', () => {
         );
       });
 
-      const map = await fetchWorkspaceSummaries(hostId, false);
+      const map = await fetchWorkspaceSummaries(hostId, {
+        includeLatestPrompt: false,
+      });
       expect([...map.keys()]).toEqual(['active', 'archived']);
       expect(request).toHaveBeenCalledTimes(3);
       expect(
@@ -203,6 +201,7 @@ function hostResult(
     archivedWorkspaces,
     workspaceRecordsById,
     isLoading: false,
+    isArchivedLoading: false,
     isConnected: true,
     error: null,
   };
@@ -273,6 +272,23 @@ describe('combineRemoteWorkspaceStreams', () => {
     expect(result.workspaces).toEqual([]);
   });
 
+  it('shows active rows while a host archive is still loading', () => {
+    const result = combineRemoteWorkspaceStreams(
+      new Map([
+        ['host-a', hostResult('host-a', ['a-1'])],
+        [
+          'host-b',
+          { ...hostResult('host-b', ['b-1']), isArchivedLoading: true },
+        ],
+      ]),
+      ['host-a', 'host-b']
+    );
+
+    expect(result.isLoading).toBe(false);
+    expect(result.isArchivedLoading).toBe(true);
+    expect(result.workspaces.map(({ id }) => id)).toEqual(['a-1', 'b-1']);
+  });
+
   it('stays loading until every online host has registered its stream', () => {
     const result = combineRemoteWorkspaceStreams(
       new Map([['host-a', hostResult('host-a', ['a-1'])]]),
@@ -303,48 +319,6 @@ describe('resolveSnapshotHostIds', () => {
       'other',
       null,
     ]);
-  });
-});
-
-describe('materializeHostWorkspaceStream', () => {
-  it('splits one unfiltered host stream into active and archived lists', () => {
-    const base = {
-      name: 'Workspace',
-      branch: 'develop',
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:00Z',
-      pinned: false,
-      is_running: false,
-    };
-    const result = materializeHostWorkspaceStream(
-      {
-        active: {
-          ...base,
-          id: 'active',
-          archived: false,
-        } as WorkspaceWithStatus,
-        archived: {
-          ...base,
-          id: 'archived',
-          archived: true,
-        } as WorkspaceWithStatus,
-      },
-      new Map(),
-      new Map(),
-      'host-a'
-    );
-
-    expect(result.workspaces.map((workspace) => workspace.id)).toEqual([
-      'active',
-    ]);
-    expect(result.archivedWorkspaces.map((workspace) => workspace.id)).toEqual([
-      'archived',
-    ]);
-    expect(
-      [...result.workspaces, ...result.archivedWorkspaces].every(
-        (workspace) => workspace.hostId === 'host-a'
-      )
-    ).toBe(true);
   });
 });
 
@@ -407,35 +381,6 @@ describe('sidebar reference and ordering cache', () => {
     ).toBe(4);
     expect(select({}, summaries, null)).toEqual([]);
   });
-
-  it('uses the same reference cache for remote active and archived rows', async () => {
-    const { createSidebarWorkspaceList } = await import('./useWorkspaces');
-    const select = createSidebarWorkspaceList();
-    const a = {
-      id: 'a',
-      created_at: '2026-09-01T00:00:00Z',
-      pinned: false,
-      archived: false,
-    } as WorkspaceWithStatus;
-    const b = { ...a, id: 'b', archived: true };
-    const first = materializeHostWorkspaceStream(
-      { a, b },
-      new Map(),
-      new Map(),
-      'host',
-      select
-    );
-    const next = materializeHostWorkspaceStream(
-      { a: { ...a, is_running: true }, b },
-      new Map(),
-      new Map(),
-      'host',
-      select
-    );
-    expect(next.archivedWorkspaces[0]).toBe(first.archivedWorkspaces[0]);
-    expect(next.workspaces[0].isRunning).toBe(true);
-    expect(next.workspaceRecordsById['host:b']).toBe(b);
-  });
 });
 
 describe('SKC-4780 host caches', () => {
@@ -446,52 +391,153 @@ describe('SKC-4780 host caches', () => {
     );
     expect(combineRemoteWorkspaceStreams(streams, []).workspaces).toEqual([]);
   });
+});
 
-  it('does not rematerialize host B when host A is patched', async () => {
-    const { createSidebarWorkspaceList } = await import('./useWorkspaces');
-    const a = {
-      a: { id: 'a', created_at: '2026-01-01' } as WorkspaceWithStatus,
+describe('useWorkspaces active-first loading', () => {
+  const ACTIVE = '/api/workspaces/streams/ws?archived=false';
+  const ARCHIVED = '/api/workspaces/streams/ws?archived=true';
+  let streams: Record<
+    string,
+    { workspaces: Record<string, WorkspaceWithStatus> } | undefined
+  >;
+  let enabledByEndpoint: Record<string, boolean>;
+  let result: UseWorkspacesResult;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  const row = (id: string, archived: boolean) =>
+    ({
+      id,
+      archived,
+      created_at: '2026-10-18T00:00:00Z',
+    }) as WorkspaceWithStatus;
+  const summaryBodies = () =>
+    vi
+      .mocked(makeLocalApiRequest)
+      .mock.calls.map(([, options]) => JSON.parse(options?.body as string));
+  function Probe() {
+    result = useWorkspaces();
+    return null;
+  }
+  const render = () =>
+    act(async () => {
+      root.render(
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(Probe)
+        )
+      );
+    });
+
+  beforeEach(() => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const document = Object.assign(new EventTarget(), {
+      nodeType: 9,
+      activeElement: null,
+    });
+    vi.stubGlobal('document', document);
+    vi.stubGlobal(
+      'window',
+      Object.assign(new EventTarget(), {
+        document,
+        event: undefined,
+        setTimeout,
+        clearTimeout,
+        HTMLIFrameElement: class {},
+      })
+    );
+    root = createRoot(
+      Object.assign(new EventTarget(), {
+        nodeType: 1,
+        tagName: 'DIV',
+        ownerDocument: document,
+      }) as unknown as HTMLElement
+    );
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    streams = {};
+    enabledByEndpoint = {};
+    vi.mocked(useJsonPatchWsStream).mockImplementation(((
+      endpoint: string,
+      enabled: boolean
+    ) => {
+      enabledByEndpoint[endpoint] = enabled;
+      const data = enabled ? streams[endpoint] : undefined;
+      return {
+        data,
+        isConnected: !!data,
+        isInitialized: !!data,
+        error: null,
+        reconcile: () => {},
+        flush: () => {},
+      };
+    }) as typeof useJsonPatchWsStream);
+    const request = vi.mocked(makeLocalApiRequest);
+    request.mockReset();
+    request.mockImplementation(async (_path, options) => {
+      const { archived } = JSON.parse(options?.body as string);
+      const summaries = archived
+        ? [{ workspace_id: 'z1', has_unseen_turns: true }]
+        : [{ workspace_id: 'a1', todo_total: 2 }];
+      return new Response(
+        JSON.stringify({ success: true, data: { summaries } })
+      );
+    });
+  });
+
+  afterEach(async () => {
+    await act(() => root.unmount());
+    queryClient.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it('renders active rows before the archive and fetches each list once', async () => {
+    await render();
+    expect(result.isLoading).toBe(true);
+    expect(enabledByEndpoint[ARCHIVED]).toBe(false);
+    expect(summaryBodies()).toEqual([]);
+
+    streams[ACTIVE] = { workspaces: { a1: row('a1', false) } };
+    await render();
+    expect(result.isLoading).toBe(false);
+    expect(result.isArchivedLoading).toBe(true);
+    expect(enabledByEndpoint[ARCHIVED]).toBe(true);
+    await vi.waitFor(() => expect(result.workspaces[0].todoTotal).toBe(2));
+    expect(summaryBodies()).toEqual([
+      { archived: false, include_latest_prompt: true },
+    ]);
+
+    streams[ARCHIVED] = { workspaces: { z1: row('z1', true) } };
+    await render();
+    expect(result.isArchivedLoading).toBe(false);
+    await vi.waitFor(() =>
+      expect(result.archivedWorkspaces[0].hasUnseenActivity).toBe(true)
+    );
+    expect(summaryBodies().slice(1)).toEqual([
+      { archived: true, include_latest_prompt: false },
+    ]);
+  });
+
+  it('refetches archived summaries only when an id is archived in', async () => {
+    streams[ACTIVE] = { workspaces: { a1: row('a1', false) } };
+    streams[ARCHIVED] = { workspaces: { z1: row('z1', true) } };
+    await render();
+    await render();
+    const archivedFetches = () =>
+      summaryBodies().filter((body) => body.archived).length;
+    await vi.waitFor(() => expect(archivedFetches()).toBe(1));
+
+    streams[ARCHIVED] = {
+      workspaces: { z1: row('z1', true), z2: row('z2', true) },
     };
-    const b = {
-      b: { id: 'b', created_at: '2026-01-01' } as WorkspaceWithStatus,
-    };
-    const summaries = new Map<string, WorkspaceSummary>();
-    const selectA = vi.fn(createSidebarWorkspaceList());
-    const selectB = vi.fn(createSidebarWorkspaceList());
-    materializeHostWorkspaceStream(a, summaries, summaries, 'a', selectA);
-    const before = materializeHostWorkspaceStream(
-      b,
-      summaries,
-      summaries,
-      'b',
-      selectB
-    );
-    const patched = materializeHostWorkspaceStream(
-      { a: { ...a.a, archived: true } },
-      summaries,
-      summaries,
-      'a',
-      selectA
-    );
-    const after = materializeHostWorkspaceStream(
-      b,
-      summaries,
-      summaries,
-      'b',
-      selectB
-    );
-    expect(selectA).toHaveBeenCalledTimes(2);
-    expect(selectB).toHaveBeenCalledTimes(1);
-    expect(after).toBe(before);
-    expect(patched.archivedWorkspaces).toHaveLength(1);
-    const updated = materializeHostWorkspaceStream(
-      b,
-      new Map([['b', { files_changed: 2 } as WorkspaceSummary]]),
-      summaries,
-      'b',
-      selectB
-    );
-    expect(updated.workspaces[0].filesChanged).toBe(2);
-    expect(selectB).toHaveBeenCalledTimes(2);
+    await render();
+    await vi.waitFor(() => expect(archivedFetches()).toBe(2));
+
+    streams[ARCHIVED] = { workspaces: { z1: row('z1', true) } };
+    await render();
+    await act(async () => {});
+    expect(archivedFetches()).toBe(2);
   });
 });
