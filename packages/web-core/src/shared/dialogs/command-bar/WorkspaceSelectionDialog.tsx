@@ -71,7 +71,8 @@ function WorkspaceSelectionContent({
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
   // Get local workspaces from WorkspaceContext (both active and archived)
-  const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
+  const { activeWorkspaces, archivedWorkspaces, isArchivedWorkspacesLoading } =
+    useWorkspaceContext();
 
   // Get already-linked workspaces from UserContext (workspaces are user-scoped)
   const { getWorkspacesForIssue, workspaces } = useUserContext();
@@ -182,7 +183,8 @@ function WorkspaceSelectionContent({
       // Build set of local workspace IDs that exist on this machine
       const localWorkspaceIds = buildLocalWorkspaceIdSet(
         activeWorkspaces,
-        archivedWorkspaces
+        archivedWorkspaces,
+        isArchivedWorkspacesLoading
       );
 
       // Get defaults from most recent workspace
@@ -227,6 +229,7 @@ function WorkspaceSelectionContent({
     isLinking,
     activeWorkspaces,
     archivedWorkspaces,
+    isArchivedWorkspacesLoading,
     t,
   ]);
 

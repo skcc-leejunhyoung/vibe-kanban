@@ -528,6 +528,8 @@ describe('useWorkspaces active-first loading', () => {
 
   it('loads a snapshot host archive only after its active snapshot', async () => {
     useHook = useUnifiedWorkspaces;
+    streams[ACTIVE] = { workspaces: {} };
+    streams[ARCHIVED] = { workspaces: {} };
     const getAll = vi.mocked(workspacesApi.getAllWorkspaces);
     let resolveActive!: (rows: WorkspaceWithStatus[]) => void;
     getAll.mockReset();
@@ -539,12 +541,14 @@ describe('useWorkspaces active-first loading', () => {
 
     await render();
     expect(getAll.mock.calls).toEqual([['i9', false]]);
+    expect(result.isArchivedLoading).toBe(true);
 
     await act(async () => resolveActive([row('b1', false)]));
     await vi.waitFor(() =>
       expect(result.archivedWorkspaces.map(({ id }) => id)).toEqual(['y1'])
     );
     expect(result.workspaces).toMatchObject([{ id: 'b1', hostId: 'i9' }]);
+    expect(result.isArchivedLoading).toBe(false);
     expect(getAll.mock.calls).toEqual([
       ['i9', false],
       ['i9', true],

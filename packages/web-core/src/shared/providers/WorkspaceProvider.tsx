@@ -66,7 +66,11 @@ const EMPTY_WORKSPACE_RECORDS = {};
 
 type WorkspaceLists = Pick<
   ReturnType<typeof useUnifiedWorkspaces>,
-  'workspaces' | 'archivedWorkspaces' | 'workspaceRecordsById' | 'isLoading'
+  | 'workspaces'
+  | 'archivedWorkspaces'
+  | 'workspaceRecordsById'
+  | 'isLoading'
+  | 'isArchivedLoading'
 >;
 
 function WorkspaceProviderContent({
@@ -94,6 +98,7 @@ function WorkspaceProviderContent({
     archivedWorkspaces,
     workspaceRecordsById,
     isLoading: isLoadingList,
+    isArchivedLoading: isArchivedLoadingList,
   } = lists;
 
   const {
@@ -357,6 +362,7 @@ function WorkspaceProviderContent({
       activeWorkspaces,
       archivedWorkspaces,
       isWorkspacesListLoading: isLoadingList,
+      isArchivedWorkspacesLoading: isArchivedLoadingList,
       isLoading,
       isWorkspaceLoadError,
       isCreateMode,
@@ -380,6 +386,7 @@ function WorkspaceProviderContent({
       activeWorkspaces,
       archivedWorkspaces,
       isLoadingList,
+      isArchivedLoadingList,
       isLoading,
       isWorkspaceLoadError,
       isCreateMode,
@@ -435,11 +442,13 @@ function WorkspaceProviderWithInheritedStreams({
       archivedWorkspaces: parent.archivedWorkspaces,
       workspaceRecordsById: EMPTY_WORKSPACE_RECORDS,
       isLoading: parent.isWorkspacesListLoading,
+      isArchivedLoading: parent.isArchivedWorkspacesLoading,
     }),
     [
       parent.activeWorkspaces,
       parent.archivedWorkspaces,
       parent.isWorkspacesListLoading,
+      parent.isArchivedWorkspacesLoading,
     ]
   );
   return (

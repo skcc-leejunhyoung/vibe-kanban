@@ -33,6 +33,7 @@ import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog'
 import { getWorkspaceDefaults } from '@/shared/lib/workspaceDefaults';
 import {
   buildLinkedIssueCreateState,
+  buildLocalWorkspaceIdSet,
   buildWorkspaceCreateInitialState,
   buildWorkspaceCreatePrompt,
   resolveGithubLinkedBranchSource,
@@ -123,16 +124,18 @@ export function KanbanIssuePanelContainer({
 
   const { openWorkspaceCreateFromState } = useProjectWorkspaceCreateDraft();
   const { workspaces } = useUserContext();
-  const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
+  const { activeWorkspaces, archivedWorkspaces, isArchivedWorkspacesLoading } =
+    useWorkspaceContext();
 
   // Build set of local workspace IDs that exist on this machine
   const localWorkspaceIds = useMemo(
     () =>
-      new Set([
-        ...activeWorkspaces.map((w) => w.id),
-        ...archivedWorkspaces.map((w) => w.id),
-      ]),
-    [activeWorkspaces, archivedWorkspaces]
+      buildLocalWorkspaceIdSet(
+        activeWorkspaces,
+        archivedWorkspaces,
+        isArchivedWorkspacesLoading
+      ),
+    [activeWorkspaces, archivedWorkspaces, isArchivedWorkspacesLoading]
   );
 
   // Get data from contexts

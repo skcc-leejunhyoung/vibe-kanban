@@ -59,7 +59,8 @@ export function IssueWorkspacesSectionContainer({
     githubIssueLinks,
     isLoading: projectLoading,
   } = useProjectContext();
-  const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
+  const { activeWorkspaces, archivedWorkspaces, isArchivedWorkspacesLoading } =
+    useWorkspaceContext();
   const workspaceHostMap = useWorkspaceHostMap();
   const { membersWithProfilesById, isLoading: orgLoading } = useOrgContext();
 
@@ -165,7 +166,8 @@ export function IssueWorkspacesSectionContainer({
     );
     const localWorkspaceIds = buildLocalWorkspaceIdSet(
       activeWorkspaces,
-      archivedWorkspaces
+      archivedWorkspaces,
+      isArchivedWorkspacesLoading
     );
 
     const defaults = await getWorkspaceDefaults(
@@ -206,6 +208,7 @@ export function IssueWorkspacesSectionContainer({
     issueId,
     activeWorkspaces,
     archivedWorkspaces,
+    isArchivedWorkspacesLoading,
     workspaces,
     githubIssueLinks,
     t,

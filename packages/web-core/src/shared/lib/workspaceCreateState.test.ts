@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildLinkedIssueCreateState,
+  buildLocalWorkspaceIdSet,
   resolveGithubLinkedBranchSource,
   toDraftWorkspaceData,
 } from './workspaceCreateState';
@@ -19,6 +20,17 @@ const link = (over: Partial<Record<string, unknown>> = {}) => ({
   repository: 'skcc-ai/c2',
   github_node_id: 'I_node_1',
   ...over,
+});
+
+describe('buildLocalWorkspaceIdSet', () => {
+  it('offers no candidates until the archive is in', () => {
+    const active = [{ id: 'active' }];
+    const archived = [{ id: 'archived' }];
+    expect(buildLocalWorkspaceIdSet(active, [], true)).toEqual(new Set());
+    expect(buildLocalWorkspaceIdSet(active, archived, false)).toEqual(
+      new Set(['active', 'archived'])
+    );
+  });
 });
 
 describe('resolveGithubLinkedBranchSource', () => {

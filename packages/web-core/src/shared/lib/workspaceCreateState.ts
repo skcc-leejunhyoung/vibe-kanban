@@ -95,10 +95,18 @@ export function buildWorkspaceCreateInitialState(args: {
   };
 }
 
+/**
+ * Empty while the archive is still loading: a partial set would make
+ * `getWorkspaceDefaults` pick an older active workspace over the archived one
+ * it would pick later. With no candidates it returns no workspace-based
+ * defaults, and create mode fills them in once the full list is in.
+ */
 export function buildLocalWorkspaceIdSet(
   activeWorkspaces: LocalWorkspaceLike[],
-  archivedWorkspaces: LocalWorkspaceLike[]
+  archivedWorkspaces: LocalWorkspaceLike[],
+  isArchivedLoading: boolean
 ): Set<string> {
+  if (isArchivedLoading) return new Set();
   return new Set([
     ...activeWorkspaces.map((workspace) => workspace.id),
     ...archivedWorkspaces.map((workspace) => workspace.id),

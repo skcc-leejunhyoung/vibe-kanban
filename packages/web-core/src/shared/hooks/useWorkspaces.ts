@@ -778,7 +778,8 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
       ],
       workspaceRecordsById,
       isLoading,
-      isArchivedLoading,
+      isArchivedLoading:
+        isArchivedLoading || archivedSnapshots.loaded.includes(false),
       isConnected,
       error,
     };

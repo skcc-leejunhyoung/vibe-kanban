@@ -34,6 +34,11 @@ export interface WorkspaceContextValue {
   /** Archived workspaces for sidebar display */
   archivedWorkspaces: SidebarWorkspace[];
   isWorkspacesListLoading: boolean;
+  /**
+   * The archive loads after the active list; until then `archivedWorkspaces`
+   * may be empty even though this workspace set has archived rows.
+   */
+  isArchivedWorkspacesLoading: boolean;
   isLoading: boolean;
   isWorkspaceLoadError: boolean;
   isCreateMode: boolean;
