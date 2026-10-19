@@ -163,13 +163,18 @@ pub type ContainerLocks = Arc<RwLock<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>
 /// Serialises our git writes into one repo's checkout — vibe auto-merge,
 /// manual Merge, base pulls. Run together they race on `.git/index.lock` and
 /// the base ref, and the loser fails outright; queued, the next one sees the
-/// moved base. Keyed by the canonical repo path, so other repos never wait.
+/// moved base. Keyed by the repo's shared git dir: whichever worktree has the
+/// target checked out, and however the repo was registered, writes into it
+/// meet here, while other repos never wait.
 // ponytail: one lock per repo, not per target branch — merges into different
 // branches of one repo queue too; key on the branch's checkout if that matters.
 pub async fn lock_repo_checkout(repo_path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
     static LOCKS: OnceLock<std::sync::Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
         OnceLock::new();
-    let key = std::fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    let key = GitService::new()
+        .get_common_dir(repo_path)
+        .unwrap_or_else(|_| repo_path.to_path_buf());
+    let key = std::fs::canonicalize(&key).unwrap_or(key);
     let lock = LOCKS
         .get_or_init(Default::default)
         .lock()

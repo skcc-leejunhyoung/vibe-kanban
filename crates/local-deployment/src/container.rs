@@ -5237,8 +5237,11 @@ done
         assert_eq!(b.unwrap().0, MergeOutcome::Success);
 
         let c = task_workspace(&container, &repo, dir.path(), "c").await;
-        let _other_checkout = lock_repo_checkout(dir.path()).await;
-        let held = lock_repo_checkout(&repo_path).await;
+        git(dir.path(), &["init", "-b", "main", "other"]);
+        let _other_repo = lock_repo_checkout(&dir.path().join("other")).await;
+        // Through a worktree of the repo: still the same lock.
+        git(&repo_path, &["worktree", "add", "-b", "side", "../side"]);
+        let held = lock_repo_checkout(&dir.path().join("side")).await;
         let c = merge(c);
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!c.is_finished(), "merge must wait for the checkout");
