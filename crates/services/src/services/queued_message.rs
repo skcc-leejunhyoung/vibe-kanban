@@ -5,10 +5,16 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, mapref::entry::Entry};
-use db::models::scratch::DraftFollowUpData;
+use db::models::{scratch::DraftFollowUpData, session_queued_messages::SessionQueuedMessages};
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+use tokio::sync::mpsc;
 use ts_rs::TS;
 use uuid::Uuid;
+
+/// Why a queue restored at startup waits for the user: the turn it was queued
+/// behind died with the server, so nothing will drain it on its own.
+const RESTART_HOLD_REASON: &str = "the server restarted before it was sent";
 
 /// Represents a queued follow-up message for a session
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -38,7 +44,8 @@ pub enum QueueStatus {
     Queued { messages: Vec<QueuedMessage> },
 }
 
-/// In-memory service for managing queued follow-up messages.
+/// Service for managing queued follow-up messages: kept in memory, written
+/// behind to the DB (see [`Self::load`]) so a restart doesn't lose them.
 ///
 /// Each session owns an ordered queue (oldest at the front). Messages are
 /// drained one at a time as each terminal turn finishes, so a session can have
@@ -56,6 +63,9 @@ pub struct QueuedMessageService {
     /// session id -> live [`DrainHold`]s: processes that will drain (or
     /// discard) the queue themselves when they finish.
     drain_holds: Arc<DashMap<Uuid, usize>>,
+    /// Sessions whose queue changed, for the DB writer. `None` keeps the
+    /// queue in memory only.
+    persist: Option<mpsc::UnboundedSender<Uuid>>,
 }
 
 /// While alive, an enqueue for the session leaves its message to the holder
@@ -82,6 +92,49 @@ impl QueuedMessageService {
             queue: Arc::new(DashMap::new()),
             steering: Arc::new(DashMap::new()),
             drain_holds: Arc::new(DashMap::new()),
+            persist: None,
+        }
+    }
+
+    /// Restore the queues persisted before the last shutdown and keep writing
+    /// every change back to `pool`. A restored queue's front waits for the user
+    /// like a failed start (see [`Self::hold_front`]).
+    pub async fn load(pool: SqlitePool) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let svc = Self {
+            persist: Some(tx),
+            ..Self::new()
+        };
+        match SessionQueuedMessages::find_all(&pool).await {
+            Ok(rows) => {
+                for row in rows {
+                    match serde_json::from_str::<VecDeque<QueuedMessage>>(&row.messages) {
+                        Ok(q) if !q.is_empty() => {
+                            svc.queue.insert(row.session_id, q);
+                            svc.hold_front(row.session_id, RESTART_HOLD_REASON.to_string());
+                        }
+                        Ok(_) => {}
+                        // The row stays until the session's queue changes, and
+                        // the log keeps the text either way.
+                        Err(e) => tracing::warn!(
+                            session_id = %row.session_id,
+                            error = %e,
+                            messages = %row.messages,
+                            "Could not restore persisted queued messages"
+                        ),
+                    }
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "Failed to load persisted queued messages"),
+        }
+        tokio::spawn(write_queues(svc.queue.clone(), pool, rx));
+        svc
+    }
+
+    /// Tell the DB writer `session_id`'s queue changed. Call after the change.
+    fn changed(&self, session_id: Uuid) {
+        if let Some(tx) = &self.persist {
+            let _ = tx.send(session_id);
         }
     }
 
@@ -92,6 +145,7 @@ impl QueuedMessageService {
             .entry(session_id)
             .or_default()
             .push_back(queued.clone());
+        self.changed(session_id);
         queued
     }
 
@@ -103,16 +157,16 @@ impl QueuedMessageService {
             .entry(session_id)
             .or_default()
             .push_front(queued.clone());
+        self.changed(session_id);
         queued
     }
 
     /// Return an interrupted attempt to dequeue without changing its identity.
     pub fn requeue_front(&self, mut msg: QueuedMessage) {
         msg.start_error = None;
-        self.queue
-            .entry(msg.session_id)
-            .or_default()
-            .push_front(msg);
+        let session_id = msg.session_id;
+        self.queue.entry(session_id).or_default().push_front(msg);
+        self.changed(session_id);
     }
 
     /// Put a message that was taken off the queue but failed to start back at
@@ -121,10 +175,9 @@ impl QueuedMessageService {
     /// lost nor retried behind the user's back.
     pub fn restore_failed(&self, mut msg: QueuedMessage, error: String) {
         msg.start_error = Some(error);
-        self.queue
-            .entry(msg.session_id)
-            .or_default()
-            .push_front(msg);
+        let session_id = msg.session_id;
+        self.queue.entry(session_id).or_default().push_front(msg);
+        self.changed(session_id);
     }
 
     /// Hold the queue behind a failure that is not its front message's own
@@ -136,6 +189,8 @@ impl QueuedMessageService {
             && front.start_error.is_none()
         {
             front.start_error = Some(reason);
+            drop(q);
+            self.changed(session_id);
         }
     }
 
@@ -156,6 +211,9 @@ impl QueuedMessageService {
             .get_mut(&session_id)
             .and_then(|mut q| Self::pop_ready(&mut q));
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
+        if msg.is_some() {
+            self.changed(session_id);
+        }
         msg
     }
 
@@ -178,6 +236,9 @@ impl QueuedMessageService {
             }
         });
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
+        if msg.is_some() {
+            self.changed(session_id);
+        }
         msg
     }
 
@@ -190,12 +251,16 @@ impl QueuedMessageService {
         message_id: Uuid,
         data: DraftFollowUpData,
     ) -> Option<QueuedMessage> {
-        self.queue.get_mut(&session_id).and_then(|mut q| {
+        let updated = self.queue.get_mut(&session_id).and_then(|mut q| {
             q.iter_mut().find(|m| m.id == message_id).map(|m| {
                 m.data = data;
                 m.clone()
             })
-        })
+        });
+        if updated.is_some() {
+            self.changed(session_id);
+        }
+        updated
     }
 
     /// Cancel a single queued message by id. Returns the removed message if found.
@@ -206,6 +271,9 @@ impl QueuedMessageService {
                 .and_then(|pos| q.remove(pos))
         });
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
+        if removed.is_some() {
+            self.changed(session_id);
+        }
         removed
     }
 
@@ -222,6 +290,8 @@ impl QueuedMessageService {
         if let Some(mut msg) = q.remove(pos) {
             msg.start_error = None;
             q.push_front(msg);
+            drop(q);
+            self.changed(session_id);
             true
         } else {
             false
@@ -249,15 +319,22 @@ impl QueuedMessageService {
         // (kept in their original order because the sort is stable).
         items.sort_by_key(|m| rank.get(&m.id).copied().unwrap_or(usize::MAX));
         *q = items.iter().cloned().collect();
+        drop(q);
+        self.changed(session_id);
         items
     }
 
     /// Remove all queued messages for a session, returning them in order.
     pub fn clear_queue(&self, session_id: Uuid) -> Vec<QueuedMessage> {
-        self.queue
+        let cleared: Vec<QueuedMessage> = self
+            .queue
             .remove(&session_id)
             .map(|(_, q)| q.into_iter().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if !cleared.is_empty() {
+            self.changed(session_id);
+        }
+        cleared
     }
 
     /// Get the queued messages for a session (oldest first).
@@ -358,6 +435,39 @@ impl QueuedMessageService {
             data,
             queued_at: Utc::now(),
             start_error: None,
+        }
+    }
+}
+
+/// Write each changed session's queue as it is *now*, not as it was when it
+/// changed, so the stored copy converges on the latest state whatever order
+/// the notifications arrive in.
+// ponytail: a change in the last moment before the process dies may not be
+// written yet; flush on graceful shutdown if that window ever matters.
+async fn write_queues(
+    queue: Arc<DashMap<Uuid, VecDeque<QueuedMessage>>>,
+    pool: SqlitePool,
+    mut changed: mpsc::UnboundedReceiver<Uuid>,
+) {
+    while let Some(session_id) = changed.recv().await {
+        let messages: Vec<QueuedMessage> = queue
+            .get(&session_id)
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default();
+        let result = if messages.is_empty() {
+            SessionQueuedMessages::delete(&pool, session_id)
+                .await
+                .map_err(|e| e.to_string())
+        } else {
+            match serde_json::to_string(&messages) {
+                Ok(json) => SessionQueuedMessages::upsert(&pool, session_id, &json)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            }
+        };
+        if let Err(error) = result {
+            tracing::warn!(%session_id, %error, "Failed to persist queued messages");
         }
     }
 }
@@ -665,6 +775,69 @@ mod tests {
         assert_eq!(svc.take_steering(session), Some(msg));
         assert!(!svc.is_steering(session));
         assert_eq!(svc.take_steering(session), None);
+    }
+
+    async fn stored(pool: &SqlitePool, session: Uuid) -> Option<Vec<QueuedMessage>> {
+        // The writer runs behind the queue; wait for it to settle.
+        let mut last = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            last = SessionQueuedMessages::find_all(pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|r| r.session_id == session)
+                .map(|r| serde_json::from_str(&r.messages).unwrap());
+        }
+        last
+    }
+
+    #[tokio::test]
+    async fn queue_survives_a_restart_with_its_front_held() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let (workspace, session) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO workspaces (id, branch, name) VALUES ($1, 'vk/test', 'q')")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES ($1, $2)")
+            .bind(session)
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let before = QueuedMessageService::load(pool.clone()).await;
+        let a = before.enqueue(session, sample_data("a"));
+        let b = before.enqueue(session, sample_data("b"));
+        before.update_message(session, b.id, sample_data("b-edited"));
+        assert_eq!(stored(&pool, session).await.unwrap().len(), 2);
+        drop(before);
+
+        let after = QueuedMessageService::load(pool.clone()).await;
+        let queued = after.get_queued(session);
+        assert_eq!(
+            queued.iter().map(|m| m.id).collect::<Vec<_>>(),
+            [a.id, b.id]
+        );
+        assert_eq!(queued[1].data.message, "b-edited");
+        assert_eq!(queued[0].start_error.as_deref(), Some(RESTART_HOLD_REASON));
+        assert!(queued[1].start_error.is_none());
+        assert!(
+            !after.can_drain_now(session),
+            "restored queue waits for the user"
+        );
+
+        // "Send now" on the held front releases it; emptying deletes the row.
+        assert_eq!(after.take_steered_or_front(session, a.id).unwrap().id, a.id);
+        assert_eq!(after.take_next(session).unwrap().id, b.id);
+        assert!(stored(&pool, session).await.is_none());
     }
 
     #[test]
