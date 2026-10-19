@@ -574,6 +574,34 @@ fn prune_agent_image_cache(dir: &Path, budget_bytes: u64) -> io::Result<AgentIma
 // never deadlock session finalization (and every follow-up gated behind it).
 const FORWARDER_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 
+// Cap on each remaining output stage of a finished process (pipeline setup,
+// log normalizers, log storage) before the follow-up barrier opens. A stage
+// past it is aborted and finalization carries on: one stuck consumer must not
+// keep the session's follow-ups and queue waiting forever.
+const OUTPUT_DRAIN_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(2)
+} else {
+    Duration::from_secs(30)
+};
+
+/// Join an output task, aborting it once `deadline` passes. Abort only lands
+/// at an await point; a task stuck in synchronous work keeps its worker, but
+/// finalization stops waiting for it either way.
+async fn join_or_abort(
+    mut handle: JoinHandle<()>,
+    deadline: tokio::time::Instant,
+    exec_id: Uuid,
+    task: &str,
+) {
+    if tokio::time::timeout_at(deadline, &mut handle)
+        .await
+        .is_err()
+    {
+        handle.abort();
+        tracing::warn!(%exec_id, "{task} did not finish in time; finalizing without it");
+    }
+}
+
 // Defensive upper bound on how long a follow-up will wait for the previous
 // execution's session finalization to drain. The barrier normally opens within
 // the drain window, but a narrow stop/exit-monitor interleaving could leave an
@@ -1552,15 +1580,24 @@ impl LocalContainerService {
             // Drain the (otherwise detached) stdout/stderr forwarder into the
             // MsgStore before any post-completion step reads this process's logs
             // (turn summary, rate-limit detection, vibe cleanup-failure log).
-            container.output_pipeline.wait_until_ready(exec_id).await;
+            if tokio::time::timeout(
+                OUTPUT_DRAIN_TIMEOUT,
+                container.output_pipeline.wait_until_ready(exec_id),
+            )
+            .await
+            .is_err()
+            {
+                tracing::warn!(%exec_id, "Output pipeline never became ready; finalizing without it");
+            }
             if let Some(forwarder) = container.take_forwarder_handle(&exec_id).await {
                 let _ = tokio::time::timeout(FORWARDER_DRAIN_TIMEOUT, forwarder).await;
             }
             if let Some(msg_store) = msg_stores.read().await.get(&exec_id).cloned() {
                 msg_store.push_finished();
             }
+            let deadline = tokio::time::Instant::now() + OUTPUT_DRAIN_TIMEOUT;
             for handle in container.take_normalizer_handles(&exec_id).await {
-                let _ = handle.await;
+                join_or_abort(handle, deadline, exec_id, "Log normalizer").await;
             }
 
             // All derived metadata is now in MsgStore. Terminate and join the
@@ -1570,7 +1607,8 @@ impl LocalContainerService {
                 msg_store.push(LogMsg::StorageFinished);
             }
             if let Some(handle) = db_stream_handle {
-                let _ = handle.await;
+                let deadline = tokio::time::Instant::now() + OUTPUT_DRAIN_TIMEOUT;
+                join_or_abort(handle, deadline, exec_id, "Log storage").await;
             }
             container.output_pipeline.remove(exec_id).await;
             container
@@ -6155,6 +6193,113 @@ done
             .await
             .expect("the script's exit handler never finished")
             .unwrap();
+        assert_eq!(turn_prompts(&container, session.id).await, ["m1"]);
+        assert_eq!(
+            queue_state(&container, session.id),
+            (vec!["m1".to_string()], true)
+        );
+    }
+
+    /// Stuck output tasks cost the exit handler their cap, not the session: a
+    /// storage task blocked in synchronous work (a watcher stop spinning in a
+    /// drop), a normalizer that never ends and a pipeline never marked ready.
+    /// A send while it finishes is the route's queue case (no turn running,
+    /// drain held), and the handler still starts that message once done.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exit_handler_finishes_past_stuck_output_tasks() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+
+        let (container, session, mut workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let dir = tempfile::tempdir().unwrap();
+        let go = dir.path().join("go");
+        workspace.container_ref = Some(dir.path().to_string_lossy().into_owned());
+        let setup = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: format!("while [ ! -f '{}' ]; do sleep 0.05; done", go.display()),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::ToolInstallScript,
+                working_dir: None,
+            }),
+            None,
+        );
+        let record = container
+            .create_execution_record(
+                &workspace,
+                &session,
+                &setup,
+                &ExecutionProcessRunReason::SetupScript,
+            )
+            .await
+            .unwrap();
+        container
+            .finish_execution_spawn(&workspace, &session, &record, &setup)
+            .await
+            .unwrap();
+
+        let release = Arc::new(AtomicBool::new(false));
+        let storage = tokio::spawn({
+            let release = release.clone();
+            async move {
+                while !release.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        });
+        container.add_db_stream_handle(record.id, storage).await;
+        let normalizer = tokio::spawn(std::future::pending::<()>());
+        let normalizer_task = normalizer.abort_handle();
+        container
+            .store_normalizer_handles(record.id, vec![normalizer])
+            .await;
+        container.output_pipeline.remove(record.id).await;
+
+        std::fs::write(&go, "").unwrap();
+        let pool = &container.db.pool;
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while ExecutionProcess::has_running_non_dev_server_processes_for_session(
+                pool, session.id,
+            )
+            .await
+            .unwrap()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the script never completed");
+        assert!(container.queued_message_service.is_drain_held(session.id));
+        container
+            .queued_message_service
+            .enqueue(session.id, follow_up("m1", BaseCodingAgent::ClaudeCode));
+        assert!(
+            container
+                .drain_queue_if_idle(&session, &workspace)
+                .await
+                .unwrap()
+                .is_none(),
+            "the finishing turn's exit handler owns the queue"
+        );
+
+        let exit_handler = container
+            .take_exit_monitor_handle(&record.id)
+            .await
+            .unwrap();
+        let finished = tokio::time::timeout(Duration::from_secs(30), exit_handler).await;
+        release.store(true, Ordering::Relaxed);
+        finished
+            .expect("the exit handler waited on stuck output tasks")
+            .unwrap();
+        assert!(normalizer_task.is_finished(), "the normalizer was aborted");
+        tokio::time::timeout(
+            Duration::from_millis(10),
+            container.session_finalization.wait_until_ready(session.id),
+        )
+        .await
+        .expect("the follow-up barrier stayed closed");
         assert_eq!(turn_prompts(&container, session.id).await, ["m1"]);
         assert_eq!(
             queue_state(&container, session.id),
