@@ -21,7 +21,10 @@ use std::{
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{LazyLock, Mutex},
+    sync::{
+        LazyLock, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::SystemTime,
 };
 
@@ -107,8 +110,12 @@ const UNTRACKED_RENAME_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
 /// worktree removal if memory ever matters.
 static UNTRACKED_LINE_COUNTS: LazyLock<Mutex<LineCounts>> = LazyLock::new(Default::default);
 
-/// Path to (size, mtime, added lines).
-type LineCounts = HashMap<PathBuf, (u64, SystemTime, Option<usize>)>;
+/// Path to the stat it was counted at and its added lines.
+type LineCounts = HashMap<PathBuf, (StatKey, Option<usize>)>;
+
+/// Size, mtime and (on Unix) ctime in nanoseconds. Ctime also moves on a
+/// same-size edit within one mtime tick and on copies that keep the mtime.
+type StatKey = (u64, SystemTime, i64);
 
 /// Repository paths as raw bytes.
 type RawPaths = Vec<Vec<u8>>;
@@ -310,25 +317,30 @@ impl GitCli {
         let args = Self::apply_pathspec_filter(args, opts.path_filter.as_ref());
         let out = self.git_with_env(worktree_path, args, &index.envs)?;
         let mut entries = Self::parse_numstat(&out);
+        let paths: Vec<PathBuf> = index
+            .untracked
+            .iter()
+            .map(|path| worktree_path.join(path))
+            .collect();
         if opts.path_filter.is_none() {
-            let live: HashSet<PathBuf> = index
-                .untracked
-                .iter()
-                .map(|path| worktree_path.join(path))
-                .collect();
+            let live: HashSet<&PathBuf> = paths.iter().collect();
             UNTRACKED_LINE_COUNTS
                 .lock()
                 .unwrap()
                 .retain(|path, _| !path.starts_with(worktree_path) || live.contains(path));
         }
-        entries.extend(index.untracked.into_iter().map(|path| {
-            let additions = Self::cached_added_lines(&worktree_path.join(&path));
-            NumstatDiffEntry {
-                additions,
-                deletions: additions.map(|_| 0),
-                path,
-            }
-        }));
+        let counts = Self::added_lines_for(&paths);
+        entries.extend(
+            index
+                .untracked
+                .into_iter()
+                .zip(counts)
+                .map(|(path, additions)| NumstatDiffEntry {
+                    additions,
+                    deletions: additions.map(|_| 0),
+                    path,
+                }),
+        );
         Ok(entries)
     }
 
@@ -380,9 +392,15 @@ impl GitCli {
                         &self.changed_paths(worktree_path, None)?.1,
                     ),
                 };
-                let (staged, rest) = untracked
-                    .into_iter()
-                    .partition(|p| all || deleted.contains(p.as_slice()));
+                let (staged, rest) = untracked.into_iter().partition(|p| {
+                    (all || deleted.contains(p.as_slice()))
+                        // An untracked nested repository without commits
+                        // can't be staged, and fails the whole `git add`.
+                        && !std::fs::symlink_metadata(
+                            worktree_path.join(&*String::from_utf8_lossy(p)),
+                        )
+                        .is_ok_and(|m| m.is_dir())
+                });
                 self.add_to_index(worktree_path, &envs, staged)?;
                 untracked = rest;
             }
@@ -473,14 +491,54 @@ impl GitCli {
         })
     }
 
+    /// [`Self::cached_added_lines`] for many files. Reads are latency bound
+    /// (endpoint scanners add to every open), so a few threads cut the first
+    /// pass over a large scratch folder about threefold.
+    fn added_lines_for(paths: &[PathBuf]) -> Vec<Option<usize>> {
+        const BATCH: usize = 64;
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get().min(8))
+            .min(paths.len().div_ceil(BATCH));
+        if threads <= 1 {
+            return paths.iter().map(|p| Self::cached_added_lines(p)).collect();
+        }
+        let next = AtomicUsize::new(0);
+        let mut counts = vec![None; paths.len()];
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            let start = next.fetch_add(BATCH, Ordering::Relaxed);
+                            if start >= paths.len() {
+                                break done;
+                            }
+                            let end = (start + BATCH).min(paths.len());
+                            done.extend(paths[start..end].iter().enumerate().map(
+                                |(offset, path)| (start + offset, Self::cached_added_lines(path)),
+                            ));
+                        }
+                    })
+                })
+                .collect();
+            for worker in workers {
+                for (i, lines) in worker.join().unwrap() {
+                    counts[i] = lines;
+                }
+            }
+        });
+        counts
+    }
+
     /// [`Self::count_added_lines`] through [`UNTRACKED_LINE_COUNTS`].
     fn cached_added_lines(path: &Path) -> Option<usize> {
         let meta = std::fs::symlink_metadata(path).ok()?;
-        let Ok(mtime) = meta.modified() else {
+        let Some(key) = Self::stat_key(&meta) else {
             return Self::count_added_lines(path, &meta);
         };
-        if let Some(&(len, cached_mtime, lines)) = UNTRACKED_LINE_COUNTS.lock().unwrap().get(path)
-            && (len, cached_mtime) == (meta.len(), mtime)
+        if let Some(&(cached, lines)) = UNTRACKED_LINE_COUNTS.lock().unwrap().get(path)
+            && cached == key
         {
             return lines;
         }
@@ -488,8 +546,19 @@ impl GitCli {
         UNTRACKED_LINE_COUNTS
             .lock()
             .unwrap()
-            .insert(path.to_path_buf(), (meta.len(), mtime, lines));
+            .insert(path.to_path_buf(), (key, lines));
         lines
+    }
+
+    fn stat_key(meta: &std::fs::Metadata) -> Option<StatKey> {
+        #[cfg(unix)]
+        let ctime = {
+            use std::os::unix::fs::MetadataExt as _;
+            meta.ctime() * 1_000_000_000 + meta.ctime_nsec()
+        };
+        #[cfg(not(unix))]
+        let ctime = 0;
+        Some((meta.len(), meta.modified().ok()?, ctime))
     }
 
     /// Added-line count for an untracked file as `git diff --numstat` would
@@ -500,7 +569,8 @@ impl GitCli {
             // single line.
             return Some(1);
         }
-        if !meta.is_file() || meta.len() > crate::MAX_INLINE_DIFF_BYTES as u64 {
+        let max = crate::MAX_INLINE_DIFF_BYTES as u64;
+        if !meta.is_file() || meta.len() > max {
             return None;
         }
         let mut file = std::fs::File::open(path).ok()?;
@@ -510,7 +580,13 @@ impl GitCli {
         if buf.contains(&0) {
             return None;
         }
-        file.read_to_end(&mut buf).ok()?;
+        // The file may have grown since `meta`; never read past the cap.
+        file.take(max + 1 - buf.len() as u64)
+            .read_to_end(&mut buf)
+            .ok()?;
+        if buf.len() as u64 > max {
+            return None;
+        }
         let newlines = buf.iter().filter(|b| **b == b'\n').count();
         Some(newlines + usize::from(buf.last().is_some_and(|b| *b != b'\n')))
     }

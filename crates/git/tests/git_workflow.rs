@@ -660,4 +660,35 @@ fn worktree_diff_reports_untracked_nested_repo_without_trailing_slash() {
         s.get_diff_file_paths(&repo_path, &base).unwrap(),
         HashSet::from(["nested".to_string()])
     );
+
+    // A deletion makes untracked files rename candidates; the commitless
+    // nested repository must not be staged with them.
+    fs::remove_file(repo_path.join("a.txt")).unwrap();
+    assert_eq!(
+        s.get_diff_file_paths(&repo_path, &base).unwrap(),
+        HashSet::from(["a.txt".to_string(), "nested".to_string()])
+    );
+}
+
+#[test]
+fn worktree_diff_stats_count_many_untracked_files() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+    write_file(&repo_path, "a.txt", "a\n");
+    s.commit(&repo_path, "baseline").unwrap();
+    create_branch(&repo_path, "feature");
+
+    // Enough files to spread the line counting over several threads.
+    let mut expected = 0;
+    for i in 0..300 {
+        write_file(&repo_path, &format!("gen/{i:03}.txt"), &"x\n".repeat(i % 7));
+        expected += i % 7;
+    }
+
+    let base = s.get_base_commit(&repo_path, "feature", "main").unwrap();
+    assert_eq!(
+        s.get_diff_stats(&repo_path, &base).unwrap(),
+        (300, expected, 0)
+    );
 }
