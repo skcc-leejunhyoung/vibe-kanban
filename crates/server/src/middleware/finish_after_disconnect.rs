@@ -4,6 +4,8 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use deployment::ACCOUNT_HOST_REQUEST;
+use tracing::Instrument;
 
 /// Run the handler to completion even if the client goes away. Axum drops a
 /// handler's future when its connection closes: a send cut off between creating
@@ -12,7 +14,13 @@ use axum::{
 /// marked the turn killed without killing it. For routes that start or stop
 /// processes.
 pub async fn finish_after_disconnect(request: Request, next: Next) -> Response {
-    match tokio::spawn(next.run(request)).await {
+    // A spawned task inherits neither task-locals nor the span: carry over the
+    // account-host gate on the host's cloud session and the request's span.
+    let account_host = ACCOUNT_HOST_REQUEST
+        .try_with(|active| *active)
+        .unwrap_or(false);
+    let handler = ACCOUNT_HOST_REQUEST.scope(account_host, next.run(request));
+    match tokio::spawn(handler.in_current_span()).await {
         Ok(response) => response,
         Err(error) => {
             tracing::error!(%error, "Request handler task failed");
@@ -31,10 +39,47 @@ mod tests {
         time::Duration,
     };
 
-    use axum::{Router, middleware::from_fn, routing::post};
-    use tokio::{io::AsyncWriteExt, net::TcpStream};
+    use axum::{
+        Router,
+        extract::Request,
+        middleware::{Next, from_fn},
+        routing::post,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpStream,
+    };
 
-    use super::finish_after_disconnect;
+    use super::{ACCOUNT_HOST_REQUEST, finish_after_disconnect};
+
+    #[tokio::test]
+    async fn handler_keeps_the_account_host_gate() {
+        let route = post(|| async {
+            ACCOUNT_HOST_REQUEST
+                .try_with(|active| active.to_string())
+                .unwrap_or_default()
+        })
+        .layer(from_fn(finish_after_disconnect));
+        let app = Router::new()
+            .route("/", route)
+            .layer(from_fn(|request: Request, next: Next| {
+                ACCOUNT_HOST_REQUEST.scope(true, next.run(request))
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, app).into_future());
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(
+                b"POST / HTTP/1.1\r\nhost: test\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+        assert!(response.ends_with("\r\n\r\ntrue"), "{response}");
+    }
 
     /// Whether a slow handler still finished after its client hung up.
     async fn finished_after_client_left(detached: bool) -> bool {
