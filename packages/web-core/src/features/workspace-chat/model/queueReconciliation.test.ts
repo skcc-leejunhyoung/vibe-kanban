@@ -1,18 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import {
   QUEUE_STATUS_REFETCH_INTERVAL_MS,
+  QUEUE_STATUS_RUNNING_REFETCH_INTERVAL_MS,
   advanceQueueTracking,
   didQueueDrain,
   queueStatusRefetchInterval,
 } from './queueReconciliation';
 
 describe('queue reconciliation', () => {
-  it('polls only while a session has queued work', () => {
+  it('polls while work is queued or a turn is running', () => {
     expect(queueStatusRefetchInterval({ status: 'queued', messages: [] })).toBe(
       QUEUE_STATUS_REFETCH_INTERVAL_MS
     );
+    expect(
+      queueStatusRefetchInterval({ status: 'queued', messages: [] }, true)
+    ).toBe(QUEUE_STATUS_REFETCH_INTERVAL_MS);
     expect(queueStatusRefetchInterval({ status: 'empty' })).toBe(false);
     expect(queueStatusRefetchInterval(undefined)).toBe(false);
+  });
+
+  it('keeps checking an empty queue while a turn runs, for messages queued elsewhere', () => {
+    expect(queueStatusRefetchInterval({ status: 'empty' }, true)).toBe(
+      QUEUE_STATUS_RUNNING_REFETCH_INTERVAL_MS
+    );
+    expect(queueStatusRefetchInterval(undefined, true)).toBe(
+      QUEUE_STATUS_RUNNING_REFETCH_INTERVAL_MS
+    );
   });
 
   it('reconciles execution state when queued work leaves the queue', () => {

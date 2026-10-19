@@ -17,6 +17,8 @@ import {
 interface UseSessionQueueInteractionOptions {
   /** Session ID for queue operations */
   sessionId: string | undefined;
+  /** A turn is running, so messages can be queued behind it from elsewhere */
+  isRunning?: boolean;
   /** Reconcile execution state after the server consumes the queue. */
   onQueueConsumed?: () => void;
 }
@@ -88,6 +90,7 @@ const statusOf = (messages: QueuedMessage[]): QueueStatus =>
  */
 export function useSessionQueueInteraction({
   sessionId,
+  isRunning = false,
   onQueueConsumed,
 }: UseSessionQueueInteractionOptions): UseSessionQueueInteractionResult {
   const queryClient = useQueryClient();
@@ -108,11 +111,14 @@ export function useSessionQueueInteraction({
       queryKey: queueKey,
       queryFn: () => queueApi.getStatus(sessionId!, hostId),
       enabled: !!sessionId,
-      // Queue state is in-memory and has no push stream of its own. Poll only
-      // while work is waiting; in-document split panes share this tab's
-      // visibility, so the default (pause while hidden) is enough.
+      // Queue state is in-memory and has no push stream of its own. Poll while
+      // work is waiting, and slower while a turn runs so messages queued from
+      // another tab, device or the API show up; in-document split panes share
+      // this tab's visibility, so the default (pause while hidden) is enough.
       refetchInterval: (query) =>
-        isMutating ? false : queueStatusRefetchInterval(query.state.data),
+        isMutating
+          ? false
+          : queueStatusRefetchInterval(query.state.data, isRunning),
     });
 
   const queuedMessages = messagesOf(queueStatus);

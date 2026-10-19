@@ -1,6 +1,9 @@
 import type { QueueStatus } from 'shared/types';
 
 export const QUEUE_STATUS_REFETCH_INTERVAL_MS = 1000;
+// Slower check while a turn runs with nothing queued here: another tab,
+// device or the API can queue behind that turn, and there is no push stream.
+export const QUEUE_STATUS_RUNNING_REFETCH_INTERVAL_MS = 5000;
 
 export interface QueueTrackingState {
   sessionId: string | undefined;
@@ -8,9 +11,11 @@ export interface QueueTrackingState {
 }
 
 export function queueStatusRefetchInterval(
-  status: QueueStatus | undefined
+  status: QueueStatus | undefined,
+  isRunning = false
 ): number | false {
-  return status?.status === 'queued' ? QUEUE_STATUS_REFETCH_INTERVAL_MS : false;
+  if (status?.status === 'queued') return QUEUE_STATUS_REFETCH_INTERVAL_MS;
+  return isRunning ? QUEUE_STATUS_RUNNING_REFETCH_INTERVAL_MS : false;
 }
 
 export function didQueueDrain(

@@ -907,6 +907,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     refreshQueueStatus,
   } = useSessionQueueInteraction({
     sessionId,
+    isRunning: isAttemptRunning,
     onQueueConsumed: reconcileExecutionProcesses,
   });
 
