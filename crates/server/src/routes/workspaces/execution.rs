@@ -266,6 +266,23 @@ pub async fn stop_workspace_execution(
         Vec::new()
     };
 
+    // A stop pressed right after a send can land before the turn's row exists:
+    // cancel such starts too, not only the processes running now.
+    let stopped_sessions = match only_session {
+        Some(id) => vec![id],
+        None => Session::find_by_workspace_id(pool, workspace.id)
+            .await?
+            .into_iter()
+            .map(|session| session.id)
+            .collect(),
+    };
+    for session_id in stopped_sessions {
+        deployment
+            .container()
+            .cancel_session_starts(session_id)
+            .await;
+    }
+
     deployment
         .container()
         .try_stop(&workspace, false, only_session)

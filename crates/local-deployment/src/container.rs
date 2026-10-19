@@ -51,7 +51,9 @@ use git::{GitService, GitServiceError};
 use services::services::{
     approvals::{Approvals, executor_approvals::ExecutorApprovalBridge},
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
-    container::{ContainerError, ContainerLocks, ContainerRef, ContainerService},
+    container::{
+        ContainerError, ContainerLocks, ContainerRef, ContainerService, SessionStopSignals,
+    },
     diff_stream::{self, DiffStreamHandle},
     events::EventService,
     file::FileService,
@@ -678,6 +680,7 @@ pub struct LocalContainerService {
     workspace_touch_times: Arc<RwLock<HashMap<Uuid, Instant>>>,
     container_locks: ContainerLocks,
     session_start_locks: ContainerLocks,
+    session_stop_signals: SessionStopSignals,
     config: Arc<RwLock<Config>>,
     git: GitService,
     file_service: FileService,
@@ -756,6 +759,7 @@ impl LocalContainerService {
             workspace_touch_times,
             container_locks,
             session_start_locks,
+            session_stop_signals: Default::default(),
             config,
             git,
             file_service,
@@ -3487,6 +3491,10 @@ impl ContainerService for LocalContainerService {
         &self.session_start_locks
     }
 
+    fn session_stop_signals(&self) -> &SessionStopSignals {
+        &self.session_stop_signals
+    }
+
     async fn has_live_child(&self, execution_process_id: Uuid) -> bool {
         self.child_store
             .read()
@@ -5012,6 +5020,38 @@ done
         );
     }
 
+    #[tokio::test]
+    async fn stop_cancels_the_starts_in_flight_once_their_check_can_see_it() {
+        let (container, session, _workspace) = queue_test_container().await;
+
+        // A start creating its row holds the start lock: the stop waits, so the
+        // row it creates is there for the stop to kill.
+        let in_flight = container.watch_session_stops(session.id);
+        let creating_row = container.lock_session_start(session.id).await;
+        let stop = container.cancel_session_starts(session.id);
+        tokio::pin!(stop);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut stop)
+                .await
+                .is_err()
+        );
+        assert!(!in_flight.has_changed().unwrap());
+        drop(creating_row);
+        tokio::time::timeout(Duration::from_secs(1), stop)
+            .await
+            .expect("stop goes through once the row exists");
+        assert!(in_flight.has_changed().unwrap());
+
+        // A start that comes in after the stop is not cancelled by it.
+        let later = container.watch_session_stops(session.id);
+        assert!(!later.has_changed().unwrap());
+
+        // Settled starts leave nothing behind.
+        drop((in_flight, later));
+        let _other = container.watch_session_stops(Uuid::new_v4());
+        assert_eq!(container.session_stop_signals.lock().unwrap().len(), 1);
+    }
+
     /// Container over an in-memory DB. Built by hand rather than with `new()`
     /// so the background workspace cleanup never runs against real worktrees.
     async fn queue_test_container() -> (LocalContainerService, Session, Workspace) {
@@ -5073,6 +5113,7 @@ done
             workspace_touch_times: Default::default(),
             container_locks: Default::default(),
             session_start_locks: Default::default(),
+            session_stop_signals: Default::default(),
             notification_service: NotificationService::new(config.clone(), pool.clone(), None),
             config,
             git: GitService::new(),

@@ -84,7 +84,7 @@ export function useCreateWorkspace() {
         selectWorkspaceSession(workspace.id, hostId, session.id);
       }
       seedOptimisticProcess(execution_process);
-      return finishWorkspaceCreation(workspace, linkToIssue);
+      return { ...finishWorkspaceCreation(workspace, linkToIssue), session };
     },
     onSuccess: () => {
       // Invalidate workspace summaries so they refresh with the new workspace included

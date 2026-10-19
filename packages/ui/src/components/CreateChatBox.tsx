@@ -3,6 +3,7 @@ import {
   ArrowUpIcon,
   CheckIcon,
   PaperclipIcon,
+  StopIcon,
   XIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
@@ -71,6 +72,9 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
   agentIcon?: ReactNode;
   onSend: () => void;
   isSending: boolean;
+  /** While sending: stop the run being created (shown only when given). */
+  onStop?: () => void;
+  isStopRequested?: boolean;
   secondaryAction?: {
     value: string;
     pendingValue: string;
@@ -107,7 +111,8 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
 
 /**
  * Lightweight chat box for create mode.
- * Supports sending and attachments - no queue, stop, or feedback functionality.
+ * Supports sending, attachments and stopping the run while it is being
+ * created - no queue or feedback functionality.
  */
 function defaultExecutorLabel(executor: string) {
   return executor
@@ -122,6 +127,8 @@ export function CreateChatBox<TExecutor extends string = string>({
   agentIcon,
   onSend,
   isSending,
+  onStop,
+  isStopRequested = false,
   secondaryAction,
   disabled = false,
   executor,
@@ -315,6 +322,19 @@ export function CreateChatBox<TExecutor extends string = string>({
                   ? secondaryAction.pendingValue
                   : secondaryAction.value
               }
+            />
+          )}
+          {isSending && onStop && (
+            <ChatActionButton
+              variant="secondary"
+              icon={isStopRequested ? 'spinner' : StopIcon}
+              label={t(
+                isStopRequested
+                  ? 'tasks:conversation.actions.stopping'
+                  : 'tasks:conversation.actions.stop'
+              )}
+              onClick={onStop}
+              disabled={isStopRequested}
             />
           )}
           <ChatActionButton

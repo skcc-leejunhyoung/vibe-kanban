@@ -144,12 +144,7 @@ interface PendingSend {
   stopRequested: boolean;
   /** The real process once known (POST returned or streamed earlier). */
   process: ExecutionProcess | null;
-  /**
-   * The request returned: the agent is registered and a stop reaches it. The
-   * stream shows the row before that; a stop is then deferred to the answer.
-   * ("Send now" has no answer to wait for; it stops on adoption and relies on
-   * the server re-checking for a child registered during the stop.)
-   */
+  /** The request returned: the turn exists (queueing waits for this). */
   spawned: boolean;
   /** Kill the real process: optimistic status + session-scoped stop. */
   stopReal: (processId: string) => void;
@@ -284,6 +279,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // New-session mode: creating the session row (fast) before the first
   // message goes out as a pending follow-up.
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  // Stop pressed while that row was being created.
+  const cancelCreatingSendRef = useRef(false);
   const [handoffTarget, setHandoffTarget] = useState<BaseCodingAgent | null>(
     null
   );
@@ -487,18 +484,25 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // delivers the terminal status. Superseded by the stream; reverted if the stop
   // request fails.
   const handleStop = useCallback(async () => {
+    if (isCreatingSession) {
+      // The first message of a new session waits for the session row: don't
+      // send it (nothing has run yet, nothing else of the workspace to stop).
+      cancelCreatingSendRef.current = true;
+      return;
+    }
     const pending = sessionId ? pendingSends.get(sessionId) : undefined;
     if (pending) {
       if (pending.stopRequested) return;
       pending.stopRequested = true;
       pendingSendsChanged();
-      if (pending.spawned && pending.process) {
-        // The request has returned and the send is only finishing up: the
-        // agent is registered, so kill it right away.
-        pending.stopReal(pending.process.id);
+      if (!pending.settleOnAdopt) {
+        // Stop right away, whether or not the request has answered: the
+        // server kills the turn if its row exists (even before the agent has
+        // spawned) and otherwise cancels the start.
+        pending.stopReal(pending.process?.id ?? pending.placeholder.id);
         return;
       }
-      if (pending.settleOnAdopt && !pending.process && sessionId) {
+      if (!pending.process && sessionId) {
         // "Send now" whose turn hasn't shown up. Don't depend on a composer
         // being here to adopt it: drop the queue now (a stop does that on the
         // server anyway) so the pinned message never becomes a turn, and stop
@@ -578,6 +582,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       });
     }
   }, [
+    isCreatingSession,
     sessionId,
     workspaceId,
     hostId,
@@ -1062,8 +1067,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // The stream publishes the new row on insert, the POST only returns after
   // the spawn: adopt our process as soon as it shows up so the placeholder
-  // never sits next to it (two user bubbles). A deferred stop waits for the
-  // request's answer (`PendingSend.spawned`), except "send now", which has none.
+  // never sits next to it (two user bubbles). A stop pressed before went out
+  // at once ("send now" stops here, once its turn shows up).
   useEffect(() => {
     if (!sessionId) return;
     const pending = pendingSends.get(sessionId);
@@ -1075,7 +1080,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (pending.stopRequested && pending.settleOnAdopt) {
       pending.stopReal(arrived.id);
     } else if (pending.stopRequested) {
-      // Keep showing the stop on the real row until the answer lets it go out.
+      // The stop went out already: show it on the real row too.
       patchOptimisticProcess(arrived.id, {
         status: ExecutionProcessStatus.killed,
       });
@@ -1189,19 +1194,21 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     }
   }, [mode, activeExecutor, effectiveExecutor]);
 
-  // Stop pressed while a send is pending: kill the real process as soon as it
-  // is known, once. Ids are captured, not read from hooks, so a session switch
-  // in the meantime can't redirect the stop.
+  // Stop pressed while a send is pending: stop the session (the server kills
+  // the turn, or cancels a start that hasn't made its row yet) and show the
+  // turn `processId` stopped. `deferred.stop` settles once every stop sent has
+  // answered. Ids are captured, not read from hooks, so a session switch in
+  // the meantime can't redirect the stop.
   const createStopReal = useCallback(
     (workspaceIdForStop: string, target: string) => {
       const deferred: { stop?: Promise<void> } = {};
       const stopReal = (processId: string) => {
-        if (deferred.stop) return;
         failedStops.delete(processId);
         patchOptimisticProcess(processId, {
           status: ExecutionProcessStatus.killed,
         });
-        deferred.stop = workspacesApi
+        const earlier = deferred.stop;
+        const stop = workspacesApi
           .stop(workspaceIdForStop, hostId, target)
           .catch((error) => {
             patchOptimisticProcess(processId, {
@@ -1209,7 +1216,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
             });
             // Let a second Stop try again, and take the stop back everywhere
             // it is shown (other panes patched their own copy).
-            deferred.stop = undefined;
             const entry = pendingSends.get(target);
             if (entry?.stopReal === stopReal) entry.stopRequested = false;
             failedStops.add(processId);
@@ -1219,6 +1225,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
               message: error instanceof Error ? error.message : String(error),
             });
           });
+        deferred.stop = earlier ? earlier.then(() => stop) : stop;
       };
       return { deferred, stopReal };
     },
@@ -1307,16 +1314,18 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           pendingState.process = process;
         }
         pendingSendsChanged(); // other composers swap their copy too
+        // The stop pressed meanwhile went out already; once more now the turn
+        // surely exists, in case it reached the server ahead of this request.
         if (pendingState.stopRequested) stopReal(process.id);
         success = true;
       } catch (error) {
-        // The request can fail after the server started the agent (e.g. the
-        // relay dropped the answer); a stop asked for meanwhile still goes out.
-        // The stop is session-scoped, so it needs no process id.
+        // A stop pressed meanwhile went out already and is what made the
+        // request fail (the start was cancelled): nothing to report.
         if (pendingState.stopRequested) {
-          stopReal(pendingState.process?.id ?? placeholder.id);
+          clearError();
+        } else {
+          onFailure?.(error);
         }
-        onFailure?.(error);
       }
       settleRequest(success);
       await deferred.stop;
@@ -1341,6 +1350,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       addOptimisticProcess,
       clearOptimisticProcess,
       restorePrompt,
+      clearError,
     ]
   );
 
@@ -1430,6 +1440,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!targetSessionId) {
       // New session: create the row first (fast) and switch to it, so the
       // first message can go out as a pending follow-up and show up at once.
+      cancelCreatingSendRef.current = false;
       setIsCreatingSession(true);
       try {
         const created = await sessionsApi.create(
@@ -1449,6 +1460,12 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         );
         onSelectSession?.(created.id);
         targetSessionId = created.id;
+        if (cancelCreatingSendRef.current) {
+          // Stopped meanwhile: keep the message as the new session's draft.
+          await clearDraft();
+          restorePrompt(created.id, prompt, executorConfig);
+          return;
+        }
       } catch (error) {
         void ErrorDialog.show({
           title: t('common:error'),
@@ -1509,6 +1526,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     reviewContext,
     processes,
     runPendingSend,
+    restorePrompt,
     t,
   ]);
 

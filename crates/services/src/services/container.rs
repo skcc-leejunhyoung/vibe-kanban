@@ -160,6 +160,10 @@ pub fn assistant_message_in_store(msg_store: &MsgStore) -> Option<String> {
 /// [`ContainerService::lock_container`].
 pub type ContainerLocks = Arc<RwLock<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>;
 
+/// Per-session stop counters of starts in flight; see
+/// [`ContainerService::watch_session_stops`].
+pub type SessionStopSignals = Arc<std::sync::Mutex<HashMap<Uuid, tokio::sync::watch::Sender<u64>>>>;
+
 /// First half of a workspace start: the session and execution-process row(s),
 /// created without touching the container so a create request can answer right
 /// away with ids the UI can open. The slow part — materialising the worktree
@@ -940,6 +944,41 @@ pub trait ContainerService {
                 .clone()
         };
         lock.lock_owned().await
+    }
+
+    fn session_stop_signals(&self) -> &SessionStopSignals;
+
+    /// Subscribe as a start request comes in, before its slow part (container
+    /// check, previous-turn drain): a stop pressed meanwhile marks the receiver
+    /// changed, so the start gives up instead of creating a turn the stop
+    /// found nothing of to kill. Check it again under
+    /// [`Self::lock_session_start`] right before creating the row.
+    fn watch_session_stops(&self, session_id: Uuid) -> tokio::sync::watch::Receiver<u64> {
+        let mut signals = self
+            .session_stop_signals()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Only starts in flight need an entry.
+        signals.retain(|_, sender| sender.receiver_count() > 0);
+        signals
+            .entry(session_id)
+            .or_insert_with(|| tokio::sync::watch::channel(0).0)
+            .subscribe()
+    }
+
+    /// A user's stop: cancel the session's starts that haven't created their
+    /// row yet. Under the start lock, so a start has either created its row
+    /// already (the stop then kills it) or sees this at its check.
+    async fn cancel_session_starts(&self, session_id: Uuid) {
+        let _starting = self.lock_session_start(session_id).await;
+        if let Some(sender) = self
+            .session_stop_signals()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session_id)
+        {
+            sender.send_modify(|stops| *stops += 1);
+        }
     }
 
     /// Hold this while materialising a workspace's checkout in several steps

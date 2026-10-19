@@ -357,6 +357,9 @@ async fn follow_up_inner(
     automation_origin: Option<executors::actions::AutomationOrigin>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
     let pool = &deployment.db().pool;
+    // A stop pressed while this request is still on its way to the row
+    // cancels it (see `stopped_before_start`).
+    let mut stops = deployment.container().watch_session_stops(session.id);
 
     // Load workspace from session
     let mut workspace = Workspace::find_by_id(pool, session.workspace_id)
@@ -395,10 +398,10 @@ async fn follow_up_inner(
     // A completed process becomes visible to the UI before its final output is
     // fully drained. Wait for that drain before resolving the native session
     // metadata used to resume the agent.
-    deployment
-        .container()
-        .wait_for_session_ready(session.id)
-        .await;
+    tokio::select! {
+        () = deployment.container().wait_for_session_ready(session.id) => {}
+        Ok(()) = stops.changed() => return Err(stopped_before_start()),
+    }
 
     // Full config from the session's most recent coding-agent execution, which
     // carries the user's model / variant / reasoning / agent overrides.
@@ -512,6 +515,9 @@ async fn follow_up_inner(
     // it — the caller keeps the message (the chat puts it back to queue or
     // resend; MCP / automation get a clear error, not someone else's turn).
     let starting = deployment.container().lock_session_start(session.id).await;
+    if stops.has_changed().unwrap_or(false) {
+        return Err(stopped_before_start());
+    }
     if payload.retry_process_id.is_none()
         && (deployment
             .queued_message_service()
@@ -576,12 +582,19 @@ async fn follow_up_inner(
     Ok(ResponseJson(ApiResponse::success(execution_process)))
 }
 
+/// The user stopped the session while a start request was still on its way to
+/// the turn's row: no turn was created.
+fn stopped_before_start() -> ApiError {
+    ApiError::Conflict("Stopped before the turn started".to_string())
+}
+
 pub async fn handoff(
     Extension(mut session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateHandoffAttempt>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
     let pool = &deployment.db().pool;
+    let mut stops = deployment.container().watch_session_stops(session.id);
     let user_prompt = payload.prompt.trim();
     if user_prompt.is_empty() {
         return Err(ApiError::BadRequest(
@@ -611,10 +624,10 @@ pub async fn handoff(
         workspace = fresh;
     }
     workspace.container_ref.get_or_insert(container_ref);
-    deployment
-        .container()
-        .wait_for_session_ready(session.id)
-        .await;
+    tokio::select! {
+        () = deployment.container().wait_for_session_ready(session.id) => {}
+        Ok(()) = stops.changed() => return Err(stopped_before_start()),
+    }
 
     let latest_executor_config =
         ExecutionProcess::latest_executor_config_for_session(pool, session.id).await?;
@@ -669,14 +682,23 @@ session ID: {}. Working directory: {}.\n\nUser request:\n{}",
         cleanup_action.map(Box::new),
     );
 
+    let starting = deployment.container().lock_session_start(session.id).await;
+    if stops.has_changed().unwrap_or(false) {
+        return Err(stopped_before_start());
+    }
     let execution_process = deployment
         .container()
-        .start_execution(
+        .create_execution_record(
             &workspace,
             &session,
             &action,
             &ExecutionProcessRunReason::CodingAgent,
         )
+        .await?;
+    drop(starting);
+    deployment
+        .container()
+        .finish_execution_spawn(&workspace, &session, &execution_process, &action)
         .await?;
 
     let target = payload.executor_config.executor.to_string();

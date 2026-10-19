@@ -9,6 +9,8 @@ import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { useCreateWorkspace } from '@/shared/hooks/useCreateWorkspace';
+import { workspacesApi } from '@/shared/lib/api';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useReviewMode } from '@/shared/hooks/useReviewMode';
 import { appendReviewInstruction } from '@/shared/lib/reviewMode';
 import { useCreateAttachments } from '@/shared/hooks/useCreateAttachments';
@@ -72,6 +74,15 @@ export function CreateChatBoxContainer({
   } = useCreateMode();
 
   const { createWorkspace, createWorkspaceOnly } = useCreateWorkspace();
+  const hostId = useHostId();
+  // Stop pressed while the create request runs: the first turn is stopped as
+  // soon as it exists — before its agent spawns, which waits for the worktree.
+  const [isStopRequested, setIsStopRequested] = useState(false);
+  const stopRequestedRef = useRef(false);
+  const handleStop = useCallback(() => {
+    stopRequestedRef.current = true;
+    setIsStopRequested(true);
+  }, []);
   // Tracks whether this create surface is still on screen when the async
   // create resolves. The document pathname is no proxy for that: in the split
   // pane grid the URL mirrors the *active* pane, so clicking another pane
@@ -447,10 +458,19 @@ export function CreateChatBoxContainer({
       working_branch: workingBranch,
     };
 
+    stopRequestedRef.current = false;
+    setIsStopRequested(false);
     const result = await createWorkspace.mutateAsync({
       data,
       linkToIssue: getLinkToIssue(),
     });
+
+    if (stopRequestedRef.current && result.session) {
+      // Failing that, the turn runs and can be stopped in the workspace.
+      await workspacesApi
+        .stop(result.workspace.id, hostId, result.session.id)
+        .catch((error) => console.error('Failed to stop new workspace', error));
+    }
 
     if (result.workspace) {
       await finishWorkspaceCreated(result.workspace.id, isMountedRef.current);
@@ -467,6 +487,7 @@ export function CreateChatBoxContainer({
     getLinkToIssue,
     finishWorkspaceCreated,
     reviewMode.prReviewPayload,
+    hostId,
   ]);
 
   const handleCreateOnly = useCallback(async () => {
@@ -616,6 +637,8 @@ export function CreateChatBoxContainer({
                   }
                   onSend={handleSubmit}
                   isSending={createWorkspace.isPending}
+                  onStop={handleStop}
+                  isStopRequested={isStopRequested}
                   secondaryAction={{
                     value: t('createMode.workspaceOnly.create'),
                     pendingValue: t('createMode.workspaceOnly.creating'),
