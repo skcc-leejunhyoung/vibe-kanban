@@ -21,7 +21,7 @@ use db::{
         pending_execution_start::PendingExecutionStart,
         pending_rate_limit_resume::PendingRateLimitResume,
         repo::Repo,
-        scratch::{DraftFollowUpData, Scratch, ScratchType},
+        scratch::DraftFollowUpData,
         session::{CreateSession, Session, SessionError},
         workspace::{Workspace, WorkspaceError},
         workspace_repo::WorkspaceRepo,
@@ -1807,15 +1807,10 @@ pub trait ContainerService {
             .await;
         drop(starting);
         let started = match created {
-            Ok((record, action)) => {
-                if let Err(e) = Scratch::delete(pool, session.id, &ScratchType::DraftFollowUp).await
-                {
-                    tracing::warn!("Failed to delete scratch after consuming queued message: {e}");
-                }
-                self.finish_execution_spawn(workspace, session, &record, &action)
-                    .await
-                    .map(|()| record)
-            }
+            Ok((record, action)) => self
+                .finish_execution_spawn(workspace, session, &record, &action)
+                .await
+                .map(|()| record),
             Err(e) => Err(e),
         };
         if let Err(e) = &started {

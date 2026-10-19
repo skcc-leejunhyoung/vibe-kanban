@@ -22,7 +22,6 @@ use db::{
         merge::{Merge, MergeStatus},
         pending_rate_limit_resume::PendingRateLimitResume,
         repo::Repo,
-        scratch::{Scratch, ScratchType},
         session::{CreateSession, Session},
         session_message_index::SessionMessageIndex,
         vibe_run::VibeRun,
@@ -2250,11 +2249,6 @@ impl LocalContainerService {
                 "Steer: starting interrupting follow-up for session {}",
                 ctx.session.id
             );
-            if let Err(e) =
-                Scratch::delete(&self.db.pool, ctx.session.id, &ScratchType::DraftFollowUp).await
-            {
-                tracing::warn!("Failed to delete scratch after consuming steered message: {e}");
-            }
             match self
                 .start_queued_followup(&ctx.session, &ctx.workspace, queued_msg)
                 .await
@@ -2517,15 +2511,6 @@ impl LocalContainerService {
                 "Found queued message for session {}, starting follow-up execution",
                 ctx.session.id
             );
-
-            // Delete the scratch since we're consuming the queued message.
-            // Only meaningful for the last message; further drained messages
-            // have no scratch backing, so the delete is a harmless no-op.
-            if let Err(e) =
-                Scratch::delete(&self.db.pool, ctx.session.id, &ScratchType::DraftFollowUp).await
-            {
-                tracing::warn!("Failed to delete scratch after consuming queued message: {e}");
-            }
 
             // Execute the queued follow-up
             match self
@@ -6018,6 +6003,59 @@ done
             queue_state(&container, session.id),
             (vec!["m2".to_string(), "m3".to_string()], true)
         );
+    }
+
+    /// The composer draft is the user's next message, not a queued one:
+    /// starting a queued message (idle drain, a finished turn's next message,
+    /// a steer) leaves it alone.
+    #[tokio::test]
+    async fn starting_a_queued_message_keeps_the_composer_draft() {
+        use db::models::scratch::{Scratch, ScratchPayload, ScratchType, UpdateScratch};
+
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let pool = &container.db.pool;
+        let queue = &container.queued_message_service;
+        let draft = UpdateScratch {
+            payload: ScratchPayload::DraftFollowUp(follow_up("next", BaseCodingAgent::ClaudeCode)),
+        };
+        Scratch::update(pool, session.id, &ScratchType::DraftFollowUp, &draft)
+            .await
+            .unwrap();
+        let draft_kept = || async {
+            let kept = Scratch::find_by_id(pool, session.id, &ScratchType::DraftFollowUp)
+                .await
+                .unwrap();
+            matches!(
+                kept.map(|s| s.payload),
+                Some(ScratchPayload::DraftFollowUp(d)) if d.message == "next"
+            )
+        };
+
+        drop(finish_turn(&container, &session, &workspace, "a").await);
+        queue.enqueue(session.id, follow_up("m1", BaseCodingAgent::ClaudeCode));
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        assert_eq!(turn_prompts(&container, session.id).await, ["a", "m1"]);
+        assert!(draft_kept().await, "idle drain");
+        queue.clear_queue(session.id);
+
+        let turn = finished_turn(&session, &workspace, ExecutionProcessStatus::Completed);
+        queue.enqueue(session.id, follow_up("m2", BaseCodingAgent::ClaudeCode));
+        container
+            .finalize_with_queued_followup(&turn, false, false)
+            .await;
+        assert!(draft_kept().await, "finished turn");
+        queue.clear_queue(session.id);
+
+        let killed = finished_turn(&session, &workspace, ExecutionProcessStatus::Killed);
+        let m3 = queue.enqueue(session.id, follow_up("m3", BaseCodingAgent::ClaudeCode));
+        assert!(queue.mark_steering(session.id, m3.id));
+        container
+            .handle_execution_post_completion(&killed, None)
+            .await
+            .unwrap();
+        assert!(draft_kept().await, "steer");
     }
 
     /// A turn that fails to spawn: a queued message's start (here a finalize
