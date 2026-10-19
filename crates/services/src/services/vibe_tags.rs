@@ -10,8 +10,9 @@ use uuid::Uuid;
 
 use crate::services::remote_client::{RemoteClient, RemoteClientError};
 
-/// Color for auto-created `vibe-*` tags (a neutral slate).
-const VIBE_TAG_COLOR: &str = "#64748b";
+/// Color for auto-created `vibe-*` tags (a neutral slate, #64748b). The remote
+/// API only accepts `"H S% L%"`; hex is rejected with a 400.
+const VIBE_TAG_COLOR: &str = "215 16% 47%";
 
 /// Find a tag id by case-insensitive name. Pure.
 pub fn find_tag_id_by_name(tags: &[Tag], name: &str) -> Option<Uuid> {
@@ -128,5 +129,17 @@ mod tests {
     #[test]
     fn empty_list_is_none() {
         assert_eq!(find_tag_id_by_name(&[], "vibe"), None);
+    }
+
+    // Mirrors the remote `is_valid_hsl_color` rule.
+    #[test]
+    fn vibe_tag_color_is_remote_hsl() {
+        let parts: Vec<&str> = VIBE_TAG_COLOR.split(' ').collect();
+        assert_eq!(parts.len(), 3);
+        assert!(parts[0].parse::<u16>().is_ok_and(|h| h <= 360));
+        for p in &parts[1..] {
+            let v = p.strip_suffix('%').and_then(|v| v.parse::<u8>().ok());
+            assert!(v.is_some_and(|v| v <= 100), "{p}");
+        }
     }
 }
