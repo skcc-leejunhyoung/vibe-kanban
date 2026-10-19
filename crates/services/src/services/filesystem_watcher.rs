@@ -29,9 +29,11 @@ pub type WatcherComponents = (WatcherGuard, Receiver<DebounceEventResult>, PathB
 /// thread. Stopping a macOS FSEvents stream spins until its run loop idles,
 /// which a burst of events can postpone indefinitely, so an async worker must
 /// never do it.
-pub struct WatcherGuard(Option<Arc<Mutex<Debouncer<RecommendedWatcher, NoCache>>>>);
+pub struct WatcherGuard<W: Send + 'static = Arc<Mutex<Debouncer<RecommendedWatcher, NoCache>>>>(
+    pub(crate) Option<W>,
+);
 
-impl Drop for WatcherGuard {
+impl<W: Send + 'static> Drop for WatcherGuard<W> {
     fn drop(&mut self) {
         if let Some(debouncer) = self.0.take() {
             release_off_thread(debouncer);

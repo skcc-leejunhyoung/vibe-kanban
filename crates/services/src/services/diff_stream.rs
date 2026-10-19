@@ -472,7 +472,7 @@ impl DiffStreamManager {
                 Some((d, rx)) => (Some(d), Some(rx)),
                 None => (None, None),
             };
-        let _git_guard = git_debouncer;
+        let _git_guard = git_debouncer.map(|d| WatcherGuard(Some(d)));
 
         let mut target_interval =
             IntervalStream::new(tokio::time::interval(Duration::from_secs(1)));
