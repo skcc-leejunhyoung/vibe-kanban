@@ -17,6 +17,11 @@ export interface AskUserQuestionBannerHandle {
   confirmSelection: () => void;
 }
 
+export interface AskUserQuestionConfirmState {
+  canConfirm: boolean;
+  isLastQuestion: boolean;
+}
+
 interface AskUserQuestionBannerProps {
   questions: AskUserQuestionItem[];
   onSubmitAnswers: (answers: QuestionAnswer[]) => void;
@@ -25,6 +30,9 @@ interface AskUserQuestionBannerProps {
   error: string | null;
   /** Answers to show selected on mount (e.g. a submission the server refused). */
   initialAnswers?: QuestionAnswer[];
+  /** Drives the confirm button, which lives in the chat box footer so a long
+   *  question can't scroll it out of view. */
+  onConfirmStateChange?: (state: AskUserQuestionConfirmState) => void;
 }
 
 export const AskUserQuestionBanner = forwardRef<
@@ -38,6 +46,7 @@ export const AskUserQuestionBanner = forwardRef<
     isTimedOut,
     error,
     initialAnswers,
+    onConfirmStateChange,
   },
   ref
 ) {
@@ -76,6 +85,11 @@ export const AskUserQuestionBanner = forwardRef<
     : [];
   const isLastQuestion = currentIndex >= questions.length - 1;
   const disabled = isSubmitting || isTimedOut;
+  const canConfirm = !submitted && !disabled && currentSelection.length > 0;
+
+  useEffect(() => {
+    onConfirmStateChange?.({ canConfirm, isLastQuestion });
+  }, [onConfirmStateChange, canConfirm, isLastQuestion]);
 
   const toQuestionAnswers = useCallback(
     (rec: Record<string, string[]>): QuestionAnswer[] =>
@@ -292,19 +306,6 @@ export const AskUserQuestionBanner = forwardRef<
               );
             })}
           </div>
-          {/* Confirm current selection (Cmd+Enter) */}
-          {currentSelection.length > 0 && (
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={confirmSelection}
-              className="mt-2 rounded-md bg-brand px-3 py-1 text-xs font-medium text-white hover:bg-brand/90 transition-colors disabled:opacity-50"
-            >
-              {isLastQuestion
-                ? t('askQuestion.submitAnswers')
-                : t('askQuestion.confirmSelection')}
-            </button>
-          )}
         </div>
       )}
 

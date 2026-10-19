@@ -56,6 +56,7 @@ import { TodoProgressPopup, type TodoProgressItem } from './TodoProgressPopup';
 import {
   AskUserQuestionBanner,
   type AskUserQuestionBannerHandle,
+  type AskUserQuestionConfirmState,
 } from './AskUserQuestionBanner';
 import {
   TurnNavigationPopup,
@@ -369,6 +370,10 @@ export function SessionChatBox<TExecutor extends string = string>({
   const { t } = useTranslation('tasks');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const askQuestionBannerRef = useRef<AskUserQuestionBannerHandle>(null);
+  const [askConfirm, setAskConfirm] = useState<AskUserQuestionConfirmState>({
+    canConfirm: false,
+    isLastQuestion: true,
+  });
 
   // Determine if in feedback mode, edit mode, or approval mode
   const isInFeedbackMode = feedbackMode?.isActive ?? false;
@@ -649,7 +654,7 @@ export function SessionChatBox<TExecutor extends string = string>({
             onClick={actions.onStop}
             value={t('conversation.actions.stop')}
           />
-          {hasMessage && (
+          {hasMessage ? (
             <PrimaryButton
               onClick={() => {
                 askQuestionBannerRef.current?.submitCustomAnswer(editor.value);
@@ -658,6 +663,18 @@ export function SessionChatBox<TExecutor extends string = string>({
               disabled={askQuestionMode?.isSubmitting}
               actionIcon={askQuestionMode?.isSubmitting ? 'spinner' : undefined}
               value={t('conversation.actions.send')}
+            />
+          ) : (
+            // Confirm the banner's selection (Cmd+Enter)
+            <PrimaryButton
+              onClick={() => askQuestionBannerRef.current?.confirmSelection()}
+              disabled={!askConfirm.canConfirm}
+              actionIcon={askQuestionMode?.isSubmitting ? 'spinner' : undefined}
+              value={
+                askConfirm.isLastQuestion
+                  ? t('common:askQuestion.submitAnswers')
+                  : t('common:askQuestion.confirmSelection')
+              }
             />
           )}
         </>
@@ -833,6 +850,7 @@ export function SessionChatBox<TExecutor extends string = string>({
           isTimedOut={askQuestionMode.isTimedOut}
           error={askQuestionMode.error ?? null}
           initialAnswers={askQuestionMode.initialAnswers}
+          onConfirmStateChange={setAskConfirm}
         />
       );
     }
