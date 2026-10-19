@@ -2580,8 +2580,8 @@ mod tests {
 
         // Same content hash, new status: both the list and the bundle change.
         let status = |observer: &ArtifactObserver| {
-            let listed = observer.manifest.list.artifacts.iter();
-            let listed = { listed }.find(|artifact| artifact.id == chart).unwrap();
+            let mut listed = observer.manifest.list.artifacts.iter();
+            let listed = listed.find(|artifact| artifact.id == chart).unwrap();
             (
                 listed.status.clone(),
                 observer.manifest.bundles[&chart].artifact.status.clone(),
