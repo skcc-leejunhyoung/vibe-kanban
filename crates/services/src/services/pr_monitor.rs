@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     sync::Arc,
     time::Duration,
 };
@@ -9,19 +10,20 @@ use chrono::Utc;
 use db::{
     DBService,
     models::{
-        merge::MergeStatus,
+        merge::{MergeStatus, PullRequestInfo},
         pull_request::PullRequest,
         workspace::{Workspace, WorkspaceError},
     },
 };
 use git_host::{GitHostError, GitHostProvider, GitHostService};
-use sqlx::error::Error as SqlxError;
+use sqlx::{SqlitePool, error::Error as SqlxError};
 use thiserror::Error;
 use tokio::{
     sync::Notify,
-    time::{Instant, MissedTickBehavior, interval, timeout},
+    time::{Instant, Interval, MissedTickBehavior, interval, timeout},
 };
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 use crate::services::{
     container::ContainerService,
@@ -65,6 +67,14 @@ fn env_secs(name: &str, default: u64) -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Round timer. After a slow round it waits a full period instead of firing
+/// the missed ticks back to back.
+fn poll_timer(period: Duration) -> Interval {
+    let mut timer = interval(period);
+    timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    timer
+}
+
 /// When each unresolved PR is next due for a status probe, keyed by URL.
 ///
 /// Open PRs (and closed ones whose workspace is still active) are probed every
@@ -76,14 +86,20 @@ fn env_secs(name: &str, default: u64) -> Duration {
 struct PollSchedule {
     poll_interval: Duration,
     closed_archived_interval: Duration,
+    probe_timeout: Duration,
     next: HashMap<String, (Instant, MergeStatus)>,
 }
 
 impl PollSchedule {
-    fn new(poll_interval: Duration, closed_archived_interval: Duration) -> Self {
+    fn new(
+        poll_interval: Duration,
+        closed_archived_interval: Duration,
+        probe_timeout: Duration,
+    ) -> Self {
         Self {
             poll_interval,
             closed_archived_interval,
+            probe_timeout,
             next: HashMap::new(),
         }
     }
@@ -111,6 +127,124 @@ impl PollSchedule {
         };
         self.next
             .insert(pr_url.to_string(), (round + interval, status));
+    }
+}
+
+async fn probe_pr_status(pr_url: String) -> Result<PullRequestInfo, GitHostError> {
+    GitHostService::from_url(&pr_url)?
+        .poll_pr_status(&pr_url)
+        .await
+}
+
+/// One monitor round: probes each due unresolved (non-merged) PR once, in
+/// sequence, persists a changed status and reschedules it. Returns
+/// `(workspace_id, pr_number)` for PRs that just merged.
+async fn poll_round<F>(
+    pool: &SqlitePool,
+    schedule: &mut PollSchedule,
+    round: Instant,
+    mut probe: impl FnMut(String) -> F,
+) -> Result<Vec<(Uuid, i64)>, PrMonitorError>
+where
+    F: Future<Output = Result<PullRequestInfo, GitHostError>>,
+{
+    let prs = PullRequest::get_unresolved(pool).await?;
+    let due = schedule.due(&prs, round);
+    let mut merged = Vec::new();
+
+    if due.is_empty() {
+        debug!("No unresolved PRs due ({} unresolved)", prs.len());
+        return Ok(merged);
+    }
+
+    info!("Checking {} of {} unresolved PRs", due.len(), prs.len());
+    for pr in due {
+        let result = match timeout(schedule.probe_timeout, probe(pr.pr_url.clone())).await {
+            Ok(Ok(info)) => persist_status(pool, pr, info).await,
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => Err(PrMonitorError::Timeout(schedule.probe_timeout)),
+        };
+        // On error or timeout keep the last known status; the schedule
+        // retries it at its normal cadence.
+        let status = match result {
+            Ok(status) => status,
+            Err(e) => {
+                if e.is_environmental() {
+                    warn!(
+                        "Skipping PR #{} due to environmental error: {}",
+                        pr.pr_number, e
+                    );
+                } else {
+                    error!("Error checking PR #{}: {}", pr.pr_number, e);
+                }
+                pr.pr_status.clone()
+            }
+        };
+        if status == MergeStatus::Merged
+            && let Some(workspace_id) = pr.workspace_id
+        {
+            merged.push((workspace_id, pr.pr_number));
+        }
+        let archived = status == MergeStatus::Closed && workspace_archived(pool, pr).await;
+        schedule.probed(&pr.pr_url, status, archived, round);
+    }
+
+    Ok(merged)
+}
+
+/// Persist a probed status if it changed. Returns the PR's stored status
+/// afterwards.
+async fn persist_status(
+    pool: &SqlitePool,
+    pr: &PullRequest,
+    status: PullRequestInfo,
+) -> Result<MergeStatus, PrMonitorError> {
+    debug!(
+        "PR #{} status: {:?} (was {:?})",
+        pr.pr_number, status.status, pr.pr_status
+    );
+
+    // Ignore Unknown responses so a transient parse/API hiccup doesn't
+    // clobber a known status.
+    if matches!(&status.status, MergeStatus::Unknown) {
+        return Ok(pr.pr_status.clone());
+    }
+
+    // No change since last poll: nothing to persist or re-sync.
+    if status.status == pr.pr_status {
+        return Ok(status.status);
+    }
+
+    let merged_at = if matches!(&status.status, MergeStatus::Merged) {
+        Some(status.merged_at.unwrap_or_else(Utc::now))
+    } else {
+        None
+    };
+
+    PullRequest::update_status(
+        pool,
+        &pr.pr_url,
+        &status.status,
+        merged_at,
+        status.merge_commit_sha.clone(),
+    )
+    .await?;
+
+    info!("PR #{} status changed to {:?}", pr.pr_number, status.status);
+
+    Ok(status.status)
+}
+
+async fn workspace_archived(pool: &SqlitePool, pr: &PullRequest) -> bool {
+    let Some(workspace_id) = pr.workspace_id else {
+        return false;
+    };
+    match Workspace::find_by_id(pool, workspace_id).await {
+        Ok(workspace) => workspace.is_some_and(|workspace| workspace.archived),
+        Err(e) => {
+            warn!("Failed to load workspace {}: {}", workspace_id, e);
+            false
+        }
     }
 }
 
@@ -150,17 +284,27 @@ impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
             self.poll_interval, self.closed_archived_interval
         );
 
-        let mut interval = interval(self.poll_interval);
-        // After a slow round, wait a full period instead of firing the missed
-        // ticks back to back.
-        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        let mut schedule = PollSchedule::new(self.poll_interval, self.closed_archived_interval);
+        let mut timer = poll_timer(self.poll_interval);
+        let mut schedule = PollSchedule::new(
+            self.poll_interval,
+            self.closed_archived_interval,
+            PR_CHECK_TIMEOUT,
+        );
 
         loop {
             tokio::select! {
-                round = interval.tick() => {
-                    if let Err(e) = self.check_due_prs(&mut schedule, round).await {
-                        error!("Error checking open PRs: {}", e);
+                round = timer.tick() => {
+                    match poll_round(&self.db.pool, &mut schedule, round, probe_pr_status).await {
+                        Ok(merged) => {
+                            for (workspace_id, pr_number) in merged {
+                                if let Err(e) =
+                                    self.try_archive_workspace(workspace_id, pr_number).await
+                                {
+                                    error!("Error archiving after PR #{}: {}", pr_number, e);
+                                }
+                            }
+                        }
+                        Err(e) => error!("Error checking open PRs: {}", e),
                     }
                 }
                 _ = self.sync_notify.notified() => {
@@ -171,115 +315,10 @@ impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
         }
     }
 
-    /// Check the unresolved (non-merged) PRs that are due this round, one
-    /// probe each, in sequence.
-    async fn check_due_prs(
-        &self,
-        schedule: &mut PollSchedule,
-        round: Instant,
-    ) -> Result<(), PrMonitorError> {
-        let prs = PullRequest::get_unresolved(&self.db.pool).await?;
-        let due = schedule.due(&prs, round);
-
-        if due.is_empty() {
-            debug!("No unresolved PRs due ({} unresolved)", prs.len());
-            return Ok(());
-        }
-
-        info!("Checking {} of {} unresolved PRs", due.len(), prs.len());
-        for pr in due {
-            // On error or timeout keep the last known status; the schedule
-            // retries it at its normal cadence.
-            let status = match self.check_open_pr(pr).await {
-                Ok(status) => status,
-                Err(e) => {
-                    if e.is_environmental() {
-                        warn!(
-                            "Skipping PR #{} due to environmental error: {}",
-                            pr.pr_number, e
-                        );
-                    } else {
-                        error!("Error checking PR #{}: {}", pr.pr_number, e);
-                    }
-                    pr.pr_status.clone()
-                }
-            };
-            let archived = status == MergeStatus::Closed && self.workspace_archived(pr).await;
-            schedule.probed(&pr.pr_url, status, archived, round);
-        }
-
-        Ok(())
-    }
-
-    async fn workspace_archived(&self, pr: &PullRequest) -> bool {
-        let Some(workspace_id) = pr.workspace_id else {
-            return false;
-        };
-        match Workspace::find_by_id(&self.db.pool, workspace_id).await {
-            Ok(workspace) => workspace.is_some_and(|workspace| workspace.archived),
-            Err(e) => {
-                warn!("Failed to load workspace {}: {}", workspace_id, e);
-                false
-            }
-        }
-    }
-
-    /// Check the status of a single unresolved PR and handle state changes.
-    /// Returns the PR's stored status afterwards.
-    async fn check_open_pr(&self, pr: &PullRequest) -> Result<MergeStatus, PrMonitorError> {
-        let git_host = GitHostService::from_url(&pr.pr_url)?;
-        let status = timeout(PR_CHECK_TIMEOUT, git_host.poll_pr_status(&pr.pr_url))
-            .await
-            .map_err(|_| PrMonitorError::Timeout(PR_CHECK_TIMEOUT))??;
-
-        debug!(
-            "PR #{} status: {:?} (was {:?})",
-            pr.pr_number, status.status, pr.pr_status
-        );
-
-        // Ignore Unknown responses so a transient parse/API hiccup doesn't
-        // clobber a known status.
-        if matches!(&status.status, MergeStatus::Unknown) {
-            return Ok(pr.pr_status.clone());
-        }
-
-        // No change since last poll: nothing to persist or re-sync.
-        if status.status == pr.pr_status {
-            return Ok(status.status);
-        }
-
-        let merged_at = if matches!(&status.status, MergeStatus::Merged) {
-            Some(status.merged_at.unwrap_or_else(Utc::now))
-        } else {
-            None
-        };
-
-        PullRequest::update_status(
-            &self.db.pool,
-            &pr.pr_url,
-            &status.status,
-            merged_at,
-            status.merge_commit_sha.clone(),
-        )
-        .await?;
-
-        // If this is a workspace PR and it was merged, try to archive
-        if matches!(&status.status, MergeStatus::Merged)
-            && let Some(workspace_id) = pr.workspace_id
-        {
-            self.try_archive_workspace(workspace_id, pr.pr_number)
-                .await?;
-        }
-
-        info!("PR #{} status changed to {:?}", pr.pr_number, status.status);
-
-        Ok(status.status)
-    }
-
     /// Archive workspace if all its PRs are merged/closed
     async fn try_archive_workspace(
         &self,
-        workspace_id: uuid::Uuid,
+        workspace_id: Uuid,
         pr_number: i64,
     ) -> Result<(), PrMonitorError> {
         let Some(workspace) = Workspace::find_by_id(&self.db.pool, workspace_id).await? else {
@@ -393,84 +432,181 @@ impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
+    use sqlx::sqlite::SqlitePoolOptions;
+
     use super::*;
 
     const MINUTE: Duration = Duration::from_secs(60);
 
-    fn pr(n: i64, status: MergeStatus) -> PullRequest {
-        PullRequest {
-            id: n.to_string(),
-            workspace_id: None,
-            repo_id: None,
-            pr_url: format!("https://github.com/acme/widgets/pull/{n}"),
-            pr_number: n,
-            pr_status: status,
-            target_branch_name: "main".to_string(),
-            head_branch_name: None,
-            merged_at: None,
-            merge_commit_sha: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            synced_at: None,
-        }
+    #[derive(Clone)]
+    enum Reply {
+        Status(MergeStatus),
+        Fail,
+        Hang,
     }
 
-    /// 9 open PRs (#0-8) + 13 closed PRs of archived workspaces (#9-21).
-    fn fixture() -> Vec<PullRequest> {
-        (0..22)
-            .map(|n| {
-                pr(
-                    n,
-                    if n < 9 {
-                        MergeStatus::Open
-                    } else {
-                        MergeStatus::Closed
-                    },
-                )
-            })
-            .collect()
+    fn url(n: i64) -> String {
+        format!("https://github.com/acme/widgets/pull/{n}")
     }
 
-    /// One monitor round against a fake host: mirrors `check_due_prs`, with
-    /// `prs` as the stored rows. `host` returns the probed status (`None` =
-    /// error/timeout). Every closed PR counts as archived. Returns the
-    /// probed PR numbers.
-    fn round(
-        schedule: &mut PollSchedule,
-        prs: &mut Vec<PullRequest>,
-        now: Instant,
-        mut host: impl FnMut(&PullRequest) -> Option<MergeStatus>,
-    ) -> Vec<i64> {
-        prs.retain(|pr| pr.pr_status != MergeStatus::Merged);
-        let due: Vec<PullRequest> = schedule.due(prs, now).into_iter().cloned().collect();
-        for pr in &due {
-            let status = host(pr)
-                .filter(|status| *status != MergeStatus::Unknown)
-                .unwrap_or_else(|| pr.pr_status.clone());
-            if let Some(row) = prs.iter_mut().find(|row| row.pr_url == pr.pr_url) {
-                row.pr_status = status.clone();
+    /// In-memory DB rows + a fake git host answering status probes.
+    struct Fixture {
+        pool: SqlitePool,
+        schedule: PollSchedule,
+        start: Instant,
+        host: RefCell<HashMap<String, Reply>>,
+        calls: RefCell<Vec<i64>>,
+    }
+
+    impl Fixture {
+        /// 9 open PRs (#0-8, active workspaces) + 13 closed PRs of archived
+        /// workspaces (#9-21); the host agrees with the stored statuses.
+        async fn new(probe_timeout: Duration) -> Self {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap();
+            sqlx::raw_sql(
+                "CREATE TABLE pull_requests (
+                    id TEXT PRIMARY KEY NOT NULL, workspace_id BLOB, repo_id BLOB,
+                    pr_url TEXT NOT NULL UNIQUE, pr_number INTEGER NOT NULL,
+                    pr_status TEXT NOT NULL, target_branch_name TEXT NOT NULL,
+                    head_branch_name TEXT, merged_at TEXT, merge_commit_sha TEXT,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    synced_at DATETIME
+                );
+                CREATE TABLE workspaces (
+                    id BLOB PRIMARY KEY, task_id BLOB, container_ref TEXT,
+                    branch TEXT NOT NULL, setup_completed_at TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    archived INTEGER NOT NULL, pinned INTEGER NOT NULL,
+                    name TEXT, worktree_deleted INTEGER NOT NULL,
+                    ephemeral INTEGER NOT NULL, in_place INTEGER NOT NULL,
+                    cleanup_blocked_reason TEXT, status_note TEXT, status_updated_at TEXT
+                );",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let fixture = Self {
+                pool,
+                schedule: PollSchedule::new(MINUTE, 10 * MINUTE, probe_timeout),
+                start: Instant::now(),
+                host: RefCell::new(HashMap::new()),
+                calls: RefCell::new(Vec::new()),
+            };
+            for n in 0..22 {
+                let status = if n < 9 {
+                    MergeStatus::Open
+                } else {
+                    MergeStatus::Closed
+                };
+                fixture.add_pr(n, status, n >= 9).await;
             }
-            schedule.probed(&pr.pr_url, status, true, now);
+            fixture
         }
-        due.iter().map(|pr| pr.pr_number).collect()
+
+        async fn add_pr(&self, n: i64, status: MergeStatus, archived: bool) -> Uuid {
+            let workspace_id = Uuid::new_v4();
+            let now = Utc::now();
+            sqlx::query(
+                "INSERT INTO workspaces (id, branch, created_at, updated_at, archived, pinned,
+                    worktree_deleted, ephemeral, in_place)
+                 VALUES (?, 'vk/test', ?, ?, ?, 0, 0, 0, 0)",
+            )
+            .bind(workspace_id)
+            .bind(now)
+            .bind(now)
+            .bind(archived)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+            PullRequest::create_for_workspace(
+                &self.pool,
+                workspace_id,
+                Uuid::new_v4(),
+                "main",
+                n,
+                &url(n),
+                None,
+            )
+            .await
+            .unwrap();
+            if status != MergeStatus::Open {
+                self.store(n, status.clone()).await;
+            }
+            self.reply(n, Reply::Status(status));
+            workspace_id
+        }
+
+        fn reply(&self, n: i64, reply: Reply) {
+            self.host.borrow_mut().insert(url(n), reply);
+        }
+
+        /// Writes the stored status directly, like a manual refresh/re-link.
+        async fn store(&self, n: i64, status: MergeStatus) {
+            PullRequest::update_status(&self.pool, &url(n), &status, None, None)
+                .await
+                .unwrap();
+        }
+
+        async fn stored(&self, n: i64) -> PullRequest {
+            PullRequest::find_by_url(&self.pool, &url(n))
+                .await
+                .unwrap()
+                .unwrap()
+        }
+
+        /// Runs the round ticked `minutes` after start. Returns the probed PR
+        /// numbers and the merged `(workspace_id, pr_number)` list.
+        async fn round(&mut self, minutes: u32) -> (Vec<i64>, Vec<(Uuid, i64)>) {
+            self.calls.borrow_mut().clear();
+            let (host, calls) = (&self.host, &self.calls);
+            let merged = poll_round(
+                &self.pool,
+                &mut self.schedule,
+                self.start + minutes * MINUTE,
+                |pr_url: String| {
+                    let n = pr_url.rsplit('/').next().unwrap().parse().unwrap();
+                    calls.borrow_mut().push(n);
+                    let reply = host.borrow()[&pr_url].clone();
+                    async move {
+                        match reply {
+                            Reply::Status(status) => Ok(PullRequestInfo {
+                                number: n,
+                                url: pr_url,
+                                status,
+                                merged_at: None,
+                                merge_commit_sha: Some("deadbeef".to_string()),
+                            }),
+                            Reply::Fail => Err(GitHostError::PullRequest(
+                                "net/http: TLS handshake timeout".to_string(),
+                            )),
+                            Reply::Hang => std::future::pending().await,
+                        }
+                    }
+                },
+            )
+            .await
+            .unwrap();
+            (self.calls.borrow().clone(), merged)
+        }
     }
 
-    #[test]
-    fn ten_minutes_poll_open_prs_every_minute_and_closed_archived_once() {
-        let mut schedule = PollSchedule::new(MINUTE, 10 * MINUTE);
-        let mut prs = fixture();
-        let start = Instant::now();
-
-        let initial = round(&mut schedule, &mut prs, start, |pr| {
-            Some(pr.pr_status.clone())
-        });
+    #[tokio::test]
+    async fn ten_minutes_poll_open_prs_every_minute_and_closed_archived_once() {
+        let mut fx = Fixture::new(PR_CHECK_TIMEOUT).await;
+        let (initial, _) = fx.round(0).await;
         assert_eq!(initial.len(), 22);
 
         let (mut open, mut closed) = (0, 0);
         for minute in 1..=10 {
-            let probed = round(&mut schedule, &mut prs, start + minute * MINUTE, |pr| {
-                Some(pr.pr_status.clone())
-            });
+            let (probed, merged) = fx.round(minute).await;
+            assert!(merged.is_empty());
             let unique: HashSet<_> = probed.iter().collect();
             assert_eq!(unique.len(), probed.len(), "duplicate probe in a round");
             open += probed.iter().filter(|n| **n < 9).count();
@@ -481,99 +617,109 @@ mod tests {
         assert_eq!((open, closed), (90, 13));
     }
 
-    #[test]
-    fn failed_probes_retry_at_normal_cadence_and_recover() {
-        let mut schedule = PollSchedule::new(MINUTE, 10 * MINUTE);
-        let mut prs = fixture();
-        let start = Instant::now();
-        round(&mut schedule, &mut prs, start, |pr| {
-            Some(pr.pr_status.clone())
-        });
+    #[tokio::test]
+    async fn merged_pr_is_persisted_reported_for_archive_and_dropped() {
+        let mut fx = Fixture::new(PR_CHECK_TIMEOUT).await;
+        let workspace_id = fx.add_pr(22, MergeStatus::Open, false).await;
+        fx.round(0).await;
 
-        // TLS errors / timeouts for minutes 1-3: one probe per open PR per
-        // round, closed PRs untouched, stored statuses kept.
+        fx.reply(22, Reply::Status(MergeStatus::Merged));
+        let (_, merged) = fx.round(1).await;
+        assert_eq!(merged, vec![(workspace_id, 22)]);
+        let stored = fx.stored(22).await;
+        assert_eq!(stored.pr_status, MergeStatus::Merged);
+        assert!(stored.merged_at.is_some());
+        assert_eq!(stored.merge_commit_sha.as_deref(), Some("deadbeef"));
+        assert!(
+            stored.synced_at.is_none(),
+            "change must be queued for cloud sync"
+        );
+
+        let (probed, _) = fx.round(2).await;
+        assert!(!probed.contains(&22));
+    }
+
+    #[tokio::test]
+    async fn failures_and_timeouts_neither_retry_nor_burst_and_recover() {
+        let mut fx = Fixture::new(Duration::from_millis(50)).await;
+        fx.round(0).await;
+
+        // TLS errors for every open PR, and #1 hangs until the probe timeout.
+        for n in 0..9 {
+            fx.reply(n, Reply::Fail);
+        }
+        fx.reply(1, Reply::Hang);
         for minute in 1..=3 {
-            let probed = round(&mut schedule, &mut prs, start + minute * MINUTE, |_| None);
+            let (probed, _) = fx.round(minute).await;
             assert_eq!(probed, (0..9).collect::<Vec<_>>());
         }
-        assert!(prs[..9].iter().all(|pr| pr.pr_status == MergeStatus::Open));
+        for n in 0..9 {
+            assert_eq!(fx.stored(n).await.pr_status, MergeStatus::Open);
+        }
 
-        // Recovery: no catch-up burst, and #0's merge lands.
-        let probed = round(&mut schedule, &mut prs, start + 4 * MINUTE, |pr| {
-            Some(if pr.pr_number == 0 {
-                MergeStatus::Merged
-            } else {
-                pr.pr_status.clone()
-            })
-        });
-        assert_eq!(probed.len(), 9);
-        assert_eq!(prs[0].pr_status, MergeStatus::Merged);
-
-        // A merged PR leaves the monitor.
-        let probed = round(&mut schedule, &mut prs, start + 5 * MINUTE, |pr| {
-            Some(pr.pr_status.clone())
-        });
-        assert_eq!(probed, (1..9).collect::<Vec<_>>());
+        // Recovery: one probe per open PR (no catch-up), and #2's close lands.
+        for n in 0..9 {
+            fx.reply(n, Reply::Status(MergeStatus::Open));
+        }
+        fx.reply(2, Reply::Status(MergeStatus::Closed));
+        let (probed, _) = fx.round(4).await;
+        assert_eq!(probed, (0..9).collect::<Vec<_>>());
+        assert_eq!(fx.stored(2).await.pr_status, MergeStatus::Closed);
     }
 
-    #[test]
-    fn unknown_response_keeps_stored_status() {
-        let mut schedule = PollSchedule::new(MINUTE, 10 * MINUTE);
-        let mut prs = fixture();
-        round(&mut schedule, &mut prs, Instant::now(), |_| {
-            Some(MergeStatus::Unknown)
-        });
-        let statuses = |prs: &[PullRequest]| -> Vec<MergeStatus> {
-            prs.iter().map(|pr| pr.pr_status.clone()).collect()
-        };
-        assert_eq!(statuses(&prs), statuses(&fixture()));
+    #[tokio::test]
+    async fn unknown_response_keeps_stored_status() {
+        let mut fx = Fixture::new(PR_CHECK_TIMEOUT).await;
+        fx.reply(0, Reply::Status(MergeStatus::Unknown));
+        fx.reply(9, Reply::Status(MergeStatus::Unknown));
+        fx.round(0).await;
+        assert_eq!(fx.stored(0).await.pr_status, MergeStatus::Open);
+        assert_eq!(fx.stored(9).await.pr_status, MergeStatus::Closed);
     }
 
-    #[test]
-    fn reopened_closed_pr_is_caught_by_slow_poll_or_manual_refresh() {
-        let start = Instant::now();
-        let reopened = |pr: &PullRequest| {
-            Some(if pr.pr_number == 9 {
-                MergeStatus::Open
-            } else {
-                pr.pr_status.clone()
-            })
-        };
-
+    #[tokio::test]
+    async fn reopened_closed_pr_is_caught_by_slow_poll_or_manual_refresh() {
         // Without a manual refresh: detected by the 10-minute probe, then
         // polled every minute.
-        let mut schedule = PollSchedule::new(MINUTE, 10 * MINUTE);
-        let mut prs = fixture();
-        round(&mut schedule, &mut prs, start, |pr| {
-            Some(pr.pr_status.clone())
-        });
+        let mut fx = Fixture::new(PR_CHECK_TIMEOUT).await;
+        fx.round(0).await;
+        fx.reply(9, Reply::Status(MergeStatus::Open));
         for minute in 1..=9 {
-            let probed = round(&mut schedule, &mut prs, start + minute * MINUTE, reopened);
-            assert!(!probed.contains(&9));
+            assert!(!fx.round(minute).await.0.contains(&9));
         }
-        let probed = round(&mut schedule, &mut prs, start + 10 * MINUTE, reopened);
-        assert!(probed.contains(&9));
-        assert_eq!(prs[9].pr_status, MergeStatus::Open);
-        let probed = round(&mut schedule, &mut prs, start + 11 * MINUTE, reopened);
-        assert!(probed.contains(&9));
+        assert!(fx.round(10).await.0.contains(&9));
+        assert_eq!(fx.stored(9).await.pr_status, MergeStatus::Open);
+        assert!(fx.round(11).await.0.contains(&9));
 
         // A manual refresh that stores `open` makes it due on the next round.
-        let mut schedule = PollSchedule::new(MINUTE, 10 * MINUTE);
-        let mut prs = fixture();
-        round(&mut schedule, &mut prs, start, |pr| {
-            Some(pr.pr_status.clone())
-        });
-        prs[9].pr_status = MergeStatus::Open;
-        let probed = round(&mut schedule, &mut prs, start + MINUTE, reopened);
-        assert!(probed.contains(&9));
+        let mut fx = Fixture::new(PR_CHECK_TIMEOUT).await;
+        fx.round(0).await;
+        fx.reply(10, Reply::Status(MergeStatus::Open));
+        fx.store(10, MergeStatus::Open).await;
+        assert!(fx.round(1).await.0.contains(&10));
     }
 
-    #[test]
-    fn closed_pr_of_active_workspace_keeps_regular_cadence() {
-        let mut schedule = PollSchedule::new(MINUTE, 10 * MINUTE);
-        let closed = vec![pr(1, MergeStatus::Closed)];
-        let start = Instant::now();
-        schedule.probed(&closed[0].pr_url, MergeStatus::Closed, false, start);
-        assert_eq!(schedule.due(&closed, start + MINUTE).len(), 1);
+    #[tokio::test]
+    async fn closed_pr_of_active_workspace_keeps_regular_cadence() {
+        let mut fx = Fixture::new(PR_CHECK_TIMEOUT).await;
+        fx.add_pr(22, MergeStatus::Closed, false).await;
+        fx.round(0).await;
+        assert!(fx.round(1).await.0.contains(&22));
+    }
+
+    #[tokio::test]
+    async fn poll_timer_skips_missed_ticks_after_a_slow_round() {
+        let period = Duration::from_millis(40);
+        let mut timer = poll_timer(period);
+        timer.tick().await;
+        // A slow round spanning several periods.
+        tokio::time::sleep(period * 4).await;
+        timer.tick().await;
+        let started = Instant::now();
+        timer.tick().await;
+        assert!(
+            started.elapsed() >= period / 2,
+            "missed ticks fired back to back"
+        );
     }
 }
