@@ -168,16 +168,17 @@ async fn worktree_diff_stats(
     })
 }
 
+const DIFF_STATS_MAX_AGE: Duration = Duration::from_secs(120);
+
 /// Per-worktree diff stats for the workspace summaries poll, keyed by the
 /// branch tips that pin the merge-base. A gitignore-aware filesystem watcher
 /// marks an entry dirty, so a hit costs two ref lookups instead of the
 /// merge-base walk plus `git status` and diff.
 ///
-/// ponytail: changes the watcher can't see stay cached until the next visible
-/// edit or branch move: force-added files under ignored paths, edits to
-/// `.git/info/exclude` or global excludes, and Linux dirs left unwatched once
-/// inotify's watch limit runs out. Add a background max-age revalidation if
-/// those start to matter.
+/// ponytail: changes the watcher can't see (force-added files under ignored
+/// paths, `.git/info/exclude` or global excludes, dirs that arrive populated,
+/// Linux dirs past inotify's watch limit) stay cached up to
+/// `DIFF_STATS_MAX_AGE`. Shorten it if that lag starts to matter.
 #[derive(Default)]
 pub struct DiffStatsCache {
     entries: std::sync::Mutex<HashMap<PathBuf, Arc<DiffStatsCacheEntry>>>,
@@ -248,7 +249,9 @@ impl DiffStatsCache {
             // A run that finished while this poll waited, or a watched
             // worktree with no change since.
             && (cached.finished_at >= arrived
-                || (state.watcher.is_some() && !entry.dirty.load(Ordering::SeqCst)))
+                || (state.watcher.is_some()
+                    && !entry.dirty.load(Ordering::SeqCst)
+                    && cached.finished_at.elapsed() < DIFF_STATS_MAX_AGE))
         {
             return Some(cached.stats.clone());
         }
