@@ -6,7 +6,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use db::{
@@ -19,7 +19,7 @@ use git::{Commit, GitService, GitServiceError, compute_line_change_counts};
 use json_patch::Patch;
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{
-    DebounceEventResult, DebouncedEvent, Debouncer, RecommendedCache, new_debouncer,
+    DebounceEventResult, DebouncedEvent, Debouncer, NoCache, RecommendedCache, new_debouncer,
 };
 use sqlx::SqlitePool;
 use thiserror::Error;
@@ -31,7 +31,7 @@ use uuid::Uuid;
 use crate::services::filesystem_watcher::{self, FilesystemWatcherError};
 
 type SentFileStats = Arc<std::sync::RwLock<HashMap<String, (SystemTime, u64)>>>;
-type WatcherGuard = Arc<std::sync::Mutex<Debouncer<RecommendedWatcher, RecommendedCache>>>;
+type WatcherGuard = Arc<std::sync::Mutex<Debouncer<RecommendedWatcher, NoCache>>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct DiffStats {
@@ -76,12 +76,7 @@ async fn compute_diff_stats_inner(
     let mut stats = DiffStats::default();
 
     for repo_with_branch in workspace_repos {
-        // In-place ("quick chat") workspaces run in the repo root itself.
-        let worktree_path = if workspace.in_place {
-            PathBuf::from(container_ref)
-        } else {
-            PathBuf::from(container_ref).join(&repo_with_branch.repo.name)
-        };
+        let worktree_path = PathBuf::from(container_ref).join(&repo_with_branch.repo.name);
         // A removed worktree would only fail after the merge-base walk.
         if !tokio::fs::try_exists(&worktree_path).await.unwrap_or(false) {
             // Its watcher may be dead (inotify); a recreated one needs a new one.
@@ -173,6 +168,12 @@ async fn worktree_diff_stats(
 /// branch tips that pin the merge-base. A gitignore-aware filesystem watcher
 /// marks an entry dirty, so a hit costs two ref lookups instead of the
 /// merge-base walk plus `git status` and diff.
+///
+/// ponytail: changes the watcher can't see stay cached until the next visible
+/// edit or branch move: force-added files under ignored paths, edits to
+/// `.git/info/exclude` or global excludes, and Linux dirs left unwatched once
+/// inotify's watch limit runs out. Add a background max-age revalidation if
+/// those start to matter.
 #[derive(Default)]
 pub struct DiffStatsCache {
     entries: std::sync::Mutex<HashMap<PathBuf, Arc<DiffStatsCacheEntry>>>,
@@ -184,6 +185,8 @@ pub struct DiffStatsCache {
 #[derive(Default)]
 struct DiffStatsCacheEntry {
     dirty: Arc<AtomicBool>,
+    /// A `.gitignore` changed, so the watcher's ignore rules are stale.
+    rewatch: Arc<AtomicBool>,
     setup_started: AtomicBool,
     /// Held across the computation so concurrent polls compute once.
     state: tokio::sync::Mutex<DiffStatsCacheState>,
@@ -191,9 +194,15 @@ struct DiffStatsCacheEntry {
 
 #[derive(Default)]
 struct DiffStatsCacheState {
-    /// Until the watcher is up nothing is cached (computes every time).
+    /// Until the watcher is up only in-flight results are shared.
     watcher: Option<WatcherGuard>,
-    cached: Option<(String, DiffStats)>,
+    cached: Option<CachedDiffStats>,
+}
+
+struct CachedDiffStats {
+    key: String,
+    stats: DiffStats,
+    finished_at: Instant,
 }
 
 impl DiffStatsCache {
@@ -207,6 +216,7 @@ impl DiffStatsCache {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Option<DiffStats>>,
     {
+        let arrived = Instant::now();
         let entry = self
             .entries
             .lock()
@@ -214,6 +224,12 @@ impl DiffStatsCache {
             .entry(worktree_path.to_path_buf())
             .or_default()
             .clone();
+        let mut state = entry.state.lock().await;
+
+        if entry.rewatch.swap(false, Ordering::SeqCst) {
+            state.watcher = None;
+            entry.setup_started.store(false, Ordering::SeqCst);
+        }
         if !entry.setup_started.swap(true, Ordering::SeqCst) {
             // Polls never wait for the watcher.
             tokio::spawn(start_watching(
@@ -223,21 +239,24 @@ impl DiffStatsCache {
             ));
         }
 
-        let mut state = entry.state.lock().await;
-        if !entry.dirty.load(Ordering::SeqCst)
-            && let Some((cached_key, stats)) = &state.cached
-            && *cached_key == key
+        if let Some(cached) = &state.cached
+            && cached.key == key
+            // A run that finished while this poll waited, or a watched
+            // worktree with no change since.
+            && (cached.finished_at >= arrived
+                || (state.watcher.is_some() && !entry.dirty.load(Ordering::SeqCst)))
         {
-            return Some(stats.clone());
+            return Some(cached.stats.clone());
         }
 
         // Clear before computing so edits made during the run re-dirty it.
         entry.dirty.store(false, Ordering::SeqCst);
         let stats = compute().await;
-        state.cached = match &stats {
-            Some(stats) if state.watcher.is_some() => Some((key, stats.clone())),
-            _ => None,
-        };
+        state.cached = stats.clone().map(|stats| CachedDiffStats {
+            key,
+            stats,
+            finished_at: Instant::now(),
+        });
         stats
     }
 
@@ -253,25 +272,42 @@ async fn start_watching(
     setup_turn: Arc<tokio::sync::Mutex<()>>,
 ) {
     let _turn = setup_turn.lock().await;
-    let watcher = watch_for_changes(&worktree_path, &entry.dirty).await;
-    if watcher.is_none() {
+    let watcher = watch_for_changes(&worktree_path, &entry.dirty, &entry.rewatch).await;
+    let mut state = entry.state.lock().await;
+    match watcher {
+        Some(watcher) => {
+            state.watcher = Some(watcher);
+            // Earlier results were computed unwatched.
+            entry.dirty.store(true, Ordering::SeqCst);
+        }
         // Retry on a later poll.
-        entry.setup_started.store(false, Ordering::SeqCst);
+        None => entry.setup_started.store(false, Ordering::SeqCst),
     }
-    entry.state.lock().await.watcher = watcher;
 }
 
-async fn watch_for_changes(worktree_path: &Path, dirty: &Arc<AtomicBool>) -> Option<WatcherGuard> {
+async fn watch_for_changes(
+    worktree_path: &Path,
+    dirty: &Arc<AtomicBool>,
+    rewatch: &Arc<AtomicBool>,
+) -> Option<WatcherGuard> {
     let root = worktree_path.to_path_buf();
     let (debouncer, mut rx, _) =
         tokio::task::spawn_blocking(move || filesystem_watcher::async_watcher(root))
             .await
             .ok()?
             .ok()?;
-    let dirty = dirty.clone();
+    let (dirty, rewatch) = (dirty.clone(), rewatch.clone());
     // Ends when the entry (and so the debouncer feeding `rx`) is dropped.
     tokio::spawn(async move {
-        while rx.next().await.is_some() {
+        while let Some(events) = rx.next().await {
+            if events
+                .iter()
+                .flatten()
+                .flat_map(|event| &event.paths)
+                .any(|path| path.file_name().is_some_and(|name| name == ".gitignore"))
+            {
+                rewatch.store(true, Ordering::SeqCst);
+            }
             dirty.store(true, Ordering::SeqCst);
         }
     });
@@ -1223,6 +1259,78 @@ mod tests {
         assert_eq!(runs.load(Ordering::SeqCst), before);
     }
 
+    /// Polls through the cache until `files_changed` reaches `expected`.
+    async fn wait_for_files_changed(
+        cache: &DiffStatsCache,
+        repo_path: &Path,
+        worktree_path: &Path,
+        runs: &AtomicUsize,
+        expected: usize,
+    ) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let stats = cached_stats(cache, repo_path, worktree_path, runs).await;
+            if stats.files_changed == expected {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "stuck at {} files, expected {expected}",
+                stats.files_changed
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Atomic writes rename an ignored temp file over a tracked one; the
+    /// watcher reports that as one event naming both paths.
+    #[tokio::test]
+    async fn diff_stats_cache_sees_renames_from_ignored_paths() {
+        let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
+        std::fs::write(worktree_path.join(".gitignore"), "*.tmp\n").unwrap();
+        let cache = DiffStatsCache::default();
+        let runs = AtomicUsize::new(0);
+        settle(&cache, &repo_path, &worktree_path, &runs).await;
+        wait_for_files_changed(&cache, &repo_path, &worktree_path, &runs, 1).await;
+
+        std::fs::write(worktree_path.join("a.tmp"), "rewritten\n").unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        std::fs::rename(worktree_path.join("a.tmp"), worktree_path.join("a.txt")).unwrap();
+        wait_for_files_changed(&cache, &repo_path, &worktree_path, &runs, 2).await;
+    }
+
+    #[tokio::test]
+    async fn diff_stats_cache_sees_tracked_files_moved_into_ignored_paths() {
+        let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
+        std::fs::write(worktree_path.join(".gitignore"), "*.tmp\n").unwrap();
+        let cache = DiffStatsCache::default();
+        let runs = AtomicUsize::new(0);
+        settle(&cache, &repo_path, &worktree_path, &runs).await;
+        wait_for_files_changed(&cache, &repo_path, &worktree_path, &runs, 1).await;
+
+        std::fs::rename(worktree_path.join("a.txt"), worktree_path.join("a.tmp")).unwrap();
+        wait_for_files_changed(&cache, &repo_path, &worktree_path, &runs, 2).await;
+    }
+
+    #[tokio::test]
+    async fn diff_stats_cache_follows_gitignore_edits() {
+        let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
+        std::fs::write(worktree_path.join(".gitignore"), "build/\n").unwrap();
+        std::fs::create_dir(worktree_path.join("build")).unwrap();
+        let cache = DiffStatsCache::default();
+        let runs = AtomicUsize::new(0);
+        settle(&cache, &repo_path, &worktree_path, &runs).await;
+        wait_for_files_changed(&cache, &repo_path, &worktree_path, &runs, 1).await;
+
+        // Un-ignore build/, let that edit land, then write into it.
+        std::fs::write(worktree_path.join(".gitignore"), "dist/\n").unwrap();
+        wait_for_files_changed(&cache, &repo_path, &worktree_path, &runs, 1).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        cached_stats(&cache, &repo_path, &worktree_path, &runs).await;
+        std::fs::write(worktree_path.join("build/new.txt"), "now tracked\n").unwrap();
+        wait_for_files_changed(&cache, &repo_path, &worktree_path, &runs, 2).await;
+    }
+
     #[tokio::test]
     async fn diff_stats_cache_misses_when_a_branch_moves_and_computes_once() {
         let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
@@ -1241,6 +1349,20 @@ mod tests {
             cached_stats(&cache, &repo_path, &worktree_path, &runs),
         );
         assert_eq!(runs.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[tokio::test]
+    async fn diff_stats_cache_shares_runs_before_the_watcher_is_up() {
+        let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
+        let cache = DiffStatsCache::default();
+        let runs = AtomicUsize::new(0);
+
+        tokio::join!(
+            cached_stats(&cache, &repo_path, &worktree_path, &runs),
+            cached_stats(&cache, &repo_path, &worktree_path, &runs),
+            cached_stats(&cache, &repo_path, &worktree_path, &runs),
+        );
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

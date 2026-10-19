@@ -18,13 +18,13 @@ use notify::{
     event::{EventKind, ModifyKind, RenameMode},
 };
 use notify_debouncer_full::{
-    DebounceEventResult, DebouncedEvent, Debouncer, RecommendedCache, new_debouncer,
+    DebounceEventResult, DebouncedEvent, Debouncer, NoCache, new_debouncer_opt,
 };
 use thiserror::Error;
 use utils::path::ALWAYS_SKIP_DIRS;
 
 pub type WatcherComponents = (
-    Arc<Mutex<Debouncer<RecommendedWatcher, RecommendedCache>>>,
+    Arc<Mutex<Debouncer<RecommendedWatcher, NoCache>>>,
     Receiver<DebounceEventResult>,
     PathBuf,
 );
@@ -204,11 +204,12 @@ fn debounced_should_forward(event: &DebouncedEvent, gi: &Gitignore, canonical_ro
         // Ignore access events
         return false;
     }
-    // We can check its paths field to determine if the event should be forwarded
+    // A rename names both ends; it matters if either side is not ignored
+    // (an ignored temp file renamed over a tracked one, or the reverse).
     event
         .paths
         .iter()
-        .all(|path| path_allowed(path, gi, canonical_root))
+        .any(|path| path_allowed(path, gi, canonical_root))
 }
 
 /// Represents a directory to watch with its recursive mode.
@@ -462,7 +463,7 @@ fn determine_watch_mode(path: &Path, gi: &Gitignore, canonical_root: &Path) -> R
 
 /// Add a watch for a newly created directory
 fn add_directory_watch(
-    debouncer: &mut Debouncer<RecommendedWatcher, RecommendedCache>,
+    debouncer: &mut Debouncer<RecommendedWatcher, NoCache>,
     watched_dirs: &mut WatchedDirs,
     dir_path: &Path,
     gi: &Gitignore,
@@ -497,7 +498,7 @@ fn add_directory_watch(
 
 /// Remove a watch for a deleted directory
 fn remove_directory_watch(
-    debouncer: &mut Debouncer<RecommendedWatcher, RecommendedCache>,
+    debouncer: &mut Debouncer<RecommendedWatcher, NoCache>,
     watched_dirs: &mut WatchedDirs,
     dir_path: &Path,
 ) {
@@ -558,7 +559,11 @@ fn async_watcher_with_policy(
     let gi_clone = gi_set.clone();
     let root_for_task = canonical_root.clone();
 
-    let debouncer_unwrapped = new_debouncer(
+    // No file-id cache (Linux already runs without one): on macOS it stitches
+    // a rename into its destination alone, so `a.txt` renamed to an ignored
+    // `a.tmp` never reported `a.txt` leaving. It also walked every watched
+    // file on setup.
+    let debouncer_unwrapped = new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
         Duration::from_millis(200),
         None,
         move |res: DebounceEventResult| {
@@ -577,6 +582,8 @@ fn async_watcher_with_policy(
                 }
             }
         },
+        NoCache::new(),
+        notify::Config::default(),
     )?;
 
     let debouncer = Arc::new(Mutex::new(debouncer_unwrapped));
