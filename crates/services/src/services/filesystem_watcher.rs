@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock, mpsc},
     time::Duration,
 };
 
@@ -23,11 +23,39 @@ use notify_debouncer_full::{
 use thiserror::Error;
 use utils::path::ALWAYS_SKIP_DIRS;
 
-pub type WatcherComponents = (
-    Arc<Mutex<Debouncer<RecommendedWatcher, NoCache>>>,
-    Receiver<DebounceEventResult>,
-    PathBuf,
-);
+pub type WatcherComponents = (WatcherGuard, Receiver<DebounceEventResult>, PathBuf);
+
+/// Keeps a watcher running; dropping it releases the watcher off the caller's
+/// thread. Stopping a macOS FSEvents stream spins until its run loop idles,
+/// which a burst of events can postpone indefinitely, so an async worker must
+/// never do it.
+pub struct WatcherGuard(Option<Arc<Mutex<Debouncer<RecommendedWatcher, NoCache>>>>);
+
+impl Drop for WatcherGuard {
+    fn drop(&mut self) {
+        if let Some(debouncer) = self.0.take() {
+            release_off_thread(debouncer);
+        }
+    }
+}
+
+/// Drop `value` on the shared release thread without waiting for it.
+// ponytail: one thread for every release, so stuck stops can't pile up
+// threads; a stop stuck behind an endless burst delays later releases (never
+// their callers). Per-release threads if that delay ever matters.
+fn release_off_thread<T: Send + 'static>(value: T) {
+    static RELEASER: OnceLock<mpsc::Sender<Box<dyn Send>>> = OnceLock::new();
+    let releaser = RELEASER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Box<dyn Send>>();
+        std::thread::Builder::new()
+            .name("watcher-release".into())
+            .spawn(move || rx.into_iter().for_each(drop))
+            .expect("failed to spawn the watcher release thread");
+        tx
+    });
+    // Fails only if a drop panicked the thread; the value then drops here.
+    let _ = releaser.send(Box::new(value));
+}
 
 #[derive(Debug, Error)]
 pub enum FilesystemWatcherError {
@@ -759,7 +787,7 @@ fn async_watcher_with_policy(
         }
     });
 
-    Ok((debouncer, filtered_rx, canonical_root))
+    Ok((WatcherGuard(Some(debouncer)), filtered_rx, canonical_root))
 }
 
 #[cfg(test)]
@@ -800,5 +828,24 @@ mod tests {
             std::time::Instant::now(),
         );
         assert!(debounced_should_forward(&rescan, &gi, tmp.path()));
+    }
+
+    #[test]
+    fn release_never_waits_for_a_stuck_stop() {
+        struct Stuck(mpsc::Receiver<()>, mpsc::Sender<()>);
+        impl Drop for Stuck {
+            fn drop(&mut self) {
+                let _ = self.0.recv();
+                let _ = self.1.send(());
+            }
+        }
+        let (unblock, blocked) = mpsc::channel();
+        let (dropped_tx, dropped) = mpsc::channel();
+        let started = std::time::Instant::now();
+        release_off_thread(Stuck(blocked, dropped_tx));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(dropped.recv_timeout(Duration::from_millis(100)).is_err());
+        unblock.send(()).unwrap();
+        dropped.recv_timeout(Duration::from_secs(5)).unwrap();
     }
 }

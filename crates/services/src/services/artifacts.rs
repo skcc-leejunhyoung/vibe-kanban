@@ -1505,6 +1505,8 @@ impl ArtifactObserver {
             }
             self.manifest.list.complete = true;
             self.dirty = true;
+            // Stops on the release thread: the log storage task awaiting this
+            // tick must not wait for an FSEvents stream to wind down.
             self.watcher.take();
         }
         self.persist().await
@@ -1846,6 +1848,48 @@ mod tests {
         assert!(resource(&converted, "image/png").is_some());
         let saved = load(session, execution).await.unwrap().unwrap();
         assert!(resource(&saved.bundles[&id], "image/png").is_some());
+        tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn completing_returns_promptly_while_files_keep_changing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let session = Uuid::new_v4();
+        let mut observer = ArtifactObserver::start(
+            root.clone(),
+            root.clone(),
+            Uuid::new_v4(),
+            session,
+            Uuid::new_v4(),
+            FileService::new(pool).unwrap(),
+        )
+        .await
+        .unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = std::thread::spawn({
+            let stop = stop.clone();
+            move || {
+                let mut index = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let dir = root.join(format!("burst/{}", index % 50));
+                    std::fs::create_dir_all(&dir).unwrap();
+                    std::fs::write(dir.join(format!("{index}.txt")), "x").unwrap();
+                    index += 1;
+                }
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let finished = tokio::time::timeout(Duration::from_secs(5), observer.tick(true)).await;
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+        finished
+            .expect("completion waited for the watcher to stop")
+            .unwrap();
+        assert!(observer.watcher.is_none());
         tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
             .await
             .unwrap();

@@ -19,7 +19,7 @@ use git::{Commit, GitService, GitServiceError, compute_line_change_counts};
 use json_patch::Patch;
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{
-    DebounceEventResult, DebouncedEvent, Debouncer, NoCache, RecommendedCache, new_debouncer,
+    DebounceEventResult, DebouncedEvent, Debouncer, RecommendedCache, new_debouncer,
 };
 use sqlx::SqlitePool;
 use thiserror::Error;
@@ -28,10 +28,9 @@ use tokio_stream::wrappers::{IntervalStream, ReceiverStream};
 use utils::{diff::Diff, log_msg::LogMsg};
 use uuid::Uuid;
 
-use crate::services::filesystem_watcher::{self, FilesystemWatcherError};
+use crate::services::filesystem_watcher::{self, FilesystemWatcherError, WatcherGuard};
 
 type SentFileStats = Arc<std::sync::RwLock<HashMap<String, (SystemTime, u64)>>>;
-type WatcherGuard = Arc<std::sync::Mutex<Debouncer<RecommendedWatcher, NoCache>>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct DiffStats {
