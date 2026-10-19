@@ -692,3 +692,46 @@ fn worktree_diff_stats_count_many_untracked_files() {
         (300, expected, 0)
     );
 }
+
+#[test]
+fn worktree_diff_lists_untracked_file_matched_by_a_tracked_path_once() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+    write_file(&repo_path, "foo", "a\n");
+    write_file(&repo_path, "app/[id]/page.tsx", "a\n");
+    s.commit(&repo_path, "baseline").unwrap();
+    create_branch(&repo_path, "feature");
+
+    // Staging the tracked `foo` takes the files now under it, and the glob
+    // `[id]` takes `app/i/page.tsx`. Past the rename budget neither is staged
+    // as an untracked file, so each must still be listed once.
+    fs::remove_file(repo_path.join("foo")).unwrap();
+    write_file(&repo_path, "foo/bar.txt", "b\n");
+    write_file(&repo_path, "app/[id]/page.tsx", "a\nb\n");
+    write_file(&repo_path, "app/i/page.tsx", "c\n");
+    fs::File::create(repo_path.join("big.bin"))
+        .unwrap()
+        .set_len(17 * 1024 * 1024)
+        .unwrap();
+
+    let base = s.get_base_commit(&repo_path, "feature", "main").unwrap();
+    let mut paths: Vec<_> = s
+        .get_diffs(&repo_path, &base, None)
+        .unwrap()
+        .into_iter()
+        .map(|d| GitService::diff_path(&d))
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        [
+            "app/[id]/page.tsx",
+            "app/i/page.tsx",
+            "big.bin",
+            "foo",
+            "foo/bar.txt"
+        ]
+    );
+    assert_eq!(s.get_diff_stats(&repo_path, &base).unwrap(), (5, 3, 1));
+}

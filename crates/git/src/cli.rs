@@ -430,8 +430,9 @@ impl GitCli {
             .into_iter()
             .flat_map(|e| std::iter::once(e.path).chain(e.orig_path))
             .collect();
-        // `git rm --cached` leaves a path both staged-deleted and untracked;
-        // staging it as tracked already covers the file on disk.
+        // `git rm --cached` leaves a path both staged-deleted and untracked,
+        // and a tracked file replaced by a directory stages the files under
+        // it; staging the tracked path already covers those.
         let tracked_set: HashSet<&[u8]> = tracked.iter().map(Vec::as_slice).collect();
         let untracked = untracked
             .into_iter()
@@ -443,31 +444,36 @@ impl GitCli {
                     .map(<[u8]>::to_vec)
                     .unwrap_or(e.path)
             })
-            .filter(|p| !tracked_set.contains(p.as_slice()))
+            .filter(|p| {
+                !(0..=p.len())
+                    .filter(|&i| i == p.len() || p[i] == b'/')
+                    .any(|i| tracked_set.contains(&p[..i]))
+            })
             .collect();
         Ok((tracked, untracked))
     }
 
     /// Stage paths into the temp index named by `envs`. Explicit paths are
     /// faster than `git add -A` for large repos, and raw paths avoid lossy
-    /// UTF-8 conversions for odd filenames.
+    /// UTF-8 conversions for odd filenames. They are literal, so a name like
+    /// `[id]` doesn't glob-match (and stage) untracked files.
     fn add_to_index(
         &self,
         worktree_path: &Path,
         envs: &[(OsString, OsString)],
-        mut paths: Vec<Vec<u8>>,
+        paths: Vec<Vec<u8>>,
     ) -> Result<(), GitCliError> {
         if paths.is_empty() {
             return Ok(());
         }
-        paths.extend(
-            Self::get_default_pathspec_excludes()
-                .iter()
-                .map(|s| s.as_encoded_bytes().to_vec()),
-        );
         let mut input = Vec::new();
         for p in paths {
+            input.extend_from_slice(b":(literal)");
             input.extend_from_slice(&p);
+            input.push(0);
+        }
+        for p in Self::get_default_pathspec_excludes() {
+            input.extend_from_slice(p.as_encoded_bytes());
             input.push(0);
         }
         let args = ["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"];
