@@ -36,17 +36,25 @@ const POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// Best-effort: failures are logged but not raised — the rebase still runs
 /// against whatever sha the local ref already points to.
 async fn refresh_main_repo_base(main_repo_path: &Path, base_branch: &str) {
-    let _checkout = lock_repo_checkout(main_repo_path).await;
-    let out = Command::new("git")
+    // Fetch outside the checkout lock: a stalled network must not hold up
+    // every merge into this repo. Only the fast-forward writes the checkout.
+    let mut out = Command::new("git")
         .arg("-C")
         .arg(main_repo_path)
-        .arg("pull")
-        .arg("--ff-only")
-        .arg("origin")
-        .arg(base_branch)
+        .args(["fetch", "origin", base_branch])
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await;
+    if matches!(&out, Ok(o) if o.status.success()) {
+        let _checkout = lock_repo_checkout(main_repo_path).await;
+        out = Command::new("git")
+            .arg("-C")
+            .arg(main_repo_path)
+            .args(["merge", "--ff-only", &format!("origin/{base_branch}")])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .await;
+    }
     match out {
         Ok(o) if o.status.success() => {
             tracing::info!(
