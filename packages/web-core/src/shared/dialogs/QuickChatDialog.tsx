@@ -113,6 +113,9 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     null
   );
   const [submitting, setSubmitting] = useState(false);
+  // Stop pressed while the request runs: stop the first turn once it exists.
+  const [isStopRequested, setIsStopRequested] = useState(false);
+  const stopRequestedRef = useRef(false);
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
@@ -316,6 +319,8 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     if (!repo || !executorConfig || !prompt.trim()) return;
     setSubmitting(true);
     setError(null);
+    stopRequestedRef.current = false;
+    setIsStopRequested(false);
     try {
       const { workspace, session, execution_process } =
         await workspacesApi.quickChat(
@@ -338,6 +343,14 @@ const QuickChatDialogImpl = create<NoProps>(() => {
         selectWorkspaceSession(workspace.id, selectedHostId, session.id);
       }
       seedOptimisticProcess(execution_process);
+      if (stopRequestedRef.current && session) {
+        // Failing that, the turn runs and can be stopped in the chat.
+        await workspacesApi
+          .stop(workspace.id, selectedHostId, session.id)
+          .catch((stopError) =>
+            console.error('Failed to stop quick chat', stopError)
+          );
+      }
       // Sent: the draft is now the workspace's first message, so drop it.
       setPrompt('');
       clearAttachments();
@@ -518,6 +531,11 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           }
           onSend={handleSend}
           isSending={submitting}
+          onStop={() => {
+            stopRequestedRef.current = true;
+            setIsStopRequested(true);
+          }}
+          isStopRequested={isStopRequested}
           disabled={!repo || !effectiveExecutor}
           executor={{
             selected: effectiveExecutor,

@@ -2348,6 +2348,10 @@ pub trait ContainerService {
                 .write()
                 .await
                 .remove(&execution_process.id);
+            // Close the artifact list, or it reads as an interrupted run.
+            if let Some(observer) = &mut artifact_observer {
+                let _ = observer.tick(true).await;
+            }
             return Ok(());
         }
 
