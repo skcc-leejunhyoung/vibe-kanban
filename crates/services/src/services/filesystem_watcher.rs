@@ -206,10 +206,12 @@ fn debounced_should_forward(event: &DebouncedEvent, gi: &Gitignore, canonical_ro
     }
     // A rename names both ends; it matters if either side is not ignored
     // (an ignored temp file renamed over a tracked one, or the reverse).
-    event
-        .paths
-        .iter()
-        .any(|path| path_allowed(path, gi, canonical_root))
+    // Rescans (inotify queue overflow) carry no paths but mean events were lost.
+    event.need_rescan()
+        || event
+            .paths
+            .iter()
+            .any(|path| path_allowed(path, gi, canonical_root))
 }
 
 /// Represents a directory to watch with its recursive mode.
@@ -780,5 +782,16 @@ mod tests {
         assert!(!ignored("other/deep/only-here"));
         assert!(ignored("other/deep/build/out.js"));
         assert!(!ignored("build/out.js"));
+    }
+
+    #[test]
+    fn pathless_rescans_are_forwarded() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let gi = build_gitignore_set(tmp.path()).unwrap();
+        let rescan = DebouncedEvent::new(
+            notify::Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan),
+            std::time::Instant::now(),
+        );
+        assert!(debounced_should_forward(&rescan, &gi, tmp.path()));
     }
 }

@@ -271,8 +271,12 @@ async fn start_watching(
     worktree_path: PathBuf,
     setup_turn: Arc<tokio::sync::Mutex<()>>,
 ) {
-    let _turn = setup_turn.lock().await;
-    let watcher = watch_for_changes(&worktree_path, &entry.dirty, &entry.rewatch).await;
+    let watcher = {
+        let _turn = setup_turn.lock().await;
+        watch_for_changes(&worktree_path, &entry.dirty, &entry.rewatch).await
+    };
+    // Turn released first: this waits out an in-flight computation, which
+    // must not stall other worktrees' setups.
     let mut state = entry.state.lock().await;
     match watcher {
         Some(watcher) => {
