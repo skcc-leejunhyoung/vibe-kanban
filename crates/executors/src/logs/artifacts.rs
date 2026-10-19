@@ -16,7 +16,7 @@ pub enum ArtifactStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 pub struct ArtifactReference {
     pub id: String,
     pub execution_id: String,
@@ -44,14 +44,14 @@ pub struct ArtifactList {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 pub struct ArtifactResource {
     pub path: String,
     pub mime: String,
     pub content_hash: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 pub struct ArtifactBundle {
     pub artifact: ArtifactReference,
     /// Workspace-relative base for inline static dependencies (never a file permission).

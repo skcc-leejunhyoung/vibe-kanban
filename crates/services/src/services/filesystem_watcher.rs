@@ -516,7 +516,7 @@ fn remove_directory_watch(
 pub fn async_watcher(root: PathBuf) -> Result<WatcherComponents, FilesystemWatcherError> {
     let canonical_root = canonicalize_lossy(&root);
     let gi_set = build_gitignore_set(&canonical_root)?;
-    async_watcher_with_policy(canonical_root, gi_set, true)
+    async_watcher_with_policy(canonical_root, gi_set, true, Arc::default())
 }
 
 /// Artifact discovery includes ignored output, but never installs watches in
@@ -537,19 +537,25 @@ pub const ARTIFACT_SKIP_DIRS: &[&str] = &[
     ".pytest_cache",
 ];
 
-pub fn artifact_watcher(root: PathBuf) -> Result<WatcherComponents, FilesystemWatcherError> {
+/// The flag is set when a burst drops events, which then name no paths.
+pub fn artifact_watcher(
+    root: PathBuf,
+) -> Result<(WatcherComponents, Arc<std::sync::atomic::AtomicBool>), FilesystemWatcherError> {
     let root = dunce::canonicalize(root)?;
     let mut builder = GitignoreBuilder::new(&root);
     for name in ARTIFACT_SKIP_DIRS {
         builder.add_line(None, &format!("{name}/"))?;
     }
-    async_watcher_with_policy(root, builder.build()?, false)
+    let dropped = Arc::default();
+    async_watcher_with_policy(root, builder.build()?, false, Arc::clone(&dropped))
+        .map(|watcher| (watcher, dropped))
 }
 
 fn async_watcher_with_policy(
     canonical_root: PathBuf,
     gi_set: Gitignore,
     respect_gitignore: bool,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<WatcherComponents, FilesystemWatcherError> {
     let gi_set = Arc::new(gi_set);
     // NOTE: changes to .gitignore aren’t picked up until the watcher is rebuilt.
@@ -574,12 +580,13 @@ fn async_watcher_with_policy(
                     raw_tx.send(res).await.ok();
                 });
             } else if let Err(error) = raw_tx.try_send(res) {
-                // Artifact observers reconcile the baseline at exit. Never let
-                // a burst block the native watcher thread (and its Drop/join)
-                // while a cancelled execution is releasing its receiver.
+                // Artifact observers refresh every output after a drop. Never
+                // let a burst block the native watcher thread (and its
+                // Drop/join) while a cancelled execution releases its receiver.
                 if error.is_full() {
+                    dropped.store(true, std::sync::atomic::Ordering::Relaxed);
                     tracing::warn!(
-                        "Artifact watcher burst exceeded the live event buffer; final scan will reconcile files"
+                        "Artifact watcher burst exceeded the live event buffer; next tick refreshes every artifact"
                     );
                 }
             }

@@ -1,10 +1,14 @@
 //! Execution-owned discovery and immutable snapshots. The sidecar is the source
 //! of truth; JsonPatch persistence and a mounted chat/diff view are not required.
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::OpenOptions,
     io::Read,
     path::{Component, Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -51,12 +55,45 @@ struct Stamp {
     modified: Option<SystemTime>,
 }
 
+/// Work done by an observer, so tests can show what a tick actually touched.
+#[cfg(test)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct IoCounts {
+    events: usize,
+    snapshots: usize,
+    bundles: usize,
+    writes: usize,
+}
+
 fn stamp(path: &Path) -> Option<Stamp> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     metadata.is_file().then(|| Stamp {
         len: metadata.len(),
         modified: metadata.modified().ok(),
     })
+}
+
+/// Paths whose events can change a dependency, even one that does not exist
+/// yet: as written (a symlink may be replaced) and as resolved.
+fn dependency_paths(path: &Path) -> Vec<PathBuf> {
+    let mut written = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                written.pop();
+            }
+            Component::CurDir => {}
+            component => written.push(component),
+        }
+    }
+    let resolved = dunce::canonicalize(&written).ok().or_else(|| {
+        let parent = dunce::canonicalize(written.parent()?).ok()?;
+        Some(parent.join(written.file_name()?))
+    });
+    match resolved {
+        Some(resolved) if resolved != written => vec![written, resolved],
+        _ => vec![written],
+    }
 }
 
 pub fn directory(session_id: Uuid, execution_id: Uuid) -> PathBuf {
@@ -496,7 +533,12 @@ pub struct ArtifactObserver {
     working_dir: PathBuf,
     destination: PathBuf,
     pending: HashSet<PathBuf>,
-    watcher: Option<WatcherComponents>,
+    /// Artifact IDs to rebundle on the next tick.
+    stale: HashSet<String>,
+    /// Paths each bundle was built from, so unrelated events cost nothing.
+    dependencies: HashMap<String, Vec<PathBuf>>,
+    /// The flag is set when the watcher dropped events.
+    watcher: Option<(WatcherComponents, Arc<AtomicBool>)>,
     manifest: ArtifactManifest,
     file_service: FileService,
     stored_hashes: HashSet<String>,
@@ -507,6 +549,8 @@ pub struct ArtifactObserver {
     subagent_handle: Option<SubagentLiveHandle>,
     codex: Option<Codex>,
     agent_session_id: Option<String>,
+    #[cfg(test)]
+    io: IoCounts,
 }
 
 impl ArtifactObserver {
@@ -535,6 +579,8 @@ impl ArtifactObserver {
             working_dir,
             watcher: watcher.ok(),
             pending: HashSet::new(),
+            stale: HashSet::new(),
+            dependencies: HashMap::new(),
             destination: directory(session_id, execution_id),
             file_service,
             manifest: ArtifactManifest {
@@ -558,6 +604,8 @@ impl ArtifactObserver {
             subagent_handle: None,
             codex: None,
             agent_session_id: None,
+            #[cfg(test)]
+            io: IoCounts::default(),
         };
         observer.persist().await?;
         Ok(observer)
@@ -682,6 +730,8 @@ impl ArtifactObserver {
             working_dir,
             watcher: None,
             pending: HashSet::new(),
+            stale: HashSet::new(),
+            dependencies: HashMap::new(),
             destination: directory(manifest.session_id, manifest.execution_id),
             file_service,
             manifest,
@@ -693,6 +743,8 @@ impl ArtifactObserver {
             subagent_handle: None,
             codex: None,
             agent_session_id: None,
+            #[cfg(test)]
+            io: IoCounts::default(),
         };
         tokio::fs::create_dir_all(&observer.destination).await?;
         // Count all previous versions, including blobs no longer referenced by
@@ -963,9 +1015,9 @@ impl ArtifactObserver {
                         error: stored.err().map(|e| e.to_string()).or_else(|| (self.recovery && scope.is_some()).then(|| "Original execution content was not preserved; recovered from the currently available subagent transcript".into())),
                     };
                     self.manifest.list.artifacts.retain(|a| a.id != id);
-                    self.manifest.list.artifacts.push(artifact.clone());
-                    let bundle = self.bundle_resources(artifact).await;
-                    self.manifest.bundles.insert(id, bundle);
+                    self.manifest.list.artifacts.push(artifact);
+                    // The tick bundles it once, together with file changes.
+                    self.stale.insert(id);
                     self.dirty = true;
                 }
                 ArtifactCandidate::Url(url) => {
@@ -1014,12 +1066,15 @@ impl ArtifactObserver {
                 scope,
                 [(index, entry)],
             ) {
-                if let Some(index) = artifact.source_entry {
-                    self.manifest
+                if let Some(index) = artifact.source_entry
+                    && self
+                        .manifest
                         .transcripts
                         .entry(scope.to_string())
                         .or_default()
-                        .insert(artifact.id, index);
+                        .insert(artifact.id, index)
+                        != Some(index)
+                {
                     self.dirty = true;
                 }
             }
@@ -1058,6 +1113,10 @@ impl ArtifactObserver {
     }
 
     async fn snapshot(&mut self, path: &Path) -> Result<(String, u32)> {
+        #[cfg(test)]
+        {
+            self.io.snapshots += 1;
+        }
         let root = self.root.clone();
         let source = path.to_path_buf();
         let bytes = tokio::task::spawn_blocking(move || read_stable(&root, &source)).await??;
@@ -1095,6 +1154,11 @@ impl ArtifactObserver {
     }
 
     async fn bundle_resources(&mut self, artifact: ArtifactReference) -> ArtifactBundle {
+        #[cfg(test)]
+        {
+            self.io.bundles += 1;
+        }
+        self.dependencies.remove(&artifact.id);
         let source_name = artifact.path.clone().unwrap_or_else(|| {
             self.working_dir
                 .strip_prefix(&self.root)
@@ -1177,6 +1241,7 @@ impl ArtifactObserver {
         }
         let mut queue = vec![(source_name.clone(), hash.clone(), 0)];
         let mut visited = HashSet::from([source_name]);
+        let mut dependencies = Vec::new();
         let mut bytes = artifact.size_bytes as u64;
         while let Some((name, hash, depth)) = queue.pop() {
             let Ok(text) = tokio::fs::read_to_string(self.destination.join(hash)).await else {
@@ -1202,6 +1267,7 @@ impl ArtifactObserver {
                     .root
                     .join(Path::new(&name).parent().unwrap_or(Path::new("")))
                     .join(&reference);
+                dependencies.extend(dependency_paths(&path));
                 let path = match dunce::canonicalize(&path) {
                     Ok(path) if path.starts_with(&self.root) => path,
                     _ => {
@@ -1268,28 +1334,54 @@ impl ArtifactObserver {
         }
         bundle.warnings.sort();
         bundle.warnings.dedup();
+        self.dependencies.insert(artifact.id, dependencies);
         bundle
     }
 
     pub async fn tick(&mut self, complete: bool) -> Result<()> {
         self.collect_subagents(complete).await;
-        let mut changed = Vec::new();
-        if let Some((_, receiver, _)) = &mut self.watcher {
+        let mut changed = HashSet::new();
+        // Rescans, pathless events, watcher errors and dropped bursts may hide
+        // any change, so they refresh every output like the final check does.
+        let mut lost = false;
+        if let Some(((_, receiver, _), dropped)) = &mut self.watcher {
             while let Ok(events) = receiver.try_recv() {
-                if let Ok(events) = events {
-                    changed.extend(events.into_iter().flat_map(|event| event.paths.clone()));
+                let Ok(events) = events else {
+                    lost = true;
+                    continue;
+                };
+                for event in events {
+                    lost |= event.need_rescan() || event.paths.is_empty();
+                    changed.extend(event.event.paths);
                 }
             }
+            lost |= dropped.swap(false, Ordering::Relaxed);
         }
-        let resources_changed = !changed.is_empty();
+        #[cfg(test)]
+        {
+            self.io.events += changed.len();
+        }
+        // Events name the file itself, either end of a rename, or a directory.
+        let touched = |path: &Path| path.ancestors().any(|path| changed.contains(path));
         // Filesystem events only refresh registered outputs. Never scan for or
         // register new files here: builds must not consume the attachment budget.
         if !self.recovery {
+            let everything = complete || lost;
             for artifact in &self.manifest.list.artifacts {
                 if let Some(relative) = &artifact.path {
                     let file = self.root.join(relative);
-                    if complete || changed.iter().any(|path| file.starts_with(path)) {
+                    if everything || touched(&file) {
                         self.pending.insert(file);
+                    }
+                }
+                if everything && artifact.content_hash.is_some() {
+                    self.stale.insert(artifact.id.clone());
+                }
+            }
+            if !changed.is_empty() {
+                for (id, paths) in &self.dependencies {
+                    if paths.iter().any(|path| touched(path)) {
+                        self.stale.insert(id.clone());
                     }
                 }
             }
@@ -1312,27 +1404,26 @@ impl ArtifactObserver {
                 .and_then(|s| s.modified)
                 .and_then(|t| t.elapsed().ok())
                 .is_some_and(|elapsed| elapsed < Duration::from_millis(500));
+            let artifact = &mut self.manifest.list.artifacts[index];
             if recent && !complete {
-                self.manifest.list.artifacts[index].status = ArtifactStatus::Preparing;
+                if artifact.status != ArtifactStatus::Preparing {
+                    artifact.status = ArtifactStatus::Preparing;
+                    self.dirty = true;
+                }
                 self.pending.insert(path);
-                self.dirty = true;
                 continue;
             }
-            match self.snapshot(&path).await {
+            let before = artifact.clone();
+            let snapshot = self.snapshot(&path).await;
+            let artifact = &mut self.manifest.list.artifacts[index];
+            match snapshot {
                 Ok((hash, size)) => {
-                    let artifact = &mut self.manifest.list.artifacts[index];
                     artifact.content_hash = Some(hash);
                     artifact.size_bytes = size;
                     artifact.status = ArtifactStatus::Ready;
                     artifact.error = None;
-                    let artifact = artifact.clone();
-                    let bundle = self.bundle_resources(artifact).await;
-                    self.manifest
-                        .bundles
-                        .insert(bundle.artifact.id.clone(), bundle);
                 }
                 Err(error) => {
-                    let artifact = &mut self.manifest.list.artifacts[index];
                     artifact.status = if path.exists() {
                         ArtifactStatus::Error
                     } else {
@@ -1342,26 +1433,29 @@ impl ArtifactObserver {
                 }
             }
             if self.recovery {
-                let artifact = &mut self.manifest.list.artifacts[index];
                 artifact.source = "recovered_current".into();
                 artifact.error = Some(if artifact.content_hash.is_some() { "Original execution content was not preserved; this is the currently available file" } else { "Original content was not preserved and the source file is unavailable" }.into());
-                if let Some(bundle) = self.manifest.bundles.get_mut(&artifact.id) {
-                    bundle.artifact = artifact.clone();
+            }
+            if *artifact != before {
+                self.dirty = true;
+                if artifact.content_hash.is_some() {
+                    self.stale.insert(artifact.id.clone());
                 }
             }
-            self.dirty = true;
         }
-        if !self.recovery && (complete || resources_changed) {
-            let artifacts = self
-                .manifest
-                .list
-                .artifacts
-                .iter()
-                .filter(|artifact| artifact.content_hash.is_some())
-                .cloned()
-                .collect::<Vec<_>>();
-            for artifact in artifacts {
-                let bundle = self.bundle_resources(artifact).await;
+        // Each output is bundled at most once per tick, after its snapshot.
+        let stale = std::mem::take(&mut self.stale);
+        let artifacts = self
+            .manifest
+            .list
+            .artifacts
+            .iter()
+            .filter(|artifact| stale.contains(&artifact.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for artifact in artifacts {
+            let bundle = self.bundle_resources(artifact).await;
+            if self.manifest.bundles.get(&bundle.artifact.id) != Some(&bundle) {
                 self.manifest
                     .bundles
                     .insert(bundle.artifact.id.clone(), bundle);
@@ -1393,6 +1487,10 @@ impl ArtifactObserver {
             )
             .await?;
             self.dirty = false;
+            #[cfg(test)]
+            {
+                self.io.writes += 1;
+            }
         }
         Ok(())
     }
@@ -2232,6 +2330,222 @@ mod tests {
         let legacy: ArtifactManifest = serde_json::from_value(old).unwrap();
         assert_eq!(legacy.list.artifacts.len(), 2);
         assert!(legacy.transcripts.is_empty());
+        tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
+            .await
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_paths_match_events_for_files_that_do_not_exist_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
+        assert_eq!(
+            dependency_paths(&root.join("out/../link/late.css")),
+            [root.join("link/late.css"), root.join("real/late.css")]
+        );
+        assert_eq!(
+            dependency_paths(&root.join("assets/./late.css")),
+            [root.join("assets/late.css")]
+        );
+    }
+
+    /// Runs one live tick after the watcher has delivered a change.
+    async fn settle(observer: &mut ArtifactObserver) -> IoCounts {
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        observer.io = IoCounts::default();
+        observer.tick(false).await.unwrap();
+        observer.io
+    }
+
+    #[tokio::test]
+    async fn live_ticks_refresh_only_artifacts_whose_dependencies_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("out/report.html"),
+            "<html><link rel=\"stylesheet\" href=\"style.css\"><img src=\"logo.png\"></html>",
+        )
+        .unwrap();
+        std::fs::write(root.join("out/style.css"), "body{color:red}").unwrap();
+        std::fs::write(root.join("out/next.css"), "body{color:green}").unwrap();
+        std::fs::write(root.join("out/logo.png"), "logo-v1").unwrap();
+        std::fs::write(root.join("out/chart.png"), "chart").unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let session = Uuid::new_v4();
+        let execution = Uuid::new_v4();
+        let mut observer = ArtifactObserver::start(
+            root.clone(),
+            root.clone(),
+            Uuid::new_v4(),
+            session,
+            execution,
+            FileService::new(pool).unwrap(),
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        observer
+            .observe_entry(
+                0,
+                &NormalizedEntry {
+                    timestamp: None,
+                    metadata: None,
+                    content: "[report](out/report.html \"vibe-artifact\")\n[chart](out/chart.png \"vibe-artifact\")\n```html vibe-artifact\n<html><link rel=\"stylesheet\" href=\"assets/late.css\"></html>\n```".into(),
+                    entry_type: NormalizedEntryType::AssistantMessage,
+                },
+            )
+            .await;
+        observer.tick(false).await.unwrap();
+        settle(&mut observer).await;
+        let id = |name: &str| {
+            observer
+                .manifest
+                .list
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.name == name)
+                .unwrap()
+                .id
+                .clone()
+        };
+        let (report, inline) = (id("out/report.html"), id("block-0.html"));
+        let resource = |observer: &ArtifactObserver, id: &str, path: &str| {
+            observer.manifest.bundles[id]
+                .resources
+                .iter()
+                .find(|resource| resource.path == path)
+                .map(|resource| resource.content_hash.clone())
+        };
+        let mut counts = Vec::new();
+
+        std::fs::write(root.join("src/main.rs"), "fn main() { run() }").unwrap();
+        counts.push(("unrelated source", settle(&mut observer).await));
+
+        let logo = resource(&observer, &report, "out/logo.png");
+        std::fs::write(root.join("out/logo.png"), "logo-v2").unwrap();
+        counts.push(("dependency changed", settle(&mut observer).await));
+        assert_ne!(resource(&observer, &report, "out/logo.png"), logo);
+
+        std::fs::write(
+            root.join("out/report.html"),
+            "<html><link rel=\"stylesheet\" href=\"style.css\"><img src=\"logo.png\">v2</html>",
+        )
+        .unwrap();
+        std::fs::write(root.join("out/style.css"), "body{color:blue}").unwrap();
+        counts.push(("artifact and dependency", settle(&mut observer).await));
+
+        std::fs::write(root.join("out/style.css"), "body{color:blue}").unwrap();
+        counts.push(("same content", settle(&mut observer).await));
+
+        std::fs::rename(root.join("out/style.css"), root.join("out/style.old")).unwrap();
+        counts.push(("renamed away", settle(&mut observer).await));
+        assert_eq!(resource(&observer, &report, "out/style.css"), None);
+        assert!(
+            observer.manifest.bundles[&report]
+                .warnings
+                .contains(&"Missing or disallowed dependency: style.css".to_string())
+        );
+
+        std::fs::rename(root.join("out/next.css"), root.join("out/style.css")).unwrap();
+        counts.push(("renamed into place", settle(&mut observer).await));
+        assert!(resource(&observer, &report, "out/style.css").is_some());
+        assert!(observer.manifest.bundles[&report].warnings.is_empty());
+
+        std::fs::remove_file(root.join("out/logo.png")).unwrap();
+        counts.push(("dependency deleted", settle(&mut observer).await));
+        assert_eq!(resource(&observer, &report, "out/logo.png"), None);
+
+        assert_eq!(resource(&observer, &inline, "assets/late.css"), None);
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("assets/late.css"), "p{margin:0}").unwrap();
+        counts.push(("missing reference created", settle(&mut observer).await));
+        assert!(resource(&observer, &inline, "assets/late.css").is_some());
+
+        // Signals that may hide a change refresh every output once.
+        let ((_, receiver, _), dropped) = observer.watcher.as_mut().unwrap();
+        dropped.store(true, Ordering::Relaxed);
+        let (mut events, injected) = futures::channel::mpsc::channel(4);
+        *receiver = injected;
+        observer.io = IoCounts::default();
+        observer.tick(false).await.unwrap();
+        counts.push(("dropped burst", observer.io));
+        let rescan =
+            notify::Event::new(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan);
+        events
+            .try_send(Ok(vec![notify_debouncer_full::DebouncedEvent::new(
+                rescan,
+                std::time::Instant::now(),
+            )]))
+            .unwrap();
+        observer.io = IoCounts::default();
+        observer.tick(false).await.unwrap();
+        counts.push(("rescan", observer.io));
+        events
+            .try_send(Err(vec![notify::Error::generic("watch lost")]))
+            .unwrap();
+        observer.io = IoCounts::default();
+        observer.tick(false).await.unwrap();
+        counts.push(("watcher error", observer.io));
+
+        // The last change never reaches the observer; completion still keeps it.
+        observer.watcher.take();
+        std::fs::write(root.join("assets/late.css"), "p{margin:1px}").unwrap();
+        observer.io = IoCounts::default();
+        tokio::time::timeout(Duration::from_secs(5), observer.tick(true))
+            .await
+            .unwrap()
+            .unwrap();
+        counts.push(("complete", observer.io));
+        let saved = load(session, execution).await.unwrap().unwrap();
+        let late = saved.bundles[&inline]
+            .resources
+            .iter()
+            .find(|resource| resource.path == "assets/late.css")
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(directory(session, execution).join(&late.content_hash))
+                .unwrap(),
+            "p{margin:1px}"
+        );
+        for (step, io) in &counts {
+            eprintln!("{step:>26}: {io:?}");
+        }
+        // (snapshots, bundles, manifest writes) per step; only the touched
+        // bundle rereads its dependencies, and equal results are not written.
+        let expected = [
+            ("unrelated source", (0, 0, 0)),
+            ("dependency changed", (2, 1, 1)),
+            ("artifact and dependency", (3, 1, 1)),
+            ("same content", (2, 1, 0)),
+            ("renamed away", (1, 1, 1)),
+            ("renamed into place", (2, 1, 1)),
+            ("dependency deleted", (1, 1, 1)),
+            ("missing reference created", (1, 1, 1)),
+            ("dropped burst", (4, 3, 0)),
+            ("rescan", (4, 3, 0)),
+            ("watcher error", (4, 3, 0)),
+            ("complete", (4, 3, 1)),
+        ];
+        for ((step, io), (name, (snapshots, bundles, writes))) in counts.iter().zip(expected) {
+            assert_eq!(*step, name);
+            assert_eq!(
+                (io.snapshots, io.bundles, io.writes),
+                (snapshots, bundles, writes),
+                "{step}"
+            );
+        }
+        assert!(counts[..8].iter().all(|(_, io)| io.events > 0));
         tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
             .await
             .unwrap();
