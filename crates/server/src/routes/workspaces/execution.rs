@@ -289,7 +289,7 @@ pub async fn stop_workspace_execution(
             .map(|session| session.id)
             .collect(),
     };
-    for session_id in stopped_sessions {
+    for &session_id in &stopped_sessions {
         deployment
             .container()
             .cancel_session_starts(session_id)
@@ -300,6 +300,27 @@ pub async fn stop_workspace_execution(
         .container()
         .try_stop(&workspace, false, only_session)
         .await?;
+
+    // A message sent while the stop ran (no turn running, drain held: the
+    // follow-up route queued it) may have nobody else to start it. Only here,
+    // not in `try_stop`: retry and delete stop first, then rewrite or remove
+    // what a freshly drained turn would run on.
+    for session_id in stopped_sessions {
+        let Some(session) = Session::find_by_id(pool, session_id).await? else {
+            continue;
+        };
+        if let Err(error) = deployment
+            .container()
+            .drain_queue_if_idle(&session, &workspace)
+            .await
+        {
+            tracing::warn!(
+                "Failed to start a follow-up queued during the stop of session {}: {}",
+                session_id,
+                error
+            );
+        }
+    }
 
     // Cascade: a workspace deferred behind this one (linked via a `blocking`
     // issue relationship) can never be unblocked by it once it is stopped, so
