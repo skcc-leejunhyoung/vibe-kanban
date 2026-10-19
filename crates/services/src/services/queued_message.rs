@@ -337,6 +337,35 @@ impl QueuedMessageService {
         cleared
     }
 
+    /// Remove the messages queued by the time a failed or stopped turn ended —
+    /// the ones it would have run — and keep those sent after it ended (the
+    /// follow-up route queues a send while the turn finishes), which the
+    /// turn's drain then starts. `None` (end unknown) removes them all.
+    pub fn discard_queued_by(
+        &self,
+        session_id: Uuid,
+        ended_at: Option<DateTime<Utc>>,
+    ) -> Vec<QueuedMessage> {
+        let Some(ended_at) = ended_at else {
+            return self.clear_queue(session_id);
+        };
+        let discarded: Vec<QueuedMessage> = self
+            .queue
+            .get_mut(&session_id)
+            .map(|mut q| {
+                let (discarded, kept): (VecDeque<_>, VecDeque<_>) =
+                    q.drain(..).partition(|m| m.queued_at <= ended_at);
+                *q = kept;
+                discarded.into()
+            })
+            .unwrap_or_default();
+        self.queue.remove_if(&session_id, |_, q| q.is_empty());
+        if !discarded.is_empty() {
+            self.changed(session_id);
+        }
+        discarded
+    }
+
     /// Get the queued messages for a session (oldest first).
     pub fn get_queued(&self, session_id: Uuid) -> Vec<QueuedMessage> {
         self.queue
@@ -751,6 +780,25 @@ mod tests {
         let cleared = svc.clear_queue(session);
         assert_eq!(cleared.len(), 2);
         assert_eq!(cleared[0].data.message, "a");
+        assert!(!svc.has_queued(session));
+    }
+
+    #[test]
+    fn discard_queued_by_keeps_messages_sent_after_the_turn_ended() {
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+        svc.enqueue(session, sample_data("behind"));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let ended_at = Utc::now();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        svc.enqueue(session, sample_data("after"));
+
+        let discarded = svc.discard_queued_by(session, Some(ended_at));
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(discarded[0].data.message, "behind");
+        assert_eq!(svc.get_queued(session)[0].data.message, "after");
+
+        assert_eq!(svc.discard_queued_by(session, None).len(), 1);
         assert!(!svc.has_queued(session));
     }
 

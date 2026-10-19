@@ -2530,10 +2530,14 @@ impl LocalContainerService {
         }
 
         if !should_execute_queued && !keep_queue && !cleanup_failed {
-            // Execution failed or was killed - discard the ENTIRE queue (not just
-            // the front of a multi-message queue) so no follow-ups are left
-            // stranded to resurface on a later turn, then finalize.
-            let discarded = self.queued_message_service.clear_queue(ctx.session.id);
+            // Execution failed or was killed - discard everything queued behind
+            // it (not just the front of a multi-message queue) so no follow-ups
+            // are left stranded to resurface on a later turn, then finalize. A
+            // message sent after it ended isn't its to drop: the exit handler's
+            // drain starts it.
+            let discarded = self
+                .queued_message_service
+                .discard_queued_by(ctx.session.id, ctx.execution_process.completed_at);
             if !discarded.is_empty() {
                 tracing::info!(
                     "Discarding {} queued message(s) for session {} due to execution status {:?}",
@@ -3989,7 +3993,7 @@ impl ContainerService for LocalContainerService {
                                 );
                             }
                             if status == ExecutionProcessStatus::Killed {
-                                self.discard_queue_for_unstarted_turn(execution_process);
+                                self.discard_queue_for_unstarted_turn(&completed_process);
                             }
                         }
                         if let Some(msg) =
@@ -6094,6 +6098,49 @@ done
             .await
             .unwrap();
         assert!(draft_kept().await, "steer");
+    }
+
+    /// A failed or stopped turn drops what was queued behind it, not a message
+    /// sent once it had ended (the follow-up route queues a send while the turn
+    /// finishes): that one is left for the exit handler's drain to start.
+    #[tokio::test]
+    async fn ended_turn_keeps_a_message_sent_while_it_finishes() {
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let queue = container.queued_message_service.clone();
+
+        for status in [
+            ExecutionProcessStatus::Failed,
+            ExecutionProcessStatus::Killed,
+        ] {
+            queue.enqueue(session.id, follow_up("behind", BaseCodingAgent::ClaudeCode));
+            std::thread::sleep(Duration::from_millis(5));
+            let turn = finished_turn(&session, &workspace, status.clone());
+            std::thread::sleep(Duration::from_millis(5));
+            let exit_handler = queue.hold_drain(session.id);
+            queue.enqueue(session.id, follow_up("after", BaseCodingAgent::ClaudeCode));
+
+            container
+                .finalize_with_queued_followup(&turn, false, false)
+                .await;
+            assert_eq!(
+                queue_state(&container, session.id),
+                (vec!["after".to_string()], false),
+                "{status:?}"
+            );
+            drop(exit_handler);
+            let _ = container.drain_queue_if_idle(&session, &workspace).await;
+            assert_eq!(
+                turn_prompts(&container, session.id)
+                    .await
+                    .last()
+                    .map(String::as_str),
+                Some("after"),
+                "{status:?}"
+            );
+            queue.clear_queue(session.id);
+        }
     }
 
     /// A turn that fails to spawn: a queued message's start (here a finalize

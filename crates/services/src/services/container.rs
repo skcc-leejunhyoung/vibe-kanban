@@ -897,7 +897,7 @@ pub trait ContainerService {
                 continue;
             }
             // A parallel setup has no finalizer to discard its queue on stop.
-            let _drain_hold = self.queued_message_service().hold_drain(session.id);
+            let drain_hold = self.queued_message_service().hold_drain(session.id);
             let processes =
                 ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await?;
             self.queued_message_service().clear_queue(session.id);
@@ -920,6 +920,16 @@ pub trait ContainerService {
                     );
                     stop_error.get_or_insert(error);
                 }
+            }
+            // A message sent while the stop ran (no turn running, drain held:
+            // the follow-up route queued it) may have nobody else to start it.
+            drop(drain_hold);
+            if let Err(error) = self.drain_queue_if_idle(&session, workspace).await {
+                tracing::warn!(
+                    "Failed to start a follow-up queued during the stop of session {}: {}",
+                    session.id,
+                    error
+                );
             }
         }
         stop_error.map_or(Ok(()), Err)
@@ -2103,7 +2113,9 @@ pub trait ContainerService {
         {
             return;
         }
-        let discarded = self.queued_message_service().clear_queue(session_id);
+        let discarded = self
+            .queued_message_service()
+            .discard_queued_by(session_id, execution_process.completed_at);
         if !discarded.is_empty() {
             tracing::info!(
                 "Discarded {} queued message(s) for session {session_id}: its turn ended before it ran",
