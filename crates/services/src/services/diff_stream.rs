@@ -76,7 +76,12 @@ async fn compute_diff_stats_inner(
     let mut stats = DiffStats::default();
 
     for repo_with_branch in workspace_repos {
-        let worktree_path = PathBuf::from(container_ref).join(&repo_with_branch.repo.name);
+        // In-place ("quick chat") workspaces run in the repo root itself.
+        let worktree_path = if workspace.in_place {
+            PathBuf::from(container_ref)
+        } else {
+            PathBuf::from(container_ref).join(&repo_with_branch.repo.name)
+        };
         // A removed worktree would only fail after the merge-base walk.
         if !tokio::fs::try_exists(&worktree_path).await.unwrap_or(false) {
             // Its watcher may be dead (inotify); a recreated one needs a new one.

@@ -16,8 +16,9 @@
 //! `git` CLI, while keeping libgit2 for read‑only graph queries and credentialed
 //! network operations when useful.
 use std::{
+    collections::HashSet,
     ffi::{OsStr, OsString},
-    io::Write as _,
+    io::{Read as _, Write as _},
     path::Path,
     process::{Command, Stdio},
 };
@@ -91,6 +92,18 @@ pub struct NumstatDiffEntry {
 pub struct WorktreeEntry {
     pub path: String,
     pub branch: Option<String>,
+}
+
+/// Total size of untracked files above which they are no longer read, neither
+/// hashed as rename candidates nor scanned for line counts.
+const UNTRACKED_READ_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
+
+/// See [`GitCli::temp_worktree_index`]. The index lives as long as this value.
+struct TempWorktreeIndex {
+    _dir: tempfile::TempDir,
+    envs: Vec<(OsString, OsString)>,
+    /// Untracked files left out of the index; callers report them as added.
+    untracked: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -237,49 +250,9 @@ impl GitCli {
         base_commit: &Commit,
         opts: StatusDiffOptions,
     ) -> Result<Vec<StatusDiffEntry>, GitCliError> {
-        // Create a temp index file
-        let tmp_dir = tempfile::TempDir::new()
-            .map_err(|e| GitCliError::CommandFailed(format!("temp dir create failed: {e}")))?;
-        let tmp_index = tmp_dir.path().join("index");
-        let envs = vec![(
-            OsString::from("GIT_INDEX_FILE"),
-            tmp_index.as_os_str().to_os_string(),
-        )];
-
-        // Use a temp index from HEAD to accurately track renames in untracked files
-        let _ = self.git_with_env(worktree_path, ["read-tree", "HEAD"], &envs)?;
-
-        // Stage changed and untracked files explicitly, which is faster than `git add -A` for large repos.
-        // Use raw paths from `get_worktree_status` to avoid lossy UTF-8 conversions for odd filenames.
-        let status = self.get_worktree_status(worktree_path)?;
-        let mut paths_to_add: Vec<Vec<u8>> = Vec::new();
-        for entry in status.entries {
-            paths_to_add.push(entry.path);
-            if let Some(orig) = entry.orig_path {
-                paths_to_add.push(orig);
-            }
-        }
-        if !paths_to_add.is_empty() {
-            paths_to_add.extend(
-                Self::get_default_pathspec_excludes()
-                    .iter()
-                    .map(|s| s.as_encoded_bytes().to_vec()),
-            );
-            let mut input = Vec::new();
-            for p in paths_to_add {
-                input.extend_from_slice(&p);
-                input.push(0);
-            }
-            let args = vec![
-                OsString::from("add"),
-                OsString::from("-A"),
-                OsString::from("--pathspec-from-file=-"),
-                OsString::from("--pathspec-file-nul"),
-            ];
-            self.git_with_stdin(worktree_path, args, Some(&envs), &input)?;
-        }
-        // git diff --cached
-        let mut args: Vec<OsString> = vec![
+        let index =
+            self.temp_worktree_index(worktree_path, base_commit, opts.path_filter.as_ref())?;
+        let args: Vec<OsString> = vec![
             "-c".into(),
             "core.quotepath=false".into(),
             "diff".into(),
@@ -288,9 +261,16 @@ impl GitCli {
             "--name-status".into(),
             OsString::from(base_commit.to_string()),
         ];
-        args = Self::apply_pathspec_filter(args, opts.path_filter.as_ref());
-        let out = self.git_with_env(worktree_path, args, &envs)?;
-        Ok(Self::parse_name_status(&out))
+        let args = Self::apply_pathspec_filter(args, opts.path_filter.as_ref());
+        let out = self.git_with_env(worktree_path, args, &index.envs)?;
+        let mut entries = Self::parse_name_status(&out);
+        entries.extend(index.untracked.into_iter().map(|path| StatusDiffEntry {
+            change: ChangeType::Added,
+            path,
+            old_path: None,
+        }));
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(entries)
     }
 
     /// Diff line stats vs a base commit using a temporary index.
@@ -301,45 +281,9 @@ impl GitCli {
         base_commit: &Commit,
         opts: StatusDiffOptions,
     ) -> Result<Vec<NumstatDiffEntry>, GitCliError> {
-        let tmp_dir = tempfile::TempDir::new()
-            .map_err(|e| GitCliError::CommandFailed(format!("temp dir create failed: {e}")))?;
-        let tmp_index = tmp_dir.path().join("index");
-        let envs = vec![(
-            OsString::from("GIT_INDEX_FILE"),
-            tmp_index.as_os_str().to_os_string(),
-        )];
-
-        let _ = self.git_with_env(worktree_path, ["read-tree", "HEAD"], &envs)?;
-
-        let status = self.get_worktree_status(worktree_path)?;
-        let mut paths_to_add: Vec<Vec<u8>> = Vec::new();
-        for entry in status.entries {
-            paths_to_add.push(entry.path);
-            if let Some(orig) = entry.orig_path {
-                paths_to_add.push(orig);
-            }
-        }
-        if !paths_to_add.is_empty() {
-            paths_to_add.extend(
-                Self::get_default_pathspec_excludes()
-                    .iter()
-                    .map(|s| s.as_encoded_bytes().to_vec()),
-            );
-            let mut input = Vec::new();
-            for p in paths_to_add {
-                input.extend_from_slice(&p);
-                input.push(0);
-            }
-            let args = vec![
-                OsString::from("add"),
-                OsString::from("-A"),
-                OsString::from("--pathspec-from-file=-"),
-                OsString::from("--pathspec-file-nul"),
-            ];
-            self.git_with_stdin(worktree_path, args, Some(&envs), &input)?;
-        }
-
-        let mut args: Vec<OsString> = vec![
+        let index =
+            self.temp_worktree_index(worktree_path, base_commit, opts.path_filter.as_ref())?;
+        let args: Vec<OsString> = vec![
             "-c".into(),
             "core.quotepath=false".into(),
             "diff".into(),
@@ -348,22 +292,196 @@ impl GitCli {
             "--numstat".into(),
             OsString::from(base_commit.to_string()),
         ];
-        args = Self::apply_pathspec_filter(args, opts.path_filter.as_ref());
-        let out = self.git_with_env(worktree_path, args, &envs)?;
-        Ok(Self::parse_numstat(&out))
+        let args = Self::apply_pathspec_filter(args, opts.path_filter.as_ref());
+        let out = self.git_with_env(worktree_path, args, &index.envs)?;
+        let mut entries = Self::parse_numstat(&out);
+        let count_lines = Self::untracked_within_budget(
+            worktree_path,
+            &index.untracked,
+            crate::MAX_INLINE_DIFF_BYTES as u64,
+        );
+        entries.extend(index.untracked.into_iter().map(|path| {
+            let additions = count_lines
+                .then(|| Self::count_added_lines(&worktree_path.join(&path)))
+                .flatten();
+            NumstatDiffEntry {
+                additions,
+                deletions: additions.map(|_| 0),
+                path,
+            }
+        }));
+        Ok(entries)
+    }
+
+    /// Temp index of HEAD plus the worktree's changes, for `diff --cached`.
+    /// Staging hashes a file and writes its blob to the object DB, so untracked
+    /// files (a scratch folder can hold gigabytes) are left out and returned
+    /// instead. They are staged only when a deletion vs base could pair with
+    /// them as a rename, or when they reappear at a path the base had.
+    fn temp_worktree_index(
+        &self,
+        worktree_path: &Path,
+        base_commit: &Commit,
+        path_filter: Option<&Vec<String>>,
+    ) -> Result<TempWorktreeIndex, GitCliError> {
+        let dir = tempfile::TempDir::new()
+            .map_err(|e| GitCliError::CommandFailed(format!("temp dir create failed: {e}")))?;
+        let envs = vec![(
+            OsString::from("GIT_INDEX_FILE"),
+            dir.path().join("index").into_os_string(),
+        )];
+        // Use a temp index from HEAD to accurately track renames
+        self.git_with_env(worktree_path, ["read-tree", "HEAD"], &envs)?;
+
+        // A path filter limits the diff to the same paths, so staging only
+        // those yields the same result.
+        let status = self.worktree_status(worktree_path, "--untracked-files=all", path_filter)?;
+        let (untracked, tracked): (Vec<_>, Vec<_>) =
+            status.entries.into_iter().partition(|e| e.is_untracked);
+        let tracked: Vec<Vec<u8>> = tracked
+            .into_iter()
+            .flat_map(|e| std::iter::once(e.path).chain(e.orig_path))
+            .collect();
+        // `git rm --cached` leaves a path both staged-deleted and untracked;
+        // staging it as tracked already covers the file on disk.
+        let tracked_set: HashSet<&[u8]> = tracked.iter().map(Vec::as_slice).collect();
+        let mut untracked: Vec<Vec<u8>> = untracked
+            .into_iter()
+            .map(|e| e.path)
+            .filter(|p| !tracked_set.contains(p.as_slice()))
+            .collect();
+        self.add_to_index(worktree_path, &envs, tracked)?;
+
+        if !untracked.is_empty() {
+            let args: Vec<OsString> = vec![
+                "diff".into(),
+                "--cached".into(),
+                "--name-only".into(),
+                "-z".into(),
+                "--diff-filter=D".into(),
+                OsString::from(base_commit.to_string()),
+            ];
+            let args = Self::apply_pathspec_filter(args, path_filter);
+            let out = self.git_impl(worktree_path, args, Some(&envs), None)?;
+            let deleted: HashSet<&[u8]> =
+                out.split(|b| *b == 0).filter(|p| !p.is_empty()).collect();
+            if !deleted.is_empty() {
+                let all = Self::untracked_within_budget(worktree_path, &untracked, u64::MAX);
+                let (staged, rest) = untracked
+                    .into_iter()
+                    .partition(|p| all || deleted.contains(p.as_slice()));
+                self.add_to_index(worktree_path, &envs, staged)?;
+                untracked = rest;
+            }
+        }
+
+        Ok(TempWorktreeIndex {
+            _dir: dir,
+            envs,
+            untracked: untracked
+                .into_iter()
+                .map(|p| String::from_utf8_lossy(&p).into_owned())
+                .collect(),
+        })
+    }
+
+    /// Stage paths into the temp index named by `envs`. Explicit paths are
+    /// faster than `git add -A` for large repos, and raw paths avoid lossy
+    /// UTF-8 conversions for odd filenames.
+    fn add_to_index(
+        &self,
+        worktree_path: &Path,
+        envs: &[(OsString, OsString)],
+        mut paths: Vec<Vec<u8>>,
+    ) -> Result<(), GitCliError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        paths.extend(
+            Self::get_default_pathspec_excludes()
+                .iter()
+                .map(|s| s.as_encoded_bytes().to_vec()),
+        );
+        let mut input = Vec::new();
+        for p in paths {
+            input.extend_from_slice(&p);
+            input.push(0);
+        }
+        let args = ["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"];
+        self.git_with_stdin(worktree_path, args, Some(envs), &input)?;
+        Ok(())
+    }
+
+    /// Whether the untracked files of at most `max_file` bytes are small enough
+    /// in total to read on every poll.
+    ///
+    /// ponytail: above the budget a file moved into an untracked path shows as
+    /// a deletion plus an addition until it is staged or committed, and
+    /// untracked files add no line counts. Pick rename candidates by size
+    /// against the deleted blobs, or cache counts by mtime, if that matters.
+    fn untracked_within_budget(
+        worktree_path: &Path,
+        paths: &[impl AsRef<[u8]>],
+        max_file: u64,
+    ) -> bool {
+        let mut total = 0u64;
+        paths.iter().all(|p| {
+            let path = worktree_path.join(&*String::from_utf8_lossy(p.as_ref()));
+            total += std::fs::symlink_metadata(path)
+                .map(|m| m.len())
+                .ok()
+                .filter(|len| *len <= max_file)
+                .unwrap_or(0);
+            total <= UNTRACKED_READ_BUDGET_BYTES
+        })
+    }
+
+    /// Added-line count for an untracked file as `git diff --numstat` would
+    /// report it, or `None` (git's `-`) for binary, oversized or unreadable files.
+    fn count_added_lines(path: &Path) -> Option<usize> {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        if meta.is_symlink() {
+            // Git diffs the link target as a single line.
+            return Some(1);
+        }
+        if !meta.is_file() || meta.len() > crate::MAX_INLINE_DIFF_BYTES as u64 {
+            return None;
+        }
+        let mut file = std::fs::File::open(path).ok()?;
+        let mut buf = Vec::new();
+        // Like git, a NUL in the first 8000 bytes marks the file binary.
+        (&mut file).take(8000).read_to_end(&mut buf).ok()?;
+        if buf.contains(&0) {
+            return None;
+        }
+        file.read_to_end(&mut buf).ok()?;
+        let newlines = buf.iter().filter(|b| **b == b'\n').count();
+        Some(newlines + usize::from(buf.last().is_some_and(|b| *b != b'\n')))
     }
 
     /// Return `git status --porcelain` parsed into a structured summary
     pub fn get_worktree_status(&self, worktree_path: &Path) -> Result<WorktreeStatus, GitCliError> {
+        self.worktree_status(worktree_path, "--untracked-files=normal", None)
+    }
+
+    fn worktree_status(
+        &self,
+        worktree_path: &Path,
+        untracked_files: &str,
+        path_filter: Option<&Vec<String>>,
+    ) -> Result<WorktreeStatus, GitCliError> {
         // Using -z for NUL-separated output which correctly handles paths with special chars.
         // Format: XY<space>PATH<NUL>[ORIGPATH<NUL>] where ORIGPATH only present for R/C.
-        let args = Self::apply_default_excludes(vec![
-            "--no-optional-locks",
-            "status",
-            "--porcelain",
-            "-z",
-            "--untracked-files=normal",
-        ]);
+        let args = Self::apply_pathspec_filter(
+            [
+                "--no-optional-locks",
+                "status",
+                "--porcelain",
+                "-z",
+                untracked_files,
+            ],
+            path_filter,
+        );
         let out = self.git_impl(worktree_path, args, None, None)?;
         let mut entries = Vec::new();
         let mut uncommitted_tracked = 0usize;

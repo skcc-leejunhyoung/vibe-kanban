@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -489,4 +490,121 @@ fn list_commits_empty_when_branch_has_no_extra_commits() {
 
     let commits = s.list_commits(&repo_path, "feature", "main", 50).unwrap();
     assert!(commits.is_empty());
+}
+
+fn count_objects(repo_path: &Path) -> String {
+    GitCli::new()
+        .git(repo_path, ["count-objects", "-v"])
+        .unwrap()
+}
+
+#[test]
+fn worktree_diff_lists_untracked_files_without_writing_blobs() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+    write_file(&repo_path, "kept.txt", "k\n");
+    s.commit(&repo_path, "baseline").unwrap();
+    create_branch(&repo_path, "feature");
+
+    write_file(&repo_path, "scratch/notes.txt", "one\ntwo\nthree");
+    fs::write(repo_path.join("scratch/blob.bin"), [0u8, 1, 2]).unwrap();
+    let before = count_objects(&repo_path);
+
+    let base = s.get_base_commit(&repo_path, "feature", "main").unwrap();
+    assert_eq!(
+        s.get_diff_file_paths(&repo_path, &base).unwrap(),
+        HashSet::from([
+            "scratch/notes.txt".to_string(),
+            "scratch/blob.bin".to_string()
+        ])
+    );
+    assert_eq!(s.get_diff_stats(&repo_path, &base).unwrap(), (2, 3, 0));
+    assert_eq!(count_objects(&repo_path), before);
+
+    // Past the read budget untracked files are listed without line counts.
+    for i in 0..9 {
+        fs::File::create(repo_path.join(format!("scratch/frame{i}.raw")))
+            .unwrap()
+            .set_len(2 * 1024 * 1024)
+            .unwrap();
+    }
+    assert_eq!(s.get_diff_stats(&repo_path, &base).unwrap(), (11, 0, 0));
+}
+
+#[test]
+fn worktree_diff_pairs_deleted_file_with_untracked_rename() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+    write_file(
+        &repo_path,
+        "src/old.rs",
+        "fn a() {}\nfn b() {}\nfn c() {}\n",
+    );
+    s.commit(&repo_path, "baseline").unwrap();
+    create_branch(&repo_path, "feature");
+
+    fs::rename(repo_path.join("src/old.rs"), repo_path.join("src/new.rs")).unwrap();
+
+    let base = s.get_base_commit(&repo_path, "feature", "main").unwrap();
+    let diffs = s.get_diffs(&repo_path, &base, None).unwrap();
+    assert_eq!(diffs.len(), 1);
+    assert!(matches!(diffs[0].change, DiffChangeKind::Renamed));
+    assert_eq!(diffs[0].old_path.as_deref(), Some("src/old.rs"));
+    assert_eq!(diffs[0].new_path.as_deref(), Some("src/new.rs"));
+}
+
+#[test]
+fn worktree_diff_treats_untracked_file_at_base_path_as_modified() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+    write_file(&repo_path, "x.txt", "base\n");
+    s.commit(&repo_path, "baseline").unwrap();
+    create_branch(&repo_path, "feature");
+    checkout_branch(&repo_path, "feature");
+    fs::remove_file(repo_path.join("x.txt")).unwrap();
+    s.commit(&repo_path, "drop x").unwrap();
+
+    // Back on disk but untracked, next to enough untracked bytes that the
+    // rest are not hashed as rename candidates.
+    write_file(&repo_path, "x.txt", "again\n");
+    fs::File::create(repo_path.join("big.bin"))
+        .unwrap()
+        .set_len(17 * 1024 * 1024)
+        .unwrap();
+
+    let base = s.get_base_commit(&repo_path, "feature", "main").unwrap();
+    let mut diffs: Vec<_> = s
+        .get_diffs(&repo_path, &base, None)
+        .unwrap()
+        .into_iter()
+        .map(|d| (d.change, d.old_path, d.new_path))
+        .collect();
+    diffs.sort_by(|a, b| a.2.cmp(&b.2));
+    assert!(matches!(
+        diffs.as_slice(),
+        [
+            (DiffChangeKind::Added, None, Some(big)),
+            (DiffChangeKind::Modified, Some(old), Some(new)),
+        ] if big == "big.bin" && old == "x.txt" && new == "x.txt"
+    ));
+}
+
+#[test]
+fn worktree_diff_lists_cached_removal_once() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+    write_file(&repo_path, "f.txt", "same\n");
+    s.commit(&repo_path, "baseline").unwrap();
+    create_branch(&repo_path, "feature");
+    // Staged-deleted and untracked at once; the content still matches base.
+    GitCli::new()
+        .git(&repo_path, ["rm", "-q", "--cached", "f.txt"])
+        .unwrap();
+
+    let base = s.get_base_commit(&repo_path, "feature", "main").unwrap();
+    assert!(s.get_diffs(&repo_path, &base, None).unwrap().is_empty());
 }
