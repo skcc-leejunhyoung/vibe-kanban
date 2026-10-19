@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -87,7 +88,9 @@ export const AskUserQuestionBanner = forwardRef<
   const disabled = isSubmitting || isTimedOut;
   const canConfirm = !submitted && !disabled && currentSelection.length > 0;
 
-  useEffect(() => {
+  // Layout effect: the parent keeps the last reported state across unmounts,
+  // so a new question must overwrite it before paint.
+  useLayoutEffect(() => {
     onConfirmStateChange?.({ canConfirm, isLastQuestion });
   }, [onConfirmStateChange, canConfirm, isLastQuestion]);
 
