@@ -399,10 +399,7 @@ impl LocalDeployment {
     }
 
     pub fn remote_client(&self) -> Result<RemoteClient, RemoteClientNotConfigured> {
-        if deployment::ACCOUNT_HOST_REQUEST
-            .try_with(|active| *active)
-            .unwrap_or(false)
-        {
+        if deployment::host_cloud_session_denied() {
             return Err(RemoteClientNotConfigured);
         }
         self.remote_client.clone()

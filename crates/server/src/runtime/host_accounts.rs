@@ -429,9 +429,40 @@ pub async fn authorize_preview(
         .ok_or(ApiError::Unauthorized)
 }
 
+/// The registered owner may use the host's central session for nested cloud
+/// requests, but only while the host is signed in as that same user. Every
+/// other account keeps local-only access.
+pub async fn is_host_owner(deployment: &DeploymentImpl, actor: Uuid) -> bool {
+    let owner = storage::read(&account_host_registration_path())
+        .ok()
+        .flatten()
+        .and_then(|state| state.registration)
+        .map(|registration| registration.owner_user_id);
+    let host_user = deployment
+        .auth_context()
+        .get_credentials()
+        .await
+        .and_then(|creds| utils::jwt::extract_subject(&creds.refresh_token).ok());
+    owner_matches(actor, owner, host_user)
+}
+
+fn owner_matches(actor: Uuid, owner: Option<Uuid>, host_user: Option<Uuid>) -> bool {
+    owner == Some(actor) && host_user == Some(actor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_owner_signed_in_on_host_counts_as_host_owner() {
+        let (owner, other) = (Uuid::new_v4(), Uuid::new_v4());
+        assert!(owner_matches(owner, Some(owner), Some(owner)));
+        assert!(!owner_matches(other, Some(owner), Some(owner)));
+        assert!(!owner_matches(owner, Some(owner), Some(other)));
+        assert!(!owner_matches(other, Some(owner), Some(other)));
+        assert!(!owner_matches(owner, None, Some(owner)));
+        assert!(!owner_matches(owner, Some(owner), None));
+    }
     #[test]
     fn dev_server_ports_require_a_local_address_and_valid_unprivileged_port() {
         assert_eq!(

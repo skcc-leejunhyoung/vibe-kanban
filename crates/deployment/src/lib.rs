@@ -133,8 +133,47 @@ pub trait Deployment: Clone + Send + Sync + 'static {
             .boxed()
     }
 }
+/// Scope of a request made through central account access.
+#[derive(Debug, Clone, Copy)]
+pub struct AccountHostRequest {
+    /// The actor registered this host and the host's saved central session is
+    /// also theirs, so nested cloud requests act as the actor themselves.
+    pub host_owner: bool,
+}
+
 tokio::task_local! {
-    /// A remote account may operate local work, but cannot borrow the host's
-    /// saved central user session for a nested cloud request.
-    pub static ACCOUNT_HOST_REQUEST: bool;
+    /// A remote account may operate local work, but only the host owner may
+    /// borrow the host's saved central user session for a nested cloud request.
+    pub static ACCOUNT_HOST_REQUEST: AccountHostRequest;
+}
+
+pub fn account_host_request() -> Option<AccountHostRequest> {
+    ACCOUNT_HOST_REQUEST.try_with(|request| *request).ok()
+}
+
+/// True when the current task is an account request from someone other than
+/// the host owner, who must not use the host's central session.
+pub fn host_cloud_session_denied() -> bool {
+    account_host_request().is_some_and(|request| !request.host_owner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn only_owner_account_requests_may_use_host_cloud_session() {
+        assert!(!host_cloud_session_denied());
+        let scoped = |host_owner| {
+            ACCOUNT_HOST_REQUEST.scope(AccountHostRequest { host_owner }, async {
+                (
+                    host_cloud_session_denied(),
+                    account_host_request().is_some(),
+                )
+            })
+        };
+        // Owners still count as account requests for centrally managed config.
+        assert_eq!(scoped(false).await, (true, true));
+        assert_eq!(scoped(true).await, (false, true));
+    }
 }

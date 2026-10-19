@@ -11,6 +11,8 @@ import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { selectWorkspaceSession } from '@/shared/hooks/useWorkspaceSessions';
 import { seedOptimisticProcess } from '@/shared/providers/executionProcessScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
+import i18n from '@/i18n/config';
 
 interface LinkToIssueParams {
   remoteProjectId: string;
@@ -35,8 +37,9 @@ export function useCreateWorkspace() {
     workspace: Workspace,
     linkToIssue?: LinkToIssueParams
   ) => {
-    // Best-effort cloud link (failures are only logged): don't hold the jump
-    // into the new workspace on that round trip.
+    // Don't hold the jump into the new workspace on the cloud link round
+    // trip, but tell the user when it fails: the board won't show the
+    // workspace or move the issue until it is linked.
     if (linkToIssue) {
       void workspacesApi
         .linkToIssue(
@@ -47,6 +50,15 @@ export function useCreateWorkspace() {
         )
         .catch((linkError) => {
           console.error('Failed to link workspace to issue:', linkError);
+          void ConfirmDialog.show({
+            title: i18n.t('common:workspaces.linkError'),
+            message:
+              linkError instanceof Error
+                ? linkError.message
+                : String(linkError),
+            confirmText: i18n.t('common:ok'),
+            showCancelButton: false,
+          });
         });
     }
 

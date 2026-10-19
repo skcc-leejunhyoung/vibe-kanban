@@ -254,9 +254,8 @@ async fn update_config(
     // Get old config state before updating
     let mut config_guard = deployment.config().write().await;
     let old_config = config_guard.clone();
-    if deployment::ACCOUNT_HOST_REQUEST
-        .try_with(|active| *active)
-        .unwrap_or(false)
+    // Even the owner manages these through the central account.
+    if deployment::account_host_request().is_some()
         && (old_config.relay_enabled != new_config.relay_enabled
             || old_config.host_nickname != new_config.host_nickname)
     {

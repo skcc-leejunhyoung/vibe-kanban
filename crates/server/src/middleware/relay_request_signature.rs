@@ -84,9 +84,17 @@ pub async fn require_relay_request_signature(
         // Use only the verified session and signed nonce, never caller-supplied
         // actor/request headers. Exclude query strings and command bodies.
         let mutation = !matches!(request.method().as_str(), "GET" | "HEAD" | "OPTIONS");
+        let scope = deployment::AccountHostRequest {
+            host_owner: crate::runtime::host_accounts::is_host_owner(
+                &deployment,
+                account.identity.user_id,
+            )
+            .await,
+        };
         let span = tracing::info_span!(
             "account_host_request",
             actor_id = %account.identity.user_id,
+            host_owner = scope.host_owner,
             auth_session_id = %account.identity.auth_session_id,
             connection_id = %account.identity.connection_id,
             request_id = %request.extensions().get::<RelayRequestSignatureContext>().unwrap().nonce,
@@ -105,7 +113,7 @@ pub async fn require_relay_request_signature(
                     }
                     return Err(ApiError::Unauthorized);
                 },
-                response=deployment::ACCOUNT_HOST_REQUEST.scope(true, next.run(request))=>response,
+                response=deployment::ACCOUNT_HOST_REQUEST.scope(scope, next.run(request))=>response,
             };
             if mutation {
                 tracing::info!(status = response.status().as_u16(), "Account host operation responded");
