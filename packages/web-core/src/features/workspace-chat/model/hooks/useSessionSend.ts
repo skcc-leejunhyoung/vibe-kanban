@@ -1,9 +1,10 @@
 import { useCallback, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ExecutionProcess, ExecutorConfig } from 'shared/types';
-import { sessionsApi } from '@/shared/lib/api';
+import { ApiError, queueApi, sessionsApi } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
+import { queueStatusQueryKey } from './useSessionQueueInteraction';
 
 interface UseSessionSendOptions {
   /** Session the composer is showing; follow-ups go here unless overridden. */
@@ -21,11 +22,15 @@ export interface SendOptions {
 
 interface UseSessionSendResult {
   /**
-   * Send a follow-up; resolves with the created process and rejects on
-   * failure (the message is also kept in `error` for the target session's
-   * composer).
+   * Send a follow-up; resolves with the created process, or null when the
+   * previous turn was still finishing and the message was queued to run next.
+   * Rejects on failure (the message is also kept in `error` for the target
+   * session's composer).
    */
-  send: (message: string, options?: SendOptions) => Promise<ExecutionProcess>;
+  send: (
+    message: string,
+    options?: SendOptions
+  ) => Promise<ExecutionProcess | null>;
   /** Error message if the send for the *current* session failed */
   error: string | null;
   /** Clear the error */
@@ -59,7 +64,7 @@ export function useSessionSend({
     async (
       message: string,
       options?: SendOptions
-    ): Promise<ExecutionProcess> => {
+    ): Promise<ExecutionProcess | null> => {
       const target = options?.sessionId ?? sessionId;
       const failure = (text: string): Error => {
         setErrorState({ sessionId: target, message: text });
@@ -88,7 +93,26 @@ export function useSessionSend({
         });
         return process;
       } catch (e: unknown) {
-        const err = e as { message?: string };
+        let error = e;
+        // 423: the previous turn is still finishing (no turn is running).
+        // Its finish starts the queue, so the message waits there.
+        if (e instanceof ApiError && e.status === 423) {
+          try {
+            const status = await queueApi.queue(
+              target,
+              { message: trimmed, executor_config: executorConfig },
+              hostId
+            );
+            queryClient.setQueryData(
+              queueStatusQueryKey(target, hostId),
+              status
+            );
+            return null;
+          } catch (queueError: unknown) {
+            error = queueError;
+          }
+        }
+        const err = error as { message?: string };
         throw failure(`Failed to send: ${err.message ?? 'Unknown error'}`);
       }
     },

@@ -1264,9 +1264,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // Send `prompt` into `target` with `placeholder` shown as its turn right
   // away; `request` makes the server call and resolves with the created
-  // process. Shared by follow-ups, handoffs and edit/retry: the entry in the
-  // registry gives stop-while-pending, adoption from the stream and the
-  // re-show on remount; a refusal takes the turn down and puts the text back.
+  // process, or null when the message went to the queue instead. Shared by
+  // follow-ups, handoffs and edit/retry: the entry in the registry gives
+  // stop-while-pending, adoption from the stream and the re-show on remount;
+  // a refusal takes the turn down and puts the text back.
   const runPendingSend = useCallback(
     async ({
       target,
@@ -1280,7 +1281,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       workspaceIdForStop: string;
       prompt: string;
       placeholder: ExecutionProcess;
-      request: () => Promise<ExecutionProcess>;
+      request: () => Promise<ExecutionProcess | null>;
       onFailure?: (error: unknown) => void;
     }): Promise<boolean> => {
       const { deferred, stopReal } = createStopReal(workspaceIdForStop, target);
@@ -1302,22 +1303,34 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       addOptimisticProcess(placeholder);
       let success = false;
       try {
-        const process = await request();
-        pendingState.spawned = true;
-        // Swap the placeholder for the real row in one render. Drop our copy
-        // even when the row was adopted from the stream: another pane may have
-        // adopted it, leaving ours unswapped. Adds are session-guarded, so this
-        // is safe after a switch.
+        // A queued message can start (and be adopted) before its request ends.
+        const process = (await request()) ?? pendingState.process;
         clearOptimisticProcess(placeholder.id);
-        if (!pendingState.process) {
-          addOptimisticProcess(process);
-          pendingState.process = process;
+        if (process) {
+          pendingState.spawned = true;
+          // Swap the placeholder for the real row in one render. Drop our
+          // copy even when the row was adopted from the stream: another pane
+          // may have adopted it, leaving ours unswapped. Adds are
+          // session-guarded, so this is safe after a switch.
+          if (!pendingState.process) {
+            addOptimisticProcess(process);
+            pendingState.process = process;
+          }
+          pendingSendsChanged(); // other composers swap their copy too
+          // The stop pressed meanwhile went out already; once more now the
+          // turn surely exists, in case it reached the server ahead of this
+          // request.
+          if (pendingState.stopRequested) stopReal(process.id);
+          success = true;
+        } else if (pendingState.stopRequested) {
+          // Queued instead: stop once more (session-scoped, it clears the
+          // queue) in case the first one landed before the message was
+          // queued, so the text comes back.
+          stopReal(placeholder.id);
+        } else {
+          // Queued behind the turn that was finishing; its row takes over.
+          success = true;
         }
-        pendingSendsChanged(); // other composers swap their copy too
-        // The stop pressed meanwhile went out already; once more now the turn
-        // surely exists, in case it reached the server ahead of this request.
-        if (pendingState.stopRequested) stopReal(process.id);
-        success = true;
       } catch (error) {
         // A stop pressed meanwhile went out already and is what made the
         // request fail (the start was cancelled): nothing to report.

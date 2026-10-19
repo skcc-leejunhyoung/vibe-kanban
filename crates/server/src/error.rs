@@ -76,6 +76,9 @@ pub enum ApiError {
     BadRequest(String),
     #[error("Conflict: {0}")]
     Conflict(String),
+    /// The resource is busy finishing earlier work (423); clients may queue.
+    #[error("Locked: {0}")]
+    Locked(String),
     #[error("Forbidden: {0}")]
     Forbidden(String),
     #[error("Too many requests: {0}")]
@@ -475,6 +478,9 @@ impl IntoResponse for ApiError {
             ),
             ApiError::BadRequest(msg) => ErrorInfo::bad_request("BadRequest", msg.clone()),
             ApiError::Conflict(msg) => ErrorInfo::conflict("ConflictError", msg.clone()),
+            ApiError::Locked(msg) => {
+                ErrorInfo::with_status(StatusCode::LOCKED, "LockedError", msg.clone())
+            }
             ApiError::Forbidden(msg) => {
                 ErrorInfo::with_status(StatusCode::FORBIDDEN, "ForbiddenError", msg.clone())
             }

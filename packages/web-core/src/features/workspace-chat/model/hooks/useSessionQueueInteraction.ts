@@ -72,6 +72,12 @@ interface UseSessionQueueInteractionResult {
 const QUEUE_STATUS_KEY = 'queue-status';
 const OPTIMISTIC_QUEUED_PREFIX = 'pending-queue-';
 
+/** Cache key of a session's queue status as seen through `hostId`. */
+export const queueStatusQueryKey = (
+  sessionId: string | undefined,
+  hostId: string | null
+) => [QUEUE_STATUS_KEY, sessionId, getHostRequestScopeQueryKey(hostId)];
+
 /** The send a queued message was waiting on failed, so it wasn't queued. */
 export class QueuedAfterFailedSendError extends Error {}
 
@@ -98,11 +104,7 @@ export function useSessionQueueInteraction({
 }: UseSessionQueueInteractionOptions): UseSessionQueueInteractionResult {
   const queryClient = useQueryClient();
   const hostId = useHostId();
-  const queueKey = [
-    QUEUE_STATUS_KEY,
-    sessionId,
-    getHostRequestScopeQueryKey(hostId),
-  ];
+  const queueKey = queueStatusQueryKey(sessionId, hostId);
   const mutationKey = [QUEUE_STATUS_KEY, 'mutate', sessionId];
   // A poll landing mid-mutation would overwrite the optimistic list with the
   // pre-mutation server state, so polling pauses while one is in flight.

@@ -516,21 +516,31 @@ async fn follow_up_inner(
     // drained, another tab sent) is refused rather than run side by side with
     // it — the caller keeps the message (the chat puts it back to queue or
     // resend; MCP / automation get a clear error, not someone else's turn).
+    // With no turn running, a held drain is the previous turn still finishing
+    // (summary, commit, cleanup). Its holder drains the queue once done, so the
+    // caller is told to queue (423) rather than that a turn started.
     let starting = deployment.container().lock_session_start(session.id).await;
     if stops.has_changed().unwrap_or(false) {
         return Err(stopped_before_start());
     }
-    if payload.retry_process_id.is_none()
-        && (deployment
+    if payload.retry_process_id.is_none() {
+        if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
+            .await?
+        {
+            return Err(ApiError::Conflict(
+                "Another turn started in this session just now; queue the message or send it again when it finishes"
+                    .to_string(),
+            ));
+        }
+        if deployment
             .queued_message_service()
             .is_drain_held(session.id)
-            || ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
-                .await?)
-    {
-        return Err(ApiError::Conflict(
-            "Another turn started in this session just now; queue the message or send it again when it finishes"
-                .to_string(),
-        ));
+        {
+            return Err(ApiError::Locked(
+                "The previous turn in this session is still finishing; queue the message to send it next"
+                    .to_string(),
+            ));
+        }
     }
     let record = deployment
         .container()
