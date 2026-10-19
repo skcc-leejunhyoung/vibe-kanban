@@ -4,7 +4,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use deployment::ACCOUNT_HOST_REQUEST;
+use deployment::{ACCOUNT_HOST_REQUEST, account_host_request};
 use tracing::Instrument;
 
 /// Run the handler to completion even if the client goes away. Axum drops a
@@ -16,10 +16,13 @@ use tracing::Instrument;
 pub async fn finish_after_disconnect(request: Request, next: Next) -> Response {
     // A spawned task inherits neither task-locals nor the span: carry over the
     // account-host gate on the host's cloud session and the request's span.
-    let account_host = ACCOUNT_HOST_REQUEST
-        .try_with(|active| *active)
-        .unwrap_or(false);
-    let handler = ACCOUNT_HOST_REQUEST.scope(account_host, next.run(request));
+    let account_host = account_host_request();
+    let handler = async move {
+        match account_host {
+            Some(scope) => ACCOUNT_HOST_REQUEST.scope(scope, next.run(request)).await,
+            None => next.run(request).await,
+        }
+    };
     match tokio::spawn(handler.in_current_span()).await {
         Ok(response) => response,
         Err(error) => {
@@ -45,6 +48,7 @@ mod tests {
         middleware::{Next, from_fn},
         routing::post,
     };
+    use deployment::AccountHostRequest;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpStream,
@@ -56,14 +60,15 @@ mod tests {
     async fn handler_keeps_the_account_host_gate() {
         let route = post(|| async {
             ACCOUNT_HOST_REQUEST
-                .try_with(|active| active.to_string())
+                .try_with(|active| active.host_owner.to_string())
                 .unwrap_or_default()
         })
         .layer(from_fn(finish_after_disconnect));
         let app = Router::new()
             .route("/", route)
             .layer(from_fn(|request: Request, next: Next| {
-                ACCOUNT_HOST_REQUEST.scope(true, next.run(request))
+                ACCOUNT_HOST_REQUEST
+                    .scope(AccountHostRequest { host_owner: true }, next.run(request))
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
