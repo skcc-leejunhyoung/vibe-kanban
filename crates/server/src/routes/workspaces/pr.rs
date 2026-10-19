@@ -1400,7 +1400,7 @@ pub async fn attach_existing_pr(
         // rather than the workspace's target_branch — in a three-branch flow the
         // PR's base (e.g. `develop`) differs from the work branch's merge target
         // (the feature branch).
-        PullRequest::create_for_workspace(
+        let stored = PullRequest::create_for_workspace(
             pool,
             workspace.id,
             request.repo_id,
@@ -1411,8 +1411,9 @@ pub async fn attach_existing_pr(
         )
         .await?;
 
-        // Update status if not open
-        if !matches!(pr_info.status, MergeStatus::Open) {
+        // Persist the host's status when it differs from the stored row,
+        // including a closed PR that was reopened.
+        if !matches!(pr_info.status, MergeStatus::Unknown) && pr_info.status != stored.pr_status {
             let merged_at = if matches!(&pr_info.status, MergeStatus::Merged) {
                 pr_info.merged_at
             } else {

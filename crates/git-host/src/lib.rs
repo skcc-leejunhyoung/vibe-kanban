@@ -7,6 +7,7 @@ pub mod github;
 use std::path::Path;
 
 use async_trait::async_trait;
+use db::models::merge::PullRequestInfo;
 use detection::detect_provider_from_url;
 use enum_dispatch::enum_dispatch;
 pub use types::{
@@ -29,6 +30,13 @@ pub trait GitHostProvider: Send + Sync {
     ) -> Result<PullRequestDetail, GitHostError>;
 
     async fn get_pr_status(&self, pr_url: &str) -> Result<PullRequestDetail, GitHostError>;
+
+    /// Single-attempt status probe for background polling: only the state and
+    /// merge fields, no retries (the caller's schedule retries). Providers
+    /// without a lighter query fall back to [`Self::get_pr_status`].
+    async fn poll_pr_status(&self, pr_url: &str) -> Result<PullRequestInfo, GitHostError> {
+        self.get_pr_status(pr_url).await.map(Into::into)
+    }
 
     async fn get_pr_status_with_activity(
         &self,

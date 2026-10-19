@@ -8,7 +8,7 @@ use std::{
     ffi::{OsStr, OsString},
     io::Write,
     path::Path,
-    process::Command,
+    process::{Command, Output},
 };
 
 use chrono::{DateTime, Utc};
@@ -17,13 +17,19 @@ use serde::Deserialize;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 use url::Url;
-use utils::{command_ext::NoWindowExt, shell::resolve_executable_path_blocking};
+use utils::{
+    command_ext::NoWindowExt,
+    shell::{resolve_executable_path, resolve_executable_path_blocking},
+};
 
 use crate::types::{
     CreatePrRequest, PrComment, PrCommentAuthor, PrReviewComment, PrReviewThread,
     PullRequestCommit, PullRequestDetail, PullRequestReview, PullRequestReviewRequest,
     PullRequestReviewRequestAction, PullRequestSummary, ReviewCommentUser,
 };
+
+/// `gh pr view` fields the PR monitor consumes: no body, reviews or commits.
+const PR_STATUS_FIELDS: &str = "number,url,state,mergedAt,mergeCommit";
 
 #[derive(Debug, Clone)]
 pub struct GitHubRepoInfo {
@@ -482,21 +488,29 @@ impl GhCli {
     {
         self.ensure_available()?;
         let gh = resolve_executable_path_blocking("gh").ok_or(GhCliError::NotAvailable)?;
-        let mut cmd = Command::new(&gh);
+        let output = Self::command(&gh, args, dir, hostname)
+            .output()
+            .map_err(|err| GhCliError::CommandFailed(err.to_string()))?;
+        Self::read_output(output)
+    }
+
+    fn command<I, S>(gh: &Path, args: I, dir: Option<&Path>, hostname: Option<&str>) -> Command
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut cmd = Command::new(gh);
         if let Some(d) = dir {
             cmd.current_dir(d);
         }
         if let Some(hostname) = hostname {
             cmd.env("GH_HOST", hostname);
         }
-        for arg in args {
-            cmd.arg(arg);
-        }
-        let output = cmd
-            .no_window()
-            .output()
-            .map_err(|err| GhCliError::CommandFailed(err.to_string()))?;
+        cmd.args(args).no_window();
+        cmd
+    }
 
+    fn read_output(output: Output) -> Result<String, GhCliError> {
         if output.status.success() {
             return Ok(String::from_utf8_lossy(&output.stdout).to_string());
         }
@@ -610,6 +624,27 @@ impl GhCli {
             None,
         )?;
         Self::parse_pr_view(&raw)
+    }
+
+    /// Fetch only a PR's state and merge fields ([`PR_STATUS_FIELDS`]) for
+    /// background polling. Async with `kill_on_drop`, so a caller-side timeout
+    /// kills a hung `gh` instead of leaving it running.
+    pub async fn view_pr_status(&self, pr_url: &str) -> Result<PullRequestDetail, GhCliError> {
+        let gh = resolve_executable_path("gh")
+            .await
+            .ok_or(GhCliError::NotAvailable)?;
+        let mut cmd = tokio::process::Command::from(Self::command(
+            &gh,
+            ["pr", "view", pr_url, "--json", PR_STATUS_FIELDS],
+            None,
+            None,
+        ));
+        let output = cmd
+            .kill_on_drop(true)
+            .output()
+            .await
+            .map_err(|err| GhCliError::CommandFailed(err.to_string()))?;
+        Self::parse_pr_view(&Self::read_output(output)?)
     }
 
     pub fn get_pr_review_request_events(
@@ -1504,6 +1539,31 @@ mod tests {
         assert_eq!(info.repo_name, "widgets");
         assert_eq!(info.hostname.as_deref(), Some("github.example.com"));
         assert_eq!(info.search_repo_spec(), "acme/widgets");
+    }
+
+    #[test]
+    fn pr_status_probe_requests_only_state_fields_and_parses_them() {
+        for heavy in ["title", "body", "author", "reviews", "commits"] {
+            assert!(
+                !PR_STATUS_FIELDS.split(',').any(|field| field == heavy),
+                "status probe must not request {heavy}"
+            );
+        }
+
+        let detail = GhCli::parse_pr_view(
+            r#"{
+                "number": 7,
+                "url": "https://github.com/example/repo/pull/7",
+                "state": "MERGED",
+                "mergedAt": "2026-10-19T00:00:00Z",
+                "mergeCommit": {"oid": "deadbeef"}
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(detail.status, MergeStatus::Merged);
+        assert!(detail.merged_at.is_some());
+        assert_eq!(detail.merge_commit_sha.as_deref(), Some("deadbeef"));
     }
 
     #[test]

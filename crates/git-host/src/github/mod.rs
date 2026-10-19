@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use backon::{ExponentialBuilder, Retryable};
 use cli::GitHubRepoInfo;
 pub use cli::{GhCli, GhCliError};
+use db::models::merge::PullRequestInfo;
 use tokio::task;
 use tracing::info;
 
@@ -460,6 +461,10 @@ impl GitHostProvider for GitHubProvider {
             );
         })
         .await
+    }
+
+    async fn poll_pr_status(&self, pr_url: &str) -> Result<PullRequestInfo, GitHostError> {
+        Ok(self.gh_cli.view_pr_status(pr_url).await?.into())
     }
 
     async fn get_pr_status_with_activity(
