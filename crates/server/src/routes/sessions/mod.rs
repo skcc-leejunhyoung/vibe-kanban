@@ -8,7 +8,7 @@ use axum::{
     Extension, Json, Router,
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
-    middleware::from_fn_with_state,
+    middleware::{from_fn, from_fn_with_state},
     response::Json as ResponseJson,
     routing::{get, post},
 };
@@ -39,7 +39,9 @@ use utils::response::ApiResponse;
 use uuid::Uuid;
 
 use crate::{
-    DeploymentImpl, error::ApiError, middleware::load_session_middleware,
+    DeploymentImpl,
+    error::ApiError,
+    middleware::{finish_after_disconnect, load_session_middleware},
     routes::workspaces::execution::RunScriptError,
 };
 
@@ -789,11 +791,20 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             "/",
             get(get_session).put(update_session).delete(delete_session),
         )
-        .route("/follow-up", post(follow_up))
-        .route("/handoff", post(handoff))
+        .route(
+            "/follow-up",
+            post(follow_up).layer(from_fn(finish_after_disconnect)),
+        )
+        .route(
+            "/handoff",
+            post(handoff).layer(from_fn(finish_after_disconnect)),
+        )
         .route("/auto-resume", get(get_auto_resume).post(set_auto_resume))
         .route("/reset", post(reset_process))
-        .route("/setup", post(run_setup_script))
+        .route(
+            "/setup",
+            post(run_setup_script).layer(from_fn(finish_after_disconnect)),
+        )
         .route("/review", post(review::start_review))
         .route("/vibe-review", post(review::vibe_review))
         .route("/vibe-review/status", get(review::vibe_review_status))

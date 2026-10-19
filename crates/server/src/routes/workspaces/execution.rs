@@ -7,6 +7,7 @@ use api_types::IssueRelationshipType;
 use axum::{
     Extension, Router,
     extract::{Query, State},
+    middleware::from_fn,
     response::Json as ResponseJson,
     routing::{get, post},
 };
@@ -28,7 +29,7 @@ use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
-use crate::{DeploymentImpl, error::ApiError};
+use crate::{DeploymentImpl, error::ApiError, middleware::finish_after_disconnect};
 
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -40,11 +41,23 @@ pub enum RunScriptError {
 
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
-        .route("/dev-server/start", post(start_dev_server))
+        .route(
+            "/dev-server/start",
+            post(start_dev_server).layer(from_fn(finish_after_disconnect)),
+        )
         .route("/dev-servers", get(get_dev_servers))
-        .route("/cleanup", post(run_cleanup_script))
-        .route("/archive", post(run_archive_script))
-        .route("/stop", post(stop_workspace_execution))
+        .route(
+            "/cleanup",
+            post(run_cleanup_script).layer(from_fn(finish_after_disconnect)),
+        )
+        .route(
+            "/archive",
+            post(run_archive_script).layer(from_fn(finish_after_disconnect)),
+        )
+        .route(
+            "/stop",
+            post(stop_workspace_execution).layer(from_fn(finish_after_disconnect)),
+        )
 }
 
 /// Return dev server processes for the workspace across all of its sessions.

@@ -6,7 +6,7 @@ use axum::{
         ws::{CloseFrame, Message, close_code},
     },
     http::StatusCode,
-    middleware::from_fn_with_state,
+    middleware::{from_fn, from_fn_with_state},
     response::{
         IntoResponse, Json as ResponseJson, Sse,
         sse::{Event, KeepAlive},
@@ -40,7 +40,7 @@ use crate::{
     DeploymentImpl,
     error::ApiError,
     middleware::{
-        load_execution_process_middleware,
+        finish_after_disconnect, load_execution_process_middleware,
         signed_ws::{MaybeSignedWebSocket, SignedWsUpgrade},
     },
 };
@@ -893,7 +893,10 @@ async fn get_execution_process_repo_states(
 pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let workspace_id_router = Router::new()
         .route("/", get(get_execution_process_by_id))
-        .route("/stop", post(stop_execution_process))
+        .route(
+            "/stop",
+            post(stop_execution_process).layer(from_fn(finish_after_disconnect)),
+        )
         .route("/subagent/transcript", post(subagent_transcript))
         .route("/subagent/stop", post(subagent_stop))
         .route("/repo-states", get(get_execution_process_repo_states))

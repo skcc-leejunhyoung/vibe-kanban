@@ -16,11 +16,14 @@ pub mod workspace_summary;
 
 use axum::{
     Router,
-    middleware::from_fn_with_state,
+    middleware::{from_fn, from_fn_with_state},
     routing::{get, post},
 };
 
-use crate::{DeploymentImpl, middleware::load_workspace_middleware};
+use crate::{
+    DeploymentImpl,
+    middleware::{finish_after_disconnect, load_workspace_middleware},
+};
 
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let workspace_id_router = Router::new()
@@ -49,8 +52,14 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             get(core::get_workspaces).post(create::create_workspace),
         )
         .route("/create", post(create::create_workspace_without_starting))
-        .route("/start", post(create::create_and_start_workspace))
-        .route("/quick-chat", post(create::create_and_start_quick_chat))
+        .route(
+            "/start",
+            post(create::create_and_start_workspace).layer(from_fn(finish_after_disconnect)),
+        )
+        .route(
+            "/quick-chat",
+            post(create::create_and_start_quick_chat).layer(from_fn(finish_after_disconnect)),
+        )
         .route("/from-pr", post(pr::create_workspace_from_pr))
         .route("/from-pr/status", get(pr::get_pr_checkout_status))
         .route("/streams/ws", get(streams::stream_workspaces_ws))

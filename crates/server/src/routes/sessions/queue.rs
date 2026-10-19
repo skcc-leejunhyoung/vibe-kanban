@@ -1,7 +1,7 @@
 use axum::{
     Extension, Json, Router,
     extract::{Query, State},
-    middleware::from_fn_with_state,
+    middleware::{from_fn, from_fn_with_state},
     response::Json as ResponseJson,
     routing::{get, post},
 };
@@ -20,7 +20,11 @@ use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
-use crate::{DeploymentImpl, error::ApiError, middleware::load_session_middleware};
+use crate::{
+    DeploymentImpl,
+    error::ApiError,
+    middleware::{finish_after_disconnect, load_session_middleware},
+};
 
 /// Request body for queueing (or steering) a follow-up message
 #[derive(Debug, Deserialize, TS)]
@@ -408,14 +412,19 @@ async fn reorder_queue(
 
 pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     Router::new()
+        .route("/", get(get_queue_status).delete(delete_queued_message))
         .route(
             "/",
-            get(get_queue_status)
-                .post(queue_message)
-                .delete(delete_queued_message),
+            post(queue_message).layer(from_fn(finish_after_disconnect)),
         )
-        .route("/steer", post(steer_message))
-        .route("/steer-queued", post(steer_queued_message))
+        .route(
+            "/steer",
+            post(steer_message).layer(from_fn(finish_after_disconnect)),
+        )
+        .route(
+            "/steer-queued",
+            post(steer_queued_message).layer(from_fn(finish_after_disconnect)),
+        )
         .route("/update", post(update_queued_message))
         .route("/reorder", post(reorder_queue))
         .layer(from_fn_with_state(
