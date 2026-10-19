@@ -160,6 +160,26 @@ pub fn assistant_message_in_store(msg_store: &MsgStore) -> Option<String> {
 /// [`ContainerService::lock_container`].
 pub type ContainerLocks = Arc<RwLock<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>;
 
+/// Serialises our git writes into one repo's checkout — vibe auto-merge,
+/// manual Merge, base pulls. Run together they race on `.git/index.lock` and
+/// the base ref, and the loser fails outright; queued, the next one sees the
+/// moved base. Keyed by the canonical repo path, so other repos never wait.
+// ponytail: one lock per repo, not per target branch — merges into different
+// branches of one repo queue too; key on the branch's checkout if that matters.
+pub async fn lock_repo_checkout(repo_path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+    static LOCKS: OnceLock<std::sync::Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
+        OnceLock::new();
+    let key = std::fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    let lock = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .entry(key)
+        .or_default()
+        .clone();
+    lock.lock_owned().await
+}
+
 /// Per-session stop counters of starts in flight; see
 /// [`ContainerService::watch_session_stops`].
 pub type SessionStopSignals = Arc<std::sync::Mutex<HashMap<Uuid, tokio::sync::watch::Sender<u64>>>>;

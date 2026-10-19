@@ -52,6 +52,7 @@ use services::services::{
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
     container::{
         ContainerError, ContainerLocks, ContainerRef, ContainerService, SessionStopSignals,
+        lock_repo_checkout,
     },
     diff_stream::{self, DiffStreamHandle},
     events::EventService,
@@ -2891,7 +2892,7 @@ impl LocalContainerService {
 
                 // Git refuses blocking local edits. Never ask an agent to
                 // settle another checkout's WIP or send its file list to it.
-                let (outcome, detail) = self.vibe_perform_merge(ctx).await;
+                let (outcome, detail) = self.vibe_perform_merge(&ctx.workspace).await;
                 match decide_after_merge(outcome, retry, &VibeBounds::default()) {
                     PostMergeAction::MarkInReview => {
                         if let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await {
@@ -3194,8 +3195,7 @@ impl LocalContainerService {
     /// Returns the outcome plus a short human-readable detail of what went
     /// wrong (empty on success) for the escalation notification / log — the
     /// outcome alone hid *why* an auto-merge gave up.
-    async fn vibe_perform_merge(&self, ctx: &ExecutionContext) -> (MergeOutcome, String) {
-        let workspace = ctx.workspace.clone();
+    async fn vibe_perform_merge(&self, workspace: &Workspace) -> (MergeOutcome, String) {
         let workspace_id = workspace.id;
 
         let workspace_repos =
@@ -3216,7 +3216,7 @@ impl LocalContainerService {
                 }
             };
 
-        let container_ref = match self.ensure_container_exists(&workspace).await {
+        let container_ref = match self.ensure_container_exists(workspace).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("vibe merge: ensure container failed: {}", e);
@@ -3254,6 +3254,9 @@ impl LocalContainerService {
                     continue;
                 }
             };
+            // Held through rebase, merge and its record: a concurrent approve
+            // into the same checkout waits here, then rebases onto our merge.
+            let _checkout = lock_repo_checkout(&repo.path).await;
 
             let merges =
                 match Merge::find_by_workspace_and_repo_id(&self.db.pool, workspace_id, repo.id)
@@ -5149,6 +5152,111 @@ done
             queued_message_service: QueuedMessageService::new(),
             remote_client: None,
         }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+
+    /// A workspace whose branch adds `<name>.txt` on top of `main`.
+    async fn task_workspace(
+        container: &LocalContainerService,
+        repo: &Repo,
+        root: &Path,
+        name: &str,
+    ) -> Workspace {
+        let pool = &container.db.pool;
+        let create = db::models::workspace::CreateWorkspace {
+            branch: format!("vk/{name}"),
+            name: None,
+        };
+        let workspace = Workspace::create(pool, &create, Uuid::new_v4())
+            .await
+            .unwrap();
+        WorkspaceRepo::create_many(
+            pool,
+            workspace.id,
+            &[db::models::workspace_repo::CreateWorkspaceRepo {
+                repo_id: repo.id,
+                target_branch: "main".into(),
+            }],
+        )
+        .await
+        .unwrap();
+        Workspace::update_container_ref(pool, workspace.id, &root.join(name).to_string_lossy())
+            .await
+            .unwrap();
+        let workspace = Workspace::find_by_id(pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let worktree = PathBuf::from(container.ensure_container_exists(&workspace).await.unwrap())
+            .join(&repo.name);
+        std::fs::write(worktree.join(format!("{name}.txt")), name).unwrap();
+        git(&worktree, &["add", "."]);
+        git(&worktree, &["commit", "-m", name]);
+        workspace
+    }
+
+    /// Approves landing together used to merge into the same checkout at
+    /// once, and the loser hit `.git/index.lock` and was blocked. Now the
+    /// later merge waits, rebases onto the earlier one and lands as well,
+    /// while a lock on another checkout holds nobody up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn vibe_merges_into_one_checkout_take_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("repo");
+        git(dir.path(), &["init", "-b", "main", "repo"]);
+        git(&repo_path, &["commit", "--allow-empty", "-m", "init"]);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let repo = Repo::find_or_create(&pool, &repo_path, "repo")
+            .await
+            .unwrap();
+        let container = Arc::new(container_on(pool));
+        let merge = |workspace: Workspace| {
+            let container = container.clone();
+            tokio::spawn(async move { container.vibe_perform_merge(&workspace).await })
+        };
+
+        let a = task_workspace(&container, &repo, dir.path(), "a").await;
+        let b = task_workspace(&container, &repo, dir.path(), "b").await;
+        let (a, b) = tokio::join!(merge(a), merge(b));
+        assert_eq!(a.unwrap().0, MergeOutcome::Success);
+        assert_eq!(b.unwrap().0, MergeOutcome::Success);
+
+        let c = task_workspace(&container, &repo, dir.path(), "c").await;
+        let _other_checkout = lock_repo_checkout(dir.path()).await;
+        let held = lock_repo_checkout(&repo_path).await;
+        let c = merge(c);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!c.is_finished(), "merge must wait for the checkout");
+        drop(held);
+        let c = tokio::time::timeout(Duration::from_secs(30), c)
+            .await
+            .expect("merge goes through once the checkout is free");
+        assert_eq!(c.unwrap().0, MergeOutcome::Success);
+
+        let tree = std::process::Command::new("git")
+            .args(["ls-tree", "--name-only", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&tree.stdout),
+            "a.txt\nb.txt\nc.txt\n"
+        );
     }
 
     /// A follow-up for `agent`; anything but Claude Code fails to start in the

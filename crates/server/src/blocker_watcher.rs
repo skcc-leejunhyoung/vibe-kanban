@@ -18,7 +18,10 @@ use db::models::{
     workspace_repo::WorkspaceRepo,
 };
 use deployment::Deployment;
-use services::services::{container::ContainerService, issue_gating};
+use services::services::{
+    container::{ContainerService, lock_repo_checkout},
+    issue_gating,
+};
 use tokio::{process::Command, time::sleep};
 
 use crate::DeploymentImpl;
@@ -33,6 +36,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(10);
 /// Best-effort: failures are logged but not raised — the rebase still runs
 /// against whatever sha the local ref already points to.
 async fn refresh_main_repo_base(main_repo_path: &Path, base_branch: &str) {
+    let _checkout = lock_repo_checkout(main_repo_path).await;
     let out = Command::new("git")
         .arg("-C")
         .arg(main_repo_path)

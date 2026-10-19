@@ -19,7 +19,10 @@ use db::models::{
 use deployment::Deployment;
 use git::{ConflictOp, GitCliError, GitServiceError, PullOutcome};
 use serde::{Deserialize, Serialize};
-use services::services::{container::ContainerService, diff_stream, remote_sync};
+use services::services::{
+    container::{ContainerService, lock_repo_checkout},
+    diff_stream, remote_sync,
+};
 use ts_rs::TS;
 use utils::{diff::Diff, response::ApiResponse};
 use uuid::Uuid;
@@ -499,6 +502,9 @@ pub async fn merge_workspace(
             "Cannot merge directly when a pull request is open for this branch.".to_string(),
         ));
     }
+
+    // Same checkout lock as the vibe auto-merge, held until the merge is recorded.
+    let _checkout = lock_repo_checkout(&repo.path).await;
 
     // If the target is a remote-only branch, materialize a local branch from it
     // (tracking the remote) and merge into that instead of blocking the merge.
@@ -1705,11 +1711,11 @@ pub async fn pull_target_branch(
         return Ok(ResponseJson(ApiResponse::error(&e.to_string())));
     }
 
-    match git.fast_forward_local_branch_to_remote(
-        &repo.path,
-        &workspace_repo.target_branch,
-        &remote,
-    ) {
+    let pulled = {
+        let _checkout = lock_repo_checkout(&repo.path).await;
+        git.fast_forward_local_branch_to_remote(&repo.path, &workspace_repo.target_branch, &remote)
+    };
+    match pulled {
         Ok(PullOutcome::Diverged { ahead, behind }) => {
             return Ok(ResponseJson(ApiResponse::success(
                 PullWorkspaceResponse::Diverged { ahead, behind },
