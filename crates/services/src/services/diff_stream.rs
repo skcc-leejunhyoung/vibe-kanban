@@ -1384,4 +1384,54 @@ mod tests {
         cache.retain(|path| path != worktree_path);
         assert!(cache.entries.lock().unwrap().is_empty());
     }
+
+    #[tokio::test]
+    async fn in_place_diff_stats_count_uncommitted_changes_in_the_checkout() {
+        use db::models::{
+            repo::Repo, workspace::CreateWorkspace, workspace_repo::CreateWorkspaceRepo,
+        };
+
+        let (_tmp, repo_path, _worktree_path) = setup_repo_with_worktree();
+        std::fs::write(repo_path.join("a.txt"), "hello\nworld\n").unwrap();
+        std::fs::write(repo_path.join("new.txt"), "x\ny\n").unwrap();
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let repo = Repo::find_or_create(&pool, &repo_path, "repo")
+            .await
+            .unwrap();
+        let workspace = Workspace::create_in_place(
+            &pool,
+            &CreateWorkspace {
+                branch: "main".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+            repo_path.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        WorkspaceRepo::create_many(
+            &pool,
+            workspace.id,
+            &[CreateWorkspaceRepo {
+                repo_id: repo.id,
+                target_branch: "main".to_string(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let stats = compute_diff_stats(&pool, &GitService::new(), &workspace)
+            .await
+            .unwrap();
+        assert_eq!(
+            (stats.files_changed, stats.lines_added, stats.lines_removed),
+            (2, 3, 0)
+        );
+    }
 }
