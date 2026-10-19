@@ -9,7 +9,13 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { useQuery, useQueries, keepPreviousData } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useQueries,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query';
 import { statusFirstSentence } from '@/shared/lib/statusNote';
 import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
@@ -268,61 +274,44 @@ export const workspaceKeys = {
 
 // workspaceSummaryKeys is imported from @/shared/hooks/workspaceSummaryKeys
 
-// `archived: null` fetches active and archived summaries in one request;
-// consumers still look up by id.
+// One list per request: the archive is fetched separately and far less often.
 export async function fetchWorkspaceSummaries(
   hostId: string | null,
   {
-    archived = null,
+    archived,
     includeLatestPrompt = true,
-  }: { archived?: boolean | null; includeLatestPrompt?: boolean } = {}
+  }: { archived: boolean; includeLatestPrompt?: boolean }
 ): Promise<Map<string, WorkspaceSummary>> {
-  const fetchByArchived = async (
-    archived: boolean | null
-  ): Promise<Map<string, WorkspaceSummary>> => {
-    try {
-      const response = await makeLocalApiRequest('/api/workspaces/summaries', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          archived,
-          include_latest_prompt: includeLatestPrompt,
-        }),
-        hostScope: 'explicit',
-        hostId,
-        relayHostId: hostId,
-      });
-
-      // Older hosts require a boolean. Retry only schema rejection, once per
-      // list; a host upgraded between polls automatically resumes one request.
-      if (archived === null && response.status === 422) {
-        const lists = await Promise.all([
-          fetchByArchived(false),
-          fetchByArchived(true),
-        ]);
-        return new Map(lists.flatMap((list) => [...list]));
-      }
-
-      if (!response.ok) {
-        console.warn('Failed to fetch workspace summaries:', response.status);
-        return new Map();
-      }
-
-      const data: ApiResponse<WorkspaceSummaryResponse> = await response.json();
-      if (!data.success || !data.data?.summaries) {
-        return new Map();
-      }
-      const map = new Map<string, WorkspaceSummary>();
-      for (const summary of data.data.summaries) {
-        map.set(summary.workspace_id, summary);
-      }
-      return map;
-    } catch (err) {
-      console.warn('Error fetching workspace summaries:', err);
+  try {
+    const response = await makeLocalApiRequest('/api/workspaces/summaries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        archived,
+        include_latest_prompt: includeLatestPrompt,
+      }),
+      hostScope: 'explicit',
+      hostId,
+      relayHostId: hostId,
+    });
+    if (!response.ok) {
+      console.warn('Failed to fetch workspace summaries:', response.status);
       return new Map();
     }
-  };
-  return fetchByArchived(archived);
+
+    const data: ApiResponse<WorkspaceSummaryResponse> = await response.json();
+    if (!data.success || !data.data?.summaries) {
+      return new Map();
+    }
+    const map = new Map<string, WorkspaceSummary>();
+    for (const summary of data.data.summaries) {
+      map.set(summary.workspace_id, summary);
+    }
+    return map;
+  } catch (err) {
+    console.warn('Error fetching workspace summaries:', err);
+    return new Map();
+  }
 }
 
 export function useWorkspaces(enabled = true): UseWorkspacesResult {
@@ -339,7 +328,8 @@ const ARCHIVED_SUMMARIES_REFRESH_MS = 5 * 60_000;
  */
 function useHostWorkspaces(
   hostId: string | null,
-  enabled: boolean
+  enabled: boolean,
+  archiveEnabled = true
 ): UseWorkspacesResult {
   const apiBasePath = hostId ? `/api/host/${hostId}` : '/api';
   const initialData = useCallback(
@@ -369,7 +359,7 @@ function useHostWorkspaces(
     `${apiBasePath}/workspaces/streams/ws?archived=true`,
     // `activeData` survives reconnects (cached snapshot), so the archive
     // doesn't drop and re-download when the active stream blips.
-    enabled && (activeIsInitialized || !!activeData),
+    enabled && archiveEnabled && (activeIsInitialized || !!activeData),
     initialData,
     streamOptions
   );
@@ -385,9 +375,10 @@ function useHostWorkspaces(
     placeholderData: keepPreviousData,
   });
 
-  // Archived rows rarely change: fetch when the archive attaches, when ids are
-  // archived into it, and on a slow interval. No archived row shows its latest
-  // prompt, which is most of this response's weight.
+  // Archived rows rarely change: fetch when the archive attaches, when a row is
+  // archived into it or its process state changes, and on a slow interval. No
+  // archived row shows its latest prompt, which is most of this response's
+  // weight.
   const {
     data: archivedSummaries = EMPTY_WORKSPACE_SUMMARIES,
     refetch: refetchArchivedSummaries,
@@ -405,16 +396,25 @@ function useHostWorkspaces(
     placeholderData: keepPreviousData,
   });
 
-  const seenArchivedIds = useRef<{
+  // Compared by value, so a reconnect replaying the same rows refetches nothing.
+  const seenArchivedRows = useRef<{
     hostId: string | null;
-    ids: ReadonlySet<string>;
+    rows: ReadonlyMap<string, string>;
   } | null>(null);
   useEffect(() => {
     if (!archivedIsInitialized) return;
-    const ids = Object.keys(archivedData?.workspaces ?? {});
-    const seen = seenArchivedIds.current;
-    seenArchivedIds.current = { hostId, ids: new Set(ids) };
-    if (seen?.hostId === hostId && ids.some((id) => !seen.ids.has(id))) {
+    const rows = new Map(
+      Object.values(archivedData?.workspaces ?? {}).map((ws) => [
+        ws.id,
+        `${ws.is_running}:${ws.is_errored}`,
+      ])
+    );
+    const seen = seenArchivedRows.current;
+    seenArchivedRows.current = { hostId, rows };
+    if (
+      seen?.hostId === hostId &&
+      [...rows].some(([id, state]) => seen.rows.get(id) !== state)
+    ) {
       void refetchArchivedSummaries();
     }
   }, [archivedData, archivedIsInitialized, hostId, refetchArchivedSummaries]);
@@ -472,11 +472,6 @@ function useHostWorkspaces(
     ]
   );
 }
-
-type HostWorkspaceSnapshot = {
-  active: SidebarWorkspace[];
-  archived: SidebarWorkspace[];
-};
 
 type RemoteHostWorkspaceStream = UseWorkspacesResult;
 
@@ -537,14 +532,16 @@ const RemoteWorkspaceStreamsContext = createContext<
 
 function RemoteHostWorkspaceStreamSource({
   hostId,
+  archiveEnabled,
   onUpdate,
   onRemove,
 }: {
   hostId: string;
+  archiveEnabled: boolean;
   onUpdate: (hostId: string, result: RemoteHostWorkspaceStream) => void;
   onRemove: (hostId: string) => void;
 }) {
-  const result = useHostWorkspaces(hostId, true);
+  const result = useHostWorkspaces(hostId, true, archiveEnabled);
 
   useEffect(() => {
     onUpdate(hostId, result);
@@ -614,6 +611,17 @@ export function UnifiedWorkspaceStreamsProvider({
     });
   }, []);
 
+  // Archives wait for every online host's active list so they never compete
+  // with the first paint. Once open they stay open; a host that comes online
+  // later still waits for its own active list.
+  const [archivesOpen, setArchivesOpen] = useState(false);
+  const activeListsReady =
+    onlineHostIds.length > 0 &&
+    onlineHostIds.every((hostId) => streams.get(hostId)?.isLoading === false);
+  useEffect(() => {
+    if (activeListsReady) setArchivesOpen(true);
+  }, [activeListsReady]);
+
   if (runtime !== 'remote') {
     return children;
   }
@@ -625,6 +633,7 @@ export function UnifiedWorkspaceStreamsProvider({
       createElement(RemoteHostWorkspaceStreamSource, {
         key: hostId,
         hostId,
+        archiveEnabled: archivesOpen,
         onUpdate: handleUpdate,
         onRemove: handleRemove,
       })
@@ -653,33 +662,53 @@ export function resolveSnapshotHostIds(
   return ids;
 }
 
-async function fetchHostWorkspaceSnapshot(
-  hostId: string | null
-): Promise<HostWorkspaceSnapshot> {
-  const [records, summaries] = await Promise.all([
-    workspacesApi.getAllWorkspaces(hostId),
-    fetchWorkspaceSummaries(hostId, { includeLatestPrompt: false }),
-  ]);
+const unifiedSnapshotKey = (
+  hostId: string | null,
+  list: 'active' | 'archived'
+) => ['unified-workspaces', hostId, list] as const;
 
-  const active: SidebarWorkspace[] = [];
-  const archived: SidebarWorkspace[] = [];
-  for (const workspace of records) {
-    const item = toSnapshotSidebarWorkspace(
-      workspace,
-      summaries.get(workspace.id),
-      hostId
-    );
-    (workspace.archived ? archived : active).push(item);
+async function fetchHostWorkspaceSnapshot(
+  hostId: string | null,
+  archived: boolean
+): Promise<SidebarWorkspace[]> {
+  const [records, summaries] = await Promise.all([
+    workspacesApi.getAllWorkspaces(hostId, archived),
+    fetchWorkspaceSummaries(hostId, { archived, includeLatestPrompt: false }),
+  ]);
+  return records.map((workspace) =>
+    toSnapshotSidebarWorkspace(workspace, summaries.get(workspace.id), hostId)
+  );
+}
+
+export async function fetchActiveHostWorkspaceSnapshot(
+  queryClient: QueryClient,
+  hostId: string | null
+): Promise<SidebarWorkspace[]> {
+  const previous = queryClient.getQueryData<SidebarWorkspace[]>(
+    unifiedSnapshotKey(hostId, 'active')
+  );
+  const next = await fetchHostWorkspaceSnapshot(hostId, false);
+  // (Un)archiving elsewhere moves ids in or out of the active set; that is
+  // the cue to refresh the slow archived snapshot.
+  const previousIds = new Set(previous?.map((workspace) => workspace.id));
+  if (
+    previous &&
+    (previous.length !== next.length ||
+      next.some((workspace) => !previousIds.has(workspace.id)))
+  ) {
+    void queryClient.invalidateQueries({
+      queryKey: unifiedSnapshotKey(hostId, 'archived'),
+    });
   }
-  return { active, archived };
+  return next;
 }
 
 function combineHostWorkspaceSnapshots(
-  queries: { data: HostWorkspaceSnapshot | undefined }[]
-): HostWorkspaceSnapshot {
+  queries: { data: SidebarWorkspace[] | undefined }[]
+) {
   return {
-    active: queries.flatMap((query) => query.data?.active ?? []),
-    archived: queries.flatMap((query) => query.data?.archived ?? []),
+    loaded: queries.map((query) => query.data !== undefined),
+    workspaces: queries.flatMap((query) => query.data ?? []),
   };
 }
 
@@ -708,12 +737,25 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
     if (!enabled || runtime !== 'local') return [];
     return resolveSnapshotHostIds(onlineHostIds, currentHostId);
   }, [enabled, onlineHostIds, currentHostId, runtime]);
-  const snapshots = useQueries({
+  const queryClient = useQueryClient();
+  // Same order as the live streams: a host's archive snapshot waits for its
+  // active one, then refreshes slowly.
+  const activeSnapshots = useQueries({
     queries: snapshotHostIds.map((hostId) => ({
-      queryKey: ['unified-workspaces', hostId],
-      queryFn: () => fetchHostWorkspaceSnapshot(hostId),
+      queryKey: unifiedSnapshotKey(hostId, 'active'),
+      queryFn: () => fetchActiveHostWorkspaceSnapshot(queryClient, hostId),
       staleTime: 15_000,
       refetchInterval: 15_000,
+    })),
+    combine: combineHostWorkspaceSnapshots,
+  });
+  const archivedSnapshots = useQueries({
+    queries: snapshotHostIds.map((hostId, i) => ({
+      queryKey: unifiedSnapshotKey(hostId, 'archived'),
+      queryFn: () => fetchHostWorkspaceSnapshot(hostId, true),
+      enabled: activeSnapshots.loaded[i],
+      staleTime: ARCHIVED_SUMMARIES_REFRESH_MS,
+      refetchInterval: ARCHIVED_SUMMARIES_REFRESH_MS,
     })),
     combine: combineHostWorkspaceSnapshots,
   });
@@ -729,8 +771,11 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
     }
 
     return {
-      workspaces: [...workspaces, ...snapshots.active],
-      archivedWorkspaces: [...archivedWorkspaces, ...snapshots.archived],
+      workspaces: [...workspaces, ...activeSnapshots.workspaces],
+      archivedWorkspaces: [
+        ...archivedWorkspaces,
+        ...archivedSnapshots.workspaces,
+      ],
       workspaceRecordsById,
       isLoading,
       isArchivedLoading,
@@ -746,7 +791,8 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
     isConnected,
     error,
     enabled,
-    snapshots,
+    activeSnapshots,
+    archivedSnapshots,
     runtime,
     remoteStreams,
     onlineHostIds,

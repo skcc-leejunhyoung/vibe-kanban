@@ -5,13 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceSummary, WorkspaceWithStatus } from 'shared/types';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
 import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
+import { workspacesApi } from '@/shared/lib/api';
 import { workspaceSummaryKeys } from './workspaceSummaryKeys';
 import {
   combineRemoteWorkspaceStreams,
+  fetchActiveHostWorkspaceSnapshot,
   fetchWorkspaceSummaries,
   getHostWorkspaceKey,
   resolveOnlineWorkspaceStreamHostIds,
   resolveSnapshotHostIds,
+  UnifiedWorkspaceStreamsProvider,
+  useUnifiedWorkspaces,
   useWorkspaces,
   type SidebarWorkspace,
   type UseWorkspacesResult,
@@ -23,10 +27,22 @@ vi.mock('@/shared/lib/localApiTransport', () => ({
 vi.mock('@/shared/hooks/useJsonPatchWsStream', () => ({
   useJsonPatchWsStream: vi.fn(),
 }));
+vi.mock('@/shared/lib/api', () => ({
+  workspacesApi: { getAllWorkspaces: vi.fn() },
+}));
+const env = vi.hoisted(() => ({
+  runtime: 'local' as 'local' | 'remote',
+  hosts: [] as { id: string; status: string }[],
+}));
+vi.mock('@/shared/hooks/useAppRuntime', () => ({
+  useAppRuntime: () => env.runtime,
+}));
+vi.mock('@/shared/hooks/useWorkspaceHostOptions', () => ({
+  useWorkspaceHostOptions: () => ({ hosts: env.hosts }),
+}));
 
-describe('combined workspace summaries', () => {
+describe('workspace summaries', () => {
   it.each([
-    [{}, { archived: null, include_latest_prompt: true }],
     [{ archived: false }, { archived: false, include_latest_prompt: true }],
     [
       { archived: true, includeLatestPrompt: false },
@@ -62,92 +78,18 @@ describe('combined workspace summaries', () => {
     );
   });
 
-  it.each([null, 'legacy-host'])(
-    'falls back to boolean filters only for an older host %s',
-    async (hostId) => {
-      const request = vi.mocked(makeLocalApiRequest);
-      request.mockReset();
-      request.mockImplementation(async (_path, options) => {
-        const { archived } = JSON.parse(options?.body as string);
-        if (archived === null) {
-          return new Response('invalid type: null, expected a boolean', {
-            status: 422,
-          });
-        }
-        return new Response(
-          JSON.stringify({
-            success: true,
-            data: {
-              summaries: [
-                {
-                  workspace_id: archived ? 'archived' : 'active',
-                  todo_total: 3,
-                },
-              ],
-            },
-          })
-        );
-      });
-
-      const map = await fetchWorkspaceSummaries(hostId, {
-        includeLatestPrompt: false,
-      });
-      expect([...map.keys()]).toEqual(['active', 'archived']);
-      expect(request).toHaveBeenCalledTimes(3);
-      expect(
-        request.mock.calls.map(([, options]) =>
-          JSON.parse(options?.body as string)
-        )
-      ).toEqual([
-        { archived: null, include_latest_prompt: false },
-        { archived: false, include_latest_prompt: false },
-        { archived: true, include_latest_prompt: false },
-      ]);
-      for (const [, options] of request.mock.calls) {
-        expect(options).toMatchObject({
-          hostScope: 'explicit',
-          hostId,
-          relayHostId: hostId,
-        });
-      }
-    }
-  );
-
   it.each([401, 403, 500])(
     'does not retry non-schema error %s',
     async (status) => {
       const request = vi.mocked(makeLocalApiRequest);
       request.mockReset();
       request.mockResolvedValue(new Response(null, { status }));
-      expect((await fetchWorkspaceSummaries('failed-host')).size).toBe(0);
+      expect(
+        (await fetchWorkspaceSummaries('failed-host', { archived: false })).size
+      ).toBe(0);
       expect(request).toHaveBeenCalledTimes(1);
     }
   );
-
-  it('keeps the other legacy list when one request fails without retrying again', async () => {
-    const request = vi.mocked(makeLocalApiRequest);
-    for (const failure of [
-      new Response(null, { status: 422 }),
-      new Error('offline'),
-    ]) {
-      request.mockReset();
-      request.mockResolvedValueOnce(new Response(null, { status: 422 }));
-      if (failure instanceof Error) request.mockRejectedValueOnce(failure);
-      else request.mockResolvedValueOnce(failure);
-      request.mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            success: true,
-            data: { summaries: [{ workspace_id: 'archived' }] },
-          })
-        )
-      );
-      expect([
-        ...(await fetchWorkspaceSummaries('legacy-host')).keys(),
-      ]).toEqual(['archived']);
-      expect(request).toHaveBeenCalledTimes(3);
-    }
-  });
 });
 
 describe('resolveOnlineWorkspaceStreamHostIds', () => {
@@ -415,8 +357,9 @@ describe('useWorkspaces active-first loading', () => {
     vi
       .mocked(makeLocalApiRequest)
       .mock.calls.map(([, options]) => JSON.parse(options?.body as string));
+  let useHook: () => UseWorkspacesResult;
   function Probe() {
-    result = useWorkspaces();
+    result = useHook();
     return null;
   }
   const render = () =>
@@ -425,7 +368,11 @@ describe('useWorkspaces active-first loading', () => {
         createElement(
           QueryClientProvider,
           { client: queryClient },
-          createElement(Probe)
+          createElement(
+            UnifiedWorkspaceStreamsProvider,
+            null,
+            createElement(Probe)
+          )
         )
       );
     });
@@ -459,6 +406,9 @@ describe('useWorkspaces active-first loading', () => {
     });
     streams = {};
     enabledByEndpoint = {};
+    useHook = useWorkspaces;
+    env.runtime = 'local';
+    env.hosts = [{ id: 'i9', status: 'online' }];
     vi.mocked(useJsonPatchWsStream).mockImplementation(((
       endpoint: string,
       enabled: boolean
@@ -520,7 +470,7 @@ describe('useWorkspaces active-first loading', () => {
     ]);
   });
 
-  it('refetches archived summaries only when an id is archived in', async () => {
+  it('refetches archived summaries when an archived row is added or changes state', async () => {
     streams[ACTIVE] = { workspaces: { a1: row('a1', false) } };
     streams[ARCHIVED] = { workspaces: { z1: row('z1', true) } };
     await render();
@@ -535,9 +485,91 @@ describe('useWorkspaces active-first loading', () => {
     await render();
     await vi.waitFor(() => expect(archivedFetches()).toBe(2));
 
+    // Unarchive, or a reconnect replaying identical rows: nothing to fetch.
     streams[ARCHIVED] = { workspaces: { z1: row('z1', true) } };
     await render();
     await act(async () => {});
     expect(archivedFetches()).toBe(2);
+
+    streams[ARCHIVED] = {
+      workspaces: { z1: { ...row('z1', true), is_running: true } },
+    };
+    await render();
+    await vi.waitFor(() => expect(archivedFetches()).toBe(3));
+  });
+
+  it('opens remote archives only after every online host has its active list', async () => {
+    env.runtime = 'remote';
+    env.hosts = [
+      { id: 'host-a', status: 'online' },
+      { id: 'host-b', status: 'online' },
+    ];
+    useHook = useUnifiedWorkspaces;
+    const endpoint = (hostId: string, archived: boolean) =>
+      `/api/host/${hostId}/workspaces/streams/ws?archived=${archived}`;
+
+    streams[endpoint('host-a', false)] = {
+      workspaces: { a1: row('a1', false) },
+    };
+    await render();
+    await render();
+    expect(result.isLoading).toBe(true);
+    expect(enabledByEndpoint[endpoint('host-a', true)]).toBe(false);
+
+    streams[endpoint('host-b', false)] = { workspaces: {} };
+    await render();
+    await vi.waitFor(() =>
+      expect(enabledByEndpoint[endpoint('host-a', true)]).toBe(true)
+    );
+    expect(enabledByEndpoint[endpoint('host-b', true)]).toBe(true);
+    expect(result.isLoading).toBe(false);
+    expect(result.workspaces.map(({ id }) => id)).toEqual(['a1']);
+  });
+
+  it('loads a snapshot host archive only after its active snapshot', async () => {
+    useHook = useUnifiedWorkspaces;
+    const getAll = vi.mocked(workspacesApi.getAllWorkspaces);
+    let resolveActive!: (rows: WorkspaceWithStatus[]) => void;
+    getAll.mockReset();
+    getAll.mockImplementation((_hostId, archived) =>
+      archived
+        ? Promise.resolve([row('y1', true)])
+        : new Promise((resolve) => (resolveActive = resolve))
+    );
+
+    await render();
+    expect(getAll.mock.calls).toEqual([['i9', false]]);
+
+    await act(async () => resolveActive([row('b1', false)]));
+    await vi.waitFor(() =>
+      expect(result.archivedWorkspaces.map(({ id }) => id)).toEqual(['y1'])
+    );
+    expect(result.workspaces).toMatchObject([{ id: 'b1', hostId: 'i9' }]);
+    expect(getAll.mock.calls).toEqual([
+      ['i9', false],
+      ['i9', true],
+    ]);
+  });
+
+  it('refreshes the archived snapshot when the active set changes', async () => {
+    const getAll = vi.mocked(workspacesApi.getAllWorkspaces);
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const key = ['unified-workspaces', 'i9', 'active'];
+    const fetchInto = async (rows: WorkspaceWithStatus[]) => {
+      getAll.mockResolvedValueOnce(rows);
+      queryClient.setQueryData(
+        key,
+        await fetchActiveHostWorkspaceSnapshot(queryClient, 'i9')
+      );
+    };
+
+    await fetchInto([row('b1', false)]);
+    await fetchInto([row('b1', false)]);
+    expect(invalidate).not.toHaveBeenCalled();
+
+    await fetchInto([]);
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['unified-workspaces', 'i9', 'archived'],
+    });
   });
 });

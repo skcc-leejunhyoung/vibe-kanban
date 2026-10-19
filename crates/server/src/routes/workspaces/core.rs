@@ -27,11 +27,21 @@ pub struct DeleteWorkspaceQuery {
     pub delete_branches: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ListWorkspacesQuery {
+    /// Omitted returns active and archived workspaces.
+    pub archived: Option<bool>,
+}
+
 pub async fn get_workspaces(
     State(deployment): State<DeploymentImpl>,
+    Query(query): Query<ListWorkspacesQuery>,
 ) -> Result<ResponseJson<ApiResponse<Vec<Workspace>>>, ApiError> {
     let pool = &deployment.db().pool;
-    let workspaces = Workspace::fetch_all(pool).await?;
+    let mut workspaces = Workspace::fetch_all(pool).await?;
+    if let Some(archived) = query.archived {
+        workspaces.retain(|workspace| workspace.archived == archived);
+    }
     Ok(ResponseJson(ApiResponse::success(workspaces)))
 }
 

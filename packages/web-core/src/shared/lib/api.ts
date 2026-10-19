@@ -745,9 +745,21 @@ export const workspacesApi = {
   },
 
   /** Get all workspaces across all tasks (newest first) */
-  getAllWorkspaces: async (hostId?: string | null): Promise<Workspace[]> => {
-    const response = await makeHostAwareRequest('/api/workspaces', hostId);
-    return handleApiResponse<Workspace[]>(response);
+  getAllWorkspaces: async (
+    hostId?: string | null,
+    archived?: boolean
+  ): Promise<Workspace[]> => {
+    const response = await makeHostAwareRequest(
+      archived === undefined
+        ? '/api/workspaces'
+        : `/api/workspaces?archived=${archived}`,
+      hostId
+    );
+    const workspaces = await handleApiResponse<Workspace[]>(response);
+    // Older hosts ignore the filter and return every workspace.
+    return archived === undefined
+      ? workspaces
+      : workspaces.filter((workspace) => workspace.archived === archived);
   },
 
   get: async (
