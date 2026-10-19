@@ -907,7 +907,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     refreshQueueStatus,
   } = useSessionQueueInteraction({
     sessionId,
-    isRunning: isAttemptRunning,
+    // A pending auto-resume blocks the server's drain just like a running turn.
+    hasTurnAhead: isAttemptRunning || autoResumePendingAt !== null,
     onQueueConsumed: reconcileExecutionProcesses,
   });
 

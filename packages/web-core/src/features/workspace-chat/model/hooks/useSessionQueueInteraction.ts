@@ -17,8 +17,11 @@ import {
 interface UseSessionQueueInteractionOptions {
   /** Session ID for queue operations */
   sessionId: string | undefined;
-  /** A turn is running, so messages can be queued behind it from elsewhere */
-  isRunning?: boolean;
+  /**
+   * A turn is running or an auto-resume is scheduled: the queue waits behind
+   * it, so another tab, device or the API can add messages meanwhile.
+   */
+  hasTurnAhead?: boolean;
   /** Reconcile execution state after the server consumes the queue. */
   onQueueConsumed?: () => void;
 }
@@ -90,7 +93,7 @@ const statusOf = (messages: QueuedMessage[]): QueueStatus =>
  */
 export function useSessionQueueInteraction({
   sessionId,
-  isRunning = false,
+  hasTurnAhead = false,
   onQueueConsumed,
 }: UseSessionQueueInteractionOptions): UseSessionQueueInteractionResult {
   const queryClient = useQueryClient();
@@ -112,13 +115,14 @@ export function useSessionQueueInteraction({
       queryFn: () => queueApi.getStatus(sessionId!, hostId),
       enabled: !!sessionId,
       // Queue state is in-memory and has no push stream of its own. Poll while
-      // work is waiting, and slower while a turn runs so messages queued from
-      // another tab, device or the API show up; in-document split panes share
-      // this tab's visibility, so the default (pause while hidden) is enough.
+      // work is waiting, and slower while a turn is ahead so messages queued
+      // from another tab, device or the API show up; in-document split panes
+      // share this tab's visibility, so the default (pause while hidden) is
+      // enough.
       refetchInterval: (query) =>
         isMutating
           ? false
-          : queueStatusRefetchInterval(query.state.data, isRunning),
+          : queueStatusRefetchInterval(query.state.data, hasTurnAhead),
     });
 
   const queuedMessages = messagesOf(queueStatus);

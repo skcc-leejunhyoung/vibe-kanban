@@ -8,7 +8,7 @@ import {
 } from './queueReconciliation';
 
 describe('queue reconciliation', () => {
-  it('polls while work is queued or a turn is running', () => {
+  it('polls while work is queued or a turn is ahead', () => {
     expect(queueStatusRefetchInterval({ status: 'queued', messages: [] })).toBe(
       QUEUE_STATUS_REFETCH_INTERVAL_MS
     );
@@ -19,7 +19,7 @@ describe('queue reconciliation', () => {
     expect(queueStatusRefetchInterval(undefined)).toBe(false);
   });
 
-  it('keeps checking an empty queue while a turn runs, for messages queued elsewhere', () => {
+  it('keeps checking an empty queue while a turn is ahead, for messages queued elsewhere', () => {
     expect(queueStatusRefetchInterval({ status: 'empty' }, true)).toBe(
       QUEUE_STATUS_RUNNING_REFETCH_INTERVAL_MS
     );
