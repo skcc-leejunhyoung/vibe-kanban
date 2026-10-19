@@ -841,13 +841,23 @@ mod tests {
                 let _ = self.1.send(());
             }
         }
+        struct Released(mpsc::Sender<()>);
+        impl Drop for Released {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
         let (unblock, blocked) = mpsc::channel();
         let (dropped_tx, dropped) = mpsc::channel();
         let started = std::time::Instant::now();
-        release_off_thread(Stuck(blocked, dropped_tx));
+        release_off_thread(Stuck(blocked, dropped_tx.clone()));
+        release_off_thread(Released(dropped_tx));
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(dropped.recv_timeout(Duration::from_millis(100)).is_err());
         unblock.send(()).unwrap();
-        dropped.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Releases queued behind the stuck stop run once it ends.
+        for _ in 0..2 {
+            dropped.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
     }
 }
