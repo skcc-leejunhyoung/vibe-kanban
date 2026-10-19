@@ -522,14 +522,17 @@ fn worktree_diff_lists_untracked_files_without_writing_blobs() {
     assert_eq!(s.get_diff_stats(&repo_path, &base).unwrap(), (2, 3, 0));
     assert_eq!(count_objects(&repo_path), before);
 
-    // Past the read budget untracked files are listed without line counts.
+    // Lines are counted per file however much untracked data sits beside it,
+    // and recounted once a file changes.
     for i in 0..9 {
         fs::File::create(repo_path.join(format!("scratch/frame{i}.raw")))
             .unwrap()
             .set_len(2 * 1024 * 1024)
             .unwrap();
     }
-    assert_eq!(s.get_diff_stats(&repo_path, &base).unwrap(), (11, 0, 0));
+    assert_eq!(s.get_diff_stats(&repo_path, &base).unwrap(), (11, 3, 0));
+    write_file(&repo_path, "scratch/notes.txt", "one\ntwo\nthree\nfour\n");
+    assert_eq!(s.get_diff_stats(&repo_path, &base).unwrap(), (11, 4, 0));
 }
 
 #[test]
@@ -607,4 +610,54 @@ fn worktree_diff_lists_cached_removal_once() {
 
     let base = s.get_base_commit(&repo_path, "feature", "main").unwrap();
     assert!(s.get_diffs(&repo_path, &base, None).unwrap().is_empty());
+}
+
+#[test]
+fn worktree_diff_filtered_rediff_pairs_renames_like_the_full_diff() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+    write_file(&repo_path, "a.txt", "one\ntwo\nthree\n");
+    s.commit(&repo_path, "baseline").unwrap();
+    create_branch(&repo_path, "feature");
+
+    // Enough untracked bytes that rename candidates are not hashed.
+    fs::File::create(repo_path.join("big.bin"))
+        .unwrap()
+        .set_len(17 * 1024 * 1024)
+        .unwrap();
+    fs::rename(repo_path.join("a.txt"), repo_path.join("b.txt")).unwrap();
+
+    let base = s.get_base_commit(&repo_path, "feature", "main").unwrap();
+    let summarize = |filter: Option<&[&str]>| {
+        let mut diffs: Vec<_> = s
+            .get_diffs(&repo_path, &base, filter)
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.new_path.as_deref() != Some("big.bin"))
+            .map(|d| format!("{:?} {:?} {:?}", d.change, d.old_path, d.new_path))
+            .collect();
+        diffs.sort();
+        diffs
+    };
+    assert_eq!(summarize(Some(&["a.txt", "b.txt"])), summarize(None));
+}
+
+#[test]
+fn worktree_diff_reports_untracked_nested_repo_without_trailing_slash() {
+    let td = TempDir::new().unwrap();
+    let repo_path = init_repo_main(&td);
+    let s = GitService::new();
+    write_file(&repo_path, "a.txt", "a\n");
+    s.commit(&repo_path, "baseline").unwrap();
+    create_branch(&repo_path, "feature");
+    GitCli::new()
+        .git(&repo_path, ["init", "-q", "nested"])
+        .unwrap();
+
+    let base = s.get_base_commit(&repo_path, "feature", "main").unwrap();
+    assert_eq!(
+        s.get_diff_file_paths(&repo_path, &base).unwrap(),
+        HashSet::from(["nested".to_string()])
+    );
 }

@@ -16,11 +16,13 @@
 //! `git` CLI, while keeping libgit2 for read‑only graph queries and credentialed
 //! network operations when useful.
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     io::{Read as _, Write as _},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{LazyLock, Mutex},
+    time::SystemTime,
 };
 
 use thiserror::Error;
@@ -94,9 +96,22 @@ pub struct WorktreeEntry {
     pub branch: Option<String>,
 }
 
-/// Total size of untracked files above which they are no longer read, neither
-/// hashed as rename candidates nor scanned for line counts.
-const UNTRACKED_READ_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
+/// Total size of untracked files above which they are no longer hashed as
+/// rename candidates.
+const UNTRACKED_RENAME_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Added-line counts of untracked files, reused while a file's size and mtime
+/// are unchanged so a poll only rereads the files that changed.
+///
+/// ponytail: entries of a removed worktree stay until restart; prune by
+/// worktree removal if memory ever matters.
+static UNTRACKED_LINE_COUNTS: LazyLock<Mutex<LineCounts>> = LazyLock::new(Default::default);
+
+/// Path to (size, mtime, added lines).
+type LineCounts = HashMap<PathBuf, (u64, SystemTime, Option<usize>)>;
+
+/// Repository paths as raw bytes.
+type RawPaths = Vec<Vec<u8>>;
 
 /// See [`GitCli::temp_worktree_index`]. The index lives as long as this value.
 struct TempWorktreeIndex {
@@ -295,15 +310,19 @@ impl GitCli {
         let args = Self::apply_pathspec_filter(args, opts.path_filter.as_ref());
         let out = self.git_with_env(worktree_path, args, &index.envs)?;
         let mut entries = Self::parse_numstat(&out);
-        let count_lines = Self::untracked_within_budget(
-            worktree_path,
-            &index.untracked,
-            crate::MAX_INLINE_DIFF_BYTES as u64,
-        );
+        if opts.path_filter.is_none() {
+            let live: HashSet<PathBuf> = index
+                .untracked
+                .iter()
+                .map(|path| worktree_path.join(path))
+                .collect();
+            UNTRACKED_LINE_COUNTS
+                .lock()
+                .unwrap()
+                .retain(|path, _| !path.starts_with(worktree_path) || live.contains(path));
+        }
         entries.extend(index.untracked.into_iter().map(|path| {
-            let additions = count_lines
-                .then(|| Self::count_added_lines(&worktree_path.join(&path)))
-                .flatten();
+            let additions = Self::cached_added_lines(&worktree_path.join(&path));
             NumstatDiffEntry {
                 additions,
                 deletions: additions.map(|_| 0),
@@ -335,21 +354,7 @@ impl GitCli {
 
         // A path filter limits the diff to the same paths, so staging only
         // those yields the same result.
-        let status = self.worktree_status(worktree_path, "--untracked-files=all", path_filter)?;
-        let (untracked, tracked): (Vec<_>, Vec<_>) =
-            status.entries.into_iter().partition(|e| e.is_untracked);
-        let tracked: Vec<Vec<u8>> = tracked
-            .into_iter()
-            .flat_map(|e| std::iter::once(e.path).chain(e.orig_path))
-            .collect();
-        // `git rm --cached` leaves a path both staged-deleted and untracked;
-        // staging it as tracked already covers the file on disk.
-        let tracked_set: HashSet<&[u8]> = tracked.iter().map(Vec::as_slice).collect();
-        let mut untracked: Vec<Vec<u8>> = untracked
-            .into_iter()
-            .map(|e| e.path)
-            .filter(|p| !tracked_set.contains(p.as_slice()))
-            .collect();
+        let (tracked, mut untracked) = self.changed_paths(worktree_path, path_filter)?;
         self.add_to_index(worktree_path, &envs, tracked)?;
 
         if !untracked.is_empty() {
@@ -366,7 +371,15 @@ impl GitCli {
             let deleted: HashSet<&[u8]> =
                 out.split(|b| *b == 0).filter(|p| !p.is_empty()).collect();
             if !deleted.is_empty() {
-                let all = Self::untracked_within_budget(worktree_path, &untracked, u64::MAX);
+                // Judge the budget on the whole worktree so a filtered rediff
+                // pairs renames exactly like the full diff does.
+                let all = match path_filter {
+                    None => Self::untracked_within_rename_budget(worktree_path, &untracked),
+                    Some(_) => Self::untracked_within_rename_budget(
+                        worktree_path,
+                        &self.changed_paths(worktree_path, None)?.1,
+                    ),
+                };
                 let (staged, rest) = untracked
                     .into_iter()
                     .partition(|p| all || deleted.contains(p.as_slice()));
@@ -383,6 +396,38 @@ impl GitCli {
                 .map(|p| String::from_utf8_lossy(&p).into_owned())
                 .collect(),
         })
+    }
+
+    /// Tracked changes (with rename sources) and untracked files from `git
+    /// status`, as raw paths.
+    fn changed_paths(
+        &self,
+        worktree_path: &Path,
+        path_filter: Option<&Vec<String>>,
+    ) -> Result<(RawPaths, RawPaths), GitCliError> {
+        let status = self.worktree_status(worktree_path, "--untracked-files=all", path_filter)?;
+        let (untracked, tracked): (Vec<_>, Vec<_>) =
+            status.entries.into_iter().partition(|e| e.is_untracked);
+        let tracked: Vec<Vec<u8>> = tracked
+            .into_iter()
+            .flat_map(|e| std::iter::once(e.path).chain(e.orig_path))
+            .collect();
+        // `git rm --cached` leaves a path both staged-deleted and untracked;
+        // staging it as tracked already covers the file on disk.
+        let tracked_set: HashSet<&[u8]> = tracked.iter().map(Vec::as_slice).collect();
+        let untracked = untracked
+            .into_iter()
+            // An untracked nested repository is listed as `dir/`, but diffs
+            // as the gitlink `dir`.
+            .map(|e| {
+                e.path
+                    .strip_suffix(b"/")
+                    .map(<[u8]>::to_vec)
+                    .unwrap_or(e.path)
+            })
+            .filter(|p| !tracked_set.contains(p.as_slice()))
+            .collect();
+        Ok((tracked, untracked))
     }
 
     /// Stage paths into the temp index named by `envs`. Explicit paths are
@@ -412,36 +457,47 @@ impl GitCli {
         Ok(())
     }
 
-    /// Whether the untracked files of at most `max_file` bytes are small enough
-    /// in total to read on every poll.
+    /// Whether the untracked files are small enough in total to hash as rename
+    /// candidates on every poll.
     ///
     /// ponytail: above the budget a file moved into an untracked path shows as
-    /// a deletion plus an addition until it is staged or committed, and
-    /// untracked files add no line counts. Pick rename candidates by size
-    /// against the deleted blobs, or cache counts by mtime, if that matters.
-    fn untracked_within_budget(
-        worktree_path: &Path,
-        paths: &[impl AsRef<[u8]>],
-        max_file: u64,
-    ) -> bool {
+    /// a deletion plus an addition until it is staged or committed; pick
+    /// candidates by size against the deleted blobs if that starts to matter.
+    fn untracked_within_rename_budget(worktree_path: &Path, paths: &[Vec<u8>]) -> bool {
         let mut total = 0u64;
         paths.iter().all(|p| {
-            let path = worktree_path.join(&*String::from_utf8_lossy(p.as_ref()));
-            total += std::fs::symlink_metadata(path)
+            total += std::fs::symlink_metadata(worktree_path.join(&*String::from_utf8_lossy(p)))
                 .map(|m| m.len())
-                .ok()
-                .filter(|len| *len <= max_file)
                 .unwrap_or(0);
-            total <= UNTRACKED_READ_BUDGET_BYTES
+            total <= UNTRACKED_RENAME_BUDGET_BYTES
         })
+    }
+
+    /// [`Self::count_added_lines`] through [`UNTRACKED_LINE_COUNTS`].
+    fn cached_added_lines(path: &Path) -> Option<usize> {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        let Ok(mtime) = meta.modified() else {
+            return Self::count_added_lines(path, &meta);
+        };
+        if let Some(&(len, cached_mtime, lines)) = UNTRACKED_LINE_COUNTS.lock().unwrap().get(path)
+            && (len, cached_mtime) == (meta.len(), mtime)
+        {
+            return lines;
+        }
+        let lines = Self::count_added_lines(path, &meta);
+        UNTRACKED_LINE_COUNTS
+            .lock()
+            .unwrap()
+            .insert(path.to_path_buf(), (meta.len(), mtime, lines));
+        lines
     }
 
     /// Added-line count for an untracked file as `git diff --numstat` would
     /// report it, or `None` (git's `-`) for binary, oversized or unreadable files.
-    fn count_added_lines(path: &Path) -> Option<usize> {
-        let meta = std::fs::symlink_metadata(path).ok()?;
-        if meta.is_symlink() {
-            // Git diffs the link target as a single line.
+    fn count_added_lines(path: &Path, meta: &std::fs::Metadata) -> Option<usize> {
+        if meta.is_symlink() || meta.is_dir() {
+            // Git diffs a link target, or a nested repository's commit, as a
+            // single line.
             return Some(1);
         }
         if !meta.is_file() || meta.len() > crate::MAX_INLINE_DIFF_BYTES as u64 {
