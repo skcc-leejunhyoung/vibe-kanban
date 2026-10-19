@@ -57,6 +57,7 @@ web-push = "0.11"
 tempfile = "3"
 
 [dev-dependencies]
+axum = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

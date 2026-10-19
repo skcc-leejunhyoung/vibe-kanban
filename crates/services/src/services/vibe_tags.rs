@@ -52,15 +52,22 @@ pub async fn ensure_tag_id(
     if let Some(id) = find_tag_id_by_name(&tags, name) {
         return Ok(id);
     }
-    let created = client
-        .create_tag(&CreateTagRequest {
-            id: None,
-            project_id,
-            name: name.to_string(),
-            color: VIBE_TAG_COLOR.to_string(),
-        })
-        .await?;
-    Ok(created.data.id)
+    let request = CreateTagRequest {
+        id: None,
+        project_id,
+        name: name.to_string(),
+        color: VIBE_TAG_COLOR.to_string(),
+    };
+    match client.create_tag(&request).await {
+        Ok(created) => Ok(created.data.id),
+        // A concurrent `vibe-*` transition in the same project created it
+        // first (UNIQUE (project_id, name)); use the winner's tag.
+        Err(err @ RemoteClientError::Http { status: 409, .. }) => {
+            let tags = client.list_tags(project_id).await?.tags;
+            find_tag_id_by_name(&tags, name).ok_or(err)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Attach the tag named `name` to `issue_id` (idempotent). The project is
@@ -141,5 +148,66 @@ mod tests {
             let v = p.strip_suffix('%').and_then(|v| v.parse::<u8>().ok());
             assert!(v.is_some_and(|v| v <= 100), "{p}");
         }
+    }
+
+    // The loser of a first-creation race gets 409 and must reuse the winner's tag.
+    #[tokio::test]
+    async fn create_conflict_resolves_to_existing_tag() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use api_types::ListTagsResponse;
+        use axum::{Json, Router, http::StatusCode, routing::get};
+        use chrono::{Duration, Utc};
+        use tokio::sync::RwLock;
+
+        use crate::services::{
+            auth::AuthContext,
+            oauth_credentials::{Credentials, OAuthCredentials},
+        };
+
+        let winner = tag("vibe-done");
+        let winner_id = winner.id;
+        let created = Arc::new(AtomicBool::new(false));
+        let list_created = created.clone();
+        let router = Router::new().route(
+            "/v1/tags",
+            get(move || {
+                let tags = if list_created.load(Ordering::SeqCst) {
+                    vec![winner.clone()]
+                } else {
+                    vec![]
+                };
+                async move { Json(ListTagsResponse { tags }) }
+            })
+            .post(move || async move {
+                created.store(true, Ordering::SeqCst);
+                (StatusCode::CONFLICT, "resource already exists")
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let dir = tempfile::tempdir().unwrap();
+        let auth = AuthContext::new(
+            Arc::new(OAuthCredentials::new(dir.path().join("credentials.json"))),
+            Arc::new(RwLock::new(None)),
+        );
+        auth.save_credentials(&Credentials {
+            access_token: Some("token".into()),
+            refresh_token: "refresh".into(),
+            expires_at: Some(Utc::now() + Duration::days(1)),
+        })
+        .await
+        .unwrap();
+        let client = RemoteClient::new(&format!("http://{address}"), auth, "test".into()).unwrap();
+
+        let id = ensure_tag_id(&client, Uuid::nil(), "vibe-done")
+            .await
+            .unwrap();
+        assert_eq!(id, winner_id);
     }
 }
