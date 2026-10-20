@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, mpsc},
@@ -14,7 +15,7 @@ use ignore::{
     gitignore::{Gitignore, GitignoreBuilder},
 };
 use notify::{
-    RecommendedWatcher, RecursiveMode,
+    EventHandler, RecommendedWatcher, RecursiveMode, Watcher,
     event::{EventKind, ModifyKind, RenameMode},
 };
 use notify_debouncer_full::{
@@ -29,15 +30,49 @@ pub type WatcherComponents = (WatcherGuard, Receiver<DebounceEventResult>, PathB
 /// thread. Stopping a macOS FSEvents stream spins until its run loop idles,
 /// which a burst of events can postpone indefinitely, so an async worker must
 /// never do it.
-pub struct WatcherGuard<W: Send + 'static = Arc<Mutex<Debouncer<RecommendedWatcher, NoCache>>>>(
-    pub(crate) Option<W>,
-);
+pub struct WatcherGuard<W: Send + 'static = Arc<Mutex<DebouncedWatcher>>>(pub(crate) Option<W>);
 
 impl<W: Send + 'static> Drop for WatcherGuard<W> {
     fn drop(&mut self) {
         if let Some(debouncer) = self.0.take() {
             release_off_thread(debouncer);
         }
+    }
+}
+
+/// A debouncer fed by a watcher we own. `Debouncer` keeps its watcher to
+/// itself, and every FSEvents `watch` restarts the stream with all paths so
+/// far, so registering a large checkout one directory at a time took seconds;
+/// owning the watcher lets `paths_mut` apply them in one restart. Without a
+/// file-id cache the debouncer never reads its own root list.
+pub struct DebouncedWatcher {
+    watcher: RecommendedWatcher,
+    _debouncer: Debouncer<EventTap, NoCache>,
+}
+
+thread_local! {
+    static TAPPED_FEED: RefCell<Option<Box<dyn EventHandler>>> = const { RefCell::new(None) };
+}
+
+/// Stands in for the debouncer's watcher and hands over its event feed.
+struct EventTap;
+
+impl Watcher for EventTap {
+    fn new<F: EventHandler>(feed: F, _: notify::Config) -> notify::Result<Self> {
+        TAPPED_FEED.set(Some(Box::new(feed)));
+        Ok(Self)
+    }
+
+    fn watch(&mut self, _: &Path, _: RecursiveMode) -> notify::Result<()> {
+        Ok(())
+    }
+
+    fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+        Ok(())
+    }
+
+    fn kind() -> notify::WatcherKind {
+        notify::WatcherKind::NullWatcher
     }
 }
 
@@ -493,9 +528,41 @@ fn determine_watch_mode(path: &Path, gi: &Gitignore, canonical_root: &Path) -> R
     RecursiveMode::Recursive
 }
 
+/// Pending watch updates: `Some(mode)` watches a path, `None` unwatches it.
+type WatchChanges = Vec<(PathBuf, Option<RecursiveMode>)>;
+
+/// Apply every update with one stream restart; a path that could not be
+/// watched is forgotten.
+fn apply_watch_changes(
+    watcher: &mut RecommendedWatcher,
+    watched_dirs: &mut WatchedDirs,
+    changes: WatchChanges,
+) {
+    if changes.is_empty() {
+        return;
+    }
+    let mut paths = watcher.paths_mut();
+    for (path, mode) in changes {
+        let result = match mode {
+            Some(mode) => paths.add(&path, mode),
+            None => paths.remove(&path),
+        };
+        if let Err(e) = result {
+            tracing::warn!("Could not update the watch on {:?}: {}", path, e);
+            if mode.is_some() {
+                watched_dirs.all.remove(&path);
+                watched_dirs.recursive.remove(&path);
+            }
+        }
+    }
+    if let Err(e) = paths.commit() {
+        tracing::warn!("Could not apply watch updates: {}", e);
+    }
+}
+
 /// Add a watch for a newly created directory
 fn add_directory_watch(
-    debouncer: &mut Debouncer<RecommendedWatcher, NoCache>,
+    changes: &mut WatchChanges,
     watched_dirs: &mut WatchedDirs,
     dir_path: &Path,
     gi: &Gitignore,
@@ -513,33 +580,25 @@ fn add_directory_watch(
 
     let mode = determine_watch_mode(&canonical_dir, gi, canonical_root);
 
-    if let Err(e) = debouncer.watch(&canonical_dir, mode) {
-        tracing::warn!("Failed to watch new directory {:?}: {}", canonical_dir, e);
-    } else {
-        if matches!(mode, RecursiveMode::Recursive) {
-            watched_dirs.remove_children_only(&canonical_dir, |child| {
-                if let Err(err) = debouncer.unwatch(child) {
-                    tracing::warn!("Could not unwatch covered directory {:?}: {}", child, err);
-                }
-            });
-        }
-
-        watched_dirs.insert(canonical_dir, mode);
+    changes.push((canonical_dir.clone(), Some(mode)));
+    if matches!(mode, RecursiveMode::Recursive) {
+        watched_dirs.remove_children_only(&canonical_dir, |child| {
+            changes.push((child.to_path_buf(), None));
+        });
     }
+    watched_dirs.insert(canonical_dir, mode);
 }
 
 /// Remove a watch for a deleted directory
 fn remove_directory_watch(
-    debouncer: &mut Debouncer<RecommendedWatcher, NoCache>,
+    changes: &mut WatchChanges,
     watched_dirs: &mut WatchedDirs,
     dir_path: &Path,
 ) {
     let canonical_dir = canonicalize_lossy(dir_path);
 
     watched_dirs.remove_dir_and_children(&canonical_dir, |path| {
-        if let Err(e) = debouncer.unwatch(path) {
-            tracing::warn!("Could not unwatch deleted directory {:?}: {}", path, e);
-        }
+        changes.push((path.to_path_buf(), None));
     });
 }
 
@@ -601,7 +660,7 @@ fn async_watcher_with_policy(
     // a rename into its destination alone, so `a.txt` renamed to an ignored
     // `a.tmp` never reported `a.txt` leaving. It also walked every watched
     // file on setup.
-    let debouncer_unwrapped = new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
+    let debouncer = new_debouncer_opt::<_, EventTap, NoCache>(
         Duration::from_millis(200),
         None,
         move |res: DebounceEventResult| {
@@ -624,27 +683,29 @@ fn async_watcher_with_policy(
         NoCache::new(),
         notify::Config::default(),
     )?;
+    let mut feed = TAPPED_FEED
+        .take()
+        .expect("EventTap::new stores the debouncer's feed");
+    let mut watcher = DebouncedWatcher {
+        watcher: RecommendedWatcher::new(
+            move |event| feed.handle_event(event),
+            notify::Config::default(),
+        )?,
+        _debouncer: debouncer,
+    };
 
-    let debouncer = Arc::new(Mutex::new(debouncer_unwrapped));
-    let debouncer_for_init = debouncer.clone();
+    let mut watched = WatchedDirs::default();
+    let changes = collect_watch_directories(&canonical_root, &gi_set, respect_gitignore)
+        .into_iter()
+        .map(|target| {
+            watched.insert(target.path.clone(), target.recursive);
+            (target.path, Some(target.recursive))
+        })
+        .collect();
+    apply_watch_changes(&mut watcher.watcher, &mut watched, changes);
+
+    let debouncer = Arc::new(Mutex::new(watcher));
     let debouncer_for_task = Arc::downgrade(&debouncer);
-
-    let watched_dirs: Arc<Mutex<WatchedDirs>> = Arc::new(Mutex::new(WatchedDirs::default()));
-    let watched_dirs_for_task = watched_dirs.clone();
-
-    let watch_targets = collect_watch_directories(&canonical_root, &gi_set, respect_gitignore);
-    {
-        let mut debouncer_guard = debouncer_for_init.lock().unwrap();
-        let mut watched = watched_dirs.lock().unwrap();
-
-        for target in &watch_targets {
-            if let Err(e) = debouncer_guard.watch(&target.path, target.recursive) {
-                tracing::warn!("Failed to watch {:?}: {}", target.path, e);
-            } else {
-                watched.insert(target.path.clone(), target.recursive);
-            }
-        }
-    }
 
     std::thread::spawn(move || {
         while let Some(result) = futures::executor::block_on(async { raw_rx.next().await }) {
@@ -654,15 +715,14 @@ fn async_watcher_with_policy(
 
             match result {
                 Ok(events) => {
-                    let mut debouncer_guard = debouncer_arc.lock().unwrap();
-                    let mut watched = watched_dirs_for_task.lock().unwrap();
+                    let mut changes = WatchChanges::new();
 
                     for event in &events {
                         if event.kind.is_create() {
                             for path in &event.paths {
                                 if path.is_dir() {
                                     add_directory_watch(
-                                        &mut debouncer_guard,
+                                        &mut changes,
                                         &mut watched,
                                         path,
                                         &gi_clone,
@@ -672,24 +732,20 @@ fn async_watcher_with_policy(
                             }
                         } else if event.kind.is_remove() {
                             for path in &event.paths {
-                                remove_directory_watch(&mut debouncer_guard, &mut watched, path);
+                                remove_directory_watch(&mut changes, &mut watched, path);
                             }
                         } else if let EventKind::Modify(ModifyKind::Name(mode)) = &event.kind {
                             match mode {
                                 RenameMode::From => {
                                     for path in &event.paths {
-                                        remove_directory_watch(
-                                            &mut debouncer_guard,
-                                            &mut watched,
-                                            path,
-                                        );
+                                        remove_directory_watch(&mut changes, &mut watched, path);
                                     }
                                 }
                                 RenameMode::To => {
                                     for path in &event.paths {
                                         if path.is_dir() {
                                             add_directory_watch(
-                                                &mut debouncer_guard,
+                                                &mut changes,
                                                 &mut watched,
                                                 path,
                                                 &gi_clone,
@@ -700,17 +756,13 @@ fn async_watcher_with_policy(
                                 }
                                 RenameMode::Both => {
                                     if let Some((from, rest)) = event.paths.split_first() {
-                                        remove_directory_watch(
-                                            &mut debouncer_guard,
-                                            &mut watched,
-                                            from,
-                                        );
+                                        remove_directory_watch(&mut changes, &mut watched, from);
 
                                         if let Some(to) = rest.last()
                                             && to.is_dir()
                                         {
                                             add_directory_watch(
-                                                &mut debouncer_guard,
+                                                &mut changes,
                                                 &mut watched,
                                                 to,
                                                 &gi_clone,
@@ -721,17 +773,13 @@ fn async_watcher_with_policy(
                                 }
                                 RenameMode::Any | RenameMode::Other => {
                                     for path in &event.paths {
-                                        remove_directory_watch(
-                                            &mut debouncer_guard,
-                                            &mut watched,
-                                            path,
-                                        );
+                                        remove_directory_watch(&mut changes, &mut watched, path);
                                     }
 
                                     for path in &event.paths {
                                         if path.is_dir() {
                                             add_directory_watch(
-                                                &mut debouncer_guard,
+                                                &mut changes,
                                                 &mut watched,
                                                 path,
                                                 &gi_clone,
@@ -754,7 +802,7 @@ fn async_watcher_with_policy(
                                 {
                                     if !watched.contains(&target.path) {
                                         add_directory_watch(
-                                            &mut debouncer_guard,
+                                            &mut changes,
                                             &mut watched,
                                             &target.path,
                                             &gi_clone,
@@ -766,8 +814,11 @@ fn async_watcher_with_policy(
                         }
                     }
 
-                    drop(debouncer_guard);
-                    drop(watched);
+                    apply_watch_changes(
+                        &mut debouncer_arc.lock().unwrap().watcher,
+                        &mut watched,
+                        changes,
+                    );
 
                     let filtered_events: Vec<DebouncedEvent> = events
                         .into_iter()
@@ -830,6 +881,40 @@ mod tests {
             std::time::Instant::now(),
         );
         assert!(debounced_should_forward(&rescan, &gi, tmp.path()));
+    }
+
+    #[test]
+    fn batched_watches_report_every_directory_including_new_ones() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        // `node_modules` keeps the root non-recursive, so `a` and `b` are
+        // separate watches registered in one batch.
+        for dir in ["node_modules", "a", "b"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let ((_guard, mut events, _), _) = artifact_watcher(root.clone()).unwrap();
+        let mut reported = |path: PathBuf| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                match events.try_recv() {
+                    Ok(Ok(batch)) if batch.iter().any(|event| event.paths.contains(&path)) => {
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(_) => std::thread::sleep(Duration::from_millis(20)),
+                }
+            }
+            panic!("no event for {path:?}");
+        };
+        std::fs::write(root.join("a/x.txt"), "x").unwrap();
+        reported(root.join("a/x.txt"));
+        std::fs::write(root.join("b/y.txt"), "y").unwrap();
+        reported(root.join("b/y.txt"));
+        // A new directory is watched before its creation is forwarded.
+        std::fs::create_dir(root.join("c")).unwrap();
+        reported(root.join("c"));
+        std::fs::write(root.join("c/z.txt"), "z").unwrap();
+        reported(root.join("c/z.txt"));
     }
 
     #[test]

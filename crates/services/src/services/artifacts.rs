@@ -24,19 +24,25 @@ use executors::{
         },
     },
 };
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
     file::{FileError, FileService},
-    filesystem_watcher::{ARTIFACT_SKIP_DIRS, WatcherComponents, artifact_watcher},
+    filesystem_watcher::{
+        ARTIFACT_SKIP_DIRS, FilesystemWatcherError, WatcherComponents, artifact_watcher,
+    },
     subagent_transcript,
 };
 
 pub const MAX_FILE_BYTES: u64 = 90 * 1024 * 1024;
 const MAX_EXECUTION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 256;
+/// Live updates give up on a slower watcher setup; completion still refreshes
+/// every output.
+const WATCHER_SETUP_LIMIT: Duration = Duration::from_secs(30);
 // ponytail: serialize rare legacy recovery; use per-execution locks if
 // concurrent history recovery becomes a measured bottleneck.
 pub static RECOVERY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -542,6 +548,8 @@ pub fn preserved_transcript_references(
         .collect()
 }
 
+type LiveWatcher = (WatcherComponents, Arc<AtomicBool>);
+
 pub struct ArtifactObserver {
     root: PathBuf,
     working_dir: PathBuf,
@@ -555,7 +563,13 @@ pub struct ArtifactObserver {
     /// each costs one stat per tick.
     unwatched: HashMap<String, Vec<(PathBuf, Option<Stamp>)>>,
     /// The flag is set when the watcher dropped events.
-    watcher: Option<(WatcherComponents, Arc<AtomicBool>)>,
+    watcher: Option<LiveWatcher>,
+    /// Setup walks the whole tree (seconds for a large in-place checkout), so
+    /// the agent never waits for it; ticks attach the watcher once it is done.
+    watcher_setup: Option<(
+        tokio::task::JoinHandle<Result<LiveWatcher, FilesystemWatcherError>>,
+        Instant,
+    )>,
     manifest: ArtifactManifest,
     file_service: FileService,
     stored_hashes: HashSet<String>,
@@ -586,15 +600,12 @@ impl ArtifactObserver {
         }
         // Watch for updates to selected outputs and their static dependencies.
         let watch_root = root.clone();
-        let watcher = tokio::task::spawn_blocking(move || artifact_watcher(watch_root)).await?;
-        let mut warnings = Vec::new();
-        if let Err(error) = &watcher {
-            warnings.push(format!("Live artifact updates unavailable: {error}"));
-        }
+        let watcher_setup = tokio::task::spawn_blocking(move || artifact_watcher(watch_root));
         let mut observer = Self {
             root,
             working_dir,
-            watcher: watcher.ok(),
+            watcher: None,
+            watcher_setup: Some((watcher_setup, Instant::now())),
             pending: HashSet::new(),
             stale: HashSet::new(),
             dependencies: HashMap::new(),
@@ -609,7 +620,7 @@ impl ArtifactObserver {
                 list: ArtifactList {
                     artifacts: Vec::new(),
                     complete: false,
-                    warnings,
+                    warnings: Vec::new(),
                 },
                 bundles: BTreeMap::new(),
                 transcripts: BTreeMap::new(),
@@ -747,6 +758,7 @@ impl ArtifactObserver {
             root,
             working_dir,
             watcher: None,
+            watcher_setup: None,
             pending: HashSet::new(),
             stale: HashSet::new(),
             dependencies: HashMap::new(),
@@ -1368,9 +1380,10 @@ impl ArtifactObserver {
     pub async fn tick(&mut self, complete: bool) -> Result<()> {
         self.collect_subagents(complete).await;
         let mut changed = HashSet::new();
-        // Rescans, pathless events, watcher errors and dropped bursts may hide
-        // any change, so they refresh every output like the final check does.
-        let mut lost = false;
+        // Rescans, pathless events, watcher errors, dropped bursts and changes
+        // made before the watcher was attached may hide any change, so they
+        // refresh every output like the final check does.
+        let mut lost = self.attach_watcher();
         if let Some(((_, receiver, _), dropped)) = &mut self.watcher {
             while let Ok(events) = receiver.try_recv() {
                 let Ok(events) = events else {
@@ -1506,10 +1519,33 @@ impl ArtifactObserver {
             self.manifest.list.complete = true;
             self.dirty = true;
             // Stops on the release thread: the log storage task awaiting this
-            // tick must not wait for an FSEvents stream to wind down.
+            // tick must not wait for an FSEvents stream to wind down. A setup
+            // still running drops its watcher the same way when it ends.
             self.watcher.take();
+            self.watcher_setup.take();
         }
         self.persist().await
+    }
+
+    /// Attach the watcher once its setup is done; true when it just was.
+    fn attach_watcher(&mut self) -> bool {
+        let Some((setup, started)) = &mut self.watcher_setup else {
+            return false;
+        };
+        let error = match setup.now_or_never() {
+            Some(Ok(Ok(watcher))) => {
+                self.watcher = Some(watcher);
+                self.watcher_setup = None;
+                return true;
+            }
+            Some(Ok(Err(error))) => error.to_string(),
+            Some(Err(error)) => error.to_string(),
+            None if started.elapsed() < WATCHER_SETUP_LIMIT => return false,
+            None => format!("setup took over {}s", WATCHER_SETUP_LIMIT.as_secs()),
+        };
+        self.watcher_setup = None;
+        self.warn(&format!("Live artifact updates unavailable: {error}"));
+        false
     }
 
     async fn persist(&mut self) -> Result<()> {
@@ -1890,6 +1926,101 @@ mod tests {
             .expect("completion waited for the watcher to stop")
             .unwrap();
         assert!(observer.watcher.is_none());
+        tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn slow_watcher_setup_delays_neither_ticks_nor_the_final_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("notes.txt"), "v1").unwrap();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let (session, execution) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut observer = ArtifactObserver::start(
+            root.clone(),
+            root.clone(),
+            Uuid::new_v4(),
+            session,
+            execution,
+            FileService::new(pool).unwrap(),
+        )
+        .await
+        .unwrap();
+        // A setup that ends only when released, like a walk of a large checkout.
+        let gated = |observer: &mut ArtifactObserver| {
+            let (release, gate) = std::sync::mpsc::channel::<()>();
+            let root = root.clone();
+            observer.watcher_setup = Some((
+                tokio::task::spawn_blocking(move || {
+                    let _ = gate.recv();
+                    artifact_watcher(root)
+                }),
+                Instant::now(),
+            ));
+            release
+        };
+        let release = gated(&mut observer);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        observer
+            .observe_entry(
+                0,
+                &NormalizedEntry {
+                    timestamp: None,
+                    metadata: None,
+                    content: "[notes](notes.txt \"vibe-artifact\")".into(),
+                    entry_type: NormalizedEntryType::AssistantMessage,
+                },
+            )
+            .await;
+        tokio::time::timeout(Duration::from_secs(1), observer.tick(false))
+            .await
+            .unwrap()
+            .unwrap();
+        let hash =
+            |observer: &ArtifactObserver| observer.manifest.list.artifacts[0].content_hash.clone();
+        let first = hash(&observer);
+        assert!(first.is_some());
+        assert!(observer.watcher.is_none());
+
+        // No watcher reports this write; attaching one refreshes every output.
+        std::fs::write(root.join("notes.txt"), "v2").unwrap();
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !observer.watcher_setup.as_ref().unwrap().0.is_finished() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        observer.tick(false).await.unwrap();
+        assert!(observer.watcher.is_some());
+        assert_ne!(hash(&observer), first);
+
+        // Completion never waits for a setup still running and keeps the output.
+        observer.watcher = None;
+        let release = gated(&mut observer);
+        std::fs::write(root.join("notes.txt"), "v3").unwrap();
+        tokio::time::timeout(Duration::from_secs(1), observer.tick(true))
+            .await
+            .unwrap()
+            .unwrap();
+        drop(release);
+        let saved = load(session, execution).await.unwrap().unwrap();
+        assert!(saved.list.complete);
+        assert!(saved.list.warnings.is_empty());
+        let notes = saved.list.artifacts[0].content_hash.as_ref().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(directory(session, execution).join(notes)).unwrap(),
+            "v3"
+        );
         tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
             .await
             .unwrap();
