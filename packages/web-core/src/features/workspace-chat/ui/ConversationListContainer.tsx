@@ -80,6 +80,7 @@ import { ChatCollapsedSteps } from '@vibe/ui/components/ChatCollapsedSteps';
 import { ChatEmptyState } from '@vibe/ui/components/ChatEmptyState';
 import { ChatScriptPlaceholder } from '@vibe/ui/components/ChatScriptPlaceholder';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface ConversationListProps {
   attempt: WorkspaceWithSession;
@@ -680,6 +681,7 @@ export const ConversationList = forwardRef<
   const { t } = useTranslation('common');
   const repos = reposProp;
   const resetAction = useResetProcess(attempt.id, attempt.session?.id);
+  const hostId = useHostId();
   const collapseCompletedTurnSteps = useCollapseCompletedTurnSteps();
   const collapseStepsRef = useRef(collapseCompletedTurnSteps);
   collapseStepsRef.current = collapseCompletedTurnSteps;
@@ -759,8 +761,9 @@ export const ConversationList = forwardRef<
       repos: currentRepos,
       workspaceId: attempt.id,
       sessionId: attempt.session?.id,
+      hostId,
     });
-  }, [attempt.id, attempt.session?.id]);
+  }, [attempt.id, attempt.session?.id, hostId]);
 
   const handleConfigureCleanup = useCallback(() => {
     const currentRepos = reposRef.current;
@@ -771,8 +774,9 @@ export const ConversationList = forwardRef<
       repos: currentRepos,
       workspaceId: attempt.id,
       sessionId: attempt.session?.id,
+      hostId,
     });
-  }, [attempt.id, attempt.session?.id]);
+  }, [attempt.id, attempt.session?.id, hostId]);
 
   // Determine if configure buttons should be shown
   const canConfigure = repos.length > 0;

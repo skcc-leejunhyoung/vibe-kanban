@@ -37,6 +37,12 @@ export interface ScriptFixerDialogProps {
   workspaceId: string;
   sessionId?: string;
   initialRepoId?: string;
+  /**
+   * Host of the workspace. nice-modal keeps this mounted after close, so
+   * following the route host would refetch on whatever host the document
+   * moves to next.
+   */
+  hostId?: string | null;
 }
 
 export type ScriptFixerDialogResult = {
@@ -46,11 +52,19 @@ export type ScriptFixerDialogResult = {
 type LogEntry = Extract<PatchType, { type: 'STDOUT' } | { type: 'STDERR' }>;
 
 const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
-  ({ scriptType, repos, workspaceId, sessionId, initialRepoId }) => {
+  ({
+    scriptType,
+    repos,
+    workspaceId,
+    sessionId,
+    initialRepoId,
+    hostId: hostIdOverride,
+  }) => {
     const modal = useModal();
     const { t } = useTranslation(['tasks', 'common']);
     const queryClient = useQueryClient();
-    const hostId = useHostId();
+    const routeHostId = useHostId();
+    const hostId = hostIdOverride === undefined ? routeHostId : hostIdOverride;
 
     // State
     const [selectedRepoId, setSelectedRepoId] = useState<string>(
@@ -68,7 +82,9 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
     );
 
     // Get execution processes for the session to find latest script process
-    const { executionProcesses } = useExecutionProcesses(activeSessionId);
+    const { executionProcesses } = useExecutionProcesses(activeSessionId, {
+      hostId,
+    });
 
     // Find the latest process for this script type
     const latestProcess = useMemo(() => {
@@ -93,7 +109,8 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
 
     // Stream logs for the latest process
     const { logs: rawLogs, error: logsError } = useLogStream(
-      latestProcess?.id ?? ''
+      latestProcess?.id ?? '',
+      hostId
     );
     const logs: LogEntry[] = rawLogs.filter(
       (l): l is LogEntry => l.type === 'STDOUT' || l.type === 'STDERR'

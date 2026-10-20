@@ -35,9 +35,11 @@ interface UseExecutionProcessesResult {
  */
 export const useExecutionProcesses = (
   sessionId: string | undefined,
-  opts?: { showSoftDeleted?: boolean }
+  /** `hostId` overrides the HostIdProvider host (e.g. a dialog's target). */
+  opts?: { showSoftDeleted?: boolean; hostId?: string | null }
 ): UseExecutionProcessesResult => {
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = opts?.hostId !== undefined ? opts.hostId : contextHostId;
   const showSoftDeleted = opts?.showSoftDeleted;
   let endpoint: string | undefined;
 

@@ -1104,8 +1104,9 @@ export function PreviewBrowserContainer({
       workspaceId: targetWorkspaceId,
       sessionId,
       initialRepoId: repos.length === 1 ? repos[0].id : undefined,
+      hostId,
     });
-  }, [activeWorkspaceId, workspaceId, repos, devServerProcesses]);
+  }, [activeWorkspaceId, workspaceId, repos, devServerProcesses, hostId]);
 
   const handleFixDevScript = useCallback(() => {
     const targetWorkspaceId = activeWorkspaceId ?? workspaceId;
@@ -1120,8 +1121,9 @@ export function PreviewBrowserContainer({
       workspaceId: targetWorkspaceId,
       sessionId,
       initialRepoId: repos.length === 1 ? repos[0].id : undefined,
+      hostId,
     });
-  }, [activeWorkspaceId, workspaceId, repos, devServerProcesses]);
+  }, [activeWorkspaceId, workspaceId, repos, devServerProcesses, hostId]);
 
   return (
     <div className="flex h-full min-w-0 flex-col">

@@ -19,10 +19,15 @@ interface UseLogStreamResult {
   error: string | null;
 }
 
-export const useLogStream = (processId: string): UseLogStreamResult => {
+export const useLogStream = (
+  processId: string,
+  /** Overrides the context host (e.g. a dialog's target). */
+  hostIdOverride?: string | null
+): UseLogStreamResult => {
   // Context host, not the document fallback: in a split pane this process
   // lives on the pane's host, which may differ from the focused route's.
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = hostIdOverride !== undefined ? hostIdOverride : contextHostId;
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_LOG_BUFFER);
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);

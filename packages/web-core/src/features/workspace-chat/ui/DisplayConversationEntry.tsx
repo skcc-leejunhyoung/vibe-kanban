@@ -1611,6 +1611,7 @@ function ScriptEntryWithFix({
   readOnly: boolean;
 }) {
   const { viewProcessInPanel } = useLogsPanelActions();
+  const hostId = useHostId();
 
   const reposRef = useRef(repos);
   reposRef.current = repos;
@@ -1635,8 +1636,9 @@ function ScriptEntryWithFix({
       workspaceId,
       sessionId,
       initialRepoId: currentRepos.length === 1 ? currentRepos[0].id : undefined,
+      hostId,
     });
-  }, [title, workspaceId, sessionId]);
+  }, [title, workspaceId, sessionId, hostId]);
 
   // Only show fix button if we have the necessary context
   const canFix = !readOnly && workspaceId && repos.length > 0;
