@@ -142,30 +142,33 @@ fn branch_tips_key(
     ))
 }
 
-async fn worktree_diff_stats(
+/// Owns its inputs so the cache can finish a revalidation off the poll path.
+fn worktree_diff_stats(
     git: &GitService,
     repo_path: &Path,
     workspace_branch: &str,
     target_branch: &str,
     worktree_path: &Path,
-) -> Option<DiffStats> {
+) -> impl std::future::Future<Output = Option<DiffStats>> + Send + 'static {
     let git = git.clone();
     let repo_path = repo_path.to_path_buf();
     let workspace_branch = workspace_branch.to_string();
     let target_branch = target_branch.to_string();
     let worktree_path = worktree_path.to_path_buf();
-    let (files_changed, lines_added, lines_removed) = tokio::task::spawn_blocking(move || {
-        let base_commit = git.get_base_commit(&repo_path, &workspace_branch, &target_branch)?;
-        git.get_diff_stats(&worktree_path, &base_commit)
-    })
-    .await
-    .ok()?
-    .ok()?;
-    Some(DiffStats {
-        files_changed,
-        lines_added,
-        lines_removed,
-    })
+    async move {
+        let (files_changed, lines_added, lines_removed) = tokio::task::spawn_blocking(move || {
+            let base_commit = git.get_base_commit(&repo_path, &workspace_branch, &target_branch)?;
+            git.get_diff_stats(&worktree_path, &base_commit)
+        })
+        .await
+        .ok()?
+        .ok()?;
+        Some(DiffStats {
+            files_changed,
+            lines_added,
+            lines_removed,
+        })
+    }
 }
 
 const DIFF_STATS_MAX_AGE: Duration = Duration::from_secs(120);
@@ -178,7 +181,9 @@ const DIFF_STATS_MAX_AGE: Duration = Duration::from_secs(120);
 /// ponytail: changes the watcher can't see (force-added files under ignored
 /// paths, `.git/info/exclude` or global excludes, dirs that arrive populated,
 /// Linux dirs past inotify's watch limit) stay cached up to
-/// `DIFF_STATS_MAX_AGE`. Shorten it if that lag starts to matter.
+/// `DIFF_STATS_MAX_AGE`; the poll after that still gets the cached value while
+/// it is revalidated in the background, so expiry never slows a poll.
+/// Shorten it if that lag starts to matter.
 #[derive(Default)]
 pub struct DiffStatsCache {
     entries: std::sync::Mutex<HashMap<PathBuf, Arc<DiffStatsCacheEntry>>>,
@@ -193,6 +198,8 @@ struct DiffStatsCacheEntry {
     /// A `.gitignore` changed, so the watcher's ignore rules are stale.
     rewatch: Arc<AtomicBool>,
     setup_started: AtomicBool,
+    /// An expired result is being recomputed in the background.
+    refreshing: AtomicBool,
     /// Held across the computation so concurrent polls compute once.
     state: tokio::sync::Mutex<DiffStatsCacheState>,
 }
@@ -219,7 +226,7 @@ impl DiffStatsCache {
     ) -> Option<DiffStats>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Option<DiffStats>>,
+        Fut: std::future::Future<Output = Option<DiffStats>> + Send + 'static,
     {
         let arrived = Instant::now();
         let entry = self
@@ -246,14 +253,24 @@ impl DiffStatsCache {
 
         if let Some(cached) = &state.cached
             && cached.key == key
+        {
+            let unchanged = state.watcher.is_some() && !entry.dirty.load(Ordering::SeqCst);
             // A run that finished while this poll waited, or a watched
             // worktree with no change since.
-            && (cached.finished_at >= arrived
-                || (state.watcher.is_some()
-                    && !entry.dirty.load(Ordering::SeqCst)
-                    && cached.finished_at.elapsed() < DIFF_STATS_MAX_AGE))
-        {
-            return Some(cached.stats.clone());
+            if cached.finished_at >= arrived || unchanged {
+                if unchanged
+                    && cached.finished_at.elapsed() >= DIFF_STATS_MAX_AGE
+                    && !entry.refreshing.swap(true, Ordering::SeqCst)
+                {
+                    tokio::spawn(revalidate(
+                        entry.clone(),
+                        key,
+                        compute(),
+                        cached.finished_at,
+                    ));
+                }
+                return Some(cached.stats.clone());
+            }
         }
 
         // Clear before computing so edits made during the run re-dirty it.
@@ -271,6 +288,31 @@ impl DiffStatsCache {
     pub fn retain(&self, keep: impl Fn(&Path) -> bool) {
         self.entries.lock().unwrap().retain(|path, _| keep(path));
     }
+}
+
+/// Replaces an expired result unless a poll recomputed it meanwhile. Leaves
+/// `dirty` alone, so an edit during the run still forces a recompute.
+async fn revalidate(
+    entry: Arc<DiffStatsCacheEntry>,
+    key: String,
+    compute: impl std::future::Future<Output = Option<DiffStats>>,
+    expired_at: Instant,
+) {
+    let stats = compute.await;
+    let mut state = entry.state.lock().await;
+    if let Some(stats) = stats
+        && state
+            .cached
+            .as_ref()
+            .is_some_and(|cached| cached.finished_at == expired_at)
+    {
+        state.cached = Some(CachedDiffStats {
+            key,
+            stats,
+            finished_at: Instant::now(),
+        });
+    }
+    entry.refreshing.store(false, Ordering::SeqCst);
 }
 
 async fn start_watching(
@@ -1385,6 +1427,52 @@ mod tests {
 
         cache.retain(|path| path != worktree_path);
         assert!(cache.entries.lock().unwrap().is_empty());
+    }
+
+    /// An expired entry is served as-is while one background run refreshes
+    /// it, so max-age never puts git work on the poll path.
+    #[tokio::test]
+    async fn diff_stats_cache_revalidates_expired_entries_in_the_background() {
+        let (_tmp, repo_path, worktree_path) = setup_repo_with_worktree();
+        let cache = DiffStatsCache::default();
+        let runs = AtomicUsize::new(0);
+        std::fs::write(worktree_path.join("a.txt"), "hello\nworld\n").unwrap();
+        settle(&cache, &repo_path, &worktree_path, &runs).await;
+
+        // An edit the watcher missed, on an entry past its max age.
+        std::fs::write(worktree_path.join("a.txt"), "hello\nworld\nagain\n").unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let entry = cache.entries.lock().unwrap()[&worktree_path].clone();
+        entry.dirty.store(false, Ordering::SeqCst);
+        entry
+            .state
+            .lock()
+            .await
+            .cached
+            .as_mut()
+            .unwrap()
+            .finished_at = Instant::now()
+            .checked_sub(DIFF_STATS_MAX_AGE + Duration::from_secs(1))
+            .unwrap();
+
+        let before = runs.load(Ordering::SeqCst);
+        let stale = cached_stats(&cache, &repo_path, &worktree_path, &runs).await;
+        assert_eq!(stale.lines_added, 1, "served without waiting for git");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while cached_stats(&cache, &repo_path, &worktree_path, &runs)
+            .await
+            .lines_added
+            != 2
+        {
+            assert!(tokio::time::Instant::now() < deadline, "never revalidated");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            before + 1,
+            "one background run"
+        );
     }
 
     #[tokio::test]
