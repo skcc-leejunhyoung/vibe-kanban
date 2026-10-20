@@ -26,9 +26,14 @@ export function canEmbedAccountPreview(
 
 /** Path the exchange redirects to; the relay falls back to `/` otherwise. */
 export function accountPreviewNextPath(url: string): string | undefined {
-  const { pathname, search } = new URL(url);
-  const next = pathname + search;
-  return next.length <= 1024 ? next : undefined;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.delete('_refresh');
+    const next = parsed.pathname + parsed.search;
+    return next.length <= 1024 ? next : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Report the dev server port, mint a one-time code and check where it may be
@@ -84,10 +89,12 @@ export function submitAccountPreviewExchange(
   form.remove();
 }
 
-/** Open synchronously from a user gesture, then POST the short-lived code. */
+/** Open synchronously from a user gesture, then POST the short-lived code.
+ * `next` lands the tab on the page being viewed instead of `/`. */
 export async function openAccountPreview(
   host: string,
-  port: number
+  port: number,
+  next?: string
 ): Promise<void> {
   const target = `vk-preview-${crypto.randomUUID()}`;
   const tab = window.open('', target);
@@ -100,7 +107,7 @@ export async function openAccountPreview(
     const exchange = await requestAccountPreviewExchange(host, port);
     if (tab.closed)
       throw new Error('미리보기 창이 닫혔습니다. 다시 열어 주세요.');
-    submitAccountPreviewExchange(tab.document, exchange, '_self');
+    submitAccountPreviewExchange(tab.document, exchange, '_self', next);
   } catch (error) {
     tab.close();
     remove();

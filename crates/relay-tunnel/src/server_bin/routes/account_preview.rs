@@ -137,28 +137,36 @@ pub async fn handle(State(state): State<RelayAppState>, mut request: Request) ->
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
-    match frame_ancestors(&app_origin, &host) {
-        Some(policy) => response.headers_mut().append(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_str(&policy).unwrap(),
-        ),
-        None => {
-            response
-                .headers_mut()
-                .insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-            response.headers_mut().append(
-                header::CONTENT_SECURITY_POLICY,
-                HeaderValue::from_static("frame-ancestors 'none'"),
-            )
-        }
-    };
+    apply_frame_policy(response.headers_mut(), &app_origin, &host);
     response
 }
 
 /// Only the app origin that opened the preview may frame it, and only when the
 /// preview host is a subdomain of it: same site, so the SameSite=Lax cookie
 /// reaches the iframe. Anything else keeps the deny-all policy.
-pub fn frame_ancestors(app_origin: &str, preview_host: &str) -> Option<String> {
+pub fn apply_frame_policy(
+    headers: &mut axum::http::HeaderMap,
+    app_origin: &str,
+    preview_host: &str,
+) {
+    match frame_ancestors(app_origin, preview_host) {
+        Some(policy) => {
+            headers.append(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_str(&policy).unwrap(),
+            );
+        }
+        None => {
+            headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+            headers.append(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static("frame-ancestors 'none'"),
+            );
+        }
+    }
+}
+
+fn frame_ancestors(app_origin: &str, preview_host: &str) -> Option<String> {
     let authority = app_origin.strip_prefix("https://")?;
     let (app_host, port) = match authority.split_once(':') {
         Some((host, port)) => (host, Some(port)),
@@ -324,15 +332,23 @@ mod host_access_tests {
     #[test]
     fn framing_is_allowed_only_for_the_parent_app_origin() {
         let preview = "p-5173--0b6a2c1e-0000-4000-8000-000000000000.relay.vk.example.test";
-        assert_eq!(
-            frame_ancestors("https://vk.example.test", preview).as_deref(),
-            Some("frame-ancestors https://vk.example.test")
-        );
-        assert_eq!(
-            frame_ancestors("https://vk.example.test:8443", preview).as_deref(),
-            Some("frame-ancestors https://vk.example.test:8443")
-        );
-        assert!(frame_ancestors("https://VK.Example.test", preview).is_some());
+        for allowed in [
+            "https://vk.example.test",
+            "https://vk.example.test:8443",
+            "https://VK.Example.test",
+        ] {
+            let mut headers = axum::http::HeaderMap::new();
+            apply_frame_policy(&mut headers, allowed, preview);
+            assert!(!headers.contains_key(header::X_FRAME_OPTIONS), "{allowed}");
+            assert_eq!(
+                headers
+                    .get_all(header::CONTENT_SECURITY_POLICY)
+                    .iter()
+                    .collect::<Vec<_>>(),
+                vec![&format!("frame-ancestors {allowed}")],
+                "{allowed}"
+            );
+        }
         for denied in [
             "https://evil.test",
             "http://vk.example.test",
@@ -344,7 +360,14 @@ mod host_access_tests {
             "https://xample.test",
             "https://relay.vk.example.test.evil.test",
         ] {
-            assert!(frame_ancestors(denied, preview).is_none(), "{denied}");
+            let mut headers = axum::http::HeaderMap::new();
+            apply_frame_policy(&mut headers, denied, preview);
+            assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{denied}");
+            assert_eq!(
+                headers[header::CONTENT_SECURITY_POLICY],
+                "frame-ancestors 'none'",
+                "{denied}"
+            );
         }
     }
     #[test]

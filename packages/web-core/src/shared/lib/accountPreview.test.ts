@@ -56,20 +56,24 @@ describe('canEmbedAccountPreview', () => {
 });
 
 describe('accountPreviewNextPath', () => {
-  it('keeps the path and query of the iframe URL', () => {
+  it('keeps the path and query, minus the reload counter', () => {
     expect(
       accountPreviewNextPath(
         'https://p-5173--h.relay.vk.example.test/app/x?_refresh=2&q=1#frag'
       )
-    ).toBe('/app/x?_refresh=2&q=1');
+    ).toBe('/app/x?q=1');
+    expect(accountPreviewNextPath('http://localhost:5173/app?_refresh=3')).toBe(
+      '/app'
+    );
     expect(
       accountPreviewNextPath('https://p-5173--h.relay.vk.example.test')
     ).toBe('/');
   });
 
-  it('drops paths the relay would reject', () => {
+  it('drops paths the relay would reject and unparsable URLs', () => {
     expect(
       accountPreviewNextPath(`https://h.example.test/${'a'.repeat(1024)}`)
     ).toBeUndefined();
+    expect(accountPreviewNextPath('not a url')).toBeUndefined();
   });
 });

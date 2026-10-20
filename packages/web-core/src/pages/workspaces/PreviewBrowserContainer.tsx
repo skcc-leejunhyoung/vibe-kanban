@@ -974,7 +974,11 @@ export function PreviewBrowserContainer({
   const handleOpenInNewTab = useCallback(() => {
     if (accountPreviewMode && hostId && devServerPort && isLoopbackPreview) {
       setAccountPreviewError('');
-      void openAccountPreview(hostId, Number(devServerPort)).catch(
+      // Land on the page being viewed rather than the dev server root.
+      const next = displayedPreviewUrl
+        ? accountPreviewNextPath(displayedPreviewUrl)
+        : undefined;
+      void openAccountPreview(hostId, Number(devServerPort), next).catch(
         (error: Error) => setAccountPreviewError(error.message)
       );
       return;
