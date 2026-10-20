@@ -32,7 +32,7 @@ use relay_types::{ListRelayHostsResponse, RelayHost};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::warn;
+use tracing::{Instrument, warn};
 use url::Url;
 use utils::jwt::extract_expiration;
 use uuid::Uuid;
@@ -252,31 +252,47 @@ impl RemoteClient {
             // holds the guard until saved; concurrent callers wait on the guard
             // and reuse the saved token.
             let client = self.clone();
-            let (refresh_token, refreshed) = tokio::spawn(async move {
-                let _refresh_guard = client.auth_context.refresh_guard().await;
-                let latest = client
-                    .auth_context
-                    .get_credentials()
-                    .await
-                    .ok_or(RemoteClientError::Auth)?;
-                if !latest.expires_soon(leeway) {
-                    return Ok((latest.refresh_token.clone(), Ok(Some(latest))));
-                }
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            tokio::spawn(
+                async move {
+                    let outcome: Result<_, RemoteClientError> = async {
+                        let _refresh_guard = client.auth_context.refresh_guard().await;
+                        let latest = client
+                            .auth_context
+                            .get_credentials()
+                            .await
+                            .ok_or(RemoteClientError::Auth)?;
+                        if !latest.expires_soon(leeway) {
+                            return Ok((latest.refresh_token.clone(), Ok(Some(latest))));
+                        }
 
-                // Do not refresh a revoked provider credential while the user
-                // is replacing it. This is temporary unavailability, not logout.
-                if client.auth_context.is_reconnecting().await {
-                    return Ok((
-                        latest.refresh_token,
-                        Err(RemoteClientError::ReconnectPending),
-                    ));
-                }
+                        // Do not refresh a revoked provider credential while the user
+                        // is replacing it. This is temporary unavailability, not logout.
+                        if client.auth_context.is_reconnecting().await {
+                            return Ok((
+                                latest.refresh_token,
+                                Err(RemoteClientError::ReconnectPending),
+                            ));
+                        }
 
-                let result = client.refresh_credentials(&latest).await;
-                Ok((latest.refresh_token, result))
-            })
-            .await
-            .map_err(|e| RemoteClientError::Transport(e.to_string()))??;
+                        let result = client.refresh_credentials(&latest).await;
+                        if sender.is_closed() {
+                            // Before detaching, this case lost the rotated token.
+                            tracing::info!(
+                                saved = matches!(result, Ok(Some(_))),
+                                "Finished token refresh after its caller was dropped"
+                            );
+                        }
+                        Ok((latest.refresh_token, result))
+                    }
+                    .await;
+                    let _ = sender.send(outcome);
+                }
+                .in_current_span(),
+            );
+            let (refresh_token, refreshed) = receiver.await.map_err(|_| {
+                RemoteClientError::Transport("token refresh task failed".to_string())
+            })??;
 
             match refreshed {
                 Ok(Some(updated)) => {
@@ -1514,8 +1530,9 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
         let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
         let auth = AuthContext::new(
-            Arc::new(OAuthCredentials::new(dir.path().join("credentials.json"))),
+            Arc::new(OAuthCredentials::new(path.clone())),
             Arc::new(RwLock::new(None)),
         );
         auth.save_credentials(&Credentials {
@@ -1535,13 +1552,24 @@ mod tests {
         received.notified().await;
         dropped.abort();
         assert!(dropped.await.unwrap_err().is_cancelled());
+
+        // A concurrent caller joins the refresh still in flight instead of
+        // sending "old" again.
+        let waiting = tokio::spawn({
+            let client = client.clone();
+            async move { client.access_token().await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished());
         release.notify_one();
+        assert_eq!(waiting.await.unwrap().unwrap(), NEW_ACCESS);
 
         assert_eq!(client.access_token().await.unwrap(), NEW_ACCESS);
         assert_eq!(
             auth.get_credentials().await.unwrap().refresh_token,
             "rotated"
         );
+        assert!(std::fs::read_to_string(&path).unwrap().contains("rotated"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
