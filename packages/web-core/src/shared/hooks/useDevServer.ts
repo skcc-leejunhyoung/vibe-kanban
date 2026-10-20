@@ -11,6 +11,8 @@ import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface UseDevServerOptions {
+  /** Overrides the HostIdProvider host (e.g. the active split pane's). */
+  hostId?: string | null;
   onStartSuccess?: () => void;
   onStartError?: (err: unknown) => void;
   onStopSuccess?: () => void;
@@ -22,8 +24,9 @@ export function useDevServer(
   options?: UseDevServerOptions
 ) {
   const queryClient = useQueryClient();
-  const hostId = useHostId();
-  const processes = useWorkspaceDevServers(workspaceId);
+  const contextHostId = useHostId();
+  const hostId = options?.hostId !== undefined ? options.hostId : contextHostId;
+  const processes = useWorkspaceDevServers(workspaceId, hostId);
 
   const runningDevServers = useMemo(
     () => filterRunningDevServers(processes),

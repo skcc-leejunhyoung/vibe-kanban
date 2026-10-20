@@ -13,8 +13,13 @@ export const branchStatusKeys = {
     ['branchStatus', workspaceId, getHostRequestScopeQueryKey(hostId)] as const,
 };
 
-export function useBranchStatus(workspaceId?: string) {
-  const hostId = useHostId();
+/** `hostIdOverride` replaces the HostIdProvider host (e.g. the active split pane's). */
+export function useBranchStatus(
+  workspaceId?: string,
+  hostIdOverride?: string | null
+) {
+  const contextHostId = useHostId();
+  const hostId = hostIdOverride !== undefined ? hostIdOverride : contextHostId;
   const query = useQuery({
     queryKey: branchStatusKeys.byWorkspace(workspaceId, hostId),
     queryFn: () => workspacesApi.getBranchStatus(workspaceId!, hostId),

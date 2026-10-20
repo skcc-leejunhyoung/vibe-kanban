@@ -7,6 +7,8 @@ import type { RepoWithTargetBranch } from 'shared/types';
 
 interface UseWorkspaceRepoOptions {
   enabled?: boolean;
+  /** Overrides the HostIdProvider host (e.g. the active split pane's). */
+  hostId?: string | null;
 }
 
 export const workspaceRepoKeys = {
@@ -46,8 +48,9 @@ export function useWorkspaceRepo(
   workspaceId?: string,
   options: UseWorkspaceRepoOptions = {}
 ) {
-  const hostId = useHostId();
+  const contextHostId = useHostId();
   const { enabled = true } = options;
+  const hostId = options.hostId !== undefined ? options.hostId : contextHostId;
   const queryClient = useQueryClient();
 
   const query = useQuery<RepoWithTargetBranch[]>({

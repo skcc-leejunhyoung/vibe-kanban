@@ -55,13 +55,16 @@ export function useActionVisibilityContext(
   // pane those actions act on; pane subtrees stay scoped to themselves via
   // the destination override (the chrome target is null there).
   const chromeTargetWorkspace = useChromeTargetWorkspace();
+  // Paired with the chrome target id: the document host lags the active pane
+  // while the URL mirror catches up, so it may belong to the previous pane.
+  const chromeTargetHostId = chromeTargetWorkspace?.hostId;
   const workspaceId = chromeTargetWorkspace?.workspaceId ?? contextWorkspaceId;
   const isCreateMode = chromeTargetWorkspace ? false : contextIsCreateMode;
   const { data: chromeTargetRecord } = useWorkspaceRecord(
     chromeTargetWorkspace?.workspaceId,
     {
       enabled: !!chromeTargetWorkspace,
-      hostId: chromeTargetWorkspace ? chromeTargetWorkspace.hostId : undefined,
+      hostId: chromeTargetHostId,
     }
   );
   const workspace = chromeTargetWorkspace
@@ -69,7 +72,7 @@ export function useActionVisibilityContext(
     : contextWorkspace;
   const { repos: chromeTargetRepos } = useWorkspaceRepo(
     chromeTargetWorkspace?.workspaceId,
-    { enabled: !!chromeTargetWorkspace }
+    { enabled: !!chromeTargetWorkspace, hostId: chromeTargetHostId }
   );
   const repos = chromeTargetWorkspace ? chromeTargetRepos : contextRepos;
   const panelState = useWorkspacePanelState(
@@ -125,9 +128,14 @@ export function useActionVisibilityContext(
         ? 'kanban'
         : 'workspaces';
   const { config } = useUserSystem();
-  const { isStarting, isStopping, runningDevServers } =
-    useDevServer(workspaceId);
-  const { data: branchStatus } = useBranchStatus(workspaceId);
+  const { isStarting, isStopping, runningDevServers } = useDevServer(
+    workspaceId,
+    { hostId: chromeTargetHostId }
+  );
+  const { data: branchStatus } = useBranchStatus(
+    workspaceId,
+    chromeTargetHostId
+  );
   const { isAttemptRunningVisible } = useExecutionProcessesContext();
   const { logsPanelContent } = useLogsPanel();
   const { isSignedIn } = useAuth();

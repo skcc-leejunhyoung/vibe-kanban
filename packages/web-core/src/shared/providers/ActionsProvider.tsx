@@ -83,7 +83,8 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
   // provider instances see a null chrome target and use their own workspace.
   const chromeTargetWorkspace = useChromeTargetWorkspace();
   const { start, stop, runningDevServers } = useDevServer(
-    chromeTargetWorkspace?.workspaceId ?? workspaceId
+    chromeTargetWorkspace?.workspaceId ?? workspaceId,
+    { hostId: chromeTargetWorkspace?.hostId }
   );
 
   // Default issue-create options (status, view filter labels) from the board

@@ -39,9 +39,11 @@ export const workspaceDevServerKeys = {
  * that stream's dev-server transitions instead of polled every 2.5s.
  */
 export function useWorkspaceDevServers(
-  workspaceId: string | undefined
+  workspaceId: string | undefined,
+  hostIdOverride?: string | null
 ): ExecutionProcess[] {
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = hostIdOverride !== undefined ? hostIdOverride : contextHostId;
   const { data, refetch } = useQuery({
     queryKey: workspaceDevServerKeys.byWorkspace(workspaceId, hostId),
     queryFn: () => workspacesApi.getDevServers(workspaceId as string, hostId),

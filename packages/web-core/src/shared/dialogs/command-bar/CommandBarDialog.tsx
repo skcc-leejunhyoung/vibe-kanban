@@ -106,7 +106,7 @@ function CommandBarContent({
         : undefined;
   const { repos: chromeTargetRepos } = useWorkspaceRepo(
     chromeTargetWorkspace?.workspaceId,
-    { enabled: !!chromeTargetWorkspace }
+    { enabled: !!chromeTargetWorkspace, hostId: chromeTargetWorkspace?.hostId }
   );
   const repos = chromeTargetWorkspace ? chromeTargetRepos : contextRepos;
 
