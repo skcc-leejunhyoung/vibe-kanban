@@ -108,6 +108,8 @@ interface PreviewBrowserProps {
   mobileScale: number;
   className?: string;
   iframeRef: RefObject<HTMLIFrameElement>;
+  /** Lets the container target the iframe by name (form POST navigation). */
+  iframeName?: string;
   navigation: PreviewNavigationState | null;
   onNavigateBack: () => void;
   onNavigateForward: () => void;
@@ -160,6 +162,7 @@ export function PreviewBrowser({
   mobileScale,
   className,
   iframeRef,
+  iframeName,
   navigation,
   onNavigateBack,
   onNavigateForward,
@@ -771,6 +774,7 @@ export function PreviewBrowser({
                 >
                   <iframe
                     ref={iframeRef}
+                    name={iframeName}
                     src={url}
                     title={t('preview.browser.title')}
                     className="w-full h-full border-0"
@@ -791,6 +795,7 @@ export function PreviewBrowser({
               >
                 <iframe
                   ref={iframeRef}
+                  name={iframeName}
                   src={url}
                   title={t('preview.browser.title')}
                   className={cn(

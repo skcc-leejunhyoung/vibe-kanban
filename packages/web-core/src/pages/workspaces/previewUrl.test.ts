@@ -12,6 +12,16 @@ describe('getTargetDevPort', () => {
     ).toBe('4173');
   });
 
+  it('reads the dev server port from a protected remote preview hostname', () => {
+    expect(
+      getTargetDevPort(
+        new URL('https://p-4173--host.preview.example.com/page'),
+        47824,
+        'preview.example.com'
+      )
+    ).toBe('4173');
+  });
+
   it('reads the dev server port from the local proxy hostname', () => {
     expect(
       getTargetDevPort(new URL('http://4173.localhost:47824/page'), 47824)

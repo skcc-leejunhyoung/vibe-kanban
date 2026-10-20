@@ -36,7 +36,14 @@ import { getTargetDevPort, transformProxyUrlToDevUrl } from './previewUrl';
 import { useQuery } from '@tanstack/react-query';
 import { accountHost } from '@/shared/lib/accountHostConnection';
 import { isLocalSelfHost } from '@/shared/lib/accountHostTransport';
-import { openAccountPreview } from '@/shared/lib/accountPreview';
+import {
+  accountPreviewNextPath,
+  canEmbedAccountPreview,
+  openAccountPreview,
+  requestAccountPreviewExchange,
+  submitAccountPreviewExchange,
+  type AccountPreviewExchange,
+} from '@/shared/lib/accountPreview';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 
 const MIN_RESPONSIVE_WIDTH = 320;
@@ -166,6 +173,10 @@ export function PreviewBrowserContainer({
     enabled: Boolean(hostId),
   });
   const accountPreviewMode = Boolean(hostId) && accountHostQuery.data !== null;
+  // Protected previews are same-site with the remote web, so the relay lets
+  // this page frame them once the cookie exchange below ran. The local web is
+  // a different site and keeps opening them in a new tab.
+  const canEmbed = useMemo(() => canEmbedAccountPreview(), []);
 
   const {
     start,
@@ -249,9 +260,11 @@ export function PreviewBrowserContainer({
     if (!effectiveParsedUrl) return true;
     return LOOPBACK_HOSTS.has(effectiveParsedUrl.hostname);
   }, [effectiveParsedUrl]);
+  const accountPreview = accountPreviewMode && isLoopbackPreview;
+  const accountEmbed = accountPreview && canEmbed;
 
   const iframeUrl = useMemo(() => {
-    if (accountPreviewMode && isLoopbackPreview) return undefined;
+    if (accountPreview && !accountEmbed) return undefined;
     if (!effectiveParsedUrl || !devServerPort) {
       return undefined;
     }
@@ -284,8 +297,10 @@ export function PreviewBrowserContainer({
       import.meta.env.VITE_RELAY_PREVIEW_HOST_SUFFIX ?? ''
     ).trim();
     if (remotePreviewSuffix && hostId != null) {
+      // Account hosts only answer on the protected `p-` host, whose cookie
+      // the exchange below sets; legacy hosts keep the open one.
       const remoteUrl = new URL(
-        `https://${devServerPort}--${hostId}.${remotePreviewSuffix}${path}`
+        `https://${accountEmbed ? 'p-' : ''}${devServerPort}--${hostId}.${remotePreviewSuffix}${path}`
       );
       remoteUrl.searchParams.set('_refresh', String(previewRefreshKey));
       return remoteUrl.toString();
@@ -329,7 +344,8 @@ export function PreviewBrowserContainer({
 
     return proxyUrl.toString();
   }, [
-    accountPreviewMode,
+    accountEmbed,
+    accountPreview,
     devServerPort,
     effectiveParsedUrl,
     hostId,
@@ -448,6 +464,80 @@ export function PreviewBrowserContainer({
       bridgeRef.current?.stop();
     };
   }, [handleBridgeMessage]);
+
+  // ─── Account Preview Cookie Exchange ──────────────────────────────────────
+  // The protected preview host answers only with its HttpOnly cookie, which a
+  // one-time code sets through a form POST that targets the iframe by name.
+  // The code is requested as soon as the port is known and posted once the
+  // iframe is mounted; refreshes reload with the cookie and never re-exchange.
+  const iframeName = `vk-preview-${workspaceId}`;
+  const isServerRunning = runningDevServers.length > 0;
+  const [exchangeAttempt, setExchangeAttempt] = useState(0);
+  const exchangeRef = useRef<{
+    key: string;
+    pending: Promise<AccountPreviewExchange>;
+    done: boolean;
+  } | null>(null);
+  const accountHostReady = Boolean(accountHostQuery.data);
+  useEffect(() => {
+    if (
+      !accountEmbed ||
+      !accountHostReady ||
+      hostId == null ||
+      !devServerPort ||
+      !isServerRunning
+    )
+      return;
+    const key = `${hostId}:${devServerPort}:${exchangeAttempt}`;
+    if (exchangeRef.current?.key !== key) {
+      const pending = requestAccountPreviewExchange(
+        hostId,
+        Number(devServerPort)
+      );
+      pending.catch(noop); // reported once a run below attaches
+      exchangeRef.current = { key, pending, done: false };
+    }
+    const exchange = exchangeRef.current;
+    if (exchange.done || !showIframe || !iframeUrl) return;
+    let cancelled = false;
+    exchange.pending.then(
+      (result) => {
+        if (cancelled || exchange.done) return;
+        // Without a mounted iframe of that name the form would open a new
+        // window; a later run submits once it is there.
+        if (iframeRef.current?.name !== iframeName) return;
+        exchange.done = true;
+        submitAccountPreviewExchange(
+          document,
+          result,
+          iframeName,
+          accountPreviewNextPath(iframeUrl)
+        );
+      },
+      (error: Error) => {
+        if (cancelled || exchange.done) return;
+        exchange.done = true;
+        setAccountPreviewError(error.message);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    accountEmbed,
+    accountHostReady,
+    hostId,
+    devServerPort,
+    isServerRunning,
+    showIframe,
+    iframeUrl,
+    iframeName,
+    exchangeAttempt,
+  ]);
+  const handleReconnect = useCallback(() => {
+    setAccountPreviewError('');
+    setExchangeAttempt((attempt) => attempt + 1);
+  }, []);
 
   // Send inspect mode toggle to iframe
   useEffect(() => {
@@ -1013,12 +1103,9 @@ export function PreviewBrowserContainer({
 
   return (
     <div className="flex h-full min-w-0 flex-col">
-      {accountPreviewMode && isLoopbackPreview && (
+      {accountPreview && !canEmbed && (
         <div className="flex flex-col gap-half p-base text-normal">
-          <p>
-            계정으로 보호된 미리보기는 새 탭에서 열립니다. Safari에서도 동일한
-            접근 검사를 적용합니다.
-          </p>
+          <p>이 개발 서버는 다른 컴퓨터에서 실행 중이라 새 탭에서 열립니다.</p>
           <button
             className="rounded-sm border border-border px-base py-half disabled:opacity-50"
             disabled={
@@ -1045,6 +1132,19 @@ export function PreviewBrowserContainer({
           )}
         </div>
       )}
+      {accountEmbed && accountPreviewError && (
+        <div className="flex flex-wrap items-center gap-base p-base text-normal">
+          <p role="alert" className="text-error">
+            {accountPreviewError}
+          </p>
+          <button
+            className="rounded-sm border border-border px-base py-half"
+            onClick={handleReconnect}
+          >
+            다시 연결
+          </button>
+        </div>
+      )}
       <PreviewBrowser
         url={iframeUrl}
         autoDetectedUrl={urlInfo?.url}
@@ -1068,8 +1168,8 @@ export function PreviewBrowserContainer({
         onStop={handleStop}
         isStarting={isStarting}
         isStopping={isStopping}
-        isServerRunning={runningDevServers.length > 0}
-        showIframe={showIframe && !(accountPreviewMode && isLoopbackPreview)}
+        isServerRunning={isServerRunning}
+        showIframe={showIframe && (!accountPreview || canEmbed)}
         allowManualUrl={allowManualUrl}
         screenSize={screenSize}
         localDimensions={localDimensions}
@@ -1086,6 +1186,7 @@ export function PreviewBrowserContainer({
         mobileScale={mobileScale}
         className={className}
         iframeRef={iframeRef}
+        iframeName={iframeName}
         navigation={navigation}
         onNavigateBack={handleNavigateBack}
         onNavigateForward={handleNavigateForward}

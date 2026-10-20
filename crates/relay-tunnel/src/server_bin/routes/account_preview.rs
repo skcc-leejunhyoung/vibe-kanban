@@ -81,9 +81,9 @@ pub async fn handle(State(state): State<RelayAppState>, mut request: Request) ->
         )
             .into_response();
     };
-    let row:Option<(Uuid,Uuid)>=match sqlx::query_as("SELECT p.id,p.connection_id FROM host_preview_sessions p JOIN hosts h ON h.id=p.host_id WHERE p.host_id=$1 AND p.port=$2 AND p.cookie_hash=$3 AND p.consumed_at IS NOT NULL AND p.expires_at>clock_timestamp() AND $2=ANY(h.preview_ports) AND h.preview_ports_updated_at>clock_timestamp()-INTERVAL '40 seconds' AND host_connection_allowed(p.connection_id,p.host_id)")
+    let row:Option<(Uuid,Uuid,String)>=match sqlx::query_as("SELECT p.id,p.connection_id,p.app_origin FROM host_preview_sessions p JOIN hosts h ON h.id=p.host_id WHERE p.host_id=$1 AND p.port=$2 AND p.cookie_hash=$3 AND p.consumed_at IS NOT NULL AND p.expires_at>clock_timestamp() AND $2=ANY(h.preview_ports) AND h.preview_ports_updated_at>clock_timestamp()-INTERVAL '40 seconds' AND host_connection_allowed(p.connection_id,p.host_id)")
         .bind(host_id).bind(i32::from(port)).bind(hash).fetch_optional(&state.pool).await {Ok(row)=>row,Err(_)=>return StatusCode::SERVICE_UNAVAILABLE.into_response()};
-    let Some((preview_id, connection_id)) = row else {
+    let Some((preview_id, connection_id, app_origin)) = row else {
         return (
             StatusCode::FORBIDDEN,
             "미리보기 접근 권한이 해제되었거나 개발 서버가 종료되었습니다.",
@@ -137,14 +137,56 @@ pub async fn handle(State(state): State<RelayAppState>, mut request: Request) ->
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
+    match frame_ancestors(&app_origin, &host) {
+        Some(policy) => response.headers_mut().append(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_str(&policy).unwrap(),
+        ),
+        None => {
+            response
+                .headers_mut()
+                .insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+            response.headers_mut().append(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static("frame-ancestors 'none'"),
+            )
+        }
+    };
     response
-        .headers_mut()
-        .insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    response.headers_mut().append(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("frame-ancestors 'none'"),
-    );
-    response
+}
+
+/// Only the app origin that opened the preview may frame it, and only when the
+/// preview host is a subdomain of it: same site, so the SameSite=Lax cookie
+/// reaches the iframe. Anything else keeps the deny-all policy.
+pub fn frame_ancestors(app_origin: &str, preview_host: &str) -> Option<String> {
+    let authority = app_origin.strip_prefix("https://")?;
+    let (app_host, port) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    let valid_host = !app_host.is_empty()
+        && app_host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let valid_port = port.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    (valid_host
+        && valid_port
+        && preview_host
+            .to_ascii_lowercase()
+            .ends_with(&format!(".{}", app_host.to_ascii_lowercase())))
+    .then(|| format!("frame-ancestors {app_origin}"))
+}
+
+/// Same-origin path to land on after the exchange; anything else goes to `/`.
+pub fn safe_next(next: Option<&str>) -> &str {
+    next.filter(|n| {
+        n.len() <= 1024
+            && n.starts_with('/')
+            && !n.starts_with("//")
+            && !n.starts_with("/\\")
+            && n.bytes().all(|b| (0x21..0x7f).contains(&b))
+    })
+    .unwrap_or("/")
 }
 
 pub fn strip_private_headers(headers: &mut axum::http::HeaderMap) {
@@ -194,7 +236,7 @@ async fn exchange(state: &RelayAppState, host: Uuid, port: u16, request: Request
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_owned();
-    let Ok(body) = to_bytes(request.into_body(), 2048).await else {
+    let Ok(body) = to_bytes(request.into_body(), 4096).await else {
         return StatusCode::BAD_REQUEST.into_response();
     };
     let form = url::form_urlencoded::parse(&body).collect::<Vec<_>>();
@@ -205,6 +247,12 @@ async fn exchange(state: &RelayAppState, host: Uuid, port: u16, request: Request
     else {
         return StatusCode::BAD_REQUEST.into_response();
     };
+    let next = safe_next(
+        form.iter()
+            .find(|(key, _)| key == "next")
+            .map(|(_, value)| value.as_ref()),
+    )
+    .to_owned();
     let Ok(hash) = credential_hash(code) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
@@ -215,9 +263,10 @@ async fn exchange(state: &RelayAppState, host: Uuid, port: u16, request: Request
     match result {
         Ok(Some(_)) => {
             let mut response = StatusCode::SEE_OTHER.into_response();
-            response
-                .headers_mut()
-                .insert(header::LOCATION, HeaderValue::from_static("/"));
+            response.headers_mut().insert(
+                header::LOCATION,
+                HeaderValue::from_str(&next).unwrap_or_else(|_| HeaderValue::from_static("/")),
+            );
             response
                 .headers_mut()
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -272,6 +321,52 @@ mod host_access_tests {
         assert!(!headers.contains_key("x-vk-session"));
         assert!(!headers.contains_key("x-forwarded-host"));
     }
+    #[test]
+    fn framing_is_allowed_only_for_the_parent_app_origin() {
+        let preview = "p-5173--0b6a2c1e-0000-4000-8000-000000000000.relay.vk.example.test";
+        assert_eq!(
+            frame_ancestors("https://vk.example.test", preview).as_deref(),
+            Some("frame-ancestors https://vk.example.test")
+        );
+        assert_eq!(
+            frame_ancestors("https://vk.example.test:8443", preview).as_deref(),
+            Some("frame-ancestors https://vk.example.test:8443")
+        );
+        assert!(frame_ancestors("https://VK.Example.test", preview).is_some());
+        for denied in [
+            "https://evil.test",
+            "http://vk.example.test",
+            "https://vk.example.test/",
+            "https://vk.example.test;x",
+            "https://vk.example.test:abc",
+            "https://vk.example.test:",
+            "https://",
+            "https://xample.test",
+            "https://relay.vk.example.test.evil.test",
+        ] {
+            assert!(frame_ancestors(denied, preview).is_none(), "{denied}");
+        }
+    }
+    #[test]
+    fn exchange_next_must_be_a_same_origin_path() {
+        assert_eq!(safe_next(Some("/a?b=1")), "/a?b=1");
+        assert_eq!(safe_next(Some("/")), "/");
+        assert_eq!(safe_next(None), "/");
+        for bad in [
+            "//evil.com",
+            "https://evil.com",
+            "/\\evil",
+            "/a\x01b",
+            "/a b",
+            "/a\u{ac00}",
+            "a",
+            "",
+        ] {
+            assert_eq!(safe_next(Some(bad)), "/", "{bad:?}");
+        }
+        assert_eq!(safe_next(Some(&format!("/{}", "a".repeat(1024)))), "/");
+        assert_ne!(safe_next(Some(&format!("/{}", "a".repeat(1023)))), "/");
+    }
     #[tokio::test]
     #[ignore = "requires HOST_ACCESS_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
     async fn preview_code_exchange_is_single_use_origin_bound_and_revocable() {
@@ -315,7 +410,9 @@ mod host_access_tests {
                 .uri("/__vk/authorize")
                 .header("host", &target)
                 .header("origin", origin)
-                .body(axum::body::Body::from(format!("code={code}")))
+                .body(axum::body::Body::from(format!(
+                    "code={code}&next=%2Fdash%3Fx%3D1"
+                )))
                 .unwrap()
         };
         assert_eq!(
@@ -326,7 +423,7 @@ mod host_access_tests {
         );
         let first = handle(State(state.clone()), request("https://app.test")).await;
         assert_eq!(first.status(), StatusCode::SEE_OTHER);
-        assert_eq!(first.headers()[header::LOCATION], "/");
+        assert_eq!(first.headers()[header::LOCATION], "/dash?x=1");
         let cookie = first.headers()[header::SET_COOKIE]
             .to_str()
             .unwrap()

@@ -29,7 +29,8 @@ export function getTargetDevPort(
   );
 
   if (hasLocalhostSuffix || hasRemotePreviewSuffix) {
-    const tokenPort = hostnameParts[0]?.split('--')[0];
+    // Account-protected relay previews prefix the label with `p-`.
+    const tokenPort = hostnameParts[0]?.split('--')[0]?.replace(/^p-/, '');
     if (tokenPort && /^\d+$/.test(tokenPort)) {
       return tokenPort;
     }
