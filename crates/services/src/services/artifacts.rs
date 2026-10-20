@@ -1544,6 +1544,11 @@ impl ArtifactObserver {
             None => format!("setup took over {}s", WATCHER_SETUP_LIMIT.as_secs()),
         };
         self.watcher_setup = None;
+        tracing::warn!(
+            execution_id = %self.manifest.execution_id,
+            %error,
+            "Live artifact updates unavailable"
+        );
         self.warn(&format!("Live artifact updates unavailable: {error}"));
         false
     }
@@ -2021,6 +2026,58 @@ mod tests {
             std::fs::read_to_string(directory(session, execution).join(notes)).unwrap(),
             "v3"
         );
+        tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_or_overdue_watcher_setup_only_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let session = Uuid::new_v4();
+        let mut observer = ArtifactObserver::start(
+            root.clone(),
+            root.clone(),
+            Uuid::new_v4(),
+            session,
+            Uuid::new_v4(),
+            FileService::new(pool).unwrap(),
+        )
+        .await
+        .unwrap();
+        let (_release, gate) = std::sync::mpsc::channel::<()>();
+        let stuck = tokio::task::spawn_blocking(move || {
+            let _ = gate.recv();
+            artifact_watcher(root)
+        });
+        observer.watcher_setup = Some((stuck, Instant::now() - WATCHER_SETUP_LIMIT));
+        tokio::time::timeout(Duration::from_secs(1), observer.tick(false))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(observer.watcher_setup.is_none());
+
+        let failing =
+            tokio::task::spawn_blocking(|| artifact_watcher(PathBuf::from("/vk/missing")));
+        observer.watcher_setup = Some((failing, Instant::now()));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !observer.watcher_setup.as_ref().unwrap().0.is_finished() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        observer.tick(false).await.unwrap();
+        assert!(observer.watcher_setup.is_none() && observer.watcher.is_none());
+        let warnings = &observer.manifest.list.warnings;
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(
+            warnings[0],
+            "Live artifact updates unavailable: setup took over 30s"
+        );
+        assert!(warnings[1].starts_with("Live artifact updates unavailable: "));
         tokio::fs::remove_dir_all(utils::execution_logs::process_logs_session_dir(session))
             .await
             .unwrap();

@@ -534,7 +534,7 @@ type WatchChanges = Vec<(PathBuf, Option<RecursiveMode>)>;
 /// Apply every update with one stream restart; a path that could not be
 /// watched is forgotten.
 fn apply_watch_changes(
-    watcher: &mut RecommendedWatcher,
+    watcher: &mut dyn Watcher,
     watched_dirs: &mut WatchedDirs,
     changes: WatchChanges,
 ) {
@@ -915,6 +915,84 @@ mod tests {
         reported(root.join("c"));
         std::fs::write(root.join("c/z.txt"), "z").unwrap();
         reported(root.join("c/z.txt"));
+    }
+
+    #[test]
+    fn watch_changes_apply_in_one_commit_and_forget_failed_adds() {
+        use notify::PathsMut;
+
+        // FSEvents restarts its stream on every `watch`/`unwatch` call and
+        // once per `paths_mut` commit.
+        #[derive(Default)]
+        struct Calls(Vec<&'static str>);
+        impl Watcher for Calls {
+            fn new<F: EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+                Ok(Self::default())
+            }
+            fn watch(&mut self, _: &Path, _: RecursiveMode) -> notify::Result<()> {
+                self.0.push("watch");
+                Ok(())
+            }
+            fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+                self.0.push("unwatch");
+                Ok(())
+            }
+            fn paths_mut<'me>(&'me mut self) -> Box<dyn PathsMut + 'me> {
+                Box::new(Batch(self))
+            }
+            fn kind() -> notify::WatcherKind {
+                notify::WatcherKind::NullWatcher
+            }
+        }
+        struct Batch<'a>(&'a mut Calls);
+        impl PathsMut for Batch<'_> {
+            fn add(&mut self, path: &Path, _: RecursiveMode) -> notify::Result<()> {
+                self.0.0.push("add");
+                if path.ends_with("gone") {
+                    return Err(notify::Error::path_not_found());
+                }
+                Ok(())
+            }
+            fn remove(&mut self, _: &Path) -> notify::Result<()> {
+                self.0.0.push("remove");
+                Ok(())
+            }
+            fn commit(self: Box<Self>) -> notify::Result<()> {
+                self.0.0.push("commit");
+                Ok(())
+            }
+        }
+
+        let mut watcher = Calls::default();
+        let mut watched = WatchedDirs::default();
+        let mut changes: WatchChanges = (0..968)
+            .map(|i| {
+                (
+                    PathBuf::from(format!("/r/{i}")),
+                    Some(RecursiveMode::NonRecursive),
+                )
+            })
+            .collect();
+        changes.push(("/r/gone".into(), Some(RecursiveMode::Recursive)));
+        changes.push(("/r/old".into(), None));
+        for (path, mode) in &changes {
+            if let Some(mode) = mode {
+                watched.insert(path.clone(), *mode);
+            }
+        }
+        apply_watch_changes(&mut watcher, &mut watched, changes);
+        let count = |name| watcher.0.iter().filter(|call| **call == name).count();
+        assert_eq!(
+            (count("add"), count("remove"), count("commit")),
+            (969, 1, 1)
+        );
+        assert_eq!(count("watch") + count("unwatch"), 0);
+        assert_eq!(watcher.0.last(), Some(&"commit"));
+        assert!(watched.contains(Path::new("/r/0")) && watched.contains(Path::new("/r/967")));
+        assert!(!watched.contains(Path::new("/r/gone")));
+        // Nothing to change restarts nothing.
+        apply_watch_changes(&mut watcher, &mut watched, Vec::new());
+        assert_eq!(watcher.0.len(), 971);
     }
 
     #[test]
