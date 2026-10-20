@@ -11,6 +11,7 @@ use axum::{
     Extension, Json, Router,
     extract::{Query, State},
     http::HeaderMap,
+    middleware::from_fn,
     response::Json as ResponseJson,
     routing::{get, post},
 };
@@ -53,7 +54,8 @@ use uuid::Uuid;
 use workspace_manager::WorkspaceManager;
 
 use crate::{
-    DeploymentImpl, error::ApiError, routes::workspaces::review_mode::review_target_branch_ref,
+    DeploymentImpl, error::ApiError, middleware::finish_after_disconnect,
+    routes::workspaces::review_mode::review_target_branch_ref,
 };
 
 #[derive(Debug, Deserialize, Serialize, TS)]
@@ -2090,9 +2092,10 @@ pub fn router() -> Router<DeploymentImpl> {
             "/draft",
             get(get_pr_draft).put(put_pr_draft).delete(delete_pr_draft),
         )
+        .route("/attach", get(list_attachable_prs_for_branch))
         .route(
             "/attach",
-            get(list_attachable_prs_for_branch).post(attach_existing_pr),
+            post(attach_existing_pr).layer(from_fn(finish_after_disconnect)),
         )
         .route("/unlink", post(unlink_pr))
         .route("/comments", get(get_pr_comments))

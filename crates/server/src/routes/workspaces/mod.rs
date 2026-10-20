@@ -17,7 +17,7 @@ pub mod workspace_summary;
 use axum::{
     Router,
     middleware::{from_fn, from_fn_with_state},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 
 use crate::{
@@ -27,11 +27,12 @@ use crate::{
 
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let workspace_id_router = Router::new()
+        .route("/", get(core::get_workspace))
         .route(
             "/",
-            get(core::get_workspace)
-                .put(core::update_workspace)
-                .delete(core::delete_workspace),
+            put(core::update_workspace)
+                .delete(core::delete_workspace)
+                .layer(from_fn(finish_after_disconnect)),
         )
         .route("/messages/first", get(core::get_first_user_message))
         .route("/project", get(core::get_workspace_project_id))
@@ -60,7 +61,10 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             "/quick-chat",
             post(create::create_and_start_quick_chat).layer(from_fn(finish_after_disconnect)),
         )
-        .route("/from-pr", post(pr::create_workspace_from_pr))
+        .route(
+            "/from-pr",
+            post(pr::create_workspace_from_pr).layer(from_fn(finish_after_disconnect)),
+        )
         .route("/from-pr/status", get(pr::get_pr_checkout_status))
         .route("/streams/ws", get(streams::stream_workspaces_ws))
         .route("/streams/sse", get(streams::stream_workspaces_sse))

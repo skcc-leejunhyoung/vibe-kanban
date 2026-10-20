@@ -10,7 +10,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     middleware::{from_fn, from_fn_with_state},
     response::Json as ResponseJson,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
@@ -797,9 +797,10 @@ pub async fn run_setup_script(
 
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let session_id_router = Router::new()
+        .route("/", get(get_session).put(update_session))
         .route(
             "/",
-            get(get_session).put(update_session).delete(delete_session),
+            delete(delete_session).layer(from_fn(finish_after_disconnect)),
         )
         .route(
             "/follow-up",
@@ -809,14 +810,27 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             "/handoff",
             post(handoff).layer(from_fn(finish_after_disconnect)),
         )
-        .route("/auto-resume", get(get_auto_resume).post(set_auto_resume))
-        .route("/reset", post(reset_process))
+        .route("/auto-resume", get(get_auto_resume))
+        .route(
+            "/auto-resume",
+            post(set_auto_resume).layer(from_fn(finish_after_disconnect)),
+        )
+        .route(
+            "/reset",
+            post(reset_process).layer(from_fn(finish_after_disconnect)),
+        )
         .route(
             "/setup",
             post(run_setup_script).layer(from_fn(finish_after_disconnect)),
         )
-        .route("/review", post(review::start_review))
-        .route("/vibe-review", post(review::vibe_review))
+        .route(
+            "/review",
+            post(review::start_review).layer(from_fn(finish_after_disconnect)),
+        )
+        .route(
+            "/vibe-review",
+            post(review::vibe_review).layer(from_fn(finish_after_disconnect)),
+        )
         .route("/vibe-review/status", get(review::vibe_review_status))
         .route("/message-slice", get(search::get_session_message_slice))
         .layer(from_fn_with_state(
