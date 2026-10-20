@@ -145,6 +145,13 @@ fn map_error_code(code: Option<&str>) -> HandoffErrorCode {
     }
 }
 
+/// The refresh token a refresh started from, and what the refresh produced.
+type RefreshOutcome =
+    Result<(String, Result<Option<Credentials>, RemoteClientError>), RemoteClientError>;
+
+/// Shared by every caller waiting on the same token refresh.
+pub(crate) type RefreshFlight = tokio::sync::watch::Receiver<Option<RefreshOutcome>>;
+
 #[derive(Deserialize)]
 struct ApiErrorResponse {
     error: String,
@@ -245,54 +252,15 @@ impl RemoteClient {
                 return Ok(token.clone());
             }
 
-            // The server commits the rotation before replying. If this caller is
-            // dropped mid-refresh, the response must still be saved, or the next
-            // refresh resends the old token past the grace window and the server
-            // revokes the whole session as reuse. So the refresh runs detached and
-            // holds the guard until saved; concurrent callers wait on the guard
-            // and reuse the saved token.
-            let client = self.clone();
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            tokio::spawn(
-                async move {
-                    let outcome: Result<_, RemoteClientError> = async {
-                        let _refresh_guard = client.auth_context.refresh_guard().await;
-                        let latest = client
-                            .auth_context
-                            .get_credentials()
-                            .await
-                            .ok_or(RemoteClientError::Auth)?;
-                        if !latest.expires_soon(leeway) {
-                            return Ok((latest.refresh_token.clone(), Ok(Some(latest))));
-                        }
-
-                        // Do not refresh a revoked provider credential while the user
-                        // is replacing it. This is temporary unavailability, not logout.
-                        if client.auth_context.is_reconnecting().await {
-                            return Ok((
-                                latest.refresh_token,
-                                Err(RemoteClientError::ReconnectPending),
-                            ));
-                        }
-
-                        let result = client.refresh_credentials(&latest).await;
-                        if sender.is_closed() {
-                            // Before detaching, this case lost the rotated token.
-                            tracing::info!(
-                                saved = matches!(result, Ok(Some(_))),
-                                "Finished token refresh after its caller was dropped"
-                            );
-                        }
-                        Ok((latest.refresh_token, result))
-                    }
-                    .await;
-                    let _ = sender.send(outcome);
-                }
-                .in_current_span(),
-            );
-            let (refresh_token, refreshed) = receiver.await.map_err(|_| {
-                RemoteClientError::Transport("token refresh task failed".to_string())
-            })??;
+            let (refresh_token, refreshed) = self
+                .join_refresh(leeway)
+                .wait_for(Option::is_some)
+                .await
+                .ok()
+                .and_then(|outcome| outcome.clone())
+                .ok_or_else(|| {
+                    RemoteClientError::Transport("token refresh task failed".to_string())
+                })??;
 
             match refreshed {
                 Ok(Some(updated)) => {
@@ -321,6 +289,75 @@ impl RemoteClient {
                 }
             }
         })
+    }
+
+    /// Joins the refresh in flight, or starts one.
+    ///
+    /// The server commits the rotation before replying. If the caller were
+    /// dropped mid-refresh and the response lost, the next refresh would resend
+    /// the old token past the grace window and the server would revoke the
+    /// whole session as reuse. So the refresh runs detached until saved, and
+    /// callers only wait on its outcome; dropping them cancels nothing.
+    fn join_refresh(&self, leeway: ChronoDuration) -> RefreshFlight {
+        let mut slot = self
+            .auth_context
+            .refresh_flight()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A flight is over once it has an outcome or its task died without one.
+        if let Some(flight) = slot.as_ref()
+            && flight.borrow().is_none()
+            && flight.has_changed().is_ok()
+        {
+            return flight.clone();
+        }
+
+        let (sender, flight) = tokio::sync::watch::channel(None);
+        *slot = Some(flight.clone());
+        let client = self.clone();
+        tokio::spawn(
+            async move {
+                let outcome = client.run_refresh(leeway, &sender).await;
+                sender.send_replace(Some(outcome));
+            }
+            .in_current_span(),
+        );
+        flight
+    }
+
+    async fn run_refresh(
+        &self,
+        leeway: ChronoDuration,
+        sender: &tokio::sync::watch::Sender<Option<RefreshOutcome>>,
+    ) -> RefreshOutcome {
+        let latest = self
+            .auth_context
+            .get_credentials()
+            .await
+            .ok_or(RemoteClientError::Auth)?;
+        if !latest.expires_soon(leeway) {
+            return Ok((latest.refresh_token.clone(), Ok(Some(latest))));
+        }
+
+        // Do not refresh a revoked provider credential while the user
+        // is replacing it. This is temporary unavailability, not logout.
+        if self.auth_context.is_reconnecting().await {
+            return Ok((
+                latest.refresh_token,
+                Err(RemoteClientError::ReconnectPending),
+            ));
+        }
+
+        let result = self.refresh_credentials(&latest).await;
+        // Only the slot still holds a receiver: every caller was dropped.
+        // Before detaching, this case lost the rotated token.
+        if sender.receiver_count() <= 1 {
+            tracing::info!(
+                saved = matches!(result, Ok(Some(_))),
+                "Finished token refresh after its caller was dropped"
+            );
+        }
+        Ok((latest.refresh_token, result))
     }
 
     async fn refresh_credentials(
@@ -1494,6 +1531,43 @@ mod tests {
     // exp = 2100-01-01; the client only decodes claims, not the signature.
     const NEW_ACCESS: &str = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.sig";
 
+    fn rotated() -> axum::response::Response {
+        Json(TokenRefreshResponse {
+            access_token: NEW_ACCESS.into(),
+            refresh_token: "rotated".into(),
+        })
+        .into_response()
+    }
+
+    /// A client whose saved session needs a refresh, against `router`.
+    async fn client_needing_refresh(router: Router) -> (RemoteClient, tempfile::TempDir) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let dir = tempfile::tempdir().unwrap();
+        let auth = AuthContext::new(
+            Arc::new(OAuthCredentials::new(dir.path().join("credentials.json"))),
+            Arc::new(RwLock::new(None)),
+        );
+        auth.save_credentials(&Credentials {
+            access_token: None,
+            refresh_token: "old".into(),
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+        let client = RemoteClient::new(&format!("http://{address}"), auth, "test".into()).unwrap();
+        (client, dir)
+    }
+
+    fn spawn_access_token(
+        client: &RemoteClient,
+    ) -> tokio::task::JoinHandle<Result<String, RemoteClientError>> {
+        let client = client.clone();
+        tokio::spawn(async move { client.access_token().await })
+    }
+
     // Regression: a caller dropped mid-refresh used to lose the rotated token;
     // the next refresh resent the old one and the server revoked the session.
     #[tokio::test]
@@ -1518,58 +1592,68 @@ mod tests {
                 }
                 handler_received.notify_one();
                 handler_release.notified().await;
-                Json(TokenRefreshResponse {
-                    access_token: NEW_ACCESS.into(),
-                    refresh_token: "rotated".into(),
-                })
-                .into_response()
+                rotated()
             }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let (client, dir) = client_needing_refresh(router).await;
 
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("credentials.json");
-        let auth = AuthContext::new(
-            Arc::new(OAuthCredentials::new(path.clone())),
-            Arc::new(RwLock::new(None)),
-        );
-        auth.save_credentials(&Credentials {
-            access_token: None,
-            refresh_token: "old".into(),
-            expires_at: None,
-        })
-        .await
-        .unwrap();
-        let client =
-            RemoteClient::new(&format!("http://{address}"), auth.clone(), "test".into()).unwrap();
-
-        let dropped = tokio::spawn({
-            let client = client.clone();
-            async move { client.access_token().await }
-        });
+        let dropped = spawn_access_token(&client);
         received.notified().await;
         dropped.abort();
         assert!(dropped.await.unwrap_err().is_cancelled());
 
         // A concurrent caller joins the refresh still in flight instead of
         // sending "old" again.
-        let waiting = tokio::spawn({
-            let client = client.clone();
-            async move { client.access_token().await }
-        });
+        let waiting = spawn_access_token(&client);
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!waiting.is_finished());
         release.notify_one();
         assert_eq!(waiting.await.unwrap().unwrap(), NEW_ACCESS);
 
         assert_eq!(client.access_token().await.unwrap(), NEW_ACCESS);
-        assert_eq!(
-            auth.get_credentials().await.unwrap().refresh_token,
-            "rotated"
-        );
-        assert!(std::fs::read_to_string(&path).unwrap().contains("rotated"));
+        let saved = client.auth_context.get_credentials().await.unwrap();
+        assert_eq!(saved.refresh_token, "rotated");
+        let on_disk = std::fs::read_to_string(dir.path().join("credentials.json")).unwrap();
+        assert!(on_disk.contains("rotated"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    // Callers in the same flight share its failure instead of each retrying;
+    // a finished flight is never reused by later callers.
+    #[tokio::test]
+    async fn failed_refresh_is_shared_then_retried_fresh() {
+        let release = Arc::new(Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (handler_release, handler_calls) = (release.clone(), calls.clone());
+        let router = Router::new().route(
+            "/v1/tokens/refresh",
+            post(move || async move {
+                if handler_calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                    return rotated();
+                }
+                handler_release.notified().await;
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": "temporary" })),
+                )
+                    .into_response()
+            }),
+        );
+        let (client, _dir) = client_needing_refresh(router).await;
+
+        let first = spawn_access_token(&client);
+        let second = spawn_access_token(&client);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        release.notify_one();
+        for caller in [first, second] {
+            let error = caller.await.unwrap().unwrap_err();
+            assert!(matches!(error, RemoteClientError::Api(_)), "{error:?}");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // A non-definitive failure keeps the session.
+        assert!(client.auth_context.get_credentials().await.is_some());
+
+        assert_eq!(client.access_token().await.unwrap(), NEW_ACCESS);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

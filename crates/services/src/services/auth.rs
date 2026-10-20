@@ -1,17 +1,22 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use api_types::ProfileResponse;
-use tokio::sync::{Mutex as TokioMutex, OwnedMutexGuard, RwLock};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use super::oauth_credentials::{Credentials, OAuthCredentials, ReconnectGuard};
+use super::{
+    oauth_credentials::{Credentials, OAuthCredentials, ReconnectGuard},
+    remote_client::RefreshFlight,
+};
 
 #[derive(Clone)]
 pub struct AuthContext {
     oauth: Arc<OAuthCredentials>,
     profile: Arc<RwLock<Option<ProfileResponse>>>,
     remote_auth_degraded_slug: Arc<RwLock<Option<String>>>,
-    refresh_lock: Arc<TokioMutex<()>>,
+    /// The token refresh in flight, if any; callers join it instead of
+    /// starting another.
+    refresh_flight: Arc<Mutex<Option<RefreshFlight>>>,
 }
 
 impl AuthContext {
@@ -23,7 +28,7 @@ impl AuthContext {
             oauth,
             profile,
             remote_auth_degraded_slug: Arc::new(RwLock::new(None)),
-            refresh_lock: Arc::new(TokioMutex::new(())),
+            refresh_flight: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -89,7 +94,7 @@ impl AuthContext {
         *self.profile.write().await = None
     }
 
-    pub async fn refresh_guard(&self) -> OwnedMutexGuard<()> {
-        self.refresh_lock.clone().lock_owned().await
+    pub fn refresh_flight(&self) -> &Mutex<Option<RefreshFlight>> {
+        &self.refresh_flight
     }
 }
