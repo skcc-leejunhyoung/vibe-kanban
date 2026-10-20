@@ -704,11 +704,14 @@ export async function fetchActiveHostWorkspaceSnapshot(
 }
 
 function combineHostWorkspaceSnapshots(
-  queries: { data: SidebarWorkspace[] | undefined }[]
+  queries: { data: SidebarWorkspace[] | undefined }[],
+  liveHostId: string | null
 ) {
   return {
     loaded: queries.map((query) => query.data !== undefined),
-    workspaces: queries.flatMap((query) => query.data ?? []),
+    workspaces: queries.flatMap((query) =>
+      (query.data ?? []).filter((workspace) => workspace.hostId !== liveHostId)
+    ),
   };
 }
 
@@ -738,6 +741,15 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
     return resolveSnapshotHostIds(onlineHostIds, currentHostId);
   }, [enabled, onlineHostIds, currentHostId, runtime]);
   const queryClient = useQueryClient();
+  // useQueries reuses its last combined result until its effect swaps the
+  // queries in, so a stale snapshot of the new route host would sit next to
+  // its live stream for a render. A new combine per route host forces the
+  // recompute in that same render.
+  const combineSnapshots = useCallback(
+    (queries: { data: SidebarWorkspace[] | undefined }[]) =>
+      combineHostWorkspaceSnapshots(queries, currentHostId),
+    [currentHostId]
+  );
   // Same order as the live streams: a host's archive snapshot waits for its
   // active one, then refreshes slowly.
   const activeSnapshots = useQueries({
@@ -747,7 +759,7 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
       staleTime: 15_000,
       refetchInterval: 15_000,
     })),
-    combine: combineHostWorkspaceSnapshots,
+    combine: combineSnapshots,
   });
   const archivedSnapshots = useQueries({
     queries: snapshotHostIds.map((hostId, i) => ({
@@ -757,7 +769,7 @@ export function useUnifiedWorkspaces(enabled = true): UseWorkspacesResult {
       staleTime: ARCHIVED_SUMMARIES_REFRESH_MS,
       refetchInterval: ARCHIVED_SUMMARIES_REFRESH_MS,
     })),
-    combine: combineHostWorkspaceSnapshots,
+    combine: combineSnapshots,
   });
 
   return useMemo(() => {

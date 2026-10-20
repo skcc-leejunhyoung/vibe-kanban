@@ -6,6 +6,7 @@ import type { WorkspaceSummary, WorkspaceWithStatus } from 'shared/types';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
 import { useJsonPatchWsStream } from '@/shared/hooks/useJsonPatchWsStream';
 import { workspacesApi } from '@/shared/lib/api';
+import { HostIdContext } from '@/shared/providers/HostIdProvider';
 import { workspaceSummaryKeys } from './workspaceSummaryKeys';
 import {
   combineRemoteWorkspaceStreams,
@@ -358,6 +359,7 @@ describe('useWorkspaces active-first loading', () => {
       .mocked(makeLocalApiRequest)
       .mock.calls.map(([, options]) => JSON.parse(options?.body as string));
   let useHook: () => UseWorkspacesResult;
+  let routeHostId: string | null;
   function Probe() {
     result = useHook();
     return null;
@@ -369,9 +371,13 @@ describe('useWorkspaces active-first loading', () => {
           QueryClientProvider,
           { client: queryClient },
           createElement(
-            UnifiedWorkspaceStreamsProvider,
-            null,
-            createElement(Probe)
+            HostIdContext.Provider,
+            { value: routeHostId },
+            createElement(
+              UnifiedWorkspaceStreamsProvider,
+              null,
+              createElement(Probe)
+            )
           )
         )
       );
@@ -407,6 +413,7 @@ describe('useWorkspaces active-first loading', () => {
     streams = {};
     enabledByEndpoint = {};
     useHook = useWorkspaces;
+    routeHostId = null;
     env.runtime = 'local';
     env.hosts = [{ id: 'i9', status: 'online' }];
     vi.mocked(useJsonPatchWsStream).mockImplementation(((
@@ -553,6 +560,41 @@ describe('useWorkspaces active-first loading', () => {
       ['i9', false],
       ['i9', true],
     ]);
+  });
+
+  it('never lists the route host twice while switching away and back', async () => {
+    const remote = (archived: boolean) =>
+      `/api/host/i9/workspaces/streams/ws?archived=${archived}`;
+    streams[ACTIVE] = { workspaces: { l1: row('l1', false) } };
+    streams[ARCHIVED] = { workspaces: {} };
+    streams[remote(false)] = { workspaces: { r1: row('r1', false) } };
+    streams[remote(true)] = { workspaces: {} };
+    const getAll = vi.mocked(workspacesApi.getAllWorkspaces);
+    getAll.mockReset();
+    getAll.mockImplementation(async (hostId, archived) =>
+      archived ? [] : [row(hostId ? 'r1' : 'l1', false)]
+    );
+    const renders: string[][] = [];
+    useHook = () => {
+      const hookResult = useUnifiedWorkspaces();
+      renders.push(
+        hookResult.workspaces.map(({ id, hostId }) =>
+          getHostWorkspaceKey(id, hostId)
+        )
+      );
+      return hookResult;
+    };
+
+    for (const hostId of ['i9', null, 'i9', null]) {
+      routeHostId = hostId;
+      await render();
+      await vi.waitFor(() =>
+        expect(renders.at(-1)?.toSorted()).toEqual(['i9:r1', 'local:l1'])
+      );
+    }
+    for (const keys of renders) {
+      expect(keys).toEqual([...new Set(keys)]);
+    }
   });
 
   it('refreshes the archived snapshot when the active set changes', async () => {
