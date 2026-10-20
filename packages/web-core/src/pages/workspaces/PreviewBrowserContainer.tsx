@@ -468,10 +468,15 @@ export function PreviewBrowserContainer({
   // ─── Account Preview Cookie Exchange ──────────────────────────────────────
   // The protected preview host answers only with its HttpOnly cookie, which a
   // one-time code sets through a form POST that targets the iframe by name.
-  // The code is requested as soon as the port is known and posted once the
-  // iframe is mounted; refreshes reload with the cookie and never re-exchange.
+  // The code is requested as soon as the dev server printed its port (the host
+  // only lists printed ports; an override URL waits for the iframe instead)
+  // and posted once the iframe is mounted. Refreshes reload with the cookie and
+  // never re-exchange; a restarted dev server does, so the host re-reports its
+  // ports before the iframe loads rather than racing its 20s heartbeat.
   const iframeName = `vk-preview-${workspaceId}`;
   const isServerRunning = runningDevServers.length > 0;
+  const devServerId = primaryDevServer?.id;
+  const portListed = Boolean(urlInfo?.url) || showIframe;
   const [exchangeAttempt, setExchangeAttempt] = useState(0);
   const exchangeRef = useRef<{
     key: string;
@@ -485,10 +490,11 @@ export function PreviewBrowserContainer({
       !accountHostReady ||
       hostId == null ||
       !devServerPort ||
-      !isServerRunning
+      !devServerId ||
+      !portListed
     )
       return;
-    const key = `${hostId}:${devServerPort}:${exchangeAttempt}`;
+    const key = `${hostId}:${devServerPort}:${devServerId}:${exchangeAttempt}`;
     if (exchangeRef.current?.key !== key) {
       const pending = requestAccountPreviewExchange(
         hostId,
@@ -528,7 +534,8 @@ export function PreviewBrowserContainer({
     accountHostReady,
     hostId,
     devServerPort,
-    isServerRunning,
+    devServerId,
+    portListed,
     showIframe,
     iframeUrl,
     iframeName,
