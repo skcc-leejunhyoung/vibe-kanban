@@ -40,6 +40,7 @@ export function useResetProcessMutation(
           branchStatus,
           processes,
           mode: 'reset',
+          hostId,
         });
       } catch {
         throw new ResetDialogCancelledError();

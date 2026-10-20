@@ -60,7 +60,9 @@ function RebaseDialogContent({
   const [hasInitializedBranches, setHasInitializedBranches] = useState(false);
 
   const git = useGitOperations(workspaceId, repoId);
-  const { data: workspace } = useWorkspaceRecord(workspaceId);
+  // nice-modal keeps this mounted after close: queries must stay on the
+  // dialog's host, not follow the route host to another machine.
+  const { data: workspace } = useWorkspaceRecord(workspaceId, { hostId });
   const { workspaceId: activeWorkspaceId } = useWorkspaceContext();
   const { workspaces } = useWorkspaces();
   const isWorkspaceRunning =
@@ -73,16 +75,18 @@ function RebaseDialogContent({
     data: branches = [],
     isLoading: branchesLoading,
     refetch: refetchBranches,
-  } = useRepoBranches(repoId, { fetch: true });
+  } = useRepoBranches(repoId, { fetch: true, hostId });
 
   // nice-modal keeps this mounted between opens, so refetch from origin each
   // time the dialog becomes visible to keep the branch list current on open.
   useEffect(() => {
     if (modal.visible) void refetchBranches();
   }, [modal.visible, refetchBranches]);
-  const { repos, isLoading: reposLoading } = useWorkspaceRepo(workspaceId);
+  const { repos, isLoading: reposLoading } = useWorkspaceRepo(workspaceId, {
+    hostId,
+  });
   const { data: branchStatus, isLoading: branchStatusLoading } =
-    useBranchStatus(workspaceId);
+    useBranchStatus(workspaceId, hostId);
 
   const repo = repos.find((r) => r.id === repoId);
   const repoStatus = branchStatus?.find((s) => s.repo_id === repoId);
@@ -101,10 +105,10 @@ function RebaseDialogContent({
         queryKey: ['branchStatus', workspaceId],
       }),
       queryClient.invalidateQueries({
-        queryKey: workspaceRepoKeys.byWorkspace(workspaceId),
+        queryKey: workspaceRepoKeys.byWorkspace(workspaceId, hostId),
       }),
     ]);
-  }, [queryClient, workspaceId]);
+  }, [queryClient, workspaceId, hostId]);
 
   const continueRebaseInProgress = useCallback(async () => {
     await workspacesApi.continueRebase(

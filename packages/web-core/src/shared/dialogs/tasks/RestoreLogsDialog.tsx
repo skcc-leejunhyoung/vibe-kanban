@@ -31,6 +31,12 @@ export interface RestoreLogsDialogProps {
   initialWorktreeResetOn?: boolean;
   initialForceReset?: boolean;
   mode?: 'retry' | 'reset';
+  /**
+   * Host of the execution process. nice-modal keeps this mounted after close,
+   * so following the route host would refetch on whatever host the document
+   * moves to next.
+   */
+  hostId?: string | null;
 }
 
 export type RestoreLogsDialogResult = {
@@ -47,9 +53,11 @@ const RestoreLogsDialogImpl = create<RestoreLogsDialogProps>(
     initialWorktreeResetOn = false,
     initialForceReset = false,
     mode = 'retry',
+    hostId: hostIdOverride,
   }) => {
     const modal = useModal();
-    const hostId = useHostId();
+    const routeHostId = useHostId();
+    const hostId = hostIdOverride === undefined ? routeHostId : hostIdOverride;
     const { t } = useTranslation(['tasks', 'common']);
     const [isLoading, setIsLoading] = useState(true);
     const [worktreeResetOn, setWorktreeResetOn] = useState(

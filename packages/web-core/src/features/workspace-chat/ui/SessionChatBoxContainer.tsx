@@ -1953,6 +1953,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         executionProcessId: targetId,
         branchStatus,
         processes,
+        hostId,
       });
     } catch {
       return;
