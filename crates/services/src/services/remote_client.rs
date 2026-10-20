@@ -245,32 +245,38 @@ impl RemoteClient {
                 return Ok(token.clone());
             }
 
-            let (refresh_token, refreshed) = {
-                let _refresh_guard = self.auth_context.refresh_guard().await;
-                let latest = self
+            // The server commits the rotation before replying. If this caller is
+            // dropped mid-refresh, the response must still be saved, or the next
+            // refresh resends the old token past the grace window and the server
+            // revokes the whole session as reuse. So the refresh runs detached and
+            // holds the guard until saved; concurrent callers wait on the guard
+            // and reuse the saved token.
+            let client = self.clone();
+            let (refresh_token, refreshed) = tokio::spawn(async move {
+                let _refresh_guard = client.auth_context.refresh_guard().await;
+                let latest = client
                     .auth_context
                     .get_credentials()
                     .await
                     .ok_or(RemoteClientError::Auth)?;
-                if let Some(token) = latest.access_token.as_ref()
-                    && !latest.expires_soon(leeway)
-                {
-                    self.auth_context.clear_remote_auth_degraded_slug().await;
-                    return Ok(token.clone());
+                if !latest.expires_soon(leeway) {
+                    return Ok((latest.refresh_token.clone(), Ok(Some(latest))));
                 }
 
                 // Do not refresh a revoked provider credential while the user
                 // is replacing it. This is temporary unavailability, not logout.
-                if self.auth_context.is_reconnecting().await {
-                    self.auth_context
-                        .set_remote_auth_degraded_slug(RemoteClientError::generic_degraded_slug())
-                        .await;
-                    return Err(RemoteClientError::ReconnectPending);
+                if client.auth_context.is_reconnecting().await {
+                    return Ok((
+                        latest.refresh_token,
+                        Err(RemoteClientError::ReconnectPending),
+                    ));
                 }
 
-                let result = self.refresh_credentials(&latest).await;
-                (latest.refresh_token, result)
-            };
+                let result = client.refresh_credentials(&latest).await;
+                Ok((latest.refresh_token, result))
+            })
+            .await
+            .map_err(|e| RemoteClientError::Transport(e.to_string()))??;
 
             match refreshed {
                 Ok(Some(updated)) => {
@@ -287,6 +293,7 @@ impl RemoteClient {
                     if !cleared {
                         return self.require_token().await;
                     }
+                    warn!(error = %err, "Cleared cloud credentials: token refresh was rejected");
                     self.auth_context.clear_remote_auth_degraded_slug().await;
                     Err(err)
                 }
@@ -496,7 +503,18 @@ impl RemoteClient {
 
             match res.status() {
                 s if s.is_success() => Ok(res),
-                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(RemoteClientError::Auth),
+                StatusCode::UNAUTHORIZED => {
+                    // Auth drops the body; log the server's reason (e.g.
+                    // token_reuse_detected) since this can end in a logout.
+                    let reason = res
+                        .json::<ApiErrorResponse>()
+                        .await
+                        .map(|body| body.error)
+                        .ok();
+                    warn!(?reason, "Remote server rejected credentials");
+                    Err(RemoteClientError::Auth)
+                }
+                StatusCode::FORBIDDEN => Err(RemoteClientError::Auth),
                 s => {
                     let status = s.as_u16();
                     let body = res.text().await.unwrap_or_default();
@@ -1442,4 +1460,88 @@ fn enum_query_value(value: impl Serialize) -> Result<String, RemoteClientError> 
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .ok_or_else(|| RemoteClientError::Serde("invalid enum query value".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
+    use tokio::sync::{Notify, RwLock};
+
+    use super::*;
+    use crate::services::oauth_credentials::OAuthCredentials;
+
+    // exp = 2100-01-01; the client only decodes claims, not the signature.
+    const NEW_ACCESS: &str = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.sig";
+
+    // Regression: a caller dropped mid-refresh used to lose the rotated token;
+    // the next refresh resent the old one and the server revoked the session.
+    #[tokio::test]
+    async fn refresh_survives_dropped_caller() {
+        let received = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (handler_received, handler_release, handler_calls) =
+            (received.clone(), release.clone(), calls.clone());
+        let router = Router::new().route(
+            "/v1/tokens/refresh",
+            post(move |Json(request): Json<TokenRefreshRequest>| async move {
+                assert_eq!(request.refresh_token, "old");
+                // Like the cloud: the rotation is committed before replying, so
+                // a second "old" is reuse.
+                if handler_calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({ "error": "token_reuse_detected" })),
+                    )
+                        .into_response();
+                }
+                handler_received.notify_one();
+                handler_release.notified().await;
+                Json(TokenRefreshResponse {
+                    access_token: NEW_ACCESS.into(),
+                    refresh_token: "rotated".into(),
+                })
+                .into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let dir = tempfile::tempdir().unwrap();
+        let auth = AuthContext::new(
+            Arc::new(OAuthCredentials::new(dir.path().join("credentials.json"))),
+            Arc::new(RwLock::new(None)),
+        );
+        auth.save_credentials(&Credentials {
+            access_token: None,
+            refresh_token: "old".into(),
+            expires_at: None,
+        })
+        .await
+        .unwrap();
+        let client =
+            RemoteClient::new(&format!("http://{address}"), auth.clone(), "test".into()).unwrap();
+
+        let dropped = tokio::spawn({
+            let client = client.clone();
+            async move { client.access_token().await }
+        });
+        received.notified().await;
+        dropped.abort();
+        assert!(dropped.await.unwrap_err().is_cancelled());
+        release.notify_one();
+
+        assert_eq!(client.access_token().await.unwrap(), NEW_ACCESS);
+        assert_eq!(
+            auth.get_credentials().await.unwrap().refresh_token,
+            "rotated"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 }

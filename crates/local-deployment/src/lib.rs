@@ -433,16 +433,19 @@ impl LocalDeployment {
             Err(RemoteClientError::Auth) => {
                 // A profile request started before reconnect must not sign out
                 // the newly saved session when its old token is rejected.
-                if !self
+                let cleared = self
                     .auth_context
                     .replace_credentials(&credentials.refresh_token, None)
                     .await
-                    .unwrap_or(false)
-                    && self.auth_context.get_credentials().await.is_some()
-                {
+                    .unwrap_or(false);
+                if !cleared && self.auth_context.get_credentials().await.is_some() {
                     return LoginStatus::LoggedIn {
                         profile: self.auth_context.cached_profile().await,
                     };
+                }
+                if cleared {
+                    // The rejection reason is logged by the remote client.
+                    tracing::warn!("Cleared cloud credentials: profile request was unauthorized");
                 }
                 self.auth_context.clear_profile().await;
                 self.auth_context.clear_remote_auth_degraded_slug().await;
