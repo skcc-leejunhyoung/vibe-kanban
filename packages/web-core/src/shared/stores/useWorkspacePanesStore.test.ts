@@ -793,3 +793,34 @@ describe('collapseHostId', () => {
     ]);
   });
 });
+
+describe('clearWorkspacePanes', () => {
+  it('empties every pane showing the workspace except the one being navigated', () => {
+    reset();
+    const issueWorkspace: WorkspacePaneDestination = {
+      kind: 'project-issue-workspace',
+      projectId: 'p1',
+      issueId: 'i1',
+      workspaceId: 'w1',
+    };
+    store.setState({
+      panes: [
+        { id: 'a', destination: ws('w1') },
+        { id: 'b', destination: issueWorkspace },
+        { id: 'c', destination: ws('w2') },
+        { id: 'd', destination: ws('w1') },
+      ],
+    });
+    const before = store.getState().panes;
+    store.getState().clearWorkspacePanes('missing');
+    expect(store.getState().panes).toBe(before);
+
+    store.getState().clearWorkspacePanes('w1', 'd');
+    expect(store.getState().panes.map((p) => p.destination)).toEqual([
+      null,
+      null,
+      ws('w2'),
+      ws('w1'),
+    ]);
+  });
+});

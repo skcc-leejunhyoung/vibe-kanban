@@ -26,6 +26,7 @@ import type { SectionAction } from '@vibe/ui/components/CollapsibleSectionHeader
 import { selectWorkspaceHost } from '@/shared/dialogs/command-bar/WorkspaceHostSelectionDialog';
 import { useWorkspaceHostMap } from '@/shared/hooks/useWorkspaceHostMap';
 import { getHostWorkspaceKey } from '@/shared/hooks/useWorkspaces';
+import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 
 interface IssueWorkspacesSectionContainerProps {
   issueId: string;
@@ -365,6 +366,7 @@ export function IssueWorkspacesSectionContainer({
           result.deleteBranches,
           localWorkspace.hostId
         );
+        useWorkspacePanesStore.getState().clearWorkspacePanes(localWorkspaceId);
         // Unlink from remote after successful deletion
         if (result.unlinkFromIssue) {
           await workspacesApi.unlinkFromIssue(

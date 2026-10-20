@@ -127,6 +127,7 @@ import { setCreateModeSeedState } from '@/features/create-mode/model/createModeS
 import { openExternalUrl, reserveExternalWindow } from '@vibe/ui/lib/open-url';
 import { useAppBarVisibilityStore } from '@/shared/stores/useAppBarVisibilityStore';
 import { useNotificationCursorStore } from '@/shared/stores/useNotificationCursorStore';
+import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import {
@@ -840,6 +841,14 @@ export const Actions = {
           : null;
 
         await workspacesApi.delete(workspaceId, result.deleteBranches, hostId);
+        // Other panes showing it would keep querying a workspace that is gone;
+        // the current one is navigated away below.
+        const { activePaneId, clearWorkspacePanes } =
+          useWorkspacePanesStore.getState();
+        clearWorkspacePanes(
+          workspaceId,
+          isCurrentWorkspace ? (activePaneId ?? undefined) : undefined
+        );
 
         // Unlink from remote issue after successful deletion
         if (result.unlinkFromIssue) {

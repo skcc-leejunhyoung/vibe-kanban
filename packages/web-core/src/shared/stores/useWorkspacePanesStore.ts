@@ -256,6 +256,11 @@ interface WorkspacePanesState {
   ) => void;
   clearPaneDestination: (paneId: string) => void;
   /**
+   * Empty every pane still showing a deleted workspace, so none keeps querying
+   * it. `exceptPaneId` is left alone for a caller that navigates it instead.
+   */
+  clearWorkspacePanes: (workspaceId: string, exceptPaneId?: string) => void;
+  /**
    * Fold destinations still addressed to `hostId` — this machine's own cloud
    * host id, persisted before it was known — to the local host (`null`).
    */
@@ -571,6 +576,20 @@ export const useWorkspacePanesStore = create<WorkspacePanesState>()(
             pane.id === paneId ? { ...pane, destination: null } : pane
           ),
         })),
+      clearWorkspacePanes: (workspaceId, exceptPaneId) =>
+        set((state) => {
+          const shows = (pane: WorkspacePane) =>
+            pane.id !== exceptPaneId &&
+            pane.destination !== null &&
+            'workspaceId' in pane.destination &&
+            pane.destination.workspaceId === workspaceId;
+          if (!state.panes.some(shows)) return state;
+          return {
+            panes: state.panes.map((pane) =>
+              shows(pane) ? { ...pane, destination: null } : pane
+            ),
+          };
+        }),
       collapseHostId: (hostId) =>
         set((state) => {
           const targetsHost = (destination: WorkspacePaneDestination | null) =>
