@@ -42,11 +42,15 @@ export function getTargetDevPort(
 /**
  * Transform a proxy URL back to the dev server URL.
  * Proxy format: http://{devPort}.localhost:{proxyPort}{path}?_refresh=...
- * Dev format:   http://localhost:{devPort}{path}
+ * Dev format:   {devProtocol}//localhost:{devPort}{path}
+ *
+ * The proxy URL's protocol is the browser↔proxy hop (e.g. Caddy TLS), so the
+ * dev server's own protocol has to come from the caller.
  */
 export function transformProxyUrlToDevUrl(
   proxyUrl: string,
-  devPort: string
+  devPort: string,
+  devProtocol = 'http:'
 ): string | null {
   try {
     const url = new URL(proxyUrl);
@@ -57,7 +61,7 @@ export function transformProxyUrlToDevUrl(
 
     url.searchParams.delete('_refresh');
 
-    const devUrl = new URL(`http://localhost${url.pathname}`);
+    const devUrl = new URL(`${devProtocol}//localhost${url.pathname}`);
 
     const search = url.searchParams.toString();
     if (search) {
@@ -68,9 +72,8 @@ export function transformProxyUrlToDevUrl(
       devUrl.hash = url.hash;
     }
 
-    if (devPort !== '80') {
-      devUrl.port = devPort;
-    }
+    // The URL drops the port when it is the protocol's default.
+    devUrl.port = devPort;
 
     return devUrl.toString();
   } catch {

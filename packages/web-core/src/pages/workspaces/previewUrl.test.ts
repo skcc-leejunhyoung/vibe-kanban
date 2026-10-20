@@ -56,13 +56,32 @@ describe('transformProxyUrlToDevUrl', () => {
     ).toBe('http://localhost:4173/page?q=1');
   });
 
-  it('maps a TLS-fronted proxy URL back to the dev server URL', () => {
+  // The proxy's https is Caddy's TLS, not the dev server's protocol.
+  it('maps a TLS-fronted proxy URL back to an http dev server URL', () => {
     expect(
       transformProxyUrlToDevUrl(
         'https://4173.vibe-kanban.localhost/page?_refresh=2',
-        '4173'
+        '4173',
+        'http:'
       )
     ).toBe('http://localhost:4173/page');
+  });
+
+  it('keeps the protocol of an https dev server', () => {
+    expect(
+      transformProxyUrlToDevUrl(
+        'https://8443.vibe-kanban.localhost/admin?session=1&_refresh=2',
+        '8443',
+        'https:'
+      )
+    ).toBe('https://localhost:8443/admin?session=1');
+    expect(
+      transformProxyUrlToDevUrl(
+        'https://443.vibe-kanban.localhost/page',
+        '443',
+        'https:'
+      )
+    ).toBe('https://localhost/page');
   });
 
   it('ignores hostnames that are not loopback proxies', () => {

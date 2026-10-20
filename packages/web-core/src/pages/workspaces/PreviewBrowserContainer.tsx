@@ -407,7 +407,8 @@ export function PreviewBrowserContainer({
       if (devServerPort) {
         const transformed = transformProxyUrlToDevUrl(
           navigation.url,
-          devServerPort
+          devServerPort,
+          effectiveParsedUrl?.protocol
         );
         if (transformed) {
           return transformed;
@@ -422,6 +423,7 @@ export function PreviewBrowserContainer({
     return effectiveUrl ?? null;
   }, [
     devServerPort,
+    effectiveParsedUrl,
     effectiveUrl,
     hostId,
     iframeUrl,
@@ -843,8 +845,11 @@ export function PreviewBrowserContainer({
         (import.meta.env.VITE_RELAY_PREVIEW_HOST_SUFFIX ?? '').trim()
       );
       const normalizedInputDevUrl =
-        transformProxyUrlToDevUrl(normalizedInput, normalizedInputDevPort) ??
-        normalizedInput;
+        transformProxyUrlToDevUrl(
+          normalizedInput,
+          normalizedInputDevPort,
+          effectiveParsedUrl?.protocol
+        ) ?? normalizedInput;
       const normalizedInputDevParsed = parsePreviewUrl(normalizedInputDevUrl);
       if (!normalizedInputDevParsed) {
         return false;
@@ -871,13 +876,17 @@ export function PreviewBrowserContainer({
       // Bridge SPA navigation only works when the proxy injects devtools_script.js
       // into the iframe. Non-loopback URLs bypass the proxy entirely, so the bridge
       // isn't available — fall through to setOverrideUrl for a full iframe reload.
+      // Local previews also show the dev server's protocol, which only the
+      // override carries, so a protocol switch goes through the override too.
       if (
         showIframe &&
         iframeRef.current?.contentWindow &&
         isLoopbackPreview &&
         iframeUrl &&
         devServerPort != null &&
-        normalizedInputDevPort === devServerPort
+        normalizedInputDevPort === devServerPort &&
+        (hostId != null ||
+          normalizedInputDevParsed.protocol === effectiveParsedUrl?.protocol)
       ) {
         const proxyPath =
           normalizedInputDevParsed.pathname +
@@ -894,6 +903,8 @@ export function PreviewBrowserContainer({
     [
       devServerPort,
       displayedPreviewUrl,
+      effectiveParsedUrl,
+      hostId,
       iframeUrl,
       isLoopbackPreview,
       showIframe,
