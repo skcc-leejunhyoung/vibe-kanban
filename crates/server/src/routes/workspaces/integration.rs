@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use axum::{
     Extension, Json, Router,
     extract::{Query, State},
+    middleware::from_fn,
     response::Json as ResponseJson,
     routing::{get, post},
 };
@@ -19,7 +20,7 @@ use utils::response::ApiResponse;
 use uuid::Uuid;
 
 use super::{codex_setup, cursor_setup, gh_cli_setup::GhCliSetupError};
-use crate::{DeploymentImpl, error::ApiError};
+use crate::{DeploymentImpl, error::ApiError, middleware::finish_after_disconnect};
 
 #[derive(Debug, Deserialize, Serialize, TS)]
 pub struct RunAgentSetupRequest {
@@ -61,8 +62,14 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/editor/path", get(get_workspace_editor_path))
         .route("/editor/open", post(open_workspace_in_editor))
-        .route("/agent/setup", post(run_agent_setup))
-        .route("/github/cli/setup", post(gh_cli_setup_handler))
+        .route(
+            "/agent/setup",
+            post(run_agent_setup).layer(from_fn(finish_after_disconnect)),
+        )
+        .route(
+            "/github/cli/setup",
+            post(gh_cli_setup_handler).layer(from_fn(finish_after_disconnect)),
+        )
 }
 
 #[axum::debug_handler]
