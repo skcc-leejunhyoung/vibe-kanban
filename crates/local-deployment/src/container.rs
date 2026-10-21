@@ -3881,6 +3881,22 @@ impl ContainerService for LocalContainerService {
         // Always inject workspace/session context
         env.insert("VK_WORKSPACE_ID", workspace.id.to_string());
         env.insert("VK_WORKSPACE_BRANCH", &workspace.branch);
+        env.insert(
+            utils::agent_cli::SESSION_ID_ENV,
+            execution_process.session_id.to_string(),
+        );
+        env.insert(
+            utils::agent_cli::EXECUTION_ID_ENV,
+            execution_process.id.to_string(),
+        );
+        // The `vk` CLI and the MCP server find this server first, then the
+        // port file; `vk` itself ships next to the server binary.
+        if let Some(url) = utils::agent_cli::backend_url() {
+            env.insert(utils::agent_cli::BACKEND_URL_ENV, url);
+        }
+        if let Some(path) = utils::agent_cli::path_with_vk(std::env::var("PATH").ok().as_deref()) {
+            env.insert("PATH", path);
+        }
 
         // Create the child and stream, add to execution tracker with timeout
         let mut spawned = tokio::time::timeout(

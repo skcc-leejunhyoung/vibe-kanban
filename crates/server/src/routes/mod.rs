@@ -24,6 +24,7 @@ pub mod execution_processes;
 pub mod frontend;
 pub mod health;
 pub mod host_relay;
+pub mod notifications;
 pub mod oauth;
 pub mod organizations;
 pub mod preview;
@@ -55,6 +56,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .merge(oauth::router())
         .merge(organizations::router())
         .merge(filesystem::router())
+        .merge(notifications::router())
         .merge(repo::router())
         .merge(events::router(&deployment))
         .merge(approvals::router())
@@ -99,6 +101,10 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
             preview_host_dispatch,
         ))
         .layer(CompressionLayer::new())
+        .layer(axum::middleware::from_fn_with_state(
+            deployment.clone(),
+            middleware::guard_agent_access,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             deployment.clone(),
             middleware::guard_account_host,

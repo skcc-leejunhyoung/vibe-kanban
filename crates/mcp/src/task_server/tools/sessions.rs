@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::McpServer;
+use crate::client::{SendPromptOptions, SendPromptOutcome};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct CreateSessionRequest {
@@ -75,32 +76,37 @@ struct RunCodingAgentInSessionRequest {
     session_id: Uuid,
     #[schemars(description = "Prompt for the coding agent")]
     prompt: String,
-}
-
-#[derive(Debug, Serialize)]
-struct FollowUpPayload {
-    prompt: String,
-    executor_config: ExecutorConfigPayload,
-    retry_process_id: Option<Uuid>,
-    force_when_dirty: Option<bool>,
-    perform_git_reset: Option<bool>,
-}
-
-#[derive(Debug, Serialize)]
-struct ExecutorConfigPayload {
-    executor: String,
+    #[schemars(
+        description = "Paired host ID the session lives on (from list_workspaces). Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
+    #[schemars(
+        description = "If the session is busy, append the prompt to its queue instead of failing; it runs after the current turn."
+    )]
+    queue: Option<bool>,
+    #[schemars(
+        description = "Interrupt the running turn and run this prompt next (steer). Takes precedence over `queue`."
+    )]
+    steer: Option<bool>,
+    #[schemars(
+        description = "Executor override ('CLAUDE_CODE', 'CODEX', ...). Defaults to the session's executor."
+    )]
+    executor: Option<String>,
+    #[schemars(description = "Executor variant/preset override")]
     variant: Option<String>,
+    #[schemars(description = "Model override, e.g. 'claude-opus-5-5' or 'openai/gpt-5.6-sol'")]
     model_id: Option<String>,
-    agent_id: Option<String>,
+    #[schemars(description = "Reasoning effort override, e.g. 'high'")]
     reasoning_id: Option<String>,
+    #[schemars(description = "Permission policy override: AUTO, DONT_ASK, SUPERVISED or PLAN")]
     permission_policy: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct RunCodingAgentInSessionResponse {
     session_id: String,
-    execution_id: String,
-    execution: serde_json::Value,
+    #[serde(flatten)]
+    outcome: SendPromptOutcome,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -127,6 +133,10 @@ struct UpdateSessionResponse {
 struct GetExecutionRequest {
     #[schemars(description = "Execution ID to inspect")]
     execution_id: Uuid,
+    #[schemars(
+        description = "Paired host ID the execution ran on (from list_workspaces). Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -161,26 +171,10 @@ impl McpServer {
 
         let payload = CreateSessionPayload {
             workspace_id,
-            executor: executor.and_then(|value| {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            }),
-            name: name.and_then(|value| {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            }),
+            executor: executor.and_then(trimmed),
+            name: name.and_then(trimmed),
         };
-
-        let url = self.url("/api/sessions");
-        let session: Session = match self.send_json(self.client.post(&url).json(&payload)).await {
+        let session: Session = match self.client.post("/sessions", &payload).await {
             Ok(value) => value,
             Err(error_result) => return Ok(Self::tool_error(error_result)),
         };
@@ -203,8 +197,11 @@ impl McpServer {
             return Ok(Self::tool_error(error_result));
         }
 
-        let url = self.url(&format!("/api/sessions?workspace_id={workspace_id}"));
-        let sessions: Vec<Session> = match self.send_json(self.client.get(&url)).await {
+        let sessions: Vec<Session> = match self
+            .client
+            .get_with("/sessions", &[("workspace_id", workspace_id.to_string())])
+            .await
+        {
             Ok(value) => value,
             Err(error_result) => return Ok(Self::tool_error(error_result)),
         };
@@ -227,8 +224,7 @@ impl McpServer {
         Parameters(UpdateSessionRequest { session_id, name }): Parameters<UpdateSessionRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         // Verify session exists and check scope
-        let session_url = self.url(&format!("/api/sessions/{session_id}"));
-        let session: Session = match self.send_json(self.client.get(&session_url)).await {
+        let session = match self.client.session(session_id).await {
             Ok(value) => value,
             Err(error_result) => return Ok(Self::tool_error(error_result)),
         };
@@ -239,8 +235,11 @@ impl McpServer {
         let payload = UpdateSessionPayload {
             name: name.map(|value| value.trim().to_string()),
         };
-        let url = self.url(&format!("/api/sessions/{session_id}"));
-        let updated: Session = match self.send_json(self.client.put(&url).json(&payload)).await {
+        let updated: Session = match self
+            .client
+            .put(&format!("/sessions/{session_id}"), &payload)
+            .await
+        {
             Ok(value) => value,
             Err(error_result) => return Ok(Self::tool_error(error_result)),
         };
@@ -253,26 +252,25 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Run a coding agent turn in an existing session and return immediately with the execution process."
+        description = "Run a coding agent turn in an existing session and return immediately with the execution process. If the session is busy, pass `queue` (run after the current turn) or `steer` (interrupt and run next); a bare call keeps the session's last model, pass overrides to change it."
     )]
     async fn run_session_prompt(
         &self,
-        Parameters(RunCodingAgentInSessionRequest { session_id, prompt }): Parameters<
-            RunCodingAgentInSessionRequest,
-        >,
+        Parameters(RunCodingAgentInSessionRequest {
+            session_id,
+            prompt,
+            host_id,
+            queue,
+            steer,
+            executor,
+            variant,
+            model_id,
+            reasoning_id,
+            permission_policy,
+        }): Parameters<RunCodingAgentInSessionRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let prompt = prompt.trim();
-        if prompt.is_empty() {
+        if prompt.trim().is_empty() {
             return Self::err("prompt must not be empty", None);
-        }
-
-        let session_url = self.url(&format!("/api/sessions/{session_id}"));
-        let session: Session = match self.send_json(self.client.get(&session_url)).await {
-            Ok(value) => value,
-            Err(error_result) => return Ok(Self::tool_error(error_result)),
-        };
-        if let Err(error_result) = self.scope_allows_workspace(session.workspace_id) {
-            return Ok(Self::tool_error(error_result));
         }
         if self.orchestrator_session_id() == Some(session_id) {
             return Self::err(
@@ -283,54 +281,54 @@ impl McpServer {
                 ),
             );
         }
-
-        let executor_config = match Self::executor_config_payload_for_session(&session) {
-            Ok(config) => config,
-            Err(error_result) => return Ok(Self::tool_error(error_result)),
-        };
-
-        let payload = FollowUpPayload {
-            prompt: prompt.to_string(),
-            executor_config,
-            retry_process_id: None,
-            force_when_dirty: None,
-            perform_git_reset: None,
-        };
-
-        let url = self.url(&format!("/api/sessions/{session_id}/follow-up"));
-        let execution_process: ExecutionProcess =
-            match self.send_json(self.client.post(&url).json(&payload)).await {
-                Ok(value) => value,
-                Err(error_result) => return Ok(Self::tool_error(error_result)),
-            };
-
-        let execution_id = execution_process.id.to_string();
-        let execution = match Self::serialize_execution_process(&execution_process) {
+        let client = self.client.host(host_id);
+        // Scope check needs the session's workspace; the client fetches the
+        // session again for the executor, which is cheap.
+        let session = match client.session(session_id).await {
             Ok(value) => value,
             Err(error_result) => return Ok(Self::tool_error(error_result)),
         };
-
+        if let Err(error_result) = self.scope_allows_workspace(session.workspace_id) {
+            return Ok(Self::tool_error(error_result));
+        }
+        let options = SendPromptOptions {
+            queue: queue.unwrap_or(false),
+            steer: steer.unwrap_or(false),
+            executor,
+            variant,
+            model_id,
+            agent_id: None,
+            reasoning_id,
+            permission_policy,
+        };
+        let outcome = match client.send_prompt(session_id, &prompt, &options).await {
+            Ok(outcome) => outcome,
+            Err(error_result) => return Ok(Self::tool_error(error_result)),
+        };
         Self::success(&RunCodingAgentInSessionResponse {
             session_id: session_id.to_string(),
-            execution_id,
-            execution,
+            outcome,
         })
     }
 
     #[tool(description = "Get status for an execution.")]
     async fn get_execution(
         &self,
-        Parameters(GetExecutionRequest { execution_id }): Parameters<GetExecutionRequest>,
+        Parameters(GetExecutionRequest {
+            execution_id,
+            host_id,
+        }): Parameters<GetExecutionRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let process_url = self.url(&format!("/api/execution-processes/{execution_id}"));
-        let execution_process: ExecutionProcess =
-            match self.send_json(self.client.get(&process_url)).await {
-                Ok(value) => value,
-                Err(error_result) => return Ok(Self::tool_error(error_result)),
-            };
+        let client = self.client.host(host_id);
+        let execution_process: ExecutionProcess = match client
+            .get(&format!("/execution-processes/{execution_id}"))
+            .await
+        {
+            Ok(value) => value,
+            Err(error_result) => return Ok(Self::tool_error(error_result)),
+        };
 
-        let session_url = self.url(&format!("/api/sessions/{}", execution_process.session_id));
-        let session: Session = match self.send_json(self.client.get(&session_url)).await {
+        let session = match client.session(execution_process.session_id).await {
             Ok(value) => value,
             Err(error_result) => return Ok(Self::tool_error(error_result)),
         };
@@ -339,10 +337,14 @@ impl McpServer {
         }
 
         let is_finished = execution_process.status != ExecutionProcessStatus::Running;
-
-        let execution_process_value = match Self::serialize_execution_process(&execution_process) {
+        let execution_process_value = match serde_json::to_value(&execution_process) {
             Ok(value) => value,
-            Err(error_result) => return Ok(Self::tool_error(error_result)),
+            Err(error) => {
+                return Self::err(
+                    "Failed to serialize execution process response".to_string(),
+                    Some(error.to_string()),
+                );
+            }
         };
 
         Self::success(&GetExecutionResponse {
@@ -356,28 +358,12 @@ impl McpServer {
     }
 }
 
-impl McpServer {
-    /// Build the executor config for a `run_session_prompt` follow-up.
-    ///
-    /// Only the executor identity is known here. The remaining fields are left
-    /// empty on purpose: the `/follow-up` endpoint inherits the session's
-    /// last-used variant/model/reasoning/agent overrides for such a bare config
-    /// (see `resolve_followup_executor_config` in the server's sessions route),
-    /// so a resumed turn keeps the session's model instead of silently
-    /// downgrading to the executor default.
-    fn executor_config_payload_for_session(
-        session: &Session,
-    ) -> Result<ExecutorConfigPayload, super::ToolError> {
-        Ok(ExecutorConfigPayload {
-            executor: Self::normalize_executor_name(session.executor.as_deref())?,
-            variant: None,
-            model_id: None,
-            agent_id: None,
-            reasoning_id: None,
-            permission_policy: None,
-        })
-    }
+fn trimmed(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
 
+impl McpServer {
     fn session_summary(&self, session: Session) -> SessionSummary {
         let is_orchestrator_session = self.orchestrator_session_id() == Some(session.id);
         SessionSummary {
@@ -389,16 +375,5 @@ impl McpServer {
             updated_at: session.updated_at.to_rfc3339(),
             is_orchestrator_session,
         }
-    }
-
-    fn serialize_execution_process(
-        execution_process: &ExecutionProcess,
-    ) -> Result<serde_json::Value, super::ToolError> {
-        serde_json::to_value(execution_process).map_err(|error| {
-            super::ToolError::new(
-                "Failed to serialize execution process response",
-                Some(error.to_string()),
-            )
-        })
     }
 }

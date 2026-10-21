@@ -1,5 +1,6 @@
 pub mod agent_memory_sync;
 pub mod blocker_watcher;
+pub mod cloud_notification_watcher;
 pub mod error;
 pub mod middleware;
 mod pull_request_cache;

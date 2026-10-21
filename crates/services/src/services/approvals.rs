@@ -67,6 +67,23 @@ pub enum ApprovalError {
     Custom(#[from] anyhow::Error),
 }
 
+/// Journal entry for an approval leaving the pending set, whatever ended it.
+fn publish_resolved(id: &str, execution_process_id: Uuid, outcome: &ApprovalOutcome) {
+    let label = match outcome {
+        ApprovalOutcome::Approved => "approved",
+        ApprovalOutcome::Denied { .. } => "denied",
+        ApprovalOutcome::Answered { .. } => "answered",
+        ApprovalOutcome::TimedOut => "timed_out",
+    };
+    crate::services::agent_journal::publish(
+        "approval.resolved",
+        None,
+        None,
+        Some(execution_process_id),
+        serde_json::json!({ "approval_id": id, "outcome": label }),
+    );
+}
+
 impl Default for Approvals {
     fn default() -> Self {
         Self::new()
@@ -121,6 +138,18 @@ impl Approvals {
             .send(crate::services::events::patches::approvals_patch::created(
                 &info,
             ));
+        crate::services::agent_journal::publish(
+            "approval.pending",
+            None,
+            None,
+            Some(request.execution_process_id),
+            serde_json::json!({
+                "approval_id": req_id,
+                "tool_name": request.tool_name,
+                "is_question": is_question,
+                "timeout_at": request.timeout_at,
+            }),
+        );
 
         self.spawn_timeout_watcher(req_id.clone(), request.timeout_at, waiter.clone());
         Ok((request, waiter))
@@ -160,6 +189,7 @@ impl Approvals {
                     .send(crate::services::events::patches::approvals_patch::resolved(
                         id,
                     ));
+            publish_resolved(id, p.execution_process_id, &outcome);
 
             let tool_ctx = ToolContext {
                 tool_name: p.tool_name,
@@ -208,6 +238,7 @@ impl Approvals {
                 let _ = patches_tx.send(
                     crate::services::events::patches::approvals_patch::resolved(&id),
                 );
+                publish_resolved(&id, pending_approval.execution_process_id, &outcome);
                 if pending_approval.response_tx.send(outcome).is_err() {
                     tracing::debug!("approval '{}' timeout notification receiver dropped", id);
                 }
@@ -216,10 +247,11 @@ impl Approvals {
     }
 
     pub(crate) async fn cancel(&self, id: &str) {
-        if let Some((_, _pending_approval)) = self.pending.remove(id) {
+        if let Some((_, pending_approval)) = self.pending.remove(id) {
             let outcome = ApprovalOutcome::Denied {
                 reason: Some("Cancelled".to_string()),
             };
+            publish_resolved(id, pending_approval.execution_process_id, &outcome);
             self.completed.insert(id.to_string(), outcome);
             let _ =
                 self.patches_tx

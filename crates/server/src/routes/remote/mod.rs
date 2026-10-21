@@ -2,6 +2,7 @@ use axum::Router;
 
 use crate::DeploymentImpl;
 
+mod cloud;
 mod issue_assignees;
 mod issue_relationships;
 mod issue_tags;
@@ -14,6 +15,7 @@ mod workspaces;
 
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
+        .merge(cloud::router())
         .merge(issue_assignees::router())
         .merge(issue_relationships::router())
         .merge(issue_tags::router())

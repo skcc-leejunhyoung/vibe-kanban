@@ -68,6 +68,21 @@ impl VibeRun {
         Ok(row)
     }
 
+    /// Row behind a SQLite update hook notification.
+    pub async fn find_by_rowid(
+        pool: &SqlitePool,
+        rowid: i64,
+    ) -> Result<Option<Self>, VibeRunError> {
+        let row = sqlx::query_as::<_, Self>(&format!(
+            "SELECT {} FROM vibe_runs WHERE rowid = ?",
+            Self::COLUMNS
+        ))
+        .bind(rowid)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row)
+    }
+
     /// All runs not in a terminal phase (`blocked`/`done`). Used by the
     /// orphan-recovery watcher to detect runs that may have stalled.
     pub async fn find_non_terminal(pool: &SqlitePool) -> Result<Vec<Self>, VibeRunError> {

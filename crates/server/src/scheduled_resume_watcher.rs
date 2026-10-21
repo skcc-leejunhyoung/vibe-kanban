@@ -159,6 +159,18 @@ async fn process_one(deployment: &DeploymentImpl, row: &ScheduledResume) -> anyh
         row.id,
         row.cron_id
     );
+    services::services::agent_journal::publish(
+        "resume.fired",
+        Some(workspace.id),
+        Some(session.id),
+        None,
+        serde_json::json!({
+            "resume_id": row.id,
+            "cron_id": row.cron_id,
+            "schedule": row.schedule,
+            "recurring": row.recurring,
+        }),
+    );
 
     // Recurring wakeups roll forward to their next fire time; one-shots are done.
     if row.recurring

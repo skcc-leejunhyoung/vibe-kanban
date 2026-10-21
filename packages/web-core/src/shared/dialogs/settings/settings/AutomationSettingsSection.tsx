@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type {
+  AgentAccessConfig,
   AgentMemoryKind,
   AgentMemoryMutation,
   AgentMemoryMutationOperation,
@@ -400,6 +401,100 @@ function defaultConnectorName(type: string) {
     default:
       return type;
   }
+}
+
+const AGENT_ACCESS_TOGGLES: {
+  key: keyof AgentAccessConfig;
+  label: string;
+  helper: string;
+}[] = [
+  {
+    key: 'write_issues',
+    label: 'Write issues',
+    helper:
+      'Create and edit issues, comments, tags, assignees and other cloud data.',
+  },
+  {
+    key: 'control_sessions',
+    label: 'Control sessions',
+    helper:
+      'Start workspaces, send or queue prompts, stop runs, rename sessions.',
+  },
+  {
+    key: 'git_write',
+    label: 'Git write',
+    helper:
+      'Commit, push, pull, rebase and open pull requests on workspace branches.',
+  },
+  {
+    key: 'git_merge',
+    label: 'Git merge',
+    helper: 'Merge a workspace branch into its base branch.',
+  },
+  {
+    key: 'respond_approvals',
+    label: 'Respond to approvals',
+    helper: 'Answer tool approvals and agent questions on your behalf.',
+  },
+  {
+    key: 'delete_workspaces',
+    label: 'Delete workspaces',
+    helper: 'Delete workspaces, their branches and cloud rows.',
+  },
+  {
+    key: 'update_config',
+    label: 'Update settings',
+    helper:
+      'Change preferences, executor profiles, MCP servers and repo scripts.',
+  },
+  {
+    key: 'automation_write',
+    label: 'Automation write',
+    helper: 'Change automation routines, connectors and memory sync.',
+  },
+];
+
+/** Toggles gating what the `vk` CLI and the MCP server may change. */
+function AgentAccessCard() {
+  const { t } = useTranslation('settings');
+  const { config, updateAndSaveConfig } = useUserSystem();
+  const [busy, setBusy] = useState(false);
+  const access = config?.agent_access;
+  if (!access) return null;
+  const toggle = async (key: keyof AgentAccessConfig, checked: boolean) => {
+    setBusy(true);
+    try {
+      await updateAndSaveConfig({
+        agent_access: { ...access, [key]: checked },
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <SettingsCard
+      title={t('settings.automation.agentAccess.title', 'Agent access')}
+      description={t(
+        'settings.automation.agentAccess.description',
+        'What coding agents may change through the vk CLI and the MCP server. Reads are always allowed; a denied call tells the agent which toggle is off and is logged.'
+      )}
+    >
+      {AGENT_ACCESS_TOGGLES.map(({ key, label, helper }) => (
+        <SettingsCheckbox
+          key={key}
+          id={`agent-access-${key}`}
+          label={t(`settings.automation.agentAccess.${key}.label`, label)}
+          description={t(
+            `settings.automation.agentAccess.${key}.helper`,
+            helper
+          )}
+          checked={access[key]}
+          onChange={(checked) => void toggle(key, checked)}
+          disabled={busy}
+        />
+      ))}
+    </SettingsCard>
+  );
 }
 
 export function AutomationSettingsSection() {
@@ -853,6 +948,8 @@ export function AutomationSettingsSection() {
           {notice}
         </div>
       )}
+
+      <AgentAccessCard />
 
       {/* Master switch */}
       <SettingsCard

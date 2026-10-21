@@ -136,6 +136,14 @@ impl QueuedMessageService {
         if let Some(tx) = &self.persist {
             let _ = tx.send(session_id);
         }
+        let size = self.queue.get(&session_id).map(|q| q.len()).unwrap_or(0);
+        crate::services::agent_journal::publish(
+            "queue.changed",
+            None,
+            Some(session_id),
+            None,
+            serde_json::json!({ "size": size }),
+        );
     }
 
     /// Append a message to the back of a session's queue.

@@ -55,7 +55,7 @@ echo "🔨 Building web app..."
 
 echo "🔨 Building Rust binaries..."
 cargo build --release --manifest-path Cargo.toml
-cargo build --release --bin vibe-kanban-mcp --manifest-path Cargo.toml
+cargo build --release --bin vibe-kanban-mcp --bin vk --manifest-path Cargo.toml
 
 echo "📦 Creating distribution package..."
 
@@ -71,6 +71,12 @@ zip -q vibe-kanban-mcp.zip vibe-kanban-mcp
 rm -f vibe-kanban-mcp
 mv vibe-kanban-mcp.zip npx-cli/dist/$PLATFORM/vibe-kanban-mcp.zip
 
+# Copy the vk agent CLI
+cp ${CARGO_TARGET_DIR}/release/vk vk
+zip -q vk.zip vk
+rm -f vk
+mv vk.zip npx-cli/dist/$PLATFORM/vk.zip
+
 # Copy the Review CLI binary
 cp ${CARGO_TARGET_DIR}/release/review vibe-kanban-review
 zip -q vibe-kanban-review.zip vibe-kanban-review
@@ -82,6 +88,7 @@ echo "📁 Files created:"
 echo "   - npx-cli/dist/$PLATFORM/vibe-kanban.zip"
 echo "   - npx-cli/dist/$PLATFORM/vibe-kanban-mcp.zip"
 echo "   - npx-cli/dist/$PLATFORM/vibe-kanban-review.zip"
+echo "   - npx-cli/dist/$PLATFORM/vk.zip"
 
 # Optionally build the Tauri desktop app
 if [[ "$1" == "--desktop" || "$1" == "--all" ]]; then

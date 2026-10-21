@@ -8,6 +8,10 @@ autobins = false
 name = "vibe-kanban-mcp"
 path = "src/bin/vibe_kanban_mcp.rs"
 
+[[bin]]
+name = "vk"
+path = "src/bin/vk.rs"
+
 [lints.clippy]
 uninlined-format-args = "allow"
 
@@ -25,7 +29,11 @@ tracing-subscriber = { workspace = true }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 rmcp = { version = "3.2.0", features = ["server", "transport-io"] }
 schemars = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["multipart"] }
+futures = "0.3"
 rustls = { workspace = true }
 regex = "1"
 thiserror = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "5.0"

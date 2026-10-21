@@ -13,6 +13,8 @@ struct SearchSessionsRequest {
         description = "Substring to find in past session conversations (user prompts, assistant/thinking messages, tool-use summary lines, error messages). Case-insensitive for ASCII; matches inside words, so short Korean fragments work. May be omitted when session_id is given, which then lists that session's entries."
     )]
     query: Option<String>,
+    #[schemars(description = "Optional paired host ID to search on. Omit for this machine.")]
+    host_id: Option<Uuid>,
     #[schemars(description = "Optional repo ID: only sessions whose workspace contains this repo")]
     repo_id: Option<Uuid>,
     #[schemars(
@@ -58,6 +60,10 @@ struct SearchSessionsResponse {
 struct GetSessionSliceRequest {
     #[schemars(description = "Session ID (from a search_sessions hit)")]
     session_id: Uuid,
+    #[schemars(
+        description = "Optional paired host ID the session lives on. Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
     #[schemars(description = "Execution ID of the hit (from search_sessions)")]
     execution_id: Uuid,
     #[schemars(description = "Entry index of the hit (from search_sessions)")]
@@ -116,12 +122,13 @@ struct GetSessionSliceResponse {
 #[tool_router(router = session_search_tools_router, vis = "pub")]
 impl McpServer {
     #[tool(
-        description = "Search past session conversations by content across all workspaces (including finished and archived ones). Returns top matches, newest first, with session/workspace context and a snippet. Narrow with session_id once you know the session; follow up with get_session_slice to read the conversation around a hit."
+        description = "Search past session conversations by content across all workspaces (including finished and archived ones) on this machine or a paired host. Returns top matches, newest first, with session/workspace context and a snippet. Narrow with session_id once you know the session; follow up with get_session_slice to read the conversation around a hit."
     )]
     async fn search_sessions(
         &self,
         Parameters(SearchSessionsRequest {
             query,
+            host_id,
             repo_id,
             session_id,
             entry_types,
@@ -133,7 +140,6 @@ impl McpServer {
             return Self::err("query must not be empty unless session_id is given", None);
         }
 
-        let url = self.url("/api/sessions/search");
         let mut params: Vec<(&str, String)> = Vec::new();
         if !query.is_empty() {
             params.push(("q", query));
@@ -151,11 +157,15 @@ impl McpServer {
             params.push(("limit", limit.to_string()));
         }
 
-        let hits: Vec<SessionSearchHit> =
-            match self.send_json(self.client.get(&url).query(&params)).await {
-                Ok(value) => value,
-                Err(error_result) => return Ok(Self::tool_error(error_result)),
-            };
+        let hits: Vec<SessionSearchHit> = match self
+            .client
+            .host(host_id)
+            .get_with("/sessions/search", &params)
+            .await
+        {
+            Ok(value) => value,
+            Err(error_result) => return Ok(Self::tool_error(error_result)),
+        };
 
         Self::success(&SearchSessionsResponse {
             total_count: hits.len(),
@@ -164,18 +174,18 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read the conversation around a search_sessions hit: the hit entry plus `radius` entries of context on each side, in session order (crossing turn boundaries), capped at ~64KB of content per call. Tool result payloads are not indexed; for those read the execution's JSONL log directly."
+        description = "Read the conversation around a search_sessions hit: the hit entry plus `radius` entries of context on each side, in session order (crossing turn boundaries), capped at ~64KB of content per call. Tool result payloads are not indexed; for those use `vk session log <execution> --tool-results`."
     )]
     async fn get_session_slice(
         &self,
         Parameters(GetSessionSliceRequest {
             session_id,
+            host_id,
             execution_id,
             entry_index,
             radius,
         }): Parameters<GetSessionSliceRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = self.url(&format!("/api/sessions/{session_id}/message-slice"));
         let mut params: Vec<(&str, String)> = vec![
             ("execution_id", execution_id.to_string()),
             ("entry_index", entry_index.to_string()),
@@ -184,11 +194,15 @@ impl McpServer {
             params.push(("radius", radius.to_string()));
         }
 
-        let slice: SessionSliceApiResponse =
-            match self.send_json(self.client.get(&url).query(&params)).await {
-                Ok(value) => value,
-                Err(error_result) => return Ok(Self::tool_error(error_result)),
-            };
+        let slice: SessionSliceApiResponse = match self
+            .client
+            .host(host_id)
+            .get_with(&format!("/sessions/{session_id}/message-slice"), &params)
+            .await
+        {
+            Ok(value) => value,
+            Err(error_result) => return Ok(Self::tool_error(error_result)),
+        };
 
         Self::success(&GetSessionSliceResponse {
             session_id: session_id.to_string(),

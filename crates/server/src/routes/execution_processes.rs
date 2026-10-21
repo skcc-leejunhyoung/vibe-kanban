@@ -53,6 +53,117 @@ struct SessionExecutionProcessQuery {
     pub show_soft_deleted: Option<bool>,
 }
 
+/// Snapshot of a session's execution processes (the stream's initial list)
+/// for clients that poll instead of subscribing.
+async fn list_execution_processes(
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<SessionExecutionProcessQuery>,
+) -> Result<ResponseJson<ApiResponse<Vec<ExecutionProcess>>>, ApiError> {
+    let processes = ExecutionProcess::find_by_session_id(
+        &deployment.db().pool,
+        query.session_id,
+        query.show_soft_deleted.unwrap_or(false),
+    )
+    .await?;
+    Ok(ResponseJson(ApiResponse::success(processes)))
+}
+
+#[derive(Debug, Deserialize)]
+struct NormalizedLogsQuery {
+    offset: Option<usize>,
+    limit: Option<usize>,
+    /// Keep tool result payloads (entry metadata). Off by default: they are
+    /// the bulk of a log and rarely needed to follow a conversation.
+    #[serde(default)]
+    tool_results: bool,
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct NormalizedLogEntry {
+    pub index: usize,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub entry: NormalizedEntry,
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct NormalizedLogsPage {
+    pub execution_id: Uuid,
+    pub status: ExecutionProcessStatus,
+    pub entries: Vec<NormalizedLogEntry>,
+    pub total: usize,
+    pub offset: usize,
+    pub limit: usize,
+    pub has_more: bool,
+}
+
+const DEFAULT_LOG_PAGE: usize = 100;
+const MAX_LOG_PAGE: usize = 1000;
+
+/// A page of the process's normalized conversation. Live processes read the
+/// in-memory store; finished ones come from the replay cache (populated on
+/// first read), so a large historical log is normalized at most once.
+async fn get_normalized_logs(
+    Extension(execution_process): Extension<ExecutionProcess>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<NormalizedLogsQuery>,
+) -> Result<ResponseJson<ApiResponse<NormalizedLogsPage>>, ApiError> {
+    let id = execution_process.id;
+    let container = deployment.container();
+    let patches: Vec<_> = if let Some(store) = container.get_msg_store_by_id(&id).await {
+        store.with_history(|messages| {
+            messages
+                .filter_map(|message| match message {
+                    LogMsg::JsonPatch(patch) => Some(patch.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+    } else if let Some(cached) = services::services::normalized_replay_cache::get(&id) {
+        cached.as_ref().clone()
+    } else {
+        let mut collected = Vec::new();
+        if let Some(mut stream) = container.stream_normalized_logs(&id).await {
+            while let Some(message) = stream.next().await {
+                match message {
+                    Ok(LogMsg::JsonPatch(patch)) => collected.push(patch),
+                    Ok(LogMsg::Finished) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        }
+        collected
+    };
+    let entries = executors::logs::utils::patch::fold_normalized_entries(&patches);
+    let total = entries.len();
+    let offset = query.offset.unwrap_or(0);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_LOG_PAGE)
+        .clamp(1, MAX_LOG_PAGE);
+    let page: Vec<NormalizedLogEntry> = entries
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|(index, mut entry)| {
+            if !query.tool_results {
+                entry.metadata = None;
+            }
+            NormalizedLogEntry { index, entry }
+        })
+        .collect();
+    let has_more = offset + page.len() < total;
+    Ok(ResponseJson(ApiResponse::success(NormalizedLogsPage {
+        execution_id: id,
+        status: execution_process.status,
+        entries: page,
+        total,
+        offset,
+        limit,
+        has_more,
+    })))
+}
+
 async fn get_execution_process_by_id(
     Extension(execution_process): Extension<ExecutionProcess>,
     State(_deployment): State<DeploymentImpl>,
@@ -905,6 +1016,7 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/artifacts/content", get(super::artifacts::content))
         .route("/raw-logs/ws", get(stream_raw_logs_ws))
         .route("/raw-logs/sse", get(stream_raw_logs_sse))
+        .route("/normalized-logs", get(get_normalized_logs))
         .route("/normalized-logs/ws", get(stream_normalized_logs_ws))
         .route("/normalized-logs/sse", get(stream_normalized_logs_sse))
         .layer(from_fn_with_state(
@@ -913,6 +1025,7 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         ));
 
     let workspaces_router = Router::new()
+        .route("/", get(list_execution_processes))
         .route(
             "/stream/session/ws",
             get(stream_execution_processes_by_session_ws),

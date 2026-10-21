@@ -119,6 +119,22 @@ impl ScheduledResume {
         Ok(())
     }
 
+    /// Pending resumes of one session, soonest first.
+    pub async fn find_pending_for_session(
+        pool: &SqlitePool,
+        session_id: Uuid,
+    ) -> Result<Vec<Self>, ScheduledResumeError> {
+        let rows = sqlx::query_as::<_, Self>(&format!(
+            "SELECT {COLUMNS} FROM scheduled_resumes \
+             WHERE session_id = ? AND status = 'pending' \
+             ORDER BY next_fire_at ASC"
+        ))
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// Cancel all pending resumes for a session (e.g. when the user takes over).
     pub async fn cancel_pending_for_session(
         pool: &SqlitePool,

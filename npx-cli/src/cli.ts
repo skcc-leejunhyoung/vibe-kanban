@@ -229,6 +229,28 @@ async function runMcp(args: string[]): Promise<void> {
   });
 }
 
+async function runVk(args: string[]): Promise<void> {
+  await extractAndRun("vk", (bin) => {
+    const proc = spawn(bin, args, { stdio: "inherit" });
+    proc.on("exit", (c) => process.exit(c || 0));
+    proc.on("error", (e) => {
+      console.error("vk error:", e.message);
+      process.exit(1);
+    });
+  });
+}
+
+/// The server puts the directory of its own binary on every agent's PATH so
+/// `vk` is found there; extract it before the server starts.
+async function ensureVkExtracted(): Promise<void> {
+  try {
+    await extractAndRun("vk", () => {});
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`vk CLI not available (${msg}); agents will run without it.`);
+  }
+}
+
 async function runReview(args: string[]): Promise<void> {
   await extractAndRun("vibe-kanban-review", (bin) => {
     const proc = spawn(bin, args, { stdio: "inherit" });
@@ -272,6 +294,7 @@ async function runMain(desktopMode: boolean): Promise<void> {
 
   // Browser mode (default — headless server + opens browser)
   console.log(`Starting vibe-kanban v${CLI_VERSION}${modeLabel}...`);
+  await ensureVkExtracted();
   await extractAndRun("vibe-kanban", async (bin) => {
     process.exitCode = await runInteractive(bin);
   });
@@ -321,6 +344,13 @@ async function main(): Promise<void> {
     .allowUnknownOptions()
     .action((args: string[]) => {
       runOrExit(runReview(args));
+    });
+
+  cli
+    .command("vk [...args]", "Run the vk agent CLI")
+    .allowUnknownOptions()
+    .action((args: string[]) => {
+      runOrExit(runVk(args));
     });
 
   cli

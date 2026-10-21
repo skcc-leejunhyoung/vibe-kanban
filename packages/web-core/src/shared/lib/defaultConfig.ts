@@ -81,6 +81,16 @@ export const DEFAULT_CONFIG: Config = {
     daily_local_time: '03:00',
     agents: ['claude_code', 'codex'],
   },
+  agent_access: {
+    write_issues: true,
+    control_sessions: true,
+    respond_approvals: false,
+    git_write: true,
+    git_merge: false,
+    delete_workspaces: false,
+    update_config: false,
+    automation_write: false,
+  },
 };
 
 /**

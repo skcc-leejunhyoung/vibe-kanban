@@ -21,6 +21,15 @@ use crate::{
     middleware::signed_ws::{MaybeSignedWebSocket, SignedWsUpgrade},
 };
 
+/// Approvals and agent questions currently waiting for an answer, oldest first.
+async fn list_pending_approvals(
+    State(deployment): State<DeploymentImpl>,
+) -> ResponseJson<ApiResponse<Vec<services::services::approvals::ApprovalInfo>>> {
+    let mut pending = deployment.approvals().pending_infos();
+    pending.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    ResponseJson(ApiResponse::success(pending))
+}
+
 async fn respond_to_approval(
     State(deployment): State<DeploymentImpl>,
     axum::extract::Path(id): axum::extract::Path<String>,
@@ -119,6 +128,7 @@ async fn handle_approvals_ws(
 
 pub(super) fn router() -> Router<DeploymentImpl> {
     Router::new()
+        .route("/approvals/pending", get(list_pending_approvals))
         .route("/approvals/{id}/respond", post(respond_to_approval))
         .route("/approvals/stream/ws", get(stream_approvals_ws))
         .route("/approvals/stream/sse", get(stream_approvals_sse))

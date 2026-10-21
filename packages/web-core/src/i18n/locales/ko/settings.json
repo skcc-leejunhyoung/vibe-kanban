@@ -1023,6 +1023,44 @@
       "pausedHelpTitle": "원격 접속이 중지되어 있습니다",
       "pausedOwnerHelp": "이 컴퓨터 설정 또는 컴퓨터 관리의 설정 탭에서 원격 접속을 다시 켜세요.",
       "pausedMemberHelp": "소유자에게 원격 접속을 다시 켜 달라고 요청하세요. 다시 로그인하거나 이 브라우저를 페어링해도 접속 중지는 해제되지 않습니다."
+    },
+    "automation": {
+      "agentAccess": {
+        "title": "에이전트 접근 권한",
+        "description": "vk CLI와 MCP 서버를 통해 코딩 에이전트가 바꿀 수 있는 범위입니다. 읽기는 항상 허용되며, 거부된 호출은 에이전트에게 어떤 토글이 꺼져 있는지 알려주고 로그에 남습니다.",
+        "write_issues": {
+          "label": "이슈 쓰기",
+          "helper": "이슈·댓글·태그·담당자 등 클라우드 데이터를 만들고 수정합니다."
+        },
+        "control_sessions": {
+          "label": "세션 제어",
+          "helper": "워크스페이스 시작, 프롬프트 전송·큐잉, 실행 중지, 세션 이름 변경."
+        },
+        "git_write": {
+          "label": "Git 쓰기",
+          "helper": "워크스페이스 브랜치에서 커밋·푸시·풀·리베이스, PR 생성."
+        },
+        "git_merge": {
+          "label": "Git 머지",
+          "helper": "워크스페이스 브랜치를 베이스 브랜치에 머지합니다."
+        },
+        "respond_approvals": {
+          "label": "승인 응답",
+          "helper": "도구 승인과 에이전트 질문에 사용자를 대신해 답합니다."
+        },
+        "delete_workspaces": {
+          "label": "워크스페이스 삭제",
+          "helper": "워크스페이스와 브랜치, 클라우드 행을 삭제합니다."
+        },
+        "update_config": {
+          "label": "설정 변경",
+          "helper": "환경설정, 실행기 프로필, MCP 서버, 레포 스크립트를 바꿉니다."
+        },
+        "automation_write": {
+          "label": "자동화 쓰기",
+          "helper": "자동화 루틴·커넥터·메모리 동기화를 바꿉니다."
+        }
+      }
     }
   },
   "integrations": {

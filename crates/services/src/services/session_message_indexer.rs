@@ -3,7 +3,7 @@
 //! immutable: the exit monitor for live processes, and a startup backfill for
 //! historical ones.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 use db::models::{
     execution_process::ExecutionProcess,
@@ -11,9 +11,7 @@ use db::models::{
 };
 use executors::{
     actions::{ExecutorAction, ExecutorActionType},
-    logs::{
-        NormalizedEntry, NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch,
-    },
+    logs::{NormalizedEntry, NormalizedEntryType, utils::patch::fold_normalized_entries},
 };
 use futures::StreamExt;
 use json_patch::Patch;
@@ -80,25 +78,7 @@ pub async fn index_rows_blocking(
 pub fn collect_indexable_rows<'a>(
     patches: impl IntoIterator<Item = &'a Patch>,
 ) -> Vec<NewSessionMessage> {
-    let mut by_index: BTreeMap<usize, NormalizedEntry> = BTreeMap::new();
-    for patch in patches {
-        if let Some((index, entry)) = extract_normalized_entry_from_patch(patch) {
-            by_index.insert(index, entry);
-        } else {
-            for op in &patch.0 {
-                if let json_patch::PatchOperation::Remove(_) = op
-                    && let Some(index) = op
-                        .path()
-                        .as_str()
-                        .strip_prefix("/entries/")
-                        .and_then(|s| s.parse::<usize>().ok())
-                {
-                    by_index.remove(&index);
-                }
-            }
-        }
-    }
-    by_index
+    fold_normalized_entries(patches)
         .into_iter()
         .filter_map(|(index, entry)| to_row(index, entry))
         .collect()

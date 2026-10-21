@@ -25,6 +25,8 @@ pub enum HookTables {
     ExecutionProcesses,
     #[strum(to_string = "scratch")]
     Scratch,
+    #[strum(to_string = "vibe_runs")]
+    VibeRuns,
 }
 
 #[derive(Serialize, Deserialize, TS)]

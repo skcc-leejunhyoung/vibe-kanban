@@ -983,6 +983,14 @@ impl Codex {
         };
 
         let mut config = self.build_config_overrides();
+        // The workspace-write sandbox blocks the network, which would cut the
+        // `vk` CLI (and any other local HTTP call) off from the server.
+        if matches!(sandbox, Some(V2SandboxMode::WorkspaceWrite)) {
+            config.get_or_insert_with(HashMap::new).insert(
+                "sandbox_workspace_write.network_access".to_string(),
+                Value::Bool(true),
+            );
+        }
         // V1 top-level params that moved into config overrides in v2
         if let Some(profile) = &self.profile {
             config
@@ -1288,8 +1296,9 @@ mod tests {
 
     use super::{
         AskForApproval, Codex, CustomModel, ReasoningEffort, SandboxMode, SelectedModel,
-        collect_model_pages, merge_custom_models, model_selector_from_live, parse_custom_models,
-        resolve_model, resolve_selected_model, static_model_selector, static_openai_models,
+        V2SandboxMode, collect_model_pages, merge_custom_models, model_selector_from_live,
+        parse_custom_models, resolve_model, resolve_selected_model, static_model_selector,
+        static_openai_models,
     };
     use crate::{
         env::ExecutionEnv,
@@ -1428,6 +1437,29 @@ base_url = "https://api.sailresearch.com/v1"
                 .config
                 .and_then(|c| c.get("model_reasoning_effort").cloned()),
             Some(json!("high"))
+        );
+    }
+
+    #[test]
+    fn workspace_write_sandbox_opens_the_network_for_the_cli() {
+        let codex: Codex = serde_json::from_value(json!({})).unwrap();
+        let params = codex.thread_start_params(std::path::Path::new("/tmp"), None);
+        assert_eq!(params.sandbox, Some(V2SandboxMode::WorkspaceWrite));
+        assert_eq!(
+            params
+                .config
+                .as_ref()
+                .and_then(|c| c.get("sandbox_workspace_write.network_access")),
+            Some(&json!(true))
+        );
+
+        let read_only: Codex = serde_json::from_value(json!({ "sandbox": "read-only" })).unwrap();
+        let params = read_only.thread_start_params(std::path::Path::new("/tmp"), None);
+        assert!(
+            params
+                .config
+                .map(|c| !c.contains_key("sandbox_workspace_write.network_access"))
+                .unwrap_or(true)
         );
     }
 

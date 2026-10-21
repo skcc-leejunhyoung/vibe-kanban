@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 use api_types::{
-    CreateIssueRequest, Issue, IssuePriority, IssueRelationshipType, IssueSortField,
-    ListIssueRelationshipsResponse, ListIssueTagsResponse, ListIssuesResponse,
-    ListPullRequestsResponse, ListTagsResponse, MutationResponse, PullRequestStatus,
-    SearchIssuesRequest, SortDirection, UpdateIssueRequest,
+    Issue, IssueRelationshipType, IssueSortField, ListIssueRelationshipsResponse,
+    ListIssueTagsResponse, ListIssuesResponse, ListPullRequestsResponse, ListTagsResponse,
+    PullRequestStatus, SearchIssuesRequest, SortDirection,
 };
 use rmcp::{
     ErrorData, handler::server::wrapper::Parameters, model::CallToolResult, schemars, tool,
@@ -14,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{McpServer, ToolError};
+use crate::client::{
+    CreateIssueInput, UpdateIssueInput, issue_priority_label, parse_issue_priority,
+};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct McpCreateIssueRequest {
@@ -31,11 +33,14 @@ struct McpCreateIssueRequest {
     priority: Option<String>,
     #[schemars(description = "Optional parent issue ID to create a subissue")]
     parent_issue_id: Option<Uuid>,
+    #[schemars(description = "Optional status name; defaults to the project's first status")]
+    status: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct McpCreateIssueResponse {
     issue_id: String,
+    simple_id: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -128,7 +133,7 @@ struct McpTagSummary {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct McpRelationshipSummary {
-    #[schemars(description = "The relationship ID (use this to delete)")]
+    #[schemars(description = "The relationship ID (use `vk issue relations remove` to delete)")]
     id: String,
     #[schemars(description = "The related issue ID")]
     related_issue_id: String,
@@ -224,17 +229,6 @@ struct McpUpdateIssueResponse {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct McpDeleteIssueRequest {
-    #[schemars(description = "The ID of the issue to delete")]
-    issue_id: Uuid,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-struct McpDeleteIssueResponse {
-    deleted_issue_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct McpGetIssueRequest {
     #[schemars(description = "The ID of the issue to retrieve")]
     issue_id: Uuid,
@@ -243,11 +237,6 @@ struct McpGetIssueRequest {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct McpGetIssueResponse {
     issue: IssueDetails,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-struct McpListIssuePrioritiesResponse {
-    priorities: Vec<String>,
 }
 
 #[tool_router(router = remote_issues_tools_router, vis = "pub")]
@@ -263,56 +252,31 @@ impl McpServer {
             description,
             priority,
             parent_issue_id,
+            status,
         }): Parameters<McpCreateIssueRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         let project_id = match self.resolve_project_id(project_id) {
             Ok(id) => id,
             Err(e) => return Ok(McpServer::tool_error(e)),
         };
-
-        let expanded_description = match description {
-            Some(desc) => Some(self.expand_tags(&desc).await),
-            None => None,
-        };
-
-        let status_id = match self.default_status_id(project_id).await {
-            Ok(id) => id,
+        let issue = match self
+            .client
+            .create_issue(CreateIssueInput {
+                project_id,
+                title,
+                description,
+                priority,
+                parent_issue_id,
+                status,
+            })
+            .await
+        {
+            Ok(issue) => issue,
             Err(e) => return Ok(McpServer::tool_error(e)),
         };
-
-        let priority = match priority {
-            Some(p) => match Self::parse_issue_priority(&p) {
-                Ok(priority) => Some(priority),
-                Err(e) => return Ok(McpServer::tool_error(e)),
-            },
-            None => None,
-        };
-
-        let payload = CreateIssueRequest {
-            id: None,
-            project_id,
-            status_id,
-            title,
-            description: expanded_description,
-            priority,
-            start_date: None,
-            target_date: None,
-            completed_at: None,
-            sort_order: 0.0,
-            parent_issue_id,
-            parent_issue_sort_order: None,
-            extension_metadata: serde_json::json!({}),
-        };
-
-        let url = self.url("/api/remote/issues");
-        let response: MutationResponse<Issue> =
-            match self.send_json(self.client.post(&url).json(&payload)).await {
-                Ok(r) => r,
-                Err(e) => return Ok(McpServer::tool_error(e)),
-            };
-
         McpServer::success(&McpCreateIssueResponse {
-            issue_id: response.data.id.to_string(),
+            issue_id: issue.id.to_string(),
+            simple_id: issue.simple_id,
         })
     }
 
@@ -342,7 +306,7 @@ impl McpServer {
             Err(e) => return Ok(McpServer::tool_error(e)),
         };
 
-        let project_statuses = match self.fetch_project_statuses(project_id).await {
+        let project_statuses = match self.client.project_statuses(project_id).await {
             Ok(statuses) => Some(statuses),
             Err(e) => {
                 if status.is_some() {
@@ -385,7 +349,7 @@ impl McpServer {
         };
 
         let priority = match priority {
-            Some(priority) => match Self::parse_issue_priority(&priority) {
+            Some(priority) => match parse_issue_priority(&priority) {
                 Ok(priority) => Some(priority),
                 Err(e) => return Ok(McpServer::tool_error(e)),
             },
@@ -435,8 +399,11 @@ impl McpServer {
                 limit: Some(limit.unwrap_or(50).max(0)),
                 offset: Some(offset.unwrap_or(0).max(0)),
             };
-            let url = self.url("/api/remote/issues/search");
-            match self.send_json(self.client.post(&url).json(&query)).await {
+            match self
+                .client
+                .post_local("/remote/issues/search", &query)
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => return Ok(McpServer::tool_error(e)),
             }
@@ -445,7 +412,7 @@ impl McpServer {
         let mut summaries = Vec::with_capacity(response.issues.len());
         for issue in &response.issues {
             let pull_requests = self.fetch_pull_requests(issue.id).await;
-            summaries.push(self.issue_to_summary(
+            summaries.push(Self::issue_to_summary(
                 issue,
                 status_names_by_id.as_ref(),
                 &pull_requests,
@@ -469,8 +436,7 @@ impl McpServer {
         &self,
         Parameters(McpGetIssueRequest { issue_id }): Parameters<McpGetIssueRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = self.url(&format!("/api/remote/issues/{}", issue_id));
-        let issue: Issue = match self.send_json(self.client.get(&url)).await {
+        let issue = match self.client.issue(issue_id).await {
             Ok(i) => i,
             Err(e) => return Ok(McpServer::tool_error(e)),
         };
@@ -481,7 +447,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Update an existing issue's title, description, or status. `issue_id` is required. `title`, `description`, and `status` are optional."
+        description = "Update an existing issue's title, description, status, priority or parent. `issue_id` is required; the other fields are optional."
     )]
     async fn update_issue(
         &self,
@@ -494,90 +460,27 @@ impl McpServer {
             parent_issue_id,
         }): Parameters<McpUpdateIssueRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        // First get the issue to know its project_id for status resolution
-        let get_url = self.url(&format!("/api/remote/issues/{}", issue_id));
-        let existing_issue: Issue = match self.send_json(self.client.get(&get_url)).await {
-            Ok(i) => i,
+        let issue = match self
+            .client
+            .update_issue(
+                issue_id,
+                UpdateIssueInput {
+                    title,
+                    description,
+                    status,
+                    priority,
+                    parent_issue_id,
+                },
+            )
+            .await
+        {
+            Ok(issue) => issue,
             Err(e) => return Ok(McpServer::tool_error(e)),
         };
 
-        // Resolve status name to status_id if provided
-        let status_id = if let Some(ref status_name) = status {
-            match self
-                .resolve_status_id(existing_issue.project_id, status_name)
-                .await
-            {
-                Ok(id) => Some(id),
-                Err(e) => return Ok(McpServer::tool_error(e)),
-            }
-        } else {
-            None
-        };
-
-        // Expand @tagname references in description
-        let expanded_description = match description {
-            Some(desc) => Some(Some(self.expand_tags(&desc).await)),
-            None => None,
-        };
-
-        let priority = if let Some(priority) = priority {
-            match Self::parse_issue_priority(&priority) {
-                Ok(parsed) => Some(Some(parsed)),
-                Err(e) => return Ok(McpServer::tool_error(e)),
-            }
-        } else {
-            None
-        };
-
-        let payload = UpdateIssueRequest {
-            status_id,
-            title,
-            description: expanded_description,
-            priority,
-            start_date: None,
-            target_date: None,
-            completed_at: None,
-            sort_order: None,
-            parent_issue_id,
-            parent_issue_sort_order: None,
-            extension_metadata: None,
-        };
-
-        let url = self.url(&format!("/api/remote/issues/{}", issue_id));
-        let response: MutationResponse<Issue> =
-            match self.send_json(self.client.patch(&url).json(&payload)).await {
-                Ok(r) => r,
-                Err(e) => return Ok(McpServer::tool_error(e)),
-            };
-
         let pull_requests = self.fetch_pull_requests(issue_id).await;
-        let details = self.issue_to_details(&response.data, pull_requests).await;
+        let details = self.issue_to_details(&issue, pull_requests).await;
         McpServer::success(&McpUpdateIssueResponse { issue: details })
-    }
-
-    #[tool(description = "List allowed issue priority values.")]
-    async fn list_issue_priorities(&self) -> Result<CallToolResult, ErrorData> {
-        McpServer::success(&McpListIssuePrioritiesResponse {
-            priorities: ["urgent", "high", "medium", "low"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-        })
-    }
-
-    #[tool(description = "Delete an issue. `issue_id` is required.")]
-    async fn delete_issue(
-        &self,
-        Parameters(McpDeleteIssueRequest { issue_id }): Parameters<McpDeleteIssueRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let url = self.url(&format!("/api/remote/issues/{}", issue_id));
-        if let Err(e) = self.send_empty_json(self.client.delete(&url)).await {
-            return Ok(McpServer::tool_error(e));
-        }
-
-        McpServer::success(&McpDeleteIssueResponse {
-            deleted_issue_id: Some(issue_id.to_string()),
-        })
     }
 }
 
@@ -618,7 +521,6 @@ impl McpServer {
     }
 
     fn issue_to_summary(
-        &self,
         issue: &Issue,
         status_names_by_id: Option<&HashMap<Uuid, String>>,
         pull_requests: &ListPullRequestsResponse,
@@ -632,10 +534,7 @@ impl McpServer {
             title: issue.title.clone(),
             simple_id: issue.simple_id.clone(),
             status,
-            priority: issue
-                .priority
-                .map(Self::issue_priority_label)
-                .map(str::to_string),
+            priority: issue.priority.map(issue_priority_label).map(str::to_string),
             parent_issue_id: issue.parent_issue_id.map(|id| id.to_string()),
             created_at: issue.created_at.to_rfc3339(),
             updated_at: issue.updated_at.to_rfc3339(),
@@ -651,7 +550,8 @@ impl McpServer {
         pull_requests: ListPullRequestsResponse,
     ) -> IssueDetails {
         let status = self
-            .resolve_status_name(issue.project_id, issue.status_id)
+            .client
+            .status_name(issue.project_id, issue.status_id)
             .await;
 
         let tags = self
@@ -671,10 +571,7 @@ impl McpServer {
             description: issue.description.clone(),
             status,
             status_id: issue.status_id.to_string(),
-            priority: issue
-                .priority
-                .map(Self::issue_priority_label)
-                .map(str::to_string),
+            priority: issue.priority.map(issue_priority_label).map(str::to_string),
             parent_issue_id: issue.parent_issue_id.map(|id| id.to_string()),
             start_date: issue.start_date.map(|date| date.to_rfc3339()),
             target_date: issue.target_date.map(|date| date.to_rfc3339()),
@@ -699,16 +596,12 @@ impl McpServer {
     }
 
     async fn fetch_pull_requests(&self, issue_id: Uuid) -> ListPullRequestsResponse {
-        let url = self.url(&format!("/api/remote/pull-requests?issue_id={}", issue_id));
-        match self
-            .send_json::<ListPullRequestsResponse>(self.client.get(&url))
+        self.client
+            .get_local(&format!("/remote/pull-requests?issue_id={issue_id}"))
             .await
-        {
-            Ok(response) => response,
-            Err(_) => ListPullRequestsResponse {
+            .unwrap_or(ListPullRequestsResponse {
                 pull_requests: vec![],
-            },
-        }
+            })
     }
 
     /// Fetches tags for an issue, resolving tag_ids to names via project tags.
@@ -717,8 +610,10 @@ impl McpServer {
         project_id: Uuid,
         issue_id: Uuid,
     ) -> Vec<McpTagSummary> {
-        let tags_url = self.url(&format!("/api/remote/tags?project_id={}", project_id));
-        let project_tags: ListTagsResponse = match self.send_json(self.client.get(&tags_url)).await
+        let project_tags: ListTagsResponse = match self
+            .client
+            .get_local(&format!("/remote/tags?project_id={project_id}"))
+            .await
         {
             Ok(r) => r,
             Err(_) => return Vec::new(),
@@ -726,8 +621,11 @@ impl McpServer {
         let tag_map: HashMap<Uuid, &api_types::Tag> =
             project_tags.tags.iter().map(|t| (t.id, t)).collect();
 
-        let url = self.url(&format!("/api/remote/issue-tags?issue_id={}", issue_id));
-        let response: ListIssueTagsResponse = match self.send_json(self.client.get(&url)).await {
+        let response: ListIssueTagsResponse = match self
+            .client
+            .get_local(&format!("/remote/issue-tags?issue_id={issue_id}"))
+            .await
+        {
             Ok(r) => r,
             Err(_) => return Vec::new(),
         };
@@ -751,25 +649,24 @@ impl McpServer {
         project_id: Uuid,
         issue_id: Uuid,
     ) -> Vec<McpRelationshipSummary> {
-        let rel_url = self.url(&format!(
-            "/api/remote/issue-relationships?issue_id={}",
-            issue_id
-        ));
-        let response: ListIssueRelationshipsResponse =
-            match self.send_json(self.client.get(&rel_url)).await {
-                Ok(r) => r,
-                Err(_) => return Vec::new(),
-            };
+        let response: ListIssueRelationshipsResponse = match self
+            .client
+            .get_local(&format!("/remote/issue-relationships?issue_id={issue_id}"))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
 
         if response.issue_relationships.is_empty() {
             return Vec::new();
         }
 
-        let issues_url = self.url(&format!("/api/remote/issues?project_id={}", project_id));
-        let issues_response: api_types::ListIssuesResponse = self
-            .send_json(self.client.get(&issues_url))
+        let issues_response: ListIssuesResponse = self
+            .client
+            .get_local(&format!("/remote/issues?project_id={project_id}"))
             .await
-            .unwrap_or(api_types::ListIssuesResponse {
+            .unwrap_or(ListIssuesResponse {
                 issues: Vec::new(),
                 total_count: 0,
                 limit: 0,
@@ -809,15 +706,18 @@ impl McpServer {
         project_id: Uuid,
         parent_issue_id: Uuid,
     ) -> Vec<McpSubIssueSummary> {
-        let url = self.url(&format!("/api/remote/issues?project_id={}", project_id));
-        let response: api_types::ListIssuesResponse =
-            match self.send_json(self.client.get(&url)).await {
-                Ok(r) => r,
-                Err(_) => return Vec::new(),
-            };
+        let response: ListIssuesResponse = match self
+            .client
+            .get_local(&format!("/remote/issues?project_id={project_id}"))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
 
         let status_names = self
-            .fetch_project_statuses(project_id)
+            .client
+            .project_statuses(project_id)
             .await
             .ok()
             .map(|statuses| {
@@ -846,35 +746,15 @@ impl McpServer {
             .collect()
     }
 
-    fn parse_issue_priority(priority: &str) -> Result<IssuePriority, ToolError> {
-        match priority.trim().to_ascii_lowercase().as_str() {
-            "urgent" => Ok(IssuePriority::Urgent),
-            "high" => Ok(IssuePriority::High),
-            "medium" => Ok(IssuePriority::Medium),
-            "low" => Ok(IssuePriority::Low),
-            _ => Err(ToolError::message(format!(
-                "Unknown priority '{}'. Allowed values: ['urgent', 'high', 'medium', 'low']",
-                priority
-            ))),
-        }
-    }
-
-    fn issue_priority_label(priority: IssuePriority) -> &'static str {
-        match priority {
-            IssuePriority::Urgent => "urgent",
-            IssuePriority::High => "high",
-            IssuePriority::Medium => "medium",
-            IssuePriority::Low => "low",
-        }
-    }
-
     async fn find_tag_ids_by_name(
         &self,
         project_id: Uuid,
         tag_name: &str,
     ) -> Result<Vec<Uuid>, ToolError> {
-        let url = self.url(&format!("/api/remote/tags?project_id={}", project_id));
-        let tags: ListTagsResponse = self.send_json(self.client.get(&url)).await?;
+        let tags: ListTagsResponse = self
+            .client
+            .get_local(&format!("/remote/tags?project_id={project_id}"))
+            .await?;
         Ok(Self::matching_ids_by_name(
             tags.tags.iter().map(|tag| (tag.id, tag.name.as_str())),
             tag_name,

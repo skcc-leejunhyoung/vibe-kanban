@@ -18,6 +18,7 @@ use db::models::{
     pending_execution_start::PendingExecutionStart,
     pending_rate_limit_resume::PendingRateLimitResume,
     requests::UpdateSession,
+    scheduled_resume::ScheduledResume,
     scratch::{Scratch, ScratchType},
     session::{CreateSession, Session, SessionError},
     workspace::{Workspace, WorkspaceError},
@@ -154,6 +155,35 @@ pub async fn set_auto_resume(
         enabled: request.enabled,
         pending_resume_at,
     })))
+}
+
+#[derive(Debug, Serialize, TS)]
+pub struct CancelScheduledResumesResponse {
+    pub cancelled: u64,
+}
+
+/// Wakeups the agent scheduled for itself that have not fired yet.
+pub async fn list_scheduled_resumes(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Vec<ScheduledResume>>>, ApiError> {
+    let rows = ScheduledResume::find_pending_for_session(&deployment.db().pool, session.id)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(ResponseJson(ApiResponse::success(rows)))
+}
+
+/// Cancel every pending scheduled wakeup of the session.
+pub async fn cancel_scheduled_resumes(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<CancelScheduledResumesResponse>>, ApiError> {
+    let cancelled = ScheduledResume::cancel_pending_for_session(&deployment.db().pool, session.id)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(ResponseJson(ApiResponse::success(
+        CancelScheduledResumesResponse { cancelled },
+    )))
 }
 
 pub async fn create_session(
@@ -811,6 +841,8 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             post(handoff).layer(from_fn(finish_after_disconnect)),
         )
         .route("/auto-resume", get(get_auto_resume))
+        .route("/resumes", get(list_scheduled_resumes))
+        .route("/resumes/cancel", post(cancel_scheduled_resumes))
         .route(
             "/auto-resume",
             post(set_auto_resume).layer(from_fn(finish_after_disconnect)),

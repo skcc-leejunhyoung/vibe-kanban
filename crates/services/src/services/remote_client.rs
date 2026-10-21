@@ -27,6 +27,7 @@ use api_types::{
     UpsertPullRequestRequest, Workspace,
 };
 use backon::{ExponentialBuilder, Retryable};
+use bytes::Bytes;
 use chrono::Duration as ChronoDuration;
 use relay_types::{ListRelayHostsResponse, RelayHost};
 use reqwest::{Client, StatusCode};
@@ -686,6 +687,61 @@ impl RemoteClient {
             return RemoteClientError::Api(map_error_code(Some(&api_err.error)));
         }
         err
+    }
+
+    /// Raw passthrough for the agent-facing cloud proxy: forwards `method` +
+    /// `path_and_query` (relative to the API base, e.g. `/v1/notifications`)
+    /// with this host's bearer token and returns the upstream status and body
+    /// unchanged. Non-2xx upstream replies come back as `Ok` too, so the caller
+    /// can relay them verbatim.
+    pub async fn proxy_raw(
+        &self,
+        method: reqwest::Method,
+        path_and_query: &str,
+        body: Option<Bytes>,
+        content_type: Option<&str>,
+    ) -> Result<(StatusCode, Bytes), RemoteClientError> {
+        let result = self
+            .send_internal_with_request(method, path_and_query, true, |req| {
+                let mut req = req;
+                if let Some(body) = &body {
+                    req = req.body(body.clone());
+                    if let Some(content_type) = content_type {
+                        req = req.header(reqwest::header::CONTENT_TYPE, content_type);
+                    }
+                }
+                req
+            })
+            .await;
+        match result {
+            Ok(response) => {
+                let status = response.status();
+                let bytes = response.bytes().await.map_err(map_reqwest_error)?;
+                Ok((status, bytes))
+            }
+            Err(RemoteClientError::Http { status, body }) => Ok((
+                StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                Bytes::from(body),
+            )),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The signed-in user's cloud notifications, newest first.
+    pub async fn list_notifications(
+        &self,
+        include_dismissed: bool,
+    ) -> Result<Vec<api_types::Notification>, RemoteClientError> {
+        #[derive(Deserialize)]
+        struct ListNotificationsResponse {
+            notifications: Vec<api_types::Notification>,
+        }
+        let response: ListNotificationsResponse = self
+            .get_authed(&format!(
+                "/v1/notifications?include_dismissed={include_dismissed}"
+            ))
+            .await?;
+        Ok(response.notifications)
     }
 
     /// Uploads this host's GitHub CLI login so `/v1/github/*` can act with it.

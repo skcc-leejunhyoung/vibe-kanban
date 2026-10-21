@@ -1,3 +1,4 @@
+pub mod agent_journal;
 pub mod approvals;
 pub mod artifacts;
 pub mod auth;

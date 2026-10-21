@@ -1170,9 +1170,91 @@ collapse_completed_turn_steps: boolean,
 /**
  * Daily agent-owned reconciliation of memory snapshots across this user's hosts.
  */
-agent_memory_sync: AgentMemorySyncConfig, };
+agent_memory_sync: AgentMemorySyncConfig,
+/**
+ * Write permissions for coding agents using the `vk` CLI / MCP server.
+ */
+agent_access: AgentAccessConfig, };
 
 export type AgentMemorySyncConfig = { enabled: boolean, daily_local_time: string, agents: Array<AgentMemoryKind>, };
+
+export type AgentAccessConfig = {
+/**
+ * Create/update issues, comments, tags, assignees and other cloud data.
+ */
+write_issues: boolean,
+/**
+ * Start workspaces, send/queue prompts, stop runs, rename sessions.
+ */
+control_sessions: boolean,
+/**
+ * Answer tool approvals and agent questions on the user's behalf.
+ */
+respond_approvals: boolean,
+/**
+ * Commit, push, pull, rebase and open pull requests on workspace branches.
+ */
+git_write: boolean,
+/**
+ * Merge a workspace branch into its base branch.
+ */
+git_merge: boolean,
+/**
+ * Delete workspaces (and their branches / cloud rows).
+ */
+delete_workspaces: boolean,
+/**
+ * Change settings, executor profiles, MCP servers and repo scripts.
+ */
+update_config: boolean,
+/**
+ * Change automation routines, connectors and memory sync.
+ */
+automation_write: boolean, };
+
+export type JournalEvent = {
+/**
+ * Monotonic position; pass the page's `cursor` back as `since`.
+ */
+cursor: bigint, at: string,
+/**
+ * Dotted kind, e.g. `process.completed`, `approval.pending`,
+ * `workspace.status_note`, `vibe.phase`, `queue.changed`,
+ * `resume.fired`, `cloud.notification`.
+ */
+kind: string, workspace_id?: string | null, session_id?: string | null, execution_id?: string | null,
+/**
+ * Paired host the event came from; absent for this machine.
+ */
+host_id?: string | null, data: JsonValue, };
+
+export type JournalPage = { events: Array<JournalEvent>,
+/**
+ * Latest cursor the journal has seen; the next `since` to pass.
+ */
+cursor: bigint,
+/**
+ * Cursor of the oldest event still buffered. A `since` below this means
+ * events were lost to the ring; callers should resync from a fresh list.
+ */
+oldest_cursor: bigint, };
+
+export type SendNotificationRequest = { title: string, message: string,
+/**
+ * Workspace the notification deep-links to when clicked.
+ */
+workspace_id: string | null,
+/**
+ * Deliver only to this host's own subscriptions and OS notifier, not to
+ * the user's cloud web-push devices.
+ */
+local_only: boolean, };
+
+export type NormalizedLogEntry = { index: number, timestamp: string | null, entry_type: NormalizedEntryType, content: string, };
+
+export type NormalizedLogsPage = { execution_id: string, status: ExecutionProcessStatus, entries: Array<NormalizedLogEntry>, total: number, offset: number, limit: number, has_more: boolean, };
+
+export type CancelScheduledResumesResponse = { cancelled: bigint, };
 
 export type AgentMemoryKind = "claude_code" | "codex";
 

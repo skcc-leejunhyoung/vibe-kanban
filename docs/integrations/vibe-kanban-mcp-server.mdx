@@ -54,110 +54,62 @@ Add the following configuration to your agent's MCP servers configuration:
 
 ## Available MCP Tools
 
-The Vibe Kanban MCP server provides tools for managing organisations, projects, issues, workspaces, and task execution.
+The MCP server keeps a small core of tools. Tool schemas ride along with every model turn, so the long tail of operations (repositories, tags, assignees, relationships, scripts, organisations, deletes, git, pull requests, logs, approvals, configuration) lives in the `vk` command line instead — see [The `vk` CLI](#the-vk-cli) below. Coding agents started by Vibe Kanban have `vk` on their `PATH`.
 
 <Note>
-Many tools accept an optional `project_id` or `organization_id` parameter. When running inside a workspace linked to a remote project, these are inferred automatically from context and can be omitted. The exception is `list_projects`, which always requires an explicit `organization_id`.
+Many tools accept an optional `project_id` parameter. When running inside a workspace linked to a remote project, it is inferred from context and can be omitted. Tools that touch a workspace, session or execution accept an optional `host_id` (from `list_workspace_hosts`) to act on a paired host.
 </Note>
 
 ### Context
 
 | Tool | Purpose | Required Parameters | Optional Parameters | Returns |
 |------|---------|-------------------|-------------------|---------|
-| `get_context` | Get current workspace context (only available within an active workspace session) | None | None | Project, issue, and workspace metadata |
+| `get_context` | Get current workspace context (only available within an active workspace session) | None | None | Project, issue, workspace and host metadata, the MCP mode and this host's agent access toggles |
 
-### Organisation Operations
-
-| Tool | Purpose | Required Parameters | Optional Parameters | Returns |
-|------|---------|-------------------|-------------------|---------|
-| `list_organizations` | List all available organisations | None | None | List of organisations with IDs, names, and slugs |
-| `list_org_members` | List members of an organisation | None | `organization_id` | List of members with user IDs, roles, and profile info |
-
-### Project Operations
+### Workspaces
 
 | Tool | Purpose | Required Parameters | Optional Parameters | Returns |
 |------|---------|-------------------|-------------------|---------|
-| `list_projects` | List projects in an organisation | `organization_id` | None | List of projects with IDs and names |
+| `list_workspace_hosts` | List paired hosts | None | None | Hosts with IDs and names |
+| `list_workspaces` | List workspaces with their live state | None | `host_id`<br/>`archived`<br/>`pinned`<br/>`running`<br/>`branch`<br/>`name_search`<br/>`limit`<br/>`offset` | Workspaces with `status_note`, `is_running`, `latest_process_status`, `has_pending_approval`, `is_waiting_on_blockers`, PR state |
+| `start_workspace` | Create a workspace and start its first coding-agent session | `name`<br/>`executor`<br/>`repositories` | `host_id`<br/>`prompt`<br/>`variant`<br/>`issue_id` | Workspace ID |
+| `link_workspace_issue` | Link a workspace to a remote issue | `workspace_id`<br/>`issue_id` | `host_id` | Link confirmation |
 
-### Issue Management
+The `repositories` parameter is an array of objects with `repo_id` (UUID) and `branch`. When `issue_id` is provided, the workspace is linked to the issue; if `prompt` is omitted, the issue's title and description become the prompt.
+
+### Sessions
 
 | Tool | Purpose | Required Parameters | Optional Parameters | Returns |
 |------|---------|-------------------|-------------------|---------|
-| `list_issues` | List issues in a project | None | `project_id`<br/>`status`<br/>`priority`<br/>`search`<br/>`simple_id`<br/>`parent_issue_id`<br/>`assignee_user_id`<br/>`tag_id`<br/>`tag_name`<br/>`limit`<br/>`offset` | Paginated list of issues with PR info |
-| `create_issue` | Create a new issue | `title` | `project_id`<br/>`description`<br/>`priority`<br/>`parent_issue_id` | Created issue ID |
-| `get_issue` | Get detailed issue information | `issue_id` | None | Full issue details with tags, relationships, sub-issues, and PRs |
+| `run_session_prompt` | Run a prompt in a session: now, `queue` (after the current turn) or `steer` (interrupt) | `session_id`<br/>`prompt` | `host_id`<br/>`queue`<br/>`steer`<br/>`executor`<br/>`variant`<br/>`model_id`<br/>`reasoning_id`<br/>`permission_policy` | `started` with the execution, `queued` or `steered` with the queue status |
+| `get_execution` | Inspect execution status | `execution_id` | `host_id` | Execution details |
+| `search_sessions` | Search past session conversations by content | `query` (optional when `session_id` is given) | `host_id`<br/>`repo_id`<br/>`session_id`<br/>`entry_types`<br/>`limit` | Newest-first hits with context and a snippet |
+| `get_session_slice` | Read the conversation around a `search_sessions` hit | `session_id`<br/>`execution_id`<br/>`entry_index` | `host_id`<br/>`radius` | Entries around the hit with truncation flags and cursors |
+
+A bare `run_session_prompt` keeps the session's last-used model; pass overrides to change it. `search_sessions` matches substrings in indexed entries (prompts, assistant and thinking messages, tool-use lines, errors). Each slice has a ~64KB budget; continue from `after_cursor` / `before_cursor` when truncated.
+
+### Issues
+
+| Tool | Purpose | Required Parameters | Optional Parameters | Returns |
+|------|---------|-------------------|-------------------|---------|
+| `list_issues` | List issues in a project | None | `project_id`<br/>`status`<br/>`priority`<br/>`search`<br/>`simple_id`<br/>`parent_issue_id`<br/>`assignee_user_id`<br/>`tag_id`<br/>`tag_name`<br/>`sort_field`<br/>`sort_direction`<br/>`limit`<br/>`offset` | Paginated list of issues with PR info |
+| `create_issue` | Create a new issue | `title` | `project_id`<br/>`description`<br/>`priority`<br/>`parent_issue_id`<br/>`status` | Issue ID and simple ID |
+| `get_issue` | Get detailed issue information | `issue_id` | None | Full issue with tags, relationships, sub-issues and PRs |
 | `update_issue` | Update an existing issue | `issue_id` | `title`<br/>`description`<br/>`status`<br/>`priority`<br/>`parent_issue_id` | Updated issue details |
-| `delete_issue` | Delete an issue | `issue_id` | None | Deletion confirmation |
-| `list_issue_priorities` | List allowed priority values | None | None | List of priorities: urgent, high, medium, low |
 
 <Tip>
 For `update_issue`, the `parent_issue_id` field supports three states: omit it entirely to leave the parent unchanged, pass `null` to un-nest the issue from its parent, or pass a UUID to set a new parent.
 </Tip>
 
-### Issue Assignees
+### Events and Notifications
 
 | Tool | Purpose | Required Parameters | Optional Parameters | Returns |
 |------|---------|-------------------|-------------------|---------|
-| `list_issue_assignees` | List assignees for an issue | `issue_id` | None | List of assignees with user IDs |
-| `assign_issue` | Assign a user to an issue | `issue_id`<br/>`user_id` | None | Issue assignee ID |
-| `unassign_issue` | Remove an assignee from an issue | `issue_assignee_id` | None | Unassignment confirmation |
+| `list_events` | Read the event journal after a cursor | None | `host_id`<br/>`since`<br/>`kinds`<br/>`limit` | Events and the next cursor |
+| `wait_for_events` | Block until a matching event lands (or the timeout passes) | `since` | `host_id`<br/>`kinds`<br/>`timeout_seconds`<br/>`limit` | Events and the next cursor |
+| `notify_user` | Send the user a notification | `title`<br/>`message` | `workspace_id`<br/>`local_only`<br/>`host_id` | Confirmation |
 
-### Issue Tags
-
-| Tool | Purpose | Required Parameters | Optional Parameters | Returns |
-|------|---------|-------------------|-------------------|---------|
-| `list_tags` | List tags for a project | None | `project_id` | List of tags with IDs, names, and colours |
-| `list_issue_tags` | List tags attached to an issue | `issue_id` | None | List of issue-tag relations |
-| `add_issue_tag` | Attach a tag to an issue | `issue_id`<br/>`tag_id` | None | Issue-tag relation ID |
-| `remove_issue_tag` | Remove a tag from an issue | `issue_tag_id` | None | Removal confirmation |
-
-### Issue Relationships
-
-| Tool | Purpose | Required Parameters | Optional Parameters | Returns |
-|------|---------|-------------------|-------------------|---------|
-| `create_issue_relationship` | Create a relationship between two issues | `issue_id`<br/>`related_issue_id`<br/>`relationship_type` | None | Relationship ID |
-| `delete_issue_relationship` | Delete a relationship between issues | `relationship_id` | None | Deletion confirmation |
-
-Supported relationship types: `blocking`, `related`, `has_duplicate`.
-
-### Repository Management
-
-| Tool | Purpose | Required Parameters | Optional Parameters | Returns |
-|------|---------|-------------------|-------------------|---------|
-| `list_repos` | List all repositories | None | None | List of repositories with IDs and names |
-| `get_repo` | Get repository details including scripts | `repo_id` | None | Repository info with setup, cleanup, and dev server scripts |
-| `update_setup_script` | Update a repository's setup script | `repo_id`<br/>`script` | None | Update confirmation |
-| `update_cleanup_script` | Update a repository's cleanup script | `repo_id`<br/>`script` | None | Update confirmation |
-| `update_dev_server_script` | Update a repository's dev server script | `repo_id`<br/>`script` | None | Update confirmation |
-
-### Workspace Management
-
-| Tool | Purpose | Required Parameters | Optional Parameters | Returns |
-|------|---------|-------------------|-------------------|---------|
-| `list_workspaces` | List local workspaces | None | `archived`<br/>`pinned`<br/>`branch`<br/>`name_search`<br/>`limit`<br/>`offset` | Paginated list of workspaces |
-| `update_workspace` | Update a workspace's properties | None | `workspace_id`<br/>`archived`<br/>`pinned`<br/>`name` | Updated workspace details |
-| `delete_workspace` | Delete a local workspace | None | `workspace_id`<br/>`delete_remote`<br/>`delete_branches` | Deletion confirmation |
-| `link_workspace_issue` | Link a workspace to a remote issue | `workspace_id`<br/>`issue_id` | None | Link confirmation |
-
-### Workspace Sessions
-
-| Tool | Purpose | Required Parameters | Optional Parameters | Returns |
-|------|---------|-------------------|-------------------|---------|
-| `start_workspace` | Create a workspace and start its first coding-agent session | `name`<br/>`executor`<br/>`repositories` | `prompt`<br/>`variant`<br/>`issue_id` | Workspace ID |
-| `create_session` | Create a session in an existing workspace | None | `workspace_id`<br/>`executor` | Session summary |
-| `list_sessions` | List sessions for a workspace | None | `workspace_id` | Session list |
-| `run_session_prompt` | Run a coding-agent prompt inside an existing session | `session_id`<br/>`prompt` | None | Execution details |
-| `get_execution` | Inspect execution status and final message | `execution_id` | None | Execution details |
-| `search_sessions` | Search past session conversations by content across all workspaces | `query` (optional when `session_id` is given) | `repo_id`<br/>`session_id`<br/>`entry_types`<br/>`limit` | Newest-first hits with session/workspace context and a snippet |
-| `get_session_slice` | Read the conversation around a `search_sessions` hit | `session_id`<br/>`execution_id`<br/>`entry_index` | `radius` | Entries around the hit in session order, with truncation flags and continuation cursors |
-
-The `repositories` parameter is an array of objects with:
-- `repo_id`: The repository ID (UUID)
-- `branch`: The branch for this repository
-
-When `issue_id` is provided, the workspace is automatically linked to the remote issue. If `prompt` is omitted, the linked issue's title and description are used as the workspace prompt.
-
-`search_sessions` matches substrings in indexed conversation entries (user prompts, assistant and thinking messages, tool-use summary lines, error messages; system/status entries and tool result payloads are not indexed). `entry_types` filters by entry kind, for example `["user_message", "tool_use"]`. Once you know the session, pass `session_id` to search within it; with no `query` and `entry_types: ["user_message"]` that lists the session's turn prompts as a table of contents. Pass a hit's `session_id`, `execution_id` and `entry_index` to `get_session_slice` to read the surrounding conversation without loading the whole transcript. Each slice has a ~64KB content budget, except that an individual hit is returned whole when it alone exceeds the budget. When `truncated_after` or `truncated_before` is set, call again using the corresponding `after_cursor` or `before_cursor`; the cursor points to the first omitted entry, so each call advances.
+Event kinds: `process.started|completed|failed|killed`, `approval.pending|resolved`, `workspace.created|archived|unarchived|deleted|status_note`, `vibe.phase`, `queue.changed`, `resume.fired`, `cloud.notification`. `kinds` filters by prefix, so `["process."]` keeps every process event.
 
 ### Supported Executors
 
@@ -172,6 +124,30 @@ When using `start_workspace`, the following executors are supported (case-insens
 - `qwen-code` / `QWEN_CODE`
 - `copilot` / `COPILOT`
 - `droid` / `DROID`
+
+## The `vk` CLI
+
+`vk` ships next to the server binary and is on the `PATH` of every coding agent Vibe Kanban starts. It covers the whole local API through one HTTP client shared with the MCP server:
+
+```
+vk ws list --json                     # workspaces with status note and run state
+vk session send <session> -m "..."    # run a prompt; --queue / --steer when busy
+vk session log <execution> --limit 50 # normalized conversation, paged
+vk git push <ws>                      # git on a workspace branch
+vk pr create <ws> --title "..."
+vk issue update <id> --status Done
+vk events wait --since <cursor> --kinds process.,approval.pending
+vk notify send -t "Done" -m "Ready for review"
+vk --host <paired-host> ws list       # any command on a paired host
+```
+
+Groups: `ws`, `session`, `git`, `pr`, `issue`, `notify`, `config`, `repo`, `automation`, `events`, `hosts`, `skill`. Run `vk --help`, `vk <group> --help` and `vk <group> <command> --help`; every command accepts `--json`.
+
+Reads are always allowed. Writes are gated by the **Agent access** toggles in Settings → Automation (`write_issues`, `control_sessions`, `respond_approvals`, `git_write`, `git_merge`, `delete_workspaces`, `update_config`, `automation_write`); a denied call answers 403 with the toggle name and is logged on the host. Force pushes, resets to remote, credentials, relay pairing, terminals and deleting repositories or organisations are never available to agents.
+
+Codex runs its threads in the `workspace-write` sandbox; Vibe Kanban enables network access for it so `vk` can reach the server. If you run Codex outside Vibe Kanban, set `[sandbox_workspace_write] network_access = true` in `~/.codex/config.toml`.
+
+Install the companion skill for Claude Code and Codex with `vk skill install`.
 
 ## Using the MCP Server
 
@@ -235,7 +211,7 @@ This creates a new workspace, links it to the issue, generates a feature branch,
 6. Start a workspace session for the issue using Amp on the develop branch
 ```
 
-Each step uses the appropriate MCP tool (`list_organizations`, `list_projects`, `list_issues`, `create_issue`, `assign_issue`, `start_workspace`) to manage the complete workflow from planning to execution.
+Each step uses the appropriate MCP tool (`list_issues`, `create_issue`, `start_workspace`) or `vk` command (`vk issue org list`, `vk issue projects`, `vk issue assignees add`) to manage the complete workflow from planning to execution.
 
 ### Internal Coding Agents (Within Vibe Kanban)
 

@@ -137,6 +137,7 @@ fn revision<T: Serialize>(value: &T) -> String {
 #[axum::debug_handler]
 async fn get_user_system_info(
     State(deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
 ) -> ResponseJson<ApiResponse<UserSystemInfo>> {
     let config = deployment.config().read().await.clone();
     let login_status = match tokio::time::timeout(
@@ -176,6 +177,10 @@ async fn get_user_system_info(
     };
 
     let cached_profiles = ExecutorConfigs::get_cached();
+    let mut config = config;
+    if crate::middleware::is_agent_request(&headers) {
+        crate::middleware::mask_secrets(&mut config);
+    }
     let user_system_info = UserSystemInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         config_revision: revision(&config),
@@ -254,6 +259,23 @@ async fn update_config(
     // Get old config state before updating
     let mut config_guard = deployment.config().write().await;
     let old_config = config_guard.clone();
+    // Agents may only touch the whitelisted preference fields.
+    if crate::middleware::is_agent_request(&headers) {
+        let blocked = crate::middleware::blocked_config_fields(&changed_top_level_fields(
+            &old_config,
+            &new_config,
+        ));
+        if !blocked.is_empty() {
+            return (
+                StatusCode::FORBIDDEN,
+                ResponseJson(ApiResponse::<VersionedConfig>::error(&format!(
+                    "Agents may not change these settings: {}",
+                    blocked.join(", ")
+                ))),
+            )
+                .into_response();
+        }
+    }
     // Even the owner manages these through the central account.
     if deployment::account_host_request().is_some()
         && (old_config.relay_enabled != new_config.relay_enabled

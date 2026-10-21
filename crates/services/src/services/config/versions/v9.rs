@@ -118,6 +118,57 @@ impl Default for AgentMemorySyncConfig {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// What coding agents may do through the `vk` CLI and the MCP server. Reads
+/// are always allowed; each toggle gates one group of writes (see the server's
+/// `agent_access` middleware for the route mapping). Destructive groups
+/// default to off.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AgentAccessConfig {
+    /// Create/update issues, comments, tags, assignees and other cloud data.
+    #[serde(default = "default_true")]
+    pub write_issues: bool,
+    /// Start workspaces, send/queue prompts, stop runs, rename sessions.
+    #[serde(default = "default_true")]
+    pub control_sessions: bool,
+    /// Answer tool approvals and agent questions on the user's behalf.
+    #[serde(default)]
+    pub respond_approvals: bool,
+    /// Commit, push, pull, rebase and open pull requests on workspace branches.
+    #[serde(default = "default_true")]
+    pub git_write: bool,
+    /// Merge a workspace branch into its base branch.
+    #[serde(default)]
+    pub git_merge: bool,
+    /// Delete workspaces (and their branches / cloud rows).
+    #[serde(default)]
+    pub delete_workspaces: bool,
+    /// Change settings, executor profiles, MCP servers and repo scripts.
+    #[serde(default)]
+    pub update_config: bool,
+    /// Change automation routines, connectors and memory sync.
+    #[serde(default)]
+    pub automation_write: bool,
+}
+
+impl Default for AgentAccessConfig {
+    fn default() -> Self {
+        Self {
+            write_issues: true,
+            control_sessions: true,
+            respond_approvals: false,
+            git_write: true,
+            git_merge: false,
+            delete_workspaces: false,
+            update_config: false,
+            automation_write: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 pub struct Config {
     pub config_version: String,
@@ -208,6 +259,9 @@ pub struct Config {
     /// Daily agent-owned reconciliation of memory snapshots across this user's hosts.
     #[serde(default)]
     pub agent_memory_sync: AgentMemorySyncConfig,
+    /// Write permissions for coding agents using the `vk` CLI / MCP server.
+    #[serde(default)]
+    pub agent_access: AgentAccessConfig,
 }
 
 impl Config {
@@ -253,6 +307,7 @@ impl Config {
             terminal_open_in_new_pane: false,
             collapse_completed_turn_steps: default_collapse_completed_turn_steps(),
             agent_memory_sync: AgentMemorySyncConfig::default(),
+            agent_access: AgentAccessConfig::default(),
         }
     }
 
@@ -325,6 +380,7 @@ impl Default for Config {
             terminal_open_in_new_pane: false,
             collapse_completed_turn_steps: default_collapse_completed_turn_steps(),
             agent_memory_sync: AgentMemorySyncConfig::default(),
+            agent_access: AgentAccessConfig::default(),
         }
     }
 }
@@ -404,5 +460,8 @@ mod tests {
         );
         assert!(!config.quick_chat_open_in_new_pane);
         assert!(!config.terminal_open_in_new_pane);
+        assert_eq!(config.agent_access, super::AgentAccessConfig::default());
+        assert!(config.agent_access.write_issues);
+        assert!(!config.agent_access.delete_workspaces);
     }
 }

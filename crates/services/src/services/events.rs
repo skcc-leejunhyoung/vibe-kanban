@@ -3,7 +3,7 @@ use std::{str::FromStr, sync::Arc};
 use db::{
     DBService,
     models::{
-        execution_process::ExecutionProcess, scratch::Scratch, session::Session,
+        execution_process::ExecutionProcess, scratch::Scratch, session::Session, vibe_run::VibeRun,
         workspace::Workspace,
     },
 };
@@ -50,6 +50,19 @@ async fn wait_for_commit(pool: &SqlitePool) {
     }
 }
 
+/// Workspace id of a `/workspaces/{id}` removal patch built by the pre-update hook.
+fn removed_workspace_id(patch: &json_patch::Patch) -> Option<Uuid> {
+    patch.0.iter().find_map(|op| match op {
+        json_patch::PatchOperation::Remove(remove) => remove
+            .path
+            .as_str()
+            .strip_prefix("/workspaces/")?
+            .parse()
+            .ok(),
+        _ => None,
+    })
+}
+
 /// Re-reads one committed row change and publishes it to the event stream.
 async fn publish_row(
     table: HookTables,
@@ -62,7 +75,17 @@ async fn publish_row(
     let record_type: RecordTypes = match (table, operation.clone()) {
         (HookTables::Workspaces, SqliteOperation::Delete)
         | (HookTables::ExecutionProcesses, SqliteOperation::Delete)
-        | (HookTables::Scratch, SqliteOperation::Delete) => {
+        | (HookTables::Scratch, SqliteOperation::Delete)
+        | (HookTables::VibeRuns, SqliteOperation::Delete) => {
+            return;
+        }
+        // Vibe runs only feed the agent journal; the live UI has no patch for them.
+        (HookTables::VibeRuns, _) => {
+            match VibeRun::find_by_rowid(&db.pool, rowid).await {
+                Ok(Some(run)) => crate::services::agent_journal::observe_vibe_run(&run),
+                Ok(None) => {}
+                Err(e) => tracing::error!("Failed to fetch vibe_run: {:?}", e),
+            }
             return;
         }
         (HookTables::Workspaces, _) => match Workspace::find_by_rowid(&db.pool, rowid).await {
@@ -134,6 +157,10 @@ async fn publish_row(
             if workspace.ephemeral {
                 return;
             }
+            crate::services::agent_journal::observe_workspace(
+                workspace,
+                matches!(operation, SqliteOperation::Insert),
+            );
             // Emit workspace patch with status
             if let Ok(Some(workspace_with_status)) =
                 Workspace::find_by_id_with_status(&db.pool, workspace.id).await
@@ -150,6 +177,10 @@ async fn publish_row(
             return;
         }
         RecordTypes::ExecutionProcess(process) => {
+            crate::services::agent_journal::observe_process(
+                process,
+                matches!(operation, SqliteOperation::Insert),
+            );
             let patch = match operation {
                 SqliteOperation::Insert => execution_process_patch::add(process),
                 SqliteOperation::Update => execution_process_patch::replace(process),
@@ -309,7 +340,14 @@ impl EventService {
                                 )
                                 .await
                             }
-                            RowChange::Removed(patch) => msg_store.push_patch(patch),
+                            RowChange::Removed(patch) => {
+                                if let Some(workspace_id) = removed_workspace_id(&patch) {
+                                    crate::services::agent_journal::observe_workspace_deleted(
+                                        workspace_id,
+                                    );
+                                }
+                                msg_store.push_patch(patch)
+                            }
                         }
                     }
                 });

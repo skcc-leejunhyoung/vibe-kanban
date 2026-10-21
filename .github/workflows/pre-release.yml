@@ -326,7 +326,7 @@ jobs:
       - name: Build backend (Linux)
         if: runner.os == 'Linux' && !contains(matrix.target, 'windows')
         run: |
-          cargo zigbuild --release --target ${{ matrix.target }} -p server -p mcp -p review --bin server --bin vibe-kanban-mcp --bin review
+          cargo zigbuild --release --target ${{ matrix.target }} -p server -p mcp -p review --bin server --bin vibe-kanban-mcp --bin vk --bin review
         env:
           VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
           VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
@@ -339,7 +339,7 @@ jobs:
           elif [[ "${{ matrix.target }}" == "aarch64-apple-darwin" ]]; then
             export MACOSX_DEPLOYMENT_TARGET=11.0
           fi
-          cargo build --release --target ${{ matrix.target }} -p server -p mcp -p review --bin server --bin vibe-kanban-mcp --bin review
+          cargo build --release --target ${{ matrix.target }} -p server -p mcp -p review --bin server --bin vibe-kanban-mcp --bin vk --bin review
         env:
           VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
           VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
@@ -355,7 +355,7 @@ jobs:
             export DEFAULT_CC=clang-cl
             export CC_aarch64_pc_windows_msvc="${{ github.workspace }}/scripts/ring-cc-wrapper.sh"
           fi
-          cargo xwin build --cross-compiler clang-cl --release --target ${{ matrix.target }} -p server -p mcp -p review --bin server --bin vibe-kanban-mcp --bin review
+          cargo xwin build --cross-compiler clang-cl --release --target ${{ matrix.target }} -p server -p mcp -p review --bin server --bin vibe-kanban-mcp --bin vk --bin review
         env:
           VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
           VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
@@ -372,10 +372,12 @@ jobs:
             cp target/${{ matrix.target }}/release/server.exe dist/vibe-kanban-${{ matrix.name }}.exe
             cp target/${{ matrix.target }}/release/vibe-kanban-mcp.exe dist/vibe-kanban-mcp-${{ matrix.name }}.exe
             cp target/${{ matrix.target }}/release/review.exe dist/vibe-kanban-review-${{ matrix.name }}.exe
+            cp target/${{ matrix.target }}/release/vk.exe dist/vk-${{ matrix.name }}.exe
           else
             cp target/${{ matrix.target }}/release/server dist/vibe-kanban-${{ matrix.name }}
             cp target/${{ matrix.target }}/release/vibe-kanban-mcp dist/vibe-kanban-mcp-${{ matrix.name }}
             cp target/${{ matrix.target }}/release/review dist/vibe-kanban-review-${{ matrix.name }}
+            cp target/${{ matrix.target }}/release/vk dist/vk-${{ matrix.name }}
           fi
 
       # Code signing for macOS only
@@ -435,6 +437,21 @@ jobs:
         if: runner.os == 'macOS'
         run: zip vibe-kanban-review.zip vibe-kanban-review
 
+      - name: Sign vk binary (macOS)
+        if: runner.os == 'macOS'
+        uses: BloopAI/apple-code-sign-action@v1
+        with:
+          input_path: target/${{ matrix.target }}/release/vk
+          output_path: vk
+          p12_file: certificate.p12
+          p12_password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          sign: true
+          sign_args: "--code-signature-flags=runtime"
+
+      - name: Package vk binary (macOS)
+        if: runner.os == 'macOS'
+        run: zip vk.zip vk
+
       - name: Notarize signed binaries (macOS)
         if: runner.os == 'macOS'
         uses: BloopAI/apple-code-sign-action@main
@@ -444,6 +461,7 @@ jobs:
             vibe-kanban.zip
             vibe-kanban-mcp.zip
             vibe-kanban-review.zip
+            vk.zip
           sign: false
           notarize: true
           app_store_connect_api_key_json_file: app_store_key.json
@@ -455,6 +473,7 @@ jobs:
           cp vibe-kanban.zip dist/vibe-kanban-${{ matrix.name }}.zip
           cp vibe-kanban-mcp.zip dist/vibe-kanban-mcp-${{ matrix.name }}.zip
           cp vibe-kanban-review.zip dist/vibe-kanban-review-${{ matrix.name }}.zip
+          cp vk.zip dist/vk-${{ matrix.name }}.zip
 
       - name: Clean up certificates (macOS)
         if: runner.os == 'macOS'
@@ -489,31 +508,37 @@ jobs:
             binary: vibe-kanban
             mcp_binary: vibe-kanban-mcp
             review_binary: vibe-kanban-review
+            vk_binary: vk
           - target: x86_64-pc-windows-msvc
             name: windows-x64
             binary: vibe-kanban.exe
             mcp_binary: vibe-kanban-mcp.exe
             review_binary: vibe-kanban-review.exe
+            vk_binary: vk.exe
           - target: x86_64-apple-darwin
             name: macos-x64
             binary: vibe-kanban
             mcp_binary: vibe-kanban-mcp
             review_binary: vibe-kanban-review
+            vk_binary: vk
           - target: aarch64-apple-darwin
             name: macos-arm64
             binary: vibe-kanban
             mcp_binary: vibe-kanban-mcp
             review_binary: vibe-kanban-review
+            vk_binary: vk
           - target: aarch64-pc-windows-msvc
             name: windows-arm64
             binary: vibe-kanban.exe
             mcp_binary: vibe-kanban-mcp.exe
             review_binary: vibe-kanban-review.exe
+            vk_binary: vk.exe
           - target: aarch64-unknown-linux-musl
             name: linux-arm64
             binary: vibe-kanban
             mcp_binary: vibe-kanban-mcp
             review_binary: vibe-kanban-review
+            vk_binary: vk
     steps:
       - uses: actions/checkout@v6
         with:
@@ -543,14 +568,17 @@ jobs:
           mkdir vibe-kanban-${{ matrix.name }}
           mkdir vibe-kanban-mcp-${{ matrix.name }}
           mkdir vibe-kanban-review-${{ matrix.name }}
+          mkdir vk-${{ matrix.name }}
 
           cp dist/vibe-kanban-${{ matrix.name }}* vibe-kanban-${{ matrix.name }}/${{ matrix.binary }}
           cp dist/vibe-kanban-mcp-${{ matrix.name }}* vibe-kanban-mcp-${{ matrix.name }}/${{ matrix.mcp_binary }}
           cp dist/vibe-kanban-review-${{ matrix.name }}* vibe-kanban-review-${{ matrix.name }}/${{ matrix.review_binary }}
+          cp dist/vk-${{ matrix.name }}* vk-${{ matrix.name }}/${{ matrix.vk_binary }}
 
           zip -j npx-cli/dist/${{ matrix.name }}/vibe-kanban.zip vibe-kanban-${{ matrix.name }}/${{ matrix.binary }}
           zip -j npx-cli/dist/${{ matrix.name }}/vibe-kanban-mcp.zip vibe-kanban-mcp-${{ matrix.name }}/${{ matrix.mcp_binary }}
           zip -j npx-cli/dist/${{ matrix.name }}/vibe-kanban-review.zip vibe-kanban-review-${{ matrix.name }}/${{ matrix.review_binary }}
+          zip -j npx-cli/dist/${{ matrix.name }}/vk.zip vk-${{ matrix.name }}/${{ matrix.vk_binary }}
 
       - name: Create platform package (macOS)
         if: matrix.name == 'macos-arm64' || matrix.name == 'macos-x64'
@@ -560,6 +588,7 @@ jobs:
           cp dist/vibe-kanban-${{ matrix.name }}* npx-cli/dist/${{ matrix.name }}/vibe-kanban.zip
           cp dist/vibe-kanban-mcp-${{ matrix.name }}* npx-cli/dist/${{ matrix.name }}/vibe-kanban-mcp.zip
           cp dist/vibe-kanban-review-${{ matrix.name }}* npx-cli/dist/${{ matrix.name }}/vibe-kanban-review.zip
+          cp dist/vk-${{ matrix.name }}* npx-cli/dist/${{ matrix.name }}/vk.zip
 
       - name: Upload platform package artifact
         uses: actions/upload-artifact@v6
@@ -606,7 +635,7 @@ jobs:
             const crypto = require('crypto');
             const manifest = { version: '$TAG', platforms: {} };
             const platforms = ['linux-x64', 'linux-arm64', 'windows-x64', 'windows-arm64', 'macos-x64', 'macos-arm64'];
-            const binaries = ['vibe-kanban', 'vibe-kanban-mcp', 'vibe-kanban-review'];
+            const binaries = ['vibe-kanban', 'vibe-kanban-mcp', 'vibe-kanban-review', 'vk'];
 
             for (const platform of platforms) {
               manifest.platforms[platform] = {};

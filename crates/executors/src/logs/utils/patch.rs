@@ -137,6 +137,32 @@ pub fn extract_normalized_entry_from_patch(patch: &Patch) -> Option<(usize, Norm
         })
 }
 
+/// Coalesce a conversation patch sequence (adds, replaces, removes) into the
+/// final normalized entry per index. Diff and non-entry patches are ignored.
+pub fn fold_normalized_entries<'a>(
+    patches: impl IntoIterator<Item = &'a Patch>,
+) -> std::collections::BTreeMap<usize, NormalizedEntry> {
+    let mut by_index = std::collections::BTreeMap::new();
+    for patch in patches {
+        if let Some((index, entry)) = extract_normalized_entry_from_patch(patch) {
+            by_index.insert(index, entry);
+            continue;
+        }
+        for op in &patch.0 {
+            if let json_patch::PatchOperation::Remove(_) = op
+                && let Some(index) = op
+                    .path()
+                    .as_str()
+                    .strip_prefix("/entries/")
+                    .and_then(|s| s.parse::<usize>().ok())
+            {
+                by_index.remove(&index);
+            }
+        }
+    }
+    by_index
+}
+
 /// Inspect an existing operation value without serializing or cloning it.
 pub fn patch_value(op: &json_patch::PatchOperation) -> Option<&serde_json::Value> {
     match op {
