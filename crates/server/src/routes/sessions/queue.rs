@@ -51,7 +51,8 @@ async fn queue_message(
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
     let data = DraftFollowUpData {
         message: payload.message,
-        executor_config: payload.executor_config,
+        executor_config: inherit_executor_config(&deployment, &session, payload.executor_config)
+            .await?,
     };
 
     deployment
@@ -69,6 +70,19 @@ async fn queue_message(
     Ok(ResponseJson(ApiResponse::success(
         deployment.queued_message_service().get_status(session.id),
     )))
+}
+
+/// A bare config (identity only) runs with the session's last-used settings,
+/// the same rule `follow-up` applies.
+async fn inherit_executor_config(
+    deployment: &DeploymentImpl,
+    session: &Session,
+    requested: ExecutorConfig,
+) -> Result<ExecutorConfig, ApiError> {
+    let latest =
+        ExecutionProcess::latest_executor_config_for_session(&deployment.db().pool, session.id)
+            .await?;
+    Ok(super::resolve_followup_executor_config(requested, latest))
 }
 
 /// Start the session's front queued message if nothing else will (see
@@ -152,7 +166,8 @@ async fn steer_message(
     let pool = &deployment.db().pool;
     let data = DraftFollowUpData {
         message: payload.message,
-        executor_config: payload.executor_config,
+        executor_config: inherit_executor_config(&deployment, &session, payload.executor_config)
+            .await?,
     };
 
     let workspace = Workspace::find_by_id(pool, session.workspace_id)

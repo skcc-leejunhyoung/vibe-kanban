@@ -110,31 +110,39 @@ async fn get_normalized_logs(
 ) -> Result<ResponseJson<ApiResponse<NormalizedLogsPage>>, ApiError> {
     let id = execution_process.id;
     let container = deployment.container();
-    let patches: Vec<_> = if let Some(store) = container.get_msg_store_by_id(&id).await {
-        store.with_history(|messages| {
+    use executors::logs::utils::patch::fold_normalized_entries;
+    let entries = if let Some(store) = container.get_msg_store_by_id(&id).await {
+        // Clone under the read lock (short), deserialize after releasing it.
+        let patches: Vec<_> = store.with_history(|messages| {
             messages
                 .filter_map(|message| match message {
                     LogMsg::JsonPatch(patch) => Some(patch.clone()),
                     _ => None,
                 })
                 .collect()
-        })
+        });
+        fold_normalized_entries(&patches)
     } else if let Some(cached) = services::services::normalized_replay_cache::get(&id) {
-        cached.as_ref().clone()
+        fold_normalized_entries(cached.iter())
     } else {
         let mut collected = Vec::new();
         if let Some(mut stream) = container.stream_normalized_logs(&id).await {
             while let Some(message) = stream.next().await {
                 match message {
                     Ok(LogMsg::JsonPatch(patch)) => collected.push(patch),
-                    Ok(LogMsg::Finished) | Err(_) => break,
+                    Ok(LogMsg::Finished) => break,
                     Ok(_) => {}
+                    // A partial page would read as the whole conversation.
+                    Err(error) => {
+                        return Err(ApiError::BadGateway(format!(
+                            "Failed to read the conversation log: {error}"
+                        )));
+                    }
                 }
             }
         }
-        collected
+        fold_normalized_entries(&collected)
     };
-    let entries = executors::logs::utils::patch::fold_normalized_entries(&patches);
     let total = entries.len();
     let offset = query.offset.unwrap_or(0);
     let limit = query

@@ -177,13 +177,16 @@ async fn get_user_system_info(
     };
 
     let cached_profiles = ExecutorConfigs::get_cached();
+    // The revision covers the real config so an agent's masked round trip
+    // still matches it on `PUT /config`.
+    let config_revision = revision(&config);
     let mut config = config;
     if crate::middleware::is_agent_request(&headers) {
         crate::middleware::mask_secrets(&mut config);
     }
     let user_system_info = UserSystemInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        config_revision: revision(&config),
+        config_revision,
         config,
         machine_id: deployment.user_id().to_string(),
         login_status,
@@ -232,7 +235,7 @@ async fn update_config(
     headers: HeaderMap,
     Json(request): Json<CompatibleUpdateConfigRequest>,
 ) -> Response {
-    let (new_config, expected_revision) = match request {
+    let (mut new_config, expected_revision) = match request {
         CompatibleUpdateConfigRequest::Versioned(request) => {
             (request.config, Some(request.revision))
         }
@@ -260,11 +263,16 @@ async fn update_config(
     let mut config_guard = deployment.config().write().await;
     let old_config = config_guard.clone();
     // Agents may only touch the whitelisted preference fields.
-    if crate::middleware::is_agent_request(&headers) {
-        let blocked = crate::middleware::blocked_config_fields(&changed_top_level_fields(
-            &old_config,
-            &new_config,
-        ));
+    let is_agent = crate::middleware::is_agent_request(&headers);
+    if is_agent {
+        crate::middleware::unmask_secrets(&mut new_config, &old_config);
+        let changed = changed_top_level_fields(&old_config, &new_config);
+        let mut blocked = crate::middleware::blocked_config_fields(&changed);
+        if !old_config.agent_access.automation_write
+            && changed.iter().any(|field| field == "agent_memory_sync")
+        {
+            blocked.push("agent_memory_sync (agent_access.automation_write is off)".to_string());
+        }
         if !blocked.is_empty() {
             return (
                 StatusCode::FORBIDDEN,
@@ -311,12 +319,17 @@ async fn update_config(
             handle_config_events(&deployment, &old_config, &new_config).await;
 
             let new_revision = revision(&new_config);
+            let changed_fields = changed_top_level_fields(&old_config, &new_config);
+            let mut new_config = new_config;
+            if is_agent {
+                crate::middleware::mask_secrets(&mut new_config);
+            }
             tracing::info!(
                 source_host = headers.get("x-vibe-source-host").and_then(|v| v.to_str().ok()).unwrap_or("browser"),
                 target_host = %deployment.user_id(),
                 previous_revision = %current_revision,
                 revision = %new_revision,
-                changed_fields = ?changed_top_level_fields(&old_config, &new_config),
+                changed_fields = ?changed_fields,
                 "host configuration updated"
             );
             if expected_revision.is_some() {

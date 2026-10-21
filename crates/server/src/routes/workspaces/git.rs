@@ -1523,8 +1523,14 @@ pub async fn fetch_target_branch(
 pub async fn push_target_branch(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<PushTargetBranchRequest>,
 ) -> Result<ResponseJson<ApiResponse<TargetBranchRemoteStatus, PushError>>, ApiError> {
+    if request.force && crate::middleware::is_agent_request(&headers) {
+        return Err(ApiError::Forbidden(
+            "Force pushes are not available to agents".to_string(),
+        ));
+    }
     let (repo, workspace_repo) =
         load_workspace_repo(&deployment, workspace.id, request.repo_id).await?;
     let git = deployment.git();

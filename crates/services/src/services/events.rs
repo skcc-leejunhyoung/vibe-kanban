@@ -82,7 +82,10 @@ async fn publish_row(
         // Vibe runs only feed the agent journal; the live UI has no patch for them.
         (HookTables::VibeRuns, _) => {
             match VibeRun::find_by_rowid(&db.pool, rowid).await {
-                Ok(Some(run)) => crate::services::agent_journal::observe_vibe_run(&run),
+                Ok(Some(run)) => crate::services::agent_journal::observe_vibe_run(
+                    &run,
+                    matches!(operation, SqliteOperation::Insert),
+                ),
                 Ok(None) => {}
                 Err(e) => tracing::error!("Failed to fetch vibe_run: {:?}", e),
             }
@@ -177,8 +180,14 @@ async fn publish_row(
             return;
         }
         RecordTypes::ExecutionProcess(process) => {
+            let workspace_id = Session::find_by_id(&db.pool, process.session_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|session| session.workspace_id);
             crate::services::agent_journal::observe_process(
                 process,
+                workspace_id,
                 matches!(operation, SqliteOperation::Insert),
             );
             let patch = match operation {

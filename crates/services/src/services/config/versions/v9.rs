@@ -140,7 +140,7 @@ pub struct AgentAccessConfig {
     /// Commit, push, pull, rebase and open pull requests on workspace branches.
     #[serde(default = "default_true")]
     pub git_write: bool,
-    /// Merge a workspace branch into its base branch.
+    /// Merge a workspace branch into its base branch, or push the base branch.
     #[serde(default)]
     pub git_merge: bool,
     /// Delete workspaces (and their branches / cloud rows).

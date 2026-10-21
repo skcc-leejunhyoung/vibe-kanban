@@ -142,6 +142,7 @@ fn is_forbidden(method: &Method, path: &str) -> bool {
         "/relay-auth/account/",
         "/export",
         "/spec/",
+        "/open-remote-editor/",
     ];
     if ALWAYS.iter().any(|prefix| path.starts_with(prefix)) {
         return true;
@@ -172,17 +173,29 @@ fn is_forbidden(method: &Method, path: &str) -> bool {
 }
 
 /// Which toggle a write needs. `None` means the write is harmless (marking a
-/// workspace seen, uploading an attachment, sending a notification).
+/// workspace seen, uploading an attachment, sending a notification) or is a
+/// read sent as POST.
 fn toggle_for(method: &Method, path: &str) -> Option<Toggle> {
     let parts = segments(path);
     Some(match parts.as_slice() {
+        ["workspaces", "summaries"]
+        | ["repos", "batch"]
+        | ["remote", "issues", "search"]
+        | ["execution-processes", _, "subagent", "transcript"] => return None,
         ["approvals", ..] => Toggle::RespondApprovals,
         ["workspaces", _] if *method == Method::DELETE => Toggle::DeleteWorkspaces,
-        ["workspaces", _, "git", "merge"] => Toggle::GitMerge,
+        // Publishing the base branch is as consequential as merging into it.
+        ["workspaces", _, "git", "merge"]
+        | [
+            "workspaces",
+            _,
+            "git",
+            "target-branch",
+            "push" | "pull-and-push",
+        ]
+        | ["repos", _, "push"] => Toggle::GitMerge,
         ["workspaces", _, "git", ..] | ["workspaces", _, "pull-requests", ..] => Toggle::GitWrite,
-        ["repos", _, "fetch"] | ["repos", _, "push"] | ["repos", _, "branches", ..] => {
-            Toggle::GitWrite
-        }
+        ["repos", _, "fetch"] | ["repos", _, "branches", ..] => Toggle::GitWrite,
         ["repos", "pr-comments", ..] => Toggle::GitWrite,
         ["workspaces", _, "seen"] | ["notifications", ..] | ["attachments", ..] => return None,
         ["workspaces", _, "attachments", ..] | ["workspaces", _, "images", ..] => return None,
@@ -204,7 +217,23 @@ pub fn classify(method: &Method, path: &str) -> Decision {
     let Some(path) = path.strip_prefix("/api") else {
         return Decision::Allow;
     };
-    let path = strip_host_prefix(path);
+    // Judge the path the relay proxy forwards: decoded, every paired-host hop
+    // removed, and no dot segments a downstream URL join would resolve.
+    let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
+    if decoded
+        .split('/')
+        .any(|s| s == "." || s == ".." || s.contains('\\'))
+    {
+        return Decision::Forbidden;
+    }
+    let mut path: &str = &decoded;
+    loop {
+        let stripped = strip_host_prefix(path);
+        if stripped == path {
+            break;
+        }
+        path = stripped;
+    }
     if is_forbidden(method, path) {
         return Decision::Forbidden;
     }
@@ -221,14 +250,25 @@ pub fn is_agent_request(headers: &HeaderMap) -> bool {
     headers.contains_key(AGENT_HEADER)
 }
 
-/// Secrets an agent must not read back from `/api/info`.
+const SECRET_MASK: &str = "***";
+
+/// Secrets an agent must not read back from `/api/info` or `PUT /api/config`.
 pub fn mask_secrets(config: &mut Config) {
-    const MASK: &str = "***";
     if config.github.pat.is_some() {
-        config.github.pat = Some(MASK.to_string());
+        config.github.pat = Some(SECRET_MASK.to_string());
     }
     if config.github.oauth_token.is_some() {
-        config.github.oauth_token = Some(MASK.to_string());
+        config.github.oauth_token = Some(SECRET_MASK.to_string());
+    }
+}
+
+/// Put back the secrets an agent's masked config round trip carries as `***`.
+pub fn unmask_secrets(config: &mut Config, current: &Config) {
+    if config.github.pat.as_deref() == Some(SECRET_MASK) {
+        config.github.pat = current.github.pat.clone();
+    }
+    if config.github.oauth_token.as_deref() == Some(SECRET_MASK) {
+        config.github.oauth_token = current.github.oauth_token.clone();
     }
 }
 
@@ -249,8 +289,7 @@ pub async fn guard_agent_access(
     let Some(agent) = request
         .headers()
         .get(AGENT_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned)
+        .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
     else {
         return Ok(next.run(request).await);
     };
@@ -364,6 +403,25 @@ mod tests {
             gated(Method::POST, "/api/notifications/send"),
             Decision::Allow
         );
+        for path in [
+            "/api/workspaces/summaries",
+            "/api/repos/batch",
+            "/api/remote/issues/search",
+            "/api/execution-processes/abc/subagent/transcript",
+        ] {
+            assert_eq!(gated(Method::POST, path), Decision::Allow, "{path}");
+        }
+        for path in [
+            "/api/workspaces/abc/git/target-branch/push",
+            "/api/workspaces/abc/git/target-branch/pull-and-push",
+            "/api/repos/abc/push",
+        ] {
+            assert_eq!(
+                gated(Method::POST, path),
+                Decision::Gated(Toggle::GitMerge),
+                "{path}"
+            );
+        }
     }
 
     #[test]
@@ -377,6 +435,16 @@ mod tests {
             gated(Method::GET, &format!("/api/host/{host}/workspaces")),
             Decision::Allow
         );
+        // Encoded, nested and dot-segment spellings reach the same rules.
+        let other = Uuid::new_v4();
+        for path in [
+            format!("/api/host/{host}/%74erminal/ws"),
+            format!("/api/host/{host}/host/{other}/terminal/ws"),
+            format!("/api/host/{host}/workspaces/../terminal/ws"),
+            format!("/api/host/{host}/workspaces/%2e%2e/terminal/ws"),
+        ] {
+            assert_eq!(gated(Method::GET, &path), Decision::Forbidden, "{path}");
+        }
     }
 
     #[test]
@@ -392,6 +460,7 @@ mod tests {
             (Method::POST, "/api/workspaces/abc/integration/editor/open"),
             (Method::GET, "/api/terminal/ws"),
             (Method::GET, "/api/preview/3000/index.html"),
+            (Method::POST, "/api/open-remote-editor/workspace"),
         ] {
             assert_eq!(gated(method, path), Decision::Forbidden, "{path}");
         }
@@ -408,6 +477,18 @@ mod tests {
     #[test]
     fn non_api_paths_are_ignored() {
         assert_eq!(gated(Method::POST, "/some/page"), Decision::Allow);
+    }
+
+    #[test]
+    fn masked_secrets_round_trip_to_the_stored_values() {
+        let mut stored = Config::default();
+        stored.github.pat = Some("ghp_secret".to_string());
+        let mut sent = stored.clone();
+        mask_secrets(&mut sent);
+        assert_eq!(sent.github.pat.as_deref(), Some(SECRET_MASK));
+        unmask_secrets(&mut sent, &stored);
+        assert_eq!(sent.github.pat.as_deref(), Some("ghp_secret"));
+        assert_eq!(sent.github.oauth_token, None);
     }
 
     #[test]

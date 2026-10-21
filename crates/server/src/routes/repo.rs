@@ -306,14 +306,20 @@ pub async fn fetch_repo_remote(
 pub async fn push_repo_branch(
     State(deployment): State<DeploymentImpl>,
     Path(repo_id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
     ResponseJson(payload): ResponseJson<Option<PushRepoBranchRequest>>,
 ) -> Result<ResponseJson<ApiResponse<RepoRemoteStatus>>, ApiError> {
+    let force = payload.unwrap_or_default().force;
+    if force && crate::middleware::is_agent_request(&headers) {
+        return Err(ApiError::Forbidden(
+            "Force pushes are not available to agents".to_string(),
+        ));
+    }
     let repo = deployment
         .repo()
         .get_by_id(&deployment.db().pool, repo_id)
         .await?;
 
-    let force = payload.unwrap_or_default().force;
     let git = deployment.git();
     let current_branch = git.get_current_branch(&repo.path)?;
 

@@ -141,12 +141,15 @@ async fn main() -> Result<(), VibeKanbanError> {
     }
     // Spawned agents get this as VIBE_BACKEND_URL so `vk` and the MCP server
     // talk to the server that started them, whatever the port file says.
-    let agent_host = if host == "0.0.0.0" || host == "::" {
-        "127.0.0.1"
-    } else {
-        host.as_str()
-    };
-    utils::agent_cli::set_backend_url(format!("http://{agent_host}:{actual_main_port}"));
+    let mut agent_addr = main_listener.local_addr()?;
+    if agent_addr.ip().is_unspecified() {
+        agent_addr.set_ip(if agent_addr.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
+    utils::agent_cli::set_backend_url(format!("http://{agent_addr}"));
 
     tracing::info!(
         "Main server on :{}, Preview proxy on :{}",

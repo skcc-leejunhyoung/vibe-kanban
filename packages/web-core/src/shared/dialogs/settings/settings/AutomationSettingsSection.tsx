@@ -429,7 +429,8 @@ const AGENT_ACCESS_TOGGLES: {
   {
     key: 'git_merge',
     label: 'Git merge',
-    helper: 'Merge a workspace branch into its base branch.',
+    helper:
+      'Merge a workspace branch into its base branch, or push the base branch.',
   },
   {
     key: 'respond_approvals',

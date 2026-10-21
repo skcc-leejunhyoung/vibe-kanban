@@ -139,8 +139,8 @@ async function extractAndRun(
       console.error(""); // newline after progress
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`\nDownload failed: ${msg}`);
-      process.exit(1);
+      console.error("");
+      throw new Error(`Download failed: ${msg}`);
     }
   }
 
@@ -152,20 +152,17 @@ async function extractAndRun(
       zip.extractAllTo(versionCacheDir, true);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("Extraction failed:", msg);
       try {
         fs.unlinkSync(zipPath);
       } catch {}
-      process.exit(1);
+      throw new Error(`Extraction failed: ${msg}`);
     }
   }
 
   if (!fs.existsSync(binPath)) {
-    console.error(`Extracted binary not found at: ${binPath}`);
-    console.error(
-      "This usually indicates a corrupt download. Please try again.",
+    throw new Error(
+      `Extracted binary not found at: ${binPath}. This usually indicates a corrupt download. Please try again.`,
     );
-    process.exit(1);
   }
 
   // Clean up old cached versions only after current version is fully ready
@@ -232,7 +229,7 @@ async function runMcp(args: string[]): Promise<void> {
 async function runVk(args: string[]): Promise<void> {
   await extractAndRun("vk", (bin) => {
     const proc = spawn(bin, args, { stdio: "inherit" });
-    proc.on("exit", (c) => process.exit(c || 0));
+    proc.on("exit", (c) => process.exit(c ?? 1));
     proc.on("error", (e) => {
       console.error("vk error:", e.message);
       process.exit(1);
@@ -240,8 +237,8 @@ async function runVk(args: string[]): Promise<void> {
   });
 }
 
-/// The server puts the directory of its own binary on every agent's PATH so
-/// `vk` is found there; extract it before the server starts.
+/// The server links the `vk` next to its own binary onto every agent's PATH;
+/// extract it before the server starts.
 async function ensureVkExtracted(): Promise<void> {
   try {
     await extractAndRun("vk", () => {});
@@ -362,7 +359,13 @@ async function main(): Promise<void> {
 
   cli.help();
   cli.version(CLI_VERSION);
-  cli.parse(normalizeArgv(process.argv));
+  const argv = normalizeArgv(process.argv);
+  // cac would swallow vk's own flags (--json, --host, -m); pass them through.
+  if (argv[2] === "vk") {
+    runOrExit(runVk(argv.slice(3)));
+    return;
+  }
+  cli.parse(argv);
 }
 
 main().catch((err: unknown) => {

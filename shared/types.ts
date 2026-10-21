@@ -1196,7 +1196,7 @@ respond_approvals: boolean,
  */
 git_write: boolean,
 /**
- * Merge a workspace branch into its base branch.
+ * Merge a workspace branch into its base branch, or push the base branch.
  */
 git_merge: boolean,
 /**
@@ -1230,7 +1230,8 @@ host_id?: string | null, data: JsonValue, };
 
 export type JournalPage = { events: Array<JournalEvent>,
 /**
- * Latest cursor the journal has seen; the next `since` to pass.
+ * The next `since` to pass: the last returned event's cursor when the
+ * page hit `limit`, otherwise the latest cursor the journal has seen.
  */
 cursor: bigint,
 /**

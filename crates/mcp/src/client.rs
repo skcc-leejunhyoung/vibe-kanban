@@ -22,7 +22,7 @@ use api_types::{
 };
 use chrono::{DateTime, Utc};
 use db::models::{
-    execution_process::ExecutionProcess,
+    execution_process::{ExecutionProcess, ExecutionProcessRunReason},
     requests::{
         ContainerQuery, CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse,
         LinkedIssueInfo, WorkingBranchInput, WorkspaceRepoInput,
@@ -31,7 +31,7 @@ use db::models::{
     tag::Tag,
     workspace::{Workspace, WorkspaceContext},
 };
-use executors::{executors::BaseCodingAgent, profile::ExecutorConfig};
+use executors::{actions::ExecutorActionType, executors::BaseCodingAgent, profile::ExecutorConfig};
 use regex::Regex;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -186,7 +186,9 @@ impl VkClient {
         format!("{}/api/{}", self.base_url, path.trim_start_matches('/'))
     }
 
-    fn request(&self, method: reqwest::Method, url: String) -> reqwest::RequestBuilder {
+    /// A request carrying the agent and audit headers, for calls the typed
+    /// helpers don't cover (multipart uploads, SSE, binary downloads).
+    pub fn request(&self, method: reqwest::Method, url: String) -> reqwest::RequestBuilder {
         let mut request = self
             .http
             .request(method, url)
@@ -274,8 +276,10 @@ impl VkClient {
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
-        let value: Value =
-            serde_json::from_str(&text).map_err(|error| VkError::Parse(error.to_string()))?;
+        // Raw bodies (artifact content, plain text) come back as a string.
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            return Ok(Value::String(text));
+        };
         match value.get("success").and_then(Value::as_bool) {
             Some(true) => Ok(value.get("data").cloned().unwrap_or(Value::Null)),
             Some(false) => Err(VkError::Api {
@@ -1015,26 +1019,63 @@ impl VkClient {
         self.get(&format!("/sessions/{session_id}")).await
     }
 
+    /// Config of the session's latest coding turn: what a bare follow-up
+    /// inherits on the server.
+    async fn latest_executor_config(&self, session_id: Uuid) -> Option<ExecutorConfig> {
+        let processes: Vec<ExecutionProcess> = self
+            .get_with(
+                "/execution-processes",
+                &[("session_id", session_id.to_string())],
+            )
+            .await
+            .ok()?;
+        processes
+            .iter()
+            .rev()
+            .filter(|p| !p.dropped && p.run_reason == ExecutionProcessRunReason::CodingAgent)
+            .find_map(|p| match &p.executor_action().ok()?.typ {
+                ExecutorActionType::CodingAgentInitialRequest(r) => Some(r.executor_config.clone()),
+                ExecutorActionType::CodingAgentFollowUpRequest(r) => {
+                    Some(r.executor_config.clone())
+                }
+                ExecutorActionType::ReviewRequest(r) => Some(r.executor_config.clone()),
+                _ => None,
+            })
+    }
+
     /// Executor config for a follow-up. A bare config (identity only) makes
-    /// the server inherit the session's last-used model and settings.
-    fn executor_config_json(
+    /// the server inherit the session's last-used model and settings; given
+    /// overrides land on top of those settings, so `--reasoning` alone keeps
+    /// the model and variant.
+    async fn executor_config_json(
         &self,
         session: &Session,
         options: &SendPromptOptions,
     ) -> Result<Value, VkError> {
-        let mut config =
-            json!({ "executor": executor_name(options.executor.as_deref(), session)? });
-        if options.has_overrides() {
-            config["variant"] = json!(options.variant);
-            config["model_id"] = json!(options.model_id);
-            config["agent_id"] = json!(options.agent_id);
-            config["reasoning_id"] = json!(options.reasoning_id);
-            config["permission_policy"] = json!(
-                options
-                    .permission_policy
-                    .as_deref()
-                    .map(|p| p.trim().replace('-', "_").to_ascii_uppercase())
-            );
+        let executor = executor_name(options.executor.as_deref(), session)?;
+        if !options.has_overrides() {
+            return Ok(json!({ "executor": executor }));
+        }
+        let mut config = self
+            .latest_executor_config(session.id)
+            .await
+            .and_then(|latest| serde_json::to_value(latest).ok())
+            .filter(|latest| latest["executor"] == json!(executor))
+            .unwrap_or_else(|| json!({ "executor": executor }));
+        let permission_policy = options
+            .permission_policy
+            .as_deref()
+            .map(|p| p.trim().replace('-', "_").to_ascii_uppercase());
+        for (key, value) in [
+            ("variant", &options.variant),
+            ("model_id", &options.model_id),
+            ("agent_id", &options.agent_id),
+            ("reasoning_id", &options.reasoning_id),
+            ("permission_policy", &permission_policy),
+        ] {
+            if let Some(value) = value {
+                config[key] = json!(value);
+            }
         }
         Ok(config)
     }
@@ -1051,7 +1092,7 @@ impl VkClient {
             return Err(VkError::message("prompt must not be empty"));
         }
         let session = self.session(session_id).await?;
-        let executor_config = self.executor_config_json(&session, options)?;
+        let executor_config = self.executor_config_json(&session, options).await?;
         if options.steer {
             let queue: Value = self
                 .post(
@@ -1170,8 +1211,9 @@ impl VkClient {
         Ok(page)
     }
 
-    /// Long-poll for the next matching events (server cap 60s per call; this
-    /// loops until `timeout` elapses).
+    /// Long-poll for the next matching events (server cap 60s per call, 20s
+    /// through the relay whose requests time out at 30s; this loops until
+    /// `timeout` elapses).
     pub async fn events_wait(
         &self,
         since: u64,
@@ -1180,10 +1222,11 @@ impl VkClient {
         timeout: Duration,
     ) -> Result<JournalPage, VkError> {
         let deadline = tokio::time::Instant::now() + timeout;
+        let max_slice = Duration::from_secs(if self.host_id.is_some() { 20 } else { 60 });
         let mut since = since;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let slice = remaining.min(Duration::from_secs(60)).as_secs().max(1);
+            let slice = remaining.min(max_slice).as_secs().max(1);
             let mut query = Self::journal_query(since, kinds, limit);
             query.push(("timeout", slice.to_string()));
             let mut page: JournalPage = self
@@ -1315,11 +1358,14 @@ impl VkClient {
 
     /// The host's `agent_access` toggles, if the server exposes them.
     pub async fn agent_access(&self) -> Option<Value> {
-        self.system_info()
+        let info: Value = self
+            .send(
+                self.request(reqwest::Method::GET, self.api_url("/info"))
+                    .timeout(Duration::from_secs(3)),
+            )
             .await
-            .ok()?
-            .pointer("/config/agent_access")
-            .cloned()
+            .ok()?;
+        info.pointer("/config/agent_access").cloned()
     }
 }
 
@@ -1575,8 +1621,16 @@ impl VkClient {
     ) -> Result<MultiHostJournalPage, VkError> {
         let mut cursors = parse_multi_cursor(since)?;
         let mut targets: Vec<(String, Option<Uuid>)> = vec![("self".to_string(), None)];
-        for host in self.host(None).list_hosts().await? {
-            targets.push((host.host_id.to_string(), Some(host.host_id)));
+        match self.host(None).list_hosts().await {
+            Ok(hosts) => {
+                for host in hosts {
+                    targets.push((host.host_id.to_string(), Some(host.host_id)));
+                }
+            }
+            // No relay (or it is down): this machine alone still works.
+            Err(error) => {
+                tracing::warn!(%error, "paired hosts unavailable; watching this host only")
+            }
         }
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         loop {
@@ -1610,7 +1664,18 @@ impl VkClient {
                 }
             }
             merged.sort_by(|a, b| a.at.cmp(&b.at));
-            merged.truncate(limit.max(1));
+            // Events cut by `limit` must come back: rewind their hosts' cursors.
+            if merged.len() > limit.max(1) {
+                for dropped in merged.split_off(limit.max(1)) {
+                    let label = dropped
+                        .host_id
+                        .map_or_else(|| "self".to_string(), |id| id.to_string());
+                    let rewind = dropped.cursor - 1;
+                    next.entry(label)
+                        .and_modify(|cursor| *cursor = (*cursor).min(rewind))
+                        .or_insert(rewind);
+                }
+            }
             let cursor = next
                 .iter()
                 .map(|(host, cursor)| format!("{host}={cursor}"))

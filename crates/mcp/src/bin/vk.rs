@@ -525,7 +525,7 @@ const COMMANDS: &[Cmd] = &[
     ),
     cmd(
         &["ws", "dev-servers"],
-        "Dev server processes of the workspace",
+        "Dev server processes of the workspace (stop one with `vk session stop <id>`)",
         "GET",
         "/workspaces/{ws}/execution/dev-servers",
         &[WS],
@@ -538,8 +538,8 @@ const COMMANDS: &[Cmd] = &[
         &[WS, BODY],
     ),
     cmd(
-        &["ws", "dev-server", "stop"],
-        "Stop running processes of the workspace (or one session's)",
+        &["ws", "stop"],
+        "Stop the workspace's running agent turns and scripts and clear their queues (dev servers keep running)",
         "POST",
         "/workspaces/{ws}/execution/stop",
         &[
@@ -599,7 +599,16 @@ const COMMANDS: &[Cmd] = &[
         &["ws", "attachments", "upload"],
         "Upload a file as a workspace attachment",
         "ws.attachments.upload",
-        &[WS, pos("file", "Local file path", Where::Local)],
+        &[
+            WS,
+            pos("file", "Local file path", Where::Local),
+            opt(
+                "session",
+                "Session whose turns will see it (default: '.', the session this shell runs in)",
+                Where::Local,
+                Kind::Str,
+            ),
+        ],
     ),
     cmd(
         &["ws", "attachments", "associate"],
@@ -749,9 +758,9 @@ const COMMANDS: &[Cmd] = &[
             ),
             short(req("message", "New text", Where::Body, Kind::Str), 'm'),
             keyed(
-                opt(
+                req(
                     "executor-config",
-                    "Executor config JSON",
+                    "Executor config JSON (the message's current one is in `vk session queue list <session> --json`)",
                     Where::Body,
                     Kind::Json,
                 ),
@@ -896,7 +905,7 @@ const COMMANDS: &[Cmd] = &[
         ],
     ),
     cmd(
-        &["session", "vibe-review"],
+        &["session", "vibe-review", "start"],
         "Start the automated vibe review for the session",
         "POST",
         "/sessions/{session}/vibe-review",
@@ -1991,10 +2000,10 @@ const COMMANDS: &[Cmd] = &[
             req("name", "Name", Where::Body, Kind::Str),
             req("color", "Color", Where::Body, Kind::Str),
             keyed(
-                opt("sort-order", "Sort order", Where::Body, Kind::Int),
+                req("sort-order", "Sort order", Where::Body, Kind::Int),
                 "sort_order",
             ),
-            opt("hidden", "Hidden status", Where::Body, Kind::Flag),
+            req("hidden", "Hide the status column", Where::Body, Kind::Bool),
         ],
     )),
     local(cmd(
@@ -2199,11 +2208,14 @@ const COMMANDS: &[Cmd] = &[
         &["config", "set"],
         "Set config fields: key=value ... (JSON values; gated by agent_access.update_config)",
         "config.set",
-        &[pos(
-            "pairs",
-            "key=value (dotted keys; value parsed as JSON, else string)",
-            Where::Local,
-        )],
+        &[ArgSpec {
+            kind: Kind::Pairs,
+            ..pos(
+                "pairs",
+                "key=value ... (dotted keys; value parsed as JSON, else string)",
+                Where::Local,
+            )
+        }],
     ),
     cmd(
         &["config", "profiles", "get"],
@@ -2296,13 +2308,6 @@ const COMMANDS: &[Cmd] = &[
         "/relay-auth/client/self-host",
         &[],
     )),
-    cmd(
-        &["config", "host", "container"],
-        "Container/worktree base info",
-        "GET",
-        "/containers/info",
-        &[],
-    ),
     cmd(
         &["config", "host", "appearance"],
         "Host primary color",
@@ -2406,7 +2411,7 @@ const COMMANDS: &[Cmd] = &[
                     Where::Body,
                     Kind::Str,
                 ),
-                "agent_working_dir",
+                "default_working_dir",
             ),
             keyed(
                 opt("setup-script", "Setup script", Where::Body, Kind::Str),
@@ -2461,7 +2466,7 @@ const COMMANDS: &[Cmd] = &[
             short(req("q", "Query", Where::Query, Kind::Str), 'q'),
             opt(
                 "mode",
-                "task_form|settings (settings includes ignored files)",
+                "taskform|settings (settings includes ignored files)",
                 Where::Query,
                 Kind::Str,
             ),
@@ -2546,20 +2551,13 @@ const COMMANDS: &[Cmd] = &[
             short(req("q", "Query", Where::Local, Kind::Str), 'q'),
             opt(
                 "mode",
-                "task_form|settings (settings includes ignored files)",
+                "taskform|settings (settings includes ignored files)",
                 Where::Local,
                 Kind::Str,
             ),
         ],
     ),
     // ---- automation ---------------------------------------------------------
-    cmd(
-        &["automation", "routines", "list"],
-        "Automation routines",
-        "GET",
-        "/automation/routines",
-        &[],
-    ),
     cmd(
         &["automation", "routines", "upsert"],
         "Create or update a routine",
@@ -2582,13 +2580,6 @@ const COMMANDS: &[Cmd] = &[
         &[pos("id", "Routine id", Where::Path)],
     ),
     cmd(
-        &["automation", "connectors", "list"],
-        "Connectors",
-        "GET",
-        "/automation/connectors",
-        &[],
-    ),
-    cmd(
         &["automation", "connectors", "enable"],
         "Enable/disable a connector",
         "PATCH",
@@ -2600,7 +2591,7 @@ const COMMANDS: &[Cmd] = &[
     ),
     cmd(
         &["automation", "status"],
-        "Worker state",
+        "Worker state: routines, connectors, recent runs",
         "GET",
         "/automation/state",
         &[],
@@ -2745,7 +2736,7 @@ const COMMANDS: &[Cmd] = &[
         &["hosts", "info"],
         "A host's version, machine id and environment",
         "hosts.info",
-        &[pos("host", "Host id or name", Where::Local)],
+        &[pos("target", "Host id or name", Where::Local)],
     ),
     // ---- skill --------------------------------------------------------------
     special(
@@ -2789,6 +2780,9 @@ fn clap_arg(spec: &ArgSpec) -> Arg {
     let mut arg = Arg::new(spec.name).help(spec.help);
     if spec.positional {
         arg = arg.required(spec.required);
+        if spec.kind == Kind::Pairs {
+            arg = arg.num_args(1..);
+        }
     } else {
         arg = arg.long(spec.name).required(spec.required);
         if let Some(c) = spec.short {
@@ -2824,7 +2818,7 @@ fn leaf(spec: &Cmd) -> Command {
 
 /// Help lines for the intermediate nodes of the tree (`vk ws attachments ...`).
 const SUBGROUPS: &[(&str, &str)] = &[
-    ("dev-server", "Start or stop dev server processes"),
+    ("dev-server", "Start dev server processes"),
     (
         "attachments",
         "Workspace attachments: list, metadata, upload, associate, import",
@@ -3058,10 +3052,21 @@ impl Ctx {
                 return Ok(id);
             }
             let cwd = std::env::current_dir().map_err(|e| VkError::message(e.to_string()))?;
+            let canonical = utils::path::normalize_macos_private_alias(
+                cwd.canonicalize().unwrap_or_else(|_| cwd.clone()),
+            );
+            // The server also matches a directory *above* a worktree; only a
+            // shell inside the workspace may stand for it (`vk ws delete .`
+            // from $HOME must not pick some worktree below).
             return self
                 .client
                 .workspace_context(&cwd)
                 .await?
+                .filter(|ctx| {
+                    ctx.workspace.container_ref.as_deref().is_some_and(|root| {
+                        canonical.starts_with(utils::path::normalize_macos_private_alias(root))
+                    })
+                })
                 .map(|ctx| ctx.workspace.id)
                 .ok_or_else(|| {
                     VkError::message(
@@ -3074,9 +3079,24 @@ impl Ctx {
         }
         let items = self
             .client
-            .list_workspaces(&WorkspaceFilter::default())
+            .list_workspaces(&WorkspaceFilter {
+                archived: Some(false),
+                ..Default::default()
+            })
             .await?;
         let lowered = raw.to_ascii_lowercase();
+        let exact: Vec<_> = items
+            .iter()
+            .filter(|w| {
+                w.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(raw))
+                    || w.branch.eq_ignore_ascii_case(raw)
+            })
+            .collect();
+        if let [only] = exact.as_slice() {
+            return Ok(only.id);
+        }
         let mut matches = items.iter().filter(|w| {
             w.name
                 .as_deref()
@@ -3089,7 +3109,9 @@ impl Ctx {
             (Some(_), Some(_)) => Err(VkError::message(format!(
                 "'{raw}' matches several workspaces; use the id (vk ws list)"
             ))),
-            (None, _) => Err(VkError::message(format!("No workspace matches '{raw}'"))),
+            (None, _) => Err(VkError::message(format!(
+                "No active workspace matches '{raw}' (archived ones need the id)"
+            ))),
         }
     }
 
@@ -3375,8 +3397,8 @@ impl Ctx {
                     None => None,
                 };
                 let working_branch = match arg_str(m, "working-branch") {
-                    Some(branch) => json!({ "type": "existing", "branch": branch }),
-                    None => json!({ "type": "auto" }),
+                    Some(branch) => json!({ "mode": "existing", "name": branch }),
+                    None => json!({ "mode": "auto" }),
                 };
                 let payload = json!({
                     "name": arg_str(m, "name"),
@@ -3539,14 +3561,18 @@ impl Ctx {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "upload".to_string());
+                let session =
+                    Self::session_id(&arg_str(m, "session").unwrap_or_else(|| ".".to_string()))?;
                 let part = reqwest::multipart::Part::bytes(bytes).file_name(name);
-                let form = reqwest::multipart::Form::new().part("file", part);
-                let request = reqwest::Client::new()
-                    .post(
+                let form = reqwest::multipart::Form::new().part("image", part);
+                let request = self
+                    .client
+                    .request(
+                        reqwest::Method::POST,
                         self.client
                             .api_url(&format!("/workspaces/{ws}/attachments/upload")),
                     )
-                    .header(mcp::client::AGENT_HEADER, format!("vk-cli/{VERSION}"))
+                    .query(&[("session_id", session.to_string())])
                     .multipart(form)
                     .timeout(self.timeout);
                 self.client.send_value(request).await
@@ -3613,10 +3639,21 @@ impl Ctx {
                     let events = self
                         .read_sse(&url, |event, _| event == "finished", Duration::from_secs(5))
                         .await?;
+                    // Each `json_patch` event adds `{type: STDOUT|STDERR, content}` entries.
                     let lines: Vec<Value> = events
                         .into_iter()
-                        .filter(|(event, _)| event == "stdout" || event == "stderr")
-                        .map(|(event, data)| json!({ "stream": event, "text": data }))
+                        .filter(|(event, _)| event == "json_patch")
+                        .filter_map(|(_, data)| serde_json::from_str::<Vec<Value>>(&data).ok())
+                        .flatten()
+                        .filter_map(|op| {
+                            let value = op.get("value")?;
+                            let stream = match value.get("type")?.as_str()? {
+                                "STDOUT" => "stdout",
+                                "STDERR" => "stderr",
+                                _ => return None,
+                            };
+                            Some(json!({ "stream": stream, "text": value.get("content")? }))
+                        })
                         .collect();
                     return Ok(json!({ "execution_id": exec, "lines": lines }));
                 }
@@ -3639,9 +3676,9 @@ impl Ctx {
                     arg_str(m, "ws").unwrap_or_default(),
                     arg_str(m, "session").unwrap_or_default()
                 );
-                let response = reqwest::Client::new()
-                    .get(url)
-                    .header(mcp::client::AGENT_HEADER, format!("vk-cli/{VERSION}"))
+                let response = self
+                    .client
+                    .request(reqwest::Method::GET, url)
                     .timeout(self.timeout)
                     .send()
                     .await
@@ -4006,7 +4043,7 @@ impl Ctx {
             "hosts.info" => {
                 let host = self
                     .client
-                    .resolve_host(&arg_str(m, "host").unwrap_or_default())
+                    .resolve_host(&arg_str(m, "target").unwrap_or_default())
                     .await?;
                 let mut info = self.client.host(host).system_info().await?;
                 if let Some(obj) = info.as_object_mut() {
@@ -4070,9 +4107,9 @@ impl Ctx {
         stop: impl Fn(&str, &str) -> bool,
         idle: Duration,
     ) -> Result<Vec<(String, String)>, VkError> {
-        let response = reqwest::Client::new()
-            .get(url)
-            .header(mcp::client::AGENT_HEADER, format!("vk-cli/{VERSION}"))
+        let response = self
+            .client
+            .request(reqwest::Method::GET, url.to_string())
             .header("accept", "text/event-stream")
             .send()
             .await
@@ -4161,20 +4198,33 @@ fn link_codex_skill(claude: &Path, codex: &Path) -> Result<(), String> {
     if let Some(parent) = codex.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    // Replace only what an earlier install left: a link, or a lone SKILL.md
+    // copy. Anything else there is the user's.
     match std::fs::symlink_metadata(codex) {
         Ok(meta) if meta.file_type().is_symlink() => {
             std::fs::remove_file(codex).map_err(|e| e.to_string())?;
         }
-        Ok(meta) if meta.is_dir() => {
+        Ok(meta)
+            if meta.is_dir()
+                && std::fs::read_dir(codex).is_ok_and(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .all(|entry| entry.file_name() == "SKILL.md")
+                }) =>
+        {
             std::fs::remove_dir_all(codex).map_err(|e| e.to_string())?;
         }
         Ok(_) => {
-            std::fs::remove_file(codex).map_err(|e| e.to_string())?;
+            return Err(format!(
+                "{} already exists and was not installed by vk; leaving it alone",
+                codex.display()
+            ));
         }
         Err(_) => {}
     }
     #[cfg(unix)]
     {
+        let claude = claude.canonicalize().map_err(|e| e.to_string())?;
         std::os::unix::fs::symlink(claude, codex).map_err(|e| e.to_string())
     }
     #[cfg(not(unix))]
@@ -4441,6 +4491,18 @@ mod tests {
     #[test]
     fn command_tree_is_well_formed() {
         build_cli().debug_assert();
+        // A leaf that is also a group would demand its own args before the
+        // nested command's (`vk session vibe-review status` never parsed).
+        for spec in COMMANDS {
+            for other in COMMANDS {
+                assert!(
+                    other.path.len() <= spec.path.len()
+                        || other.path[..spec.path.len()] != *spec.path,
+                    "'{}' is both a command and a group",
+                    spec.path.join(" ")
+                );
+            }
+        }
     }
 
     #[test]

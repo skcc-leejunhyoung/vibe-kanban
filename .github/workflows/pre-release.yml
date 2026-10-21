@@ -657,7 +657,7 @@ jobs:
 
           # Upload binaries (use full tag for path, allows multiple pre-releases to coexist)
           for platform in linux-x64 linux-arm64 windows-x64 windows-arm64 macos-x64 macos-arm64; do
-            for binary in vibe-kanban vibe-kanban-mcp vibe-kanban-review; do
+            for binary in vibe-kanban vibe-kanban-mcp vibe-kanban-review vk; do
               if [ -f "binaries/$platform/$binary.zip" ]; then
                 echo "Uploading binaries/$platform/$binary.zip..."
                 aws s3 cp "binaries/$platform/$binary.zip" \

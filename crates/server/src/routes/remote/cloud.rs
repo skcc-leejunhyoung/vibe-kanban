@@ -42,6 +42,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("pull_request_issues", &["GET", "POST", "DELETE"]),
     ("github_issue_links", &["GET", "POST", "PATCH", "DELETE"]),
     ("github/pull-requests", &["GET"]),
+    ("github/pull-requests/tracked/sync", &["POST"]),
     ("github/repositories", &["GET"]),
     ("organizations", &["GET", "PATCH"]),
     ("agent-memory/snapshots", &["GET"]),
@@ -57,9 +58,22 @@ fn is_denied(tail: &str) -> bool {
     )
 }
 
+/// Plain segments only: the upstream URL join would resolve `.`/`..` (also
+/// percent-encoded or with `\`) past the allowlisted prefix.
+fn is_plain(tail: &str) -> bool {
+    tail.split('/').all(|segment| {
+        !segment.is_empty()
+            && segment != "."
+            && segment != ".."
+            && segment
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    })
+}
+
 pub fn is_allowed(method: &Method, tail: &str) -> bool {
     let tail = tail.trim_matches('/');
-    if is_denied(tail) {
+    if !is_plain(tail) || is_denied(tail) {
         return false;
     }
     ALLOWED.iter().any(|(prefix, methods)| {
@@ -123,5 +137,20 @@ mod tests {
         assert!(!is_allowed(&Method::GET, "hosts"));
         assert!(!is_allowed(&Method::POST, "tokens/refresh"));
         assert!(!is_allowed(&Method::GET, "issuesx"));
+    }
+
+    #[test]
+    fn dot_segments_cannot_leave_the_allowed_prefix() {
+        for tail in [
+            "issues/../organizations/abc",
+            "issue_comments/%2e%2e/organizations/abc/members/u",
+            "issues/./x",
+            "issues//x",
+            "issues/..\\tokens",
+            "issues/x?y",
+        ] {
+            assert!(!is_allowed(&Method::DELETE, tail), "{tail}");
+        }
+        assert!(is_allowed(&Method::GET, "attachments/abc/file.png"));
     }
 }
