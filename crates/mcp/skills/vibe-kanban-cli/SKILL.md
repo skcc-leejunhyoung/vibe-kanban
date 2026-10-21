@@ -31,7 +31,7 @@ in; `<session>` accepts a session id or `.` for the current session (`VK_SESSION
 | Need | Command |
 |---|---|
 | What is running / waiting / blocked | `vk ws list --json` (status_note, is_running, latest_process_status, has_pending_approval, is_waiting_on_blockers, pr_status) |
-| One workspace's branch state | `vk ws status <ws>`, `vk ws commits <ws>`, `vk ws diff <ws> --stats` |
+| One workspace's branch state | `vk ws status <ws>`, `vk ws commits <ws>`, `vk ws diff <ws> --stats`, `vk ws first-message <ws>`, `vk ws project <ws>` |
 | Sessions and turns | `vk session list <ws>`, `vk session executions <session>` |
 | Read a turn | `vk session log <exec> --limit 50` (`--tool-results` keeps tool payloads, `--raw` = stdout) |
 | Find past work | `vk session search -q "text"`, then `vk session slice <session> --execution <id> --index <n>` |
@@ -39,9 +39,9 @@ in; `<session>` accepts a session id or `.` for the current session (`VK_SESSION
 | Pick a model | add `--executor CODEX --model gpt-5.6-sol --reasoning high --permission DONT_ASK` |
 | Approvals | `vk session approvals list`; `vk session approvals respond <id> --exec <process> --approve|--deny --reason "..."` |
 | Issues | `vk issue list --project <id> --status "In progress"`, `vk issue get <id>`, `vk issue create --project <id> --title "..."`, `vk issue update <id> --status Done` |
-| Comments / tags / relations | `vk issue comments add <issue> -m "..."`, `vk issue tags add <issue> --tag <id>`, `vk issue relations add <issue> --related <id> --type blocking` |
+| Comments / tags / relations / files | `vk issue comments add <issue> -m "..."`, `vk issue tags add <issue> --tag <id>`, `vk issue relations add <issue> --related <id> --type blocking`, `vk issue attachments upload <issue> <file>` |
 | Git | `vk git commit <ws>`, `vk git push <ws>`, `vk git update-from-base <ws> --strategy rebase`, `vk git merge <ws>` |
-| Pull requests | `vk pr create <ws> --title "..." --body "..."`, `vk pr comments <ws>`, `vk pr info --url <url>` |
+| Pull requests | `vk pr create <ws> --title "..." --body "..."`, `vk pr comments <ws>`, `vk pr list --repo <id> [--involved]`, `vk pr info --url <url>`, `vk pr comments-url --url <url> --number <n>` |
 | Wait for something | `vk events wait --since <cursor> --kinds process.,approval.pending --timeout 120` |
 | Tell the user | `vk notify send -t "Title" -m "Message" --ws <ws>` |
 | Start work | `vk ws start --repo <id> --branch main --name "..." --executor CLAUDE_CODE -m "..."`, `vk ws quick-chat <repo-path> -m "..."` |
@@ -82,7 +82,8 @@ vk issue list --project <id> --json | jq -r '.issues[] | "\(.simple_id)\t\(.stat
 vk events list --since 0 --json | jq '.events | map(.kind) | group_by(.) | map({(.[0]): length}) | add'
 ```
 
-Errors come on stderr (`error: ...`) with exit code 1; `--json` turns them into
+Every call carries the command name (`x-vibe-agent-command`) and your session id to the host's
+audit log, so the user can see what ran. Errors come on stderr (`error: ...`) with exit code 1; `--json` turns them into
 `{"success":false,"error":...,"status":...}`. Exit 3 = server unreachable, exit 4 = denied
 by agent access.
 

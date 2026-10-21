@@ -23,6 +23,8 @@ use crate::{DeploymentImpl, error::ApiError};
 pub const AGENT_HEADER: &str = "x-vibe-agent";
 /// Session the agent runs in (from `VK_SESSION_ID`), for the audit log.
 pub const AGENT_SESSION_HEADER: &str = "x-vibe-agent-session";
+/// CLI command or MCP tool behind the call (e.g. `ws delete`), for the audit log.
+pub const AGENT_COMMAND_HEADER: &str = "x-vibe-agent-command";
 
 /// Top-level `Config` fields an agent may change through `PUT /api/config`.
 /// Everything else (credentials, onboarding state, relay settings, the agent
@@ -258,8 +260,16 @@ pub async fn guard_agent_access(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-")
         .to_owned();
+    let command = request
+        .headers()
+        .get(AGENT_COMMAND_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-")
+        .to_owned();
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
+    // The query string is the argument summary; bodies are not read here.
+    let query = request.uri().query().unwrap_or("").to_owned();
     let decision = classify(&method, &path);
     let denial = match decision {
         Decision::Allow => None,
@@ -279,7 +289,7 @@ pub async fn guard_agent_access(
         Some(reason) => {
             tracing::warn!(
                 target: "agent_access",
-                agent, session, method = %method, path, decision = "deny", reason,
+                agent, session, command, method = %method, path, query, decision = "deny", reason,
                 "agent request denied"
             );
             Err(ApiError::Forbidden(reason))
@@ -288,13 +298,13 @@ pub async fn guard_agent_access(
             if is_write {
                 tracing::info!(
                     target: "agent_access",
-                    agent, session, method = %method, path, decision = "allow",
+                    agent, session, command, method = %method, path, query, decision = "allow",
                     "agent write"
                 );
             } else {
                 tracing::debug!(
                     target: "agent_access",
-                    agent, session, method = %method, path, decision = "allow",
+                    agent, session, command, method = %method, path, query, decision = "allow",
                     "agent read"
                 );
             }

@@ -16,8 +16,8 @@ use std::{
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use mcp::client::{
-    CreateIssueInput, JournalEvent, JournalPage, SendPromptOptions, StartWorkspaceInput,
-    UpdateIssueInput, VkClient, VkError, WorkspaceFilter, discover_base_url,
+    CreateIssueInput, SendPromptOptions, StartWorkspaceInput, UpdateIssueInput, VkClient, VkError,
+    WorkspaceFilter, discover_base_url,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -642,6 +642,20 @@ const COMMANDS: &[Cmd] = &[
         "/workspaces/{ws}/links",
         &[WS],
     ),
+    cmd(
+        &["ws", "project"],
+        "Cloud project id the workspace is linked to",
+        "GET",
+        "/workspaces/{ws}/project",
+        &[WS],
+    ),
+    cmd(
+        &["ws", "first-message"],
+        "First user prompt of the workspace",
+        "GET",
+        "/workspaces/{ws}/messages/first",
+        &[WS],
+    ),
     // ---- session ------------------------------------------------------------
     cmd(
         &["session", "list"],
@@ -1153,6 +1167,24 @@ const COMMANDS: &[Cmd] = &[
         "/sessions/{session}/resumes/cancel",
         &[SESSION],
     ),
+    cmd(
+        &["session", "queue", "steer"],
+        "Interrupt the running turn with a message already in the queue",
+        "POST",
+        "/sessions/{session}/queue/steer-queued",
+        &[
+            SESSION,
+            keyed(
+                req(
+                    "message-id",
+                    "Queued message id to run next",
+                    Where::Body,
+                    Kind::Str,
+                ),
+                "message_id",
+            ),
+        ],
+    ),
     // ---- git ----------------------------------------------------------------
     cmd(
         &["git", "commit"],
@@ -1463,35 +1495,6 @@ const COMMANDS: &[Cmd] = &[
         "/repos/pr-info",
         &[req("url", "PR URL", Where::Query, Kind::Str)],
     ),
-    cmd(
-        &["pr", "list"],
-        "Open PRs of a repository",
-        "GET",
-        "/repos/{repo}/prs",
-        &[
-            pos("repo", "Repository id", Where::Path),
-            opt("remote", "Remote name", Where::Query, Kind::Str),
-        ],
-    ),
-    cmd(
-        &["pr", "involved"],
-        "PRs involving me in a repository",
-        "GET",
-        "/repos/{repo}/pull-requests",
-        &[
-            pos("repo", "Repository id", Where::Path),
-            keyed(
-                opt(
-                    "involved",
-                    "Only PRs I am involved in",
-                    Where::Query,
-                    Kind::Flag,
-                ),
-                "involves_me",
-            ),
-            opt("refresh", "Bypass the cache", Where::Query, Kind::Flag),
-        ],
-    ),
     local(cmd(
         &["pr", "link-issue"],
         "Track a PR for an issue (cloud)",
@@ -1566,6 +1569,71 @@ const COMMANDS: &[Cmd] = &[
         "/remote/cloud/github/pull-requests/tracked/sync",
         &[BODY],
     )),
+    special(
+        &["pr", "list"],
+        "PRs of a repository: open ones, or --involved for those involving me",
+        "pr.list",
+        &[
+            req("repo", "Repository id", Where::Local, Kind::Str),
+            opt(
+                "involved",
+                "PRs I am involved in instead of all open PRs",
+                Where::Local,
+                Kind::Flag,
+            ),
+            opt(
+                "refresh",
+                "Bypass the cache (with --involved)",
+                Where::Local,
+                Kind::Flag,
+            ),
+            opt(
+                "remote",
+                "Remote name (without --involved)",
+                Where::Local,
+                Kind::Str,
+            ),
+        ],
+    ),
+    cmd(
+        &["pr", "comments-url"],
+        "Review comments of any PR by URL",
+        "GET",
+        "/repos/pr-comments",
+        &[
+            req("url", "Repository or PR URL", Where::Query, Kind::Str),
+            keyed(
+                req("number", "PR number", Where::Query, Kind::Int),
+                "pr_number",
+            ),
+        ],
+    ),
+    cmd(
+        &["pr", "resolve-url"],
+        "Resolve or unresolve a review thread of any PR by URL",
+        "POST",
+        "/repos/pr-comments/resolve",
+        &[
+            req("url", "Repository or PR URL", Where::Body, Kind::Str),
+            keyed(
+                req("number", "PR number", Where::Body, Kind::Int),
+                "pr_number",
+            ),
+            keyed(
+                req("thread", "Review thread id", Where::Body, Kind::Str),
+                "thread_id",
+            ),
+            keyed(
+                opt(
+                    "unresolve",
+                    "Mark unresolved instead",
+                    Where::Local,
+                    Kind::Flag,
+                ),
+                "resolved",
+            ),
+        ],
+    ),
     // ---- issue --------------------------------------------------------------
     special(
         &["issue", "list"],
@@ -2053,6 +2121,12 @@ const COMMANDS: &[Cmd] = &[
             "organization_id",
         )],
     )),
+    special(
+        &["issue", "attachments", "upload"],
+        "Upload a local file as an issue attachment",
+        "issue.attachments.upload",
+        &[ISSUE, pos("file", "Local file path", Where::Local)],
+    ),
     // ---- notify -------------------------------------------------------------
     special(
         &["notify", "send"],
@@ -2463,23 +2537,19 @@ const COMMANDS: &[Cmd] = &[
         "/filesystem/git-repos",
         &[pos("path", "Directory path", Where::Query)],
     ),
-    cmd(
+    special(
         &["repo", "search-files"],
-        "Find files across repositories",
-        "GET",
-        "/search",
+        "Find files across a workspace's repositories",
+        "repo.search-files",
         &[
-            short(req("q", "Query", Where::Query, Kind::Str), 'q'),
-            keyed(
-                req(
-                    "repos",
-                    "Repository ids, comma-separated",
-                    Where::Query,
-                    Kind::Str,
-                ),
-                "repo_ids",
+            WS,
+            short(req("q", "Query", Where::Local, Kind::Str), 'q'),
+            opt(
+                "mode",
+                "task_form|settings (settings includes ignored files)",
+                Where::Local,
+                Kind::Str,
             ),
-            opt("mode", "task_form|settings", Where::Query, Kind::Str),
         ],
     ),
     // ---- automation ---------------------------------------------------------
@@ -2596,6 +2666,13 @@ const COMMANDS: &[Cmd] = &[
         "Memory mutations (corrections/deletions)",
         "GET",
         "/agent-memory-sync/mutations",
+        &[],
+    ),
+    cmd(
+        &["automation", "host-status"],
+        "This host's busy state as the worker sees it",
+        "GET",
+        "/automation-actions/status",
         &[],
     ),
     // ---- events -------------------------------------------------------------
@@ -3863,6 +3940,53 @@ impl Ctx {
                 Ok(info)
             }
             "events.list" | "events.wait" => self.run_events(key == "events.wait", m).await,
+            "pr.list" => {
+                let repo = parse_uuid(&arg_str(m, "repo").unwrap_or_default(), "--repo")?;
+                let mut query = Vec::new();
+                let path = if arg_flag(m, "involved") {
+                    query.push(("involves_me".to_string(), "true".to_string()));
+                    if arg_flag(m, "refresh") {
+                        query.push(("refresh".to_string(), "true".to_string()));
+                    }
+                    format!("/repos/{repo}/pull-requests")
+                } else {
+                    if let Some(remote) = arg_str(m, "remote") {
+                        query.push(("remote".to_string(), remote));
+                    }
+                    format!("/repos/{repo}/prs")
+                };
+                self.client
+                    .exec("GET", &path, false, &query, None, Some(self.timeout))
+                    .await
+            }
+            "repo.search-files" => {
+                let ws = self
+                    .workspace_id(&arg_str(m, "ws").unwrap_or_default())
+                    .await?;
+                let repo_ids = self
+                    .client
+                    .workspace_repos(ws)
+                    .await?
+                    .iter()
+                    .map(|r| r.id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let mut query = vec![
+                    ("q".to_string(), arg_str(m, "q").unwrap_or_default()),
+                    ("repo_ids".to_string(), repo_ids),
+                ];
+                if let Some(mode) = arg_str(m, "mode") {
+                    query.push(("mode".to_string(), mode));
+                }
+                self.client
+                    .exec("GET", "/search", false, &query, None, Some(self.timeout))
+                    .await
+            }
+            "issue.attachments.upload" => {
+                let issue = parse_uuid(&arg_str(m, "issue").unwrap_or_default(), "issue")?;
+                let file = PathBuf::from(arg_str(m, "file").unwrap_or_default());
+                self.client.upload_issue_attachment(issue, &file).await
+            }
             "hosts.list" => {
                 let mut hosts: Vec<Value> = self
                     .client
@@ -3912,94 +4036,30 @@ impl Ctx {
             .collect();
         let limit = arg_usize(m, "limit", 100)?;
         let timeout = Duration::from_secs(arg_usize(m, "timeout", 30)?.clamp(1, 600) as u64);
-        let since_raw = arg_str(m, "since").unwrap_or_else(|| "0".to_string());
-        if !arg_flag(m, "all-hosts") {
-            let since: u64 = since_raw.trim().parse().map_err(|_| {
-                VkError::message(
-                    "--since must be a cursor number (or host=cursor pairs with --all-hosts)",
-                )
-            })?;
+        let since = arg_str(m, "since").unwrap_or_else(|| "0".to_string());
+        if arg_flag(m, "all-hosts") {
             let page = if wait {
                 self.client
-                    .events_wait(since, &kinds, limit, timeout)
+                    .events_wait_all_hosts(&since, &kinds, limit, timeout)
                     .await?
             } else {
-                self.client.events_list(since, &kinds, limit).await?
+                self.client
+                    .events_list_all_hosts(&since, &kinds, limit)
+                    .await?
             };
             return Ok(serde_json::to_value(page).unwrap_or_default());
         }
-        // One cursor per host: "self=12,<uuid>=40". Unknown hosts start at
-        // their latest cursor so a first call does not replay their backlog.
-        let mut cursors: BTreeMap<String, u64> = BTreeMap::new();
-        for part in since_raw
-            .split(',')
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-        {
-            match part.split_once('=') {
-                Some((host, cursor)) => {
-                    cursors.insert(
-                        host.trim().to_string(),
-                        cursor
-                            .trim()
-                            .parse()
-                            .map_err(|_| VkError::message(format!("Bad cursor in '{part}'")))?,
-                    );
-                }
-                None => {
-                    cursors.insert(
-                        "self".to_string(),
-                        part.parse()
-                            .map_err(|_| VkError::message(format!("Bad cursor '{part}'")))?,
-                    );
-                }
-            }
-        }
-        let mut targets: Vec<(String, Option<Uuid>)> = vec![("self".to_string(), None)];
-        for host in self.client.list_hosts().await? {
-            targets.push((host.host_id.to_string(), Some(host.host_id)));
-        }
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let mut merged: Vec<JournalEvent> = Vec::new();
-            let mut next: BTreeMap<String, u64> = BTreeMap::new();
-            for (label, host) in &targets {
-                let client = self.client.host(*host);
-                let page: JournalPage = match cursors.get(label) {
-                    Some(since) => match client.events_list(*since, &kinds, limit).await {
-                        Ok(page) => page,
-                        Err(error) => {
-                            eprintln!("warning: host {label}: {error}");
-                            continue;
-                        }
-                    },
-                    None => match client.events_list(u64::MAX, &kinds, 1).await {
-                        Ok(page) => JournalPage {
-                            events: Vec::new(),
-                            ..page
-                        },
-                        Err(error) => {
-                            eprintln!("warning: host {label}: {error}");
-                            continue;
-                        }
-                    },
-                };
-                next.insert(label.clone(), page.cursor);
-                merged.extend(page.events);
-            }
-            merged.sort_by(|a, b| a.at.cmp(&b.at));
-            merged.truncate(limit);
-            let cursor_string = next
-                .iter()
-                .map(|(host, cursor)| format!("{host}={cursor}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            if !merged.is_empty() || !wait || tokio::time::Instant::now() >= deadline {
-                return Ok(json!({ "events": merged, "cursor": cursor_string }));
-            }
-            cursors = next;
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
+        let since: u64 = since.trim().parse().map_err(|_| {
+            VkError::message("--since must be a cursor number (host=cursor pairs need --all-hosts)")
+        })?;
+        let page = if wait {
+            self.client
+                .events_wait(since, &kinds, limit, timeout)
+                .await?
+        } else {
+            self.client.events_list(since, &kinds, limit).await?
+        };
+        Ok(serde_json::to_value(page).unwrap_or_default())
     }
 
     /// Minimal SSE reader: collects `(event, data)` until `stop` matches or no
@@ -4333,6 +4393,7 @@ async fn main() -> ExitCode {
             }
         }
     }
+    let client = client.with_command(&spec.path.join(" "));
     let ctx = Ctx {
         client,
         json,
@@ -4458,6 +4519,13 @@ mod tests {
             "events wait",
             "hosts info",
             "skill install",
+            "ws project",
+            "ws first-message",
+            "session queue steer",
+            "pr comments-url",
+            "pr resolve-url",
+            "issue attachments upload",
+            "automation host-status",
         ] {
             assert!(paths.iter().any(|p| p == required), "missing {required}");
         }

@@ -37,3 +37,5 @@ thiserror = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "5.0"
+sha2 = "0.10"
+mime_guess = "2.0"

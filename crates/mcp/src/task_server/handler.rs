@@ -1,13 +1,33 @@
 use rmcp::{
-    ServerHandler,
-    model::{Implementation, ProtocolVersion, ServerCapabilities, ServerInfo},
+    ErrorData, RoleServer, ServerHandler,
+    handler::server::tool::ToolCallContext,
+    model::{
+        CallToolRequestParams, CallToolResponse, Implementation, ProtocolVersion,
+        ServerCapabilities, ServerInfo,
+    },
+    service::RequestContext,
     tool_handler,
 };
 
 use super::{McpMode, McpServer};
+use crate::client::CURRENT_COMMAND;
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for McpServer {
+    /// Same dispatch the macro would generate, wrapped so every HTTP call the
+    /// tool makes carries the tool name for the server's audit log.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let name = request.name.to_string();
+        let tcc = ToolCallContext::new(self, request, context);
+        CURRENT_COMMAND
+            .scope(name, self.tool_router.call(tcc))
+            .await
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut tool_names = self
             .tool_router

@@ -105,11 +105,11 @@ For `update_issue`, the `parent_issue_id` field supports three states: omit it e
 
 | Tool | Purpose | Required Parameters | Optional Parameters | Returns |
 |------|---------|-------------------|-------------------|---------|
-| `list_events` | Read the event journal after a cursor | None | `host_id`<br/>`since`<br/>`kinds`<br/>`limit` | Events and the next cursor |
-| `wait_for_events` | Block until a matching event lands (or the timeout passes) | `since` | `host_id`<br/>`kinds`<br/>`timeout_seconds`<br/>`limit` | Events and the next cursor |
+| `list_events` | Read the event journal after a cursor | None | `host_id`<br/>`since`<br/>`kinds`<br/>`limit`<br/>`all_hosts` | Events and the next cursor |
+| `wait_for_events` | Block until a matching event lands (or the timeout passes) | `since` | `host_id`<br/>`kinds`<br/>`timeout_seconds`<br/>`limit`<br/>`all_hosts` | Events and the next cursor |
 | `notify_user` | Send the user a notification | `title`<br/>`message` | `workspace_id`<br/>`local_only`<br/>`host_id` | Confirmation |
 
-Event kinds: `process.started|completed|failed|killed`, `approval.pending|resolved`, `workspace.created|archived|unarchived|deleted|status_note`, `vibe.phase`, `queue.changed`, `resume.fired`, `cloud.notification`. `kinds` filters by prefix, so `["process."]` keeps every process event.
+With `all_hosts` the journal of every paired host is merged and the cursor becomes `self=N,<host-id>=N`; pass it back verbatim. Event kinds: `process.started|completed|failed|killed`, `approval.pending|resolved`, `workspace.created|archived|unarchived|deleted|status_note`, `vibe.phase`, `queue.changed`, `resume.fired`, `cloud.notification`. `kinds` filters by prefix, so `["process."]` keeps every process event.
 
 ### Supported Executors
 
@@ -143,7 +143,7 @@ vk --host <paired-host> ws list       # any command on a paired host
 
 Groups: `ws`, `session`, `git`, `pr`, `issue`, `notify`, `config`, `repo`, `automation`, `events`, `hosts`, `skill`. Run `vk --help`, `vk <group> --help` and `vk <group> <command> --help`; every command accepts `--json`.
 
-Reads are always allowed. Writes are gated by the **Agent access** toggles in Settings → Automation (`write_issues`, `control_sessions`, `respond_approvals`, `git_write`, `git_merge`, `delete_workspaces`, `update_config`, `automation_write`); a denied call answers 403 with the toggle name and is logged on the host. Force pushes, resets to remote, credentials, relay pairing, terminals and deleting repositories or organisations are never available to agents.
+Every agent call carries `x-vibe-agent` (client and version), `x-vibe-agent-session` (the session it runs in) and `x-vibe-agent-command` (the `vk` command or MCP tool); the host logs writes and denials under the `agent_access` tracing target. Reads are always allowed. Writes are gated by the **Agent access** toggles in Settings → Automation (`write_issues`, `control_sessions`, `respond_approvals`, `git_write`, `git_merge`, `delete_workspaces`, `update_config`, `automation_write`); a denied call answers 403 with the toggle name and is logged on the host. Force pushes, resets to remote, credentials, relay pairing, terminals and deleting repositories or organisations are never available to agents.
 
 Codex runs its threads in the `workspace-write` sandbox; Vibe Kanban enables network access for it so `vk` can reach the server. If you run Codex outside Vibe Kanban, set `[sandbox_workspace_write] network_access = true` in `~/.codex/config.toml`.
 

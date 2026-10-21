@@ -9,7 +9,12 @@
 //! this machine (`local_*`). Every request carries `x-vibe-agent` so the
 //! server applies the agent access policy and audits the call.
 
-use std::{collections::HashMap, path::Path, str::FromStr, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+    str::FromStr,
+    time::Duration,
+};
 
 use api_types::{
     CreateIssueRequest, Issue, IssuePriority, ListProjectStatusesResponse, MutationResponse,
@@ -36,6 +41,14 @@ use uuid::Uuid;
 
 pub const AGENT_HEADER: &str = "x-vibe-agent";
 pub const AGENT_SESSION_HEADER: &str = "x-vibe-agent-session";
+/// Which CLI command or MCP tool made the call, for the server's audit log.
+pub const AGENT_COMMAND_HEADER: &str = "x-vibe-agent-command";
+
+tokio::task_local! {
+    /// Label of the MCP tool running in this task (set by the tool handler),
+    /// sent as `x-vibe-agent-command` when the client has no explicit label.
+    pub static CURRENT_COMMAND: String;
+}
 
 const HOST_ENV: &str = "MCP_HOST";
 const PORT_ENV: &str = "MCP_PORT";
@@ -109,6 +122,7 @@ pub struct VkClient {
     host_id: Option<Uuid>,
     agent: String,
     session_id: Option<Uuid>,
+    command: Option<String>,
 }
 
 impl VkClient {
@@ -126,6 +140,15 @@ impl VkClient {
             host_id: None,
             agent: agent.to_string(),
             session_id,
+            command: None,
+        }
+    }
+
+    /// Label the calls of this client (e.g. `ws delete`) for the audit log.
+    pub fn with_command(&self, command: &str) -> Self {
+        Self {
+            command: Some(command.to_string()),
+            ..self.clone()
         }
     }
 
@@ -170,6 +193,13 @@ impl VkClient {
             .header(AGENT_HEADER, &self.agent);
         if let Some(session_id) = self.session_id {
             request = request.header(AGENT_SESSION_HEADER, session_id.to_string());
+        }
+        let command = self
+            .command
+            .clone()
+            .or_else(|| CURRENT_COMMAND.try_with(|name| name.clone()).ok());
+        if let Some(command) = command {
+            request = request.header(AGENT_COMMAND_HEADER, command);
         }
         request
     }
@@ -1488,6 +1518,226 @@ pub fn issue_priority_label(priority: IssuePriority) -> &'static str {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Events across every paired host
+// ---------------------------------------------------------------------------
+
+/// Journal page merged across this machine and every paired host. `cursor`
+/// is `self=<n>,<host-id>=<n>` and must be passed back verbatim.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct MultiHostJournalPage {
+    pub events: Vec<JournalEvent>,
+    pub cursor: String,
+}
+
+/// `"12"` → this machine at 12; `"self=12,<uuid>=40"` → one cursor per host.
+pub fn parse_multi_cursor(raw: &str) -> Result<BTreeMap<String, u64>, VkError> {
+    let mut cursors = BTreeMap::new();
+    for part in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let (host, cursor) = part.split_once('=').unwrap_or(("self", part));
+        let cursor = cursor
+            .trim()
+            .parse()
+            .map_err(|_| VkError::message(format!("Bad journal cursor '{part}'")))?;
+        cursors.insert(host.trim().to_string(), cursor);
+    }
+    Ok(cursors)
+}
+
+impl VkClient {
+    pub async fn events_list_all_hosts(
+        &self,
+        since: &str,
+        kinds: &[String],
+        limit: usize,
+    ) -> Result<MultiHostJournalPage, VkError> {
+        self.events_all_hosts(since, kinds, limit, None).await
+    }
+
+    /// Polls every host until a matching event lands or `timeout` passes.
+    pub async fn events_wait_all_hosts(
+        &self,
+        since: &str,
+        kinds: &[String],
+        limit: usize,
+        timeout: Duration,
+    ) -> Result<MultiHostJournalPage, VkError> {
+        self.events_all_hosts(since, kinds, limit, Some(timeout))
+            .await
+    }
+
+    async fn events_all_hosts(
+        &self,
+        since: &str,
+        kinds: &[String],
+        limit: usize,
+        timeout: Option<Duration>,
+    ) -> Result<MultiHostJournalPage, VkError> {
+        let mut cursors = parse_multi_cursor(since)?;
+        let mut targets: Vec<(String, Option<Uuid>)> = vec![("self".to_string(), None)];
+        for host in self.host(None).list_hosts().await? {
+            targets.push((host.host_id.to_string(), Some(host.host_id)));
+        }
+        let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+        loop {
+            let mut merged: Vec<JournalEvent> = Vec::new();
+            let mut next: BTreeMap<String, u64> = BTreeMap::new();
+            for (label, host) in &targets {
+                let client = self.host(*host);
+                let page = match cursors.get(label) {
+                    Some(since) => client.events_list(*since, kinds, limit).await,
+                    // A host seen for the first time starts at its latest
+                    // cursor so its backlog is not replayed.
+                    None => client
+                        .events_list(u64::MAX, kinds, 1)
+                        .await
+                        .map(|page| JournalPage {
+                            events: Vec::new(),
+                            ..page
+                        }),
+                };
+                match page {
+                    Ok(page) => {
+                        next.insert(label.clone(), page.cursor);
+                        merged.extend(page.events);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, host = %label, "journal unavailable on host");
+                        if let Some(cursor) = cursors.get(label) {
+                            next.insert(label.clone(), *cursor);
+                        }
+                    }
+                }
+            }
+            merged.sort_by(|a, b| a.at.cmp(&b.at));
+            merged.truncate(limit.max(1));
+            let cursor = next
+                .iter()
+                .map(|(host, cursor)| format!("{host}={cursor}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let timed_out = deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline);
+            if !merged.is_empty() || timed_out {
+                return Ok(MultiHostJournalPage {
+                    events: merged,
+                    cursor,
+                });
+            }
+            cursors = next;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue attachments (cloud blob upload)
+// ---------------------------------------------------------------------------
+
+impl VkClient {
+    /// Upload a local file as an issue attachment the way the web app does:
+    /// init (dedup by hash) → PUT the bytes to the blob store → confirm →
+    /// commit to the issue. Returns the committed attachments.
+    pub async fn upload_issue_attachment(
+        &self,
+        issue_id: Uuid,
+        path: &Path,
+    ) -> Result<Value, VkError> {
+        use sha2::{Digest, Sha256};
+        let issue = self.issue(issue_id).await?;
+        let bytes = std::fs::read(path)
+            .map_err(|e| VkError::message(format!("Cannot read {}: {e}", path.display())))?;
+        let filename = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "upload".to_string());
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        let content_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+        let size_bytes = bytes.len() as i64;
+        let init = self
+            .exec(
+                "POST",
+                "/remote/cloud/attachments/init",
+                true,
+                &[],
+                Some(&json!({
+                    "project_id": issue.project_id,
+                    "filename": filename,
+                    "size_bytes": size_bytes,
+                    "hash": hash,
+                })),
+                None,
+            )
+            .await?;
+        let upload_id = init
+            .get("upload_id")
+            .cloned()
+            .ok_or_else(|| VkError::Parse("attachment init returned no upload_id".to_string()))?;
+        if !init
+            .get("skip_upload")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let upload_url = init
+                .get("upload_url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    VkError::Parse("attachment init returned no upload_url".to_string())
+                })?;
+            // The blob store is external, so the system proxy applies here.
+            let response = reqwest::Client::new()
+                .put(upload_url)
+                .header("x-ms-blob-type", "BlockBlob")
+                .header(reqwest::header::CONTENT_TYPE, &content_type)
+                .body(bytes)
+                .send()
+                .await
+                .map_err(|e| VkError::Connect(e.to_string()))?;
+            if !response.status().is_success() {
+                return Err(VkError::Api {
+                    status: response.status().as_u16(),
+                    message: format!(
+                        "blob upload failed: {}",
+                        response.text().await.unwrap_or_default()
+                    ),
+                });
+            }
+        }
+        let confirmed = self
+            .exec(
+                "POST",
+                "/remote/cloud/attachments/confirm",
+                true,
+                &[],
+                Some(&json!({
+                    "project_id": issue.project_id,
+                    "upload_id": upload_id,
+                    "filename": filename,
+                    "content_type": content_type,
+                    "size_bytes": size_bytes,
+                    "hash": hash,
+                    "issue_id": issue_id,
+                })),
+                None,
+            )
+            .await?;
+        let attachment_id = confirmed
+            .get("id")
+            .cloned()
+            .ok_or_else(|| VkError::Parse("attachment confirm returned no id".to_string()))?;
+        self.exec(
+            "POST",
+            &format!("/remote/cloud/issues/{issue_id}/attachments/commit"),
+            true,
+            &[],
+            Some(&json!({ "attachment_ids": [attachment_id] })),
+            None,
+        )
+        .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1526,6 +1776,17 @@ mod tests {
         assert_eq!(executor_name(None, &session).unwrap(), "CLAUDE_CODE");
         assert_eq!(executor_name(Some("codex"), &session).unwrap(), "CODEX");
         assert!(executor_name(Some("nope"), &session).is_err());
+    }
+
+    #[test]
+    fn multi_host_cursors_parse_bare_and_keyed_forms() {
+        let bare = parse_multi_cursor("12").unwrap();
+        assert_eq!(bare.get("self"), Some(&12));
+        let host = Uuid::new_v4();
+        let keyed = parse_multi_cursor(&format!("self=3, {host}=40")).unwrap();
+        assert_eq!(keyed.get("self"), Some(&3));
+        assert_eq!(keyed.get(&host.to_string()), Some(&40));
+        assert!(parse_multi_cursor("self=x").is_err());
     }
 
     #[test]
