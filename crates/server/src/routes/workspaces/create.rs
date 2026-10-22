@@ -1032,10 +1032,6 @@ pub async fn create_and_start_quick_chat(
             ))
         })?;
 
-    if autopilot {
-        seed_autopilot_instructions(&repo.path).await;
-    }
-
     let container_ref = repo.path.to_string_lossy().to_string();
     let workspace = Workspace::create_in_place(
         &deployment.db().pool,
@@ -1064,6 +1060,11 @@ pub async fn create_and_start_quick_chat(
             ApiError::from(error)
         }
     })?;
+    // Only the Autopilot that actually exists seeds the folder (a create that
+    // lost the race above writes nothing).
+    if autopilot {
+        seed_autopilot_instructions(&repo.path).await;
+    }
 
     let mut managed_workspace = deployment
         .workspace_manager()
@@ -1144,7 +1145,7 @@ const AUTOPILOT_AGENTS_MD: &str = r#"# Autopilot
 
 ## 기억·루틴
 - 규칙 변경은 이 파일의 해당 절을 고친다(날짜·출처 한 줄). 일지는 `autopilot/journal.md`.
-- 너를 깨우는 루틴은 `vk automation status`(목록)와 `vk automation routines upsert`로 네가 관리한다. "조용히 해" = 루틴 비활성.
+- 너를 깨우는 루틴은 `vk automation status`(목록)와 `vk automation routines upsert`로, 이벤트 커넥터(`vibe_events`)는 `vk automation connectors upsert`로 네가 관리한다. "조용히 해" = 루틴 비활성.
 "#;
 
 /// Seed `AGENTS.md` (and a `CLAUDE.md` that includes it) in the Autopilot's
@@ -1159,7 +1160,16 @@ async fn seed_autopilot_instructions(repo_path: &std::path::Path) {
     // Claude reads CLAUDE.md, so it must include AGENTS.md; an existing
     // CLAUDE.md that does not mention it gets the include line appended.
     let claude = repo_path.join("CLAUDE.md");
-    let existing = tokio::fs::read_to_string(&claude).await.unwrap_or_default();
+    let existing = match tokio::fs::read_to_string(&claude).await {
+        Ok(body) => body,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        // Unreadable (permissions, not UTF-8): leave it alone rather than
+        // overwrite it with just the include line.
+        Err(error) => {
+            tracing::warn!(?error, path = %claude.display(), "Could not read CLAUDE.md; not linking AGENTS.md");
+            return;
+        }
+    };
     if existing.contains("AGENTS.md") {
         return;
     }

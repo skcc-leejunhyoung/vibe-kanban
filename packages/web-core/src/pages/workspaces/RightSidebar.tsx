@@ -155,7 +155,7 @@ export const RightSidebar = memo(function RightSidebar({
         id: 'commits',
         title: 'Commits',
         persistKey: PERSIST_KEYS.commitsSection,
-        visible: !!selectedWorkspace,
+        visible: !!selectedWorkspace && !selectedWorkspace.autopilot,
         expanded: commitsExpanded,
         content: selectedWorkspace ? (
           <CommitsPanelContainer

@@ -433,7 +433,9 @@ function WorkspaceSessionPanel({
                               mode: 'existing-session' as const,
                               session: selectedSession,
                               onSelectSession: selectSession,
-                              onStartNewSession: startNewSession,
+                              onStartNewSession: workspace?.autopilot
+                                ? undefined
+                                : startNewSession,
                             }
                           : {
                               mode: 'placeholder' as const,

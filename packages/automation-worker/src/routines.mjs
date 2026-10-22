@@ -293,6 +293,7 @@ export function routineRunTrigger(event) {
     'source',
     'issueId',
     'executionProcessId',
+    'executionId',
     'workspaceId',
     'projectId',
     'sessionId',

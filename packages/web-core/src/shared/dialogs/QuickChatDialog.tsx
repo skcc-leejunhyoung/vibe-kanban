@@ -367,8 +367,8 @@ const QuickChatDialogImpl = create<NoProps>(() => {
 
   // Pause = archive: automation skips an archived Autopilot and the tab
   // offers the form again, so a new one can take a different folder or model.
-  const pauseAutopilot = useCallback(async () => {
-    if (!existingAutopilot) return;
+  const pauseAutopilot = useCallback(async (): Promise<boolean> => {
+    if (!existingAutopilot) return false;
     setPausing(true);
     setError(null);
     try {
@@ -378,8 +378,10 @@ const QuickChatDialogImpl = create<NoProps>(() => {
         selectedHostId
       );
       await autopilotQuery.refetch();
+      return true;
     } catch (e) {
       setError(getErrorMessage(e) || 'Failed to pause the Autopilot.');
+      return false;
     } finally {
       setPausing(false);
     }
@@ -389,7 +391,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   // prompt or model needs changing.
   const recreateAutopilot = useCallback(async () => {
     const folder = existingAutopilot?.workspace.container_ref;
-    await pauseAutopilot();
+    if (!(await pauseAutopilot())) return;
     if (folder) await registerAndSelect(folder);
   }, [existingAutopilot, pauseAutopilot, registerAndSelect]);
 
@@ -646,8 +648,8 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           {isAutopilotMode && (
             <p className="text-sm text-low">
               Writes a starter AGENTS.md (its standing rules) into the folder if
-              there is none. One Autopilot per host; pause it to change the
-              folder or model later.
+              there is none, and makes CLAUDE.md include it. One Autopilot per
+              host; pause it to change the folder or model later.
             </p>
           )}
 

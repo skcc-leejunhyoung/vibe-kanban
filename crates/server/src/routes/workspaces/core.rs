@@ -6,7 +6,7 @@ use axum::{
 };
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
-    execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
     requests::AutopilotWorkspaceResponse,
     session::Session,
     task::Task,
@@ -105,14 +105,32 @@ pub async fn update_workspace(
         ));
     }
 
+    // The Autopilot stays pinned (it is the list's fixed entry): a request to
+    // unpin it is ignored, not refused.
+    let pinned = if workspace.autopilot {
+        request.pinned.filter(|pinned| *pinned)
+    } else {
+        request.pinned
+    };
+
     Workspace::update(
         pool,
         workspace.id,
         request.archived,
-        request.pinned,
+        pinned,
         request.name.as_deref(),
     )
-    .await?;
+    .await
+    .map_err(|error| match &error {
+        // Two resumes racing past the check above: the index settles it.
+        SqlxError::Database(db) if workspace.autopilot && db.is_unique_violation() => {
+            ApiError::Conflict(
+                "Another Autopilot is active on this host; pause it before resuming this one."
+                    .to_string(),
+            )
+        }
+        _ => ApiError::from(error),
+    })?;
     let updated = Workspace::find_by_id(pool, workspace.id)
         .await?
         .ok_or(WorkspaceError::WorkspaceNotFound)?;
@@ -137,10 +155,49 @@ pub async fn update_workspace(
         });
     }
 
+    if is_archiving && workspace.autopilot {
+        silence_autopilot(&deployment, &workspace).await;
+    }
     if is_archiving && let Err(e) = deployment.container().archive_workspace(workspace.id).await {
         tracing::error!("Failed to archive workspace {}: {}", workspace.id, e);
     }
     Ok(ResponseJson(ApiResponse::success(updated)))
+}
+
+/// Pausing the Autopilot must make it quiet: end its running turn and drop its
+/// queued prompts, so nothing it was about to do happens while paused.
+/// (Automation already skips it: `GET /workspaces/autopilot` is 404.)
+async fn silence_autopilot(deployment: &DeploymentImpl, workspace: &Workspace) {
+    let pool = &deployment.db().pool;
+    let session = match Session::find_latest_by_workspace_id(pool, workspace.id).await {
+        Ok(Some(session)) => session,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(workspace_id = %workspace.id, %error, "Could not find the Autopilot session to pause");
+            return;
+        }
+    };
+    // Clear before killing: the kill's exit handler would drain the queue.
+    deployment.queued_message_service().clear_queue(session.id);
+    let running = match ExecutionProcess::find_running(pool).await {
+        Ok(running) => running,
+        Err(error) => {
+            tracing::warn!(workspace_id = %workspace.id, %error, "Could not list the Autopilot's processes to pause");
+            return;
+        }
+    };
+    for process in running.into_iter().filter(|process| {
+        process.session_id == session.id
+            && process.run_reason != ExecutionProcessRunReason::DevServer
+    }) {
+        if let Err(error) = deployment
+            .container()
+            .stop_execution(&process, ExecutionProcessStatus::Killed)
+            .await
+        {
+            tracing::warn!(workspace_id = %workspace.id, process_id = %process.id, %error, "Could not stop the Autopilot's turn");
+        }
+    }
 }
 
 /// Resolve the project id a workspace belongs to (via its linked task), if any.

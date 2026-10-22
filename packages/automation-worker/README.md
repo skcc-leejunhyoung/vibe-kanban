@@ -167,8 +167,8 @@ A `vibe_events` connector polls each host's agent journal
 the events into the same ingest path as `POST /api/events`. The first poll only
 seeds the per-host cursor at the journal's end (no replay); cursors live in the
 runtime `cursors` field. With `excludeAutopilot` (default `true`) the host's own
-Autopilot workspace is looked up (`GET /api/workspaces/autopilot`, cached 60s)
-and its events are dropped, so an Autopilot turn never wakes the Autopilot again.
+Autopilot workspace is looked up (`GET /api/workspaces/autopilot`, once per
+poll) and its events are dropped, so an Autopilot turn never wakes the Autopilot again.
 Cloud notifications are matched through their payload's `workspace_id`, so the
 Autopilot should send its own with `vk notify send ... --ws autopilot`.
 
@@ -190,7 +190,7 @@ Autopilot should send its own with `vk notify send ... --ws autopilot`.
 A routine with trigger `vk_event` (optional `kinds` prefixes and `hosts`
 filters) and a `coalesce` block runs **once per burst**: the buffer flushes
 `windowSeconds` after the last matching event (but no later than
-`maxWaitSeconds`, default 300, after the first one), right away for `immediate`
+`maxWaitSeconds`, default 300, after the first one; `0` removes that cap), right away for `immediate`
 kinds, never sooner than `minIntervalSeconds` after the previous flush and at
 most `maxPerHour` times per rolling hour (held events merge into the next
 flush). Pending buffers are saved in the worker state (`routineBuffers`) and
