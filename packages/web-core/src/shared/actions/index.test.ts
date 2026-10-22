@@ -266,6 +266,7 @@ describe('command palette navigation actions', () => {
       Actions.GitLinkPR,
       Actions.NewSession,
       Actions.ToggleDevServer,
+      Actions.TogglePreviewMode,
       Actions.PinWorkspace,
     ]) {
       expect(isActionVisible(action, autopilotContext)).toBe(false);

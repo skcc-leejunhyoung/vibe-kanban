@@ -86,7 +86,23 @@ export type AutomationRoutineTrigger =
   | { type: 'schedule'; at?: string; cron?: string; timezone: string }
   | {
       type: 'issue_created' | 'execution_completed' | 'workspace_archived';
+    }
+  /** Host journal events polled by a `vibe_events` connector (prefix filters). */
+  | {
+      type: 'vk_event';
+      connectorId?: string;
+      kinds?: string[];
+      hosts?: string[];
     };
+
+/** Burst handling for `vk_event` routines: one run per flush. */
+export interface AutomationRoutineCoalesce {
+  windowSeconds?: number;
+  minIntervalSeconds?: number;
+  maxPerHour?: number;
+  maxWaitSeconds?: number;
+  immediate?: string[];
+}
 
 export type AutomationRoutineAction =
   | {
@@ -107,9 +123,13 @@ export type AutomationRoutineAction =
       connectorId: string;
       targetHostId: string;
       input: Record<string, unknown> & {
-        sessionId: string;
+        /** Either a session id or `target: 'autopilot'` (the host's Autopilot). */
+        sessionId?: string;
+        target?: 'autopilot';
+        /** Queue behind the running turn instead of failing with 409. */
+        queue?: boolean;
         prompt: string;
-        scope: { projectId: string; repositoryIds: string[] };
+        scope?: { projectId: string; repositoryIds: string[] };
       };
     }
   | {
@@ -125,6 +145,7 @@ export interface AutomationRoutine {
   enabled: boolean;
   trigger: AutomationRoutineTrigger;
   condition: Record<string, unknown> | null;
+  coalesce?: AutomationRoutineCoalesce | null;
   action: AutomationRoutineAction;
 }
 

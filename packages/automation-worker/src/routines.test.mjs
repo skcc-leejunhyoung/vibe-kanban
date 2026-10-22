@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { renderPromptTemplate } from './vibe-events.mjs';
 import assert from 'node:assert/strict';
 import { automationEventKey, eventMatchesRoutine, isIndeterminateActionError, normalizeRoutine, recoverInterruptedAutomationState, redactEvent, routineEventKey, routineRunTrigger, scheduleOccurrence, validateRoutineScope } from './routines.mjs';
 
@@ -86,7 +87,8 @@ test('routine condition and action input require object shapes', () => {
 
 test('vk_event routines accept kind/host filters and coalesce settings', () => {
   const routine = normalizeRoutine({ id: 'autopilot-wake', enabled: true, trigger: { type: 'vk_event', kinds: ['process.', 'approval.pending'], hosts: ['host-a'] }, coalesce: { windowSeconds: 10, immediate: ['approval.pending'] }, action: { type: 'send_prompt', connectorId: 'vibe', targetHostId: 'host-a', input: { target: 'autopilot', queue: true, prompt: '{{events}}' } } });
-  assert.deepEqual(routine.coalesce, { windowSeconds: 10, minIntervalSeconds: 120, maxPerHour: 20, immediate: ['approval.pending'] });
+  assert.deepEqual(routine.coalesce, { windowSeconds: 10, minIntervalSeconds: 120, maxPerHour: 20, maxWaitSeconds: 300, immediate: ['approval.pending'] });
+  assert.throws(() => normalizeRoutine({ trigger: { type: 'vk_event' }, coalesce: { maxWaitSeconds: -5 }, action: { type: 'notification', connectorId: 'vibe', targetHostId: 'h', input: { title: 'a', message: 'b' } } }), /maxWaitSeconds/);
   assert.equal(eventMatchesRoutine(routine, { type: 'vk_event', kind: 'process.failed', hostId: 'host-a' }), true);
   assert.equal(eventMatchesRoutine(routine, { type: 'vk_event', kind: 'workspace.status_note', hostId: 'host-a' }), false);
   assert.equal(eventMatchesRoutine(routine, { type: 'vk_event', kind: 'process.failed', hostId: 'host-b' }), false);
@@ -104,6 +106,10 @@ test('send_prompt needs a session id or the autopilot target', () => {
   assert.throws(() => normalizeRoutine(action({ sessionId: 's', prompt: 'x' })), /executor/);
 });
 
-test('run history keeps journal routing fields for batch events', () => {
-  assert.deepEqual(routineRunTrigger({ id: 'batch:h:1..h:2', type: 'vk_event_batch', source: 'vibe', count: 2, cursor: 2, events: [{ title: 'private' }] }), { id: 'batch:h:1..h:2', type: 'vk_event_batch', source: 'vibe', cursor: 2, count: 2 });
+test('run history keeps batch events (routing fields and title, no payload)', () => {
+  const batch = { id: 'batch:h:1..h:2', type: 'vk_event_batch', source: 'vibe', count: 2, cursor: 2, hostIds: ['h'], events: [{ id: 'h:1', kind: 'process.failed', hostId: 'h', workspaceId: 'ws', title: 'exit 101', data: { token: 'secret', status_note: 'long' } }, { id: 'h:2', kind: 'approval.pending', hostId: 'h', title: 'rm -rf', data: {} }] };
+  const trigger = routineRunTrigger(batch);
+  assert.deepEqual(trigger, { id: 'batch:h:1..h:2', type: 'vk_event_batch', source: 'vibe', hostIds: ['h'], cursor: 2, count: 2, events: [{ id: 'h:1', workspaceId: 'ws', kind: 'process.failed', hostId: 'h', title: 'exit 101' }, { id: 'h:2', kind: 'approval.pending', hostId: 'h', title: 'rm -rf' }] });
+  // A run recovered from history renders the same prompt as the original.
+  assert.equal(renderPromptTemplate('{{count}} {{hostIds}} {{cursor}}\n{{events}}', trigger), renderPromptTemplate('{{count}} {{hostIds}} {{cursor}}\n{{events}}', batch));
 });

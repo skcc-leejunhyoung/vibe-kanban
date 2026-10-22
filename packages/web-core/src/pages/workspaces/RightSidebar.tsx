@@ -126,7 +126,7 @@ export const RightSidebar = memo(function RightSidebar({
         id: 'pullRequests',
         title: 'Pull Requests',
         persistKey: PERSIST_KEYS.pullRequestsSection,
-        visible: hasPrs,
+        visible: hasPrs && !selectedWorkspace?.autopilot,
         expanded: prExpanded,
         content: (
           <PrPanelContainer
@@ -140,7 +140,8 @@ export const RightSidebar = memo(function RightSidebar({
         id: 'git',
         title: 'Git',
         persistKey: PERSIST_KEYS.gitPanelRepositories,
-        visible: true,
+        // The Autopilot's folder is rules and notes; git stays out of its UI.
+        visible: !selectedWorkspace?.autopilot,
         expanded: gitExpanded,
         content: (
           <GitPanelContainer

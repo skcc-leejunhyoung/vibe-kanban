@@ -1188,14 +1188,18 @@ export function SessionChatBox<TExecutor extends string = string>({
             disabled={isInFeedbackMode || isInEditMode || isInApprovalMode}
             className="min-w-0 max-w-[120px]"
           >
-            {/* New Session option */}
-            <DropdownMenuItem
-              icon={isNewSessionMode ? CheckIcon : PlusIcon}
-              onClick={() => onNewSession?.()}
-            >
-              {t('conversation.sessions.newSession')}
-            </DropdownMenuItem>
-            {sessions.length > 0 && <DropdownMenuSeparator />}
+            {/* New Session option (absent for single-session workspaces) */}
+            {(onNewSession || isNewSessionMode) && (
+              <DropdownMenuItem
+                icon={isNewSessionMode ? CheckIcon : PlusIcon}
+                onClick={() => onNewSession?.()}
+              >
+                {t('conversation.sessions.newSession')}
+              </DropdownMenuItem>
+            )}
+            {(onNewSession || isNewSessionMode) && sessions.length > 0 && (
+              <DropdownMenuSeparator />
+            )}
             {sessions.length > 0 ? (
               <>
                 <DropdownMenuLabel>

@@ -189,10 +189,12 @@ Autopilot should send its own with `vk notify send ... --ws autopilot`.
 
 A routine with trigger `vk_event` (optional `kinds` prefixes and `hosts`
 filters) and a `coalesce` block runs **once per burst**: the buffer flushes
-`windowSeconds` after the last matching event, right away for `immediate`
+`windowSeconds` after the last matching event (but no later than
+`maxWaitSeconds`, default 300, after the first one), right away for `immediate`
 kinds, never sooner than `minIntervalSeconds` after the previous flush and at
 most `maxPerHour` times per rolling hour (held events merge into the next
-flush). The run receives a `vk_event_batch` event; `send_prompt` renders
+flush). Pending buffers are saved in the worker state (`routineBuffers`) and
+re-armed on restart, so events held by a window or an interval are not lost. The run receives a `vk_event_batch` event; `send_prompt` renders
 `{{count}}`, `{{cursor}}`, `{{hostIds}}` and `{{events}}` (one line per event)
 into the prompt. `target: "autopilot"` resolves the host's Autopilot session
 (and its executor config) at run time instead of a `sessionId` — a host without
@@ -205,7 +207,7 @@ current turn instead of failing with 409.
   "id": "autopilot-wake",
   "enabled": true,
   "trigger": { "type": "vk_event", "connectorId": "vibe-events" },
-  "coalesce": { "windowSeconds": 30, "minIntervalSeconds": 120, "maxPerHour": 20, "immediate": ["approval.pending", "process.failed"] },
+  "coalesce": { "windowSeconds": 30, "minIntervalSeconds": 120, "maxPerHour": 20, "maxWaitSeconds": 300, "immediate": ["approval.pending", "process.failed"] },
   "action": {
     "type": "send_prompt",
     "connectorId": "vibe-default",

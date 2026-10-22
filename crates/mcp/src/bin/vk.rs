@@ -4321,6 +4321,7 @@ const PREFERRED_COLUMNS: &[&str] = &[
     "is_running",
     "latest_process_status",
     "has_pending_approval",
+    "autopilot",
     "executor",
     "cursor",
     "at",

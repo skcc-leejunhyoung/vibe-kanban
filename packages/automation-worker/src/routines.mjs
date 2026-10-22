@@ -117,7 +117,7 @@ function normalizeCoalesce(input) {
   if (typeof input !== 'object' || Array.isArray(input))
     throw new Error('coalesce must be an object');
   const result = { ...COALESCE_DEFAULTS };
-  for (const key of ['windowSeconds', 'minIntervalSeconds', 'maxPerHour']) {
+  for (const key of ['windowSeconds', 'minIntervalSeconds', 'maxPerHour', 'maxWaitSeconds']) {
     if (input[key] === undefined) continue;
     const value = Number(input[key]);
     if (!Number.isFinite(value) || value < 0)
@@ -298,14 +298,23 @@ export function routineRunTrigger(event) {
     'sessionId',
     'kind',
     'hostId',
+    'hostIds',
     'cursor',
     'count',
   ];
-  return Object.fromEntries(
+  const trigger = Object.fromEntries(
     keys
       .filter((key) => event?.[key] !== undefined)
       .map((key) => [key, redactEvent(event[key], key)])
   );
+  // A batch keeps its journal events (routing fields + the generated title, no
+  // payload) so a run recovered from history renders the same `{{events}}`.
+  if (Array.isArray(event?.events))
+    trigger.events = event.events.map((item) => ({
+      ...routineRunTrigger(item),
+      ...(item?.title !== undefined ? { title: redactEvent(item.title, 'title') } : {}),
+    }));
+  return trigger;
 }
 
 function parseCron(value) {

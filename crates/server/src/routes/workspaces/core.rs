@@ -92,6 +92,19 @@ pub async fn update_workspace(
     let pool = &deployment.db().pool;
     let is_archiving = request.archived == Some(true) && !workspace.archived;
 
+    // Resuming (unarchiving) an Autopilot while another one is active would
+    // trip the single-active-autopilot index; say so instead of a DB error.
+    if workspace.autopilot
+        && workspace.archived
+        && request.archived == Some(false)
+        && Workspace::find_active_autopilot(pool).await?.is_some()
+    {
+        return Err(ApiError::Conflict(
+            "Another Autopilot is active on this host; pause it before resuming this one."
+                .to_string(),
+        ));
+    }
+
     Workspace::update(
         pool,
         workspace.id,

@@ -14,6 +14,9 @@ export const COALESCE_DEFAULTS = {
   windowSeconds: 30,
   minIntervalSeconds: 120,
   maxPerHour: 20,
+  // Flush no later than this after the FIRST buffered event, so a stream of
+  // frequent events (status notes) cannot postpone the wake-up forever.
+  maxWaitSeconds: 300,
   immediate: [],
 };
 
@@ -119,13 +122,16 @@ function batchEvent(events) {
   };
 }
 
-// Per-routine buffer. Flushes `windowSeconds` after the LAST appended event,
-// immediately for `immediate` kinds, never sooner than `minIntervalSeconds`
-// after the previous flush and never more than `maxPerHour` times per rolling
-// hour (held events merge into the next flush). Buffers live in memory only;
-// the connector cursor is what survives a restart.
+// Per-routine buffer. Flushes `windowSeconds` after the LAST appended event
+// (but no later than `maxWaitSeconds` after the first), immediately for
+// `immediate` kinds, never sooner than `minIntervalSeconds` after the previous
+// flush and never more than `maxPerHour` times per rolling hour (held events
+// merge into the next flush). `onChange` receives a JSON-safe snapshot after
+// every add and flush so the host can persist it; `restore` loads such a
+// snapshot (re-arming its timer) after a restart.
 export function createCoalescer({
   onFlush,
+  onChange,
   onError = (error) => console.error(error),
   now = Date.now,
   setTimer = (fn, ms) => {
@@ -140,10 +146,19 @@ export function createCoalescer({
   function entry(routineId) {
     let item = buffers.get(routineId);
     if (!item) {
-      item = { events: [], timer: null, flushAt: 0, lastFlushAt: 0, flushes: [] };
+      item = { events: [], timer: null, flushAt: 0, firstAt: 0, lastFlushAt: 0, flushes: [] };
       buffers.set(routineId, item);
     }
     return item;
+  }
+
+  function snapshot(item) {
+    return {
+      events: item.events.slice(),
+      firstAt: item.firstAt,
+      lastFlushAt: item.lastFlushAt,
+      flushes: item.flushes.slice(),
+    };
   }
 
   function earliestAllowed(item, settings, at) {
@@ -165,7 +180,11 @@ export function createCoalescer({
     const urgent = item.events.some((event) =>
       settings.immediate.length ? kindMatches(event.kind, settings.immediate) : false
     );
-    const desired = urgent ? at : at + settings.windowSeconds * 1000;
+    const maxAt =
+      settings.maxWaitSeconds > 0 && item.firstAt
+        ? item.firstAt + settings.maxWaitSeconds * 1000
+        : Infinity;
+    const desired = urgent ? at : Math.min(at + settings.windowSeconds * 1000, maxAt);
     const flushAt = Math.max(desired, earliestAllowed(item, settings, at));
     if (item.timer) clearTimer(item.timer);
     item.flushAt = flushAt;
@@ -175,10 +194,24 @@ export function createCoalescer({
     );
   }
 
-  function add(routine, event) {
+  async function add(routine, event) {
     const item = entry(routine.id);
+    const at = now();
+    if (!item.events.length) item.firstAt = at;
     item.events.push(event);
-    arm(routine, item, now());
+    arm(routine, item, at);
+    await onChange?.(routine.id, snapshot(item));
+    return item.events.length;
+  }
+
+  // Load a persisted snapshot (see `onChange`) and re-arm its timer.
+  function restore(routine, saved) {
+    const item = entry(routine.id);
+    item.events = Array.isArray(saved?.events) ? saved.events.slice() : [];
+    item.firstAt = Number(saved?.firstAt) || 0;
+    item.lastFlushAt = Number(saved?.lastFlushAt) || 0;
+    item.flushes = Array.isArray(saved?.flushes) ? saved.flushes.map(Number) : [];
+    if (item.events.length) arm(routine, item, now());
     return item.events.length;
   }
 
@@ -189,10 +222,14 @@ export function createCoalescer({
     item.timer = null;
     const events = item.events.splice(0);
     const at = now();
+    item.firstAt = 0;
     item.lastFlushAt = at;
     item.flushes.push(at);
     const batch = batchEvent(events);
     await onFlush(routineId, batch);
+    // After the run: a crash before this point replays the same batch id, which
+    // the routine claims already dedupe.
+    await onChange?.(routineId, snapshot(item));
     return batch;
   }
 
@@ -200,5 +237,5 @@ export function createCoalescer({
     return buffers.get(routineId)?.events.length || 0;
   }
 
-  return { add, flush, pending };
+  return { add, flush, pending, restore };
 }

@@ -2396,8 +2396,14 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onSelectSession: onSelectSession ?? (() => {}),
         isNewSessionMode: needsExecutorSelection,
         onNewSession: onStartNewSession,
-        onRenameSession: handleRenameSession,
-        onDeleteSession: handleDeleteSession,
+        // The Autopilot keeps exactly one session (the server refuses to
+        // delete it), so its menu offers neither rename nor delete.
+        onRenameSession: actionCtx.isAutopilot
+          ? undefined
+          : handleRenameSession,
+        onDeleteSession: actionCtx.isAutopilot
+          ? undefined
+          : handleDeleteSession,
       }}
       toolbarActions={{
         items: toolbarActionItems,

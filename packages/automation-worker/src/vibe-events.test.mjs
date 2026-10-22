@@ -131,3 +131,36 @@ test('eventWorkspaceId reads the cloud notification payload', () => {
   );
   assert.equal(eventWorkspaceId({ kind: 'cloud.notification', data: {} }), null);
 });
+
+test('maxWaitSeconds flushes a never-quiet burst from the first event', async () => {
+  const clock = fakeClock();
+  const flushes = [];
+  const coalescer = createCoalescer({ ...clock, onFlush: async (id, batch) => flushes.push(batch) });
+  const routine = { id: 'r', coalesce: { ...COALESCE_DEFAULTS, windowSeconds: 30, minIntervalSeconds: 0, maxWaitSeconds: 60 } };
+  for (let i = 1; i <= 6; i += 1) {
+    await coalescer.add(routine, journalEventToWorkerEvent('h', journal(i, 'workspace.status_note')));
+    await clock.advance(20_000);
+  }
+  assert.equal(flushes.length, 2, 'the window never went quiet, so the cap flushed instead');
+  assert.equal(flushes[0].count, 3, 'everything buffered in the first 60s');
+  assert.equal(flushes[0].id, 'batch:h:1..h:3');
+});
+
+test('persisted snapshots restore into a fresh coalescer and still flush', async () => {
+  const clock = fakeClock();
+  const snapshots = {};
+  const first = createCoalescer({ ...clock, onFlush: async () => {}, onChange: async (id, snap) => { snapshots[id] = JSON.parse(JSON.stringify(snap)); } });
+  const routine = { id: 'r', coalesce: { ...COALESCE_DEFAULTS, windowSeconds: 30, minIntervalSeconds: 0 } };
+  await first.add(routine, journalEventToWorkerEvent('h', journal(1, 'process.completed')));
+  assert.deepEqual(Object.keys(snapshots.r).sort(), ['events', 'firstAt', 'flushes', 'lastFlushAt']);
+  assert.equal(snapshots.r.events.length, 1);
+  // "restart": a new coalescer loads the snapshot, nothing is lost
+  const flushes = [];
+  const second = createCoalescer({ ...clock, onFlush: async (id, batch) => flushes.push(batch), onChange: async (id, snap) => { snapshots[id] = snap; } });
+  assert.equal(second.restore(routine, snapshots.r), 1);
+  await clock.advance(30_000);
+  assert.equal(flushes.length, 1);
+  assert.equal(flushes[0].id, 'batch:h:1..h:1');
+  assert.equal(snapshots.r.events.length, 0, 'flushed buffer is persisted empty');
+  assert.equal(snapshots.r.lastFlushAt, clock.now());
+});

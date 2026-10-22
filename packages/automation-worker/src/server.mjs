@@ -268,6 +268,8 @@ const defaultState = {
   githubIssueLinkOperations: [],
   pullRequestLinkOperations: [],
   eventReceipts: {},
+  // routineId -> coalescer snapshot { events, firstAt, lastFlushAt, flushes }
+  routineBuffers: {},
 };
 
 let state = structuredClone(defaultState);
@@ -292,12 +294,13 @@ const routineHostInFlight = new Set();
 // flush (see flushCoalescedRoutine). Declared before bootstrap like the caches.
 const routineCoalescer = createCoalescer({
   onFlush: (routineId, batch) => flushCoalescedRoutine(routineId, batch),
+  onChange: async (routineId, snapshot) => {
+    state.routineBuffers[routineId] = snapshot;
+    await persistState();
+  },
   onError: (error) =>
     log('error', 'coalesced routine run failed', { error: errorMessage(error) }),
 });
-// hostId -> { workspaceId, at }: the host's Autopilot workspace, so its own
-// turns are not fed back to it as events (60s cache).
-const autopilotCache = new Map();
 const eventInFlight = new Map();
 const githubIssueLinkInFlight = new Map();
 // ponytail: keep comment snapshots in memory; use an indexed persistent store
@@ -335,6 +338,7 @@ async function bootstrap() {
   state = await readJson(STATE_PATH, defaultState);
   logs = await readJson(LOG_PATH, []);
   ensureDefaults();
+  restoreRoutineBuffers();
   await persistState();
   scheduleAll();
   restoreRoutineDeadlines();
@@ -358,6 +362,7 @@ function ensureDefaults() {
   state.githubIssueLinkOperations ||= [];
   state.pullRequestLinkOperations ||= [];
   state.eventReceipts ||= {};
+  state.routineBuffers ||= {};
   for (const connector of defaultState.connectors) {
     if (!state.connectors.some((item) => item.id === connector.id)) {
       state.connectors.push(structuredClone(connector));
@@ -893,12 +898,22 @@ async function dispatchRoutineEvent(event) {
       continue;
     }
     if (routine.coalesce && event.type !== 'vk_event_batch') {
-      routineCoalescer.add(routine, event);
+      await routineCoalescer.add(routine, event);
       continue;
     }
     const key = routineEventKey(routine.id, event);
     const result = await runRoutine(routine, event, key);
     if (result.status === 'busy') await queueRoutineEvent(routine.id, event, key);
+  }
+}
+
+// Events buffered when the worker stopped (quiet window, interval or hourly
+// hold) re-enter the coalescer with their timers re-armed.
+function restoreRoutineBuffers() {
+  for (const [routineId, snapshot] of Object.entries(state.routineBuffers)) {
+    const routine = state.routines.find((item) => item.id === routineId);
+    if (routine?.coalesce) routineCoalescer.restore(routine, snapshot);
+    else delete state.routineBuffers[routineId];
   }
 }
 
@@ -1263,7 +1278,7 @@ async function pollVibeEvents(connector) {
     const excludeId =
       config.excludeAutopilot === false
         ? null
-        : await autopilotWorkspaceId(vibe, bridge.baseUrl, hostId);
+        : await autopilotWorkspaceId(vibe, bridge.baseUrl);
     for (let pages = 0; pages < 10; pages += 1) {
       const page = await vibeApi(
         vibe,
@@ -1296,18 +1311,16 @@ async function pollVibeEvents(connector) {
   return { ok: true, processed, cursors: { ...cursors } };
 }
 
-async function autopilotWorkspaceId(vibe, baseUrl, hostId) {
-  const cached = autopilotCache.get(hostId);
-  if (cached && cached.at > Date.now() - 60000) return cached.workspaceId;
-  let workspaceId = null;
+// Looked up once per poll (no cache): a paused-then-recreated Autopilot must
+// not receive its own events even for one interval.
+async function autopilotWorkspaceId(vibe, baseUrl) {
   try {
     const autopilot = await vibeApi(vibe, 'GET', '/api/workspaces/autopilot', undefined, baseUrl);
-    workspaceId = autopilot?.data?.workspace?.id || null;
+    return autopilot?.data?.workspace?.id || null;
   } catch (error) {
     if (error?.status !== 404) throw error;
+    return null;
   }
-  autopilotCache.set(hostId, { workspaceId, at: Date.now() });
-  return workspaceId;
 }
 
 // ponytail: journal events arrive far more often than issue events, so drop

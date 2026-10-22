@@ -248,6 +248,8 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     if (!modal.visible) {
       setSubmitting(false);
       setError(null);
+      // The ⚡ button means quick chat; the Autopilot tab is a deliberate pick.
+      setMode('quick');
     }
   }, [modal.visible]);
 
@@ -383,6 +385,14 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     }
   }, [existingAutopilot, selectedHostId, autopilotQuery]);
 
+  // Recreate = pause, then start the form on the same folder so only the
+  // prompt or model needs changing.
+  const recreateAutopilot = useCallback(async () => {
+    const folder = existingAutopilot?.workspace.container_ref;
+    await pauseAutopilot();
+    if (folder) await registerAndSelect(folder);
+  }, [existingAutopilot, pauseAutopilot, registerAndSelect]);
+
   const handleSend = useCallback(async () => {
     if (!repo || !executorConfig || !prompt.trim()) return;
     setSubmitting(true);
@@ -423,6 +433,11 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       // Sent: the draft is now the workspace's first message, so drop it.
       setPrompt('');
       clearAttachments();
+      if (isAutopilotMode) {
+        void queryClient.invalidateQueries({
+          queryKey: ['autopilot', selectedHostId],
+        });
+      }
       openWorkspace(workspace.id);
     } catch (e) {
       setError(
@@ -510,6 +525,34 @@ const QuickChatDialogImpl = create<NoProps>(() => {
         ))}
       </div>
 
+      <label className="flex items-center gap-base rounded-md border border-border bg-secondary px-base py-half">
+        {selectedHostId ? (
+          <ComputerTowerIcon className="size-icon-sm shrink-0 text-low" />
+        ) : (
+          <DesktopIcon className="size-icon-sm shrink-0 text-low" />
+        )}
+        <span className="text-sm text-low">Run on</span>
+        <select
+          value={selectedHostId ?? ''}
+          onChange={(event) => {
+            setSelectedHostId(event.target.value || null);
+            setRepo(null);
+            setError(null);
+            // Uploaded to the previous host's cache — those ids mean nothing here.
+            clearAttachments();
+          }}
+          className="min-w-0 flex-1 bg-transparent text-sm text-high outline-none"
+          aria-label="Quick chat host"
+        >
+          {runtime === 'local' && <option value="">This machine</option>}
+          {onlineHosts.map((host) => (
+            <option key={host.id} value={host.id}>
+              {host.name}
+            </option>
+          ))}
+        </select>
+      </label>
+
       {isAutopilotMode && autopilotQuery.isLoading && (
         <p className="text-sm text-low">Checking this host's Autopilot…</p>
       )}
@@ -526,6 +569,10 @@ const QuickChatDialogImpl = create<NoProps>(() => {
             <RobotIcon weight="fill" className="size-icon-sm text-brand" />
             <span className="font-medium text-high">
               {existingAutopilot.workspace.name ?? 'Autopilot'}
+            </span>
+            <span className="shrink-0 rounded-sm border border-border px-1 text-sm text-low">
+              {onlineHosts.find((host) => host.id === selectedHostId)?.name ??
+                'This machine'}
             </span>
             <span
               className="min-w-0 truncate text-sm text-low"
@@ -578,9 +625,9 @@ const QuickChatDialogImpl = create<NoProps>(() => {
             </button>
             <button
               type="button"
-              onClick={pauseAutopilot}
+              onClick={recreateAutopilot}
               disabled={pausing}
-              title="Pause this Autopilot and start a new one with a different folder or model"
+              title="Pause this Autopilot and start a new one on the same folder with a different prompt or model"
               className="rounded-md border border-border px-base py-half text-sm text-normal hover:text-high disabled:opacity-50"
             >
               Recreate…
@@ -603,33 +650,6 @@ const QuickChatDialogImpl = create<NoProps>(() => {
               folder or model later.
             </p>
           )}
-          <label className="flex items-center gap-base rounded-md border border-border bg-secondary px-base py-half">
-            {selectedHostId ? (
-              <ComputerTowerIcon className="size-icon-sm shrink-0 text-low" />
-            ) : (
-              <DesktopIcon className="size-icon-sm shrink-0 text-low" />
-            )}
-            <span className="text-sm text-low">Run on</span>
-            <select
-              value={selectedHostId ?? ''}
-              onChange={(event) => {
-                setSelectedHostId(event.target.value || null);
-                setRepo(null);
-                setError(null);
-                // Uploaded to the previous host's cache — those ids mean nothing here.
-                clearAttachments();
-              }}
-              className="min-w-0 flex-1 bg-transparent text-sm text-high outline-none"
-              aria-label="Quick chat host"
-            >
-              {runtime === 'local' && <option value="">This machine</option>}
-              {onlineHosts.map((host) => (
-                <option key={host.id} value={host.id}>
-                  {host.name}
-                </option>
-              ))}
-            </select>
-          </label>
 
           <div className="flex flex-wrap items-center gap-base">
             <button

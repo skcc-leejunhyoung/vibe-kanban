@@ -335,6 +335,7 @@ const AUTOPILOT_HIDDEN_ACTION_IDS = new Set<string>([
   'duplicate-workspace',
   'pin-workspace',
   'toggle-dev-server',
+  'toggle-preview-mode',
 ]);
 
 // Pure action helper functions

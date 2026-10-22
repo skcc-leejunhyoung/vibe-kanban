@@ -1491,6 +1491,7 @@ export function AutomationSettingsSection() {
                       value: 'workspace_archived',
                       label: 'Workspace archived',
                     },
+                    { value: 'vk_event', label: 'Host journal event' },
                   ]}
                   onChange={(type) =>
                     setRoutine({

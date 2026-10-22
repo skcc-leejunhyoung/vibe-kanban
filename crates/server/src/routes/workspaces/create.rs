@@ -10,7 +10,7 @@ use db::models::{
         CreateWorkspaceWithoutStartingResponse, GithubLinkedBranchInput, LinkedIssueInfo,
         PrReviewInput, WorkingBranchInput, WorkspaceRepoInput,
     },
-    workspace::{CreateWorkspace, Workspace},
+    workspace::{CreateWorkspace, Workspace, WorkspaceError},
 };
 use deployment::Deployment;
 use executors::model_selector::PermissionPolicy;
@@ -1047,7 +1047,23 @@ pub async fn create_and_start_quick_chat(
         &container_ref,
         autopilot,
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        // Two Autopilot creates racing past the check above: the partial unique
+        // index settles it, and the loser gets the same answer as the check.
+        let unique_violation = matches!(
+            &error,
+            WorkspaceError::Database(sqlx::Error::Database(db)) if db.is_unique_violation()
+        );
+        if autopilot && unique_violation {
+            ApiError::Conflict(
+                "This host already has an active Autopilot. Open it, or pause it before creating another."
+                    .to_string(),
+            )
+        } else {
+            ApiError::from(error)
+        }
+    })?;
 
     let mut managed_workspace = deployment
         .workspace_manager()
@@ -1117,7 +1133,7 @@ const AUTOPILOT_AGENTS_MD: &str = r#"# Autopilot
 
 ## 조향 정책
 - process.failed: 실패 로그 꼬리를 읽고 원인이 분명하면 그 세션에 `vk session send <session> --queue -m "..."`로 재시도 지시. 같은 세션에 하루 2회까지.
-- approval.pending: 파일 삭제·force push·외부 전송은 승인하지 않고 링크만 전달한다. 테스트 실행·읽기·설치는 `vk session approvals respond --approve`.
+- approval.pending: 파일 삭제·force push·외부 전송은 승인하지 않고 링크만 전달한다. 테스트 실행·읽기·설치는 `vk session approvals respond <id> --exec <exec> --approve`(목록은 `vk session approvals list`).
 - 사용자 세션이 진행 중이면 steer 대신 queue.
 
 ## 이슈 정책
@@ -1134,17 +1150,26 @@ const AUTOPILOT_AGENTS_MD: &str = r#"# Autopilot
 /// Seed `AGENTS.md` (and a `CLAUDE.md` that includes it) in the Autopilot's
 /// folder when they are missing. Failures only log: the agent still starts.
 async fn seed_autopilot_instructions(repo_path: &std::path::Path) {
-    for (file, body) in [
-        ("AGENTS.md", AUTOPILOT_AGENTS_MD),
-        ("CLAUDE.md", "@AGENTS.md\n"),
-    ] {
-        let path = repo_path.join(file);
-        if path.exists() {
-            continue;
-        }
-        if let Err(error) = tokio::fs::write(&path, body).await {
-            tracing::warn!(?error, path = %path.display(), "Could not seed Autopilot instructions");
-        }
+    let agents = repo_path.join("AGENTS.md");
+    if !agents.exists()
+        && let Err(error) = tokio::fs::write(&agents, AUTOPILOT_AGENTS_MD).await
+    {
+        tracing::warn!(?error, path = %agents.display(), "Could not seed Autopilot instructions");
+    }
+    // Claude reads CLAUDE.md, so it must include AGENTS.md; an existing
+    // CLAUDE.md that does not mention it gets the include line appended.
+    let claude = repo_path.join("CLAUDE.md");
+    let existing = tokio::fs::read_to_string(&claude).await.unwrap_or_default();
+    if existing.contains("AGENTS.md") {
+        return;
+    }
+    let body = if existing.is_empty() {
+        "@AGENTS.md\n".to_string()
+    } else {
+        format!("{}\n@AGENTS.md\n", existing.trim_end_matches('\n'))
+    };
+    if let Err(error) = tokio::fs::write(&claude, body).await {
+        tracing::warn!(?error, path = %claude.display(), "Could not link AGENTS.md from CLAUDE.md");
     }
 }
 
