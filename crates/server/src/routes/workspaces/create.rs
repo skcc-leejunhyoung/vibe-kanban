@@ -1108,7 +1108,7 @@ const AUTOPILOT_AGENTS_MD: &str = r#"# Autopilot
 
 ## 턴의 형식
 - 한 턴 = 자동화 루틴이 보낸 이벤트 묶음 1건 또는 사용자 메시지 1건.
-- 상태 확인은 `vk ws list --json --all-hosts`로 시작한다. 로그가 필요하면 `vk session log <exec> --limit 60`.
+- 상태 확인은 `vk ws list --json`으로 시작한다(페어 호스트는 `vk hosts list` 뒤 `--host <이름>`). 로그가 필요하면 `vk session log <exec> --limit 60`.
 - 끝은 반드시 ```vibe-status 한 문단(1000자 이내, 첫 문장 = 무엇을 지켜보고 어디까지 왔는지). 조치는 본문에 한 줄씩: 알림 / 조향 / 이슈 / 건너뜀(이유).
 
 ## 알림 정책
@@ -1128,7 +1128,7 @@ const AUTOPILOT_AGENTS_MD: &str = r#"# Autopilot
 
 ## 기억·루틴
 - 규칙 변경은 이 파일의 해당 절을 고친다(날짜·출처 한 줄). 일지는 `autopilot/journal.md`.
-- 너를 깨우는 루틴은 `vk automation routines list|upsert`로 네가 관리한다. "조용히 해" = 루틴 비활성.
+- 너를 깨우는 루틴은 `vk automation status`(목록)와 `vk automation routines upsert`로 네가 관리한다. "조용히 해" = 루틴 비활성.
 "#;
 
 /// Seed `AGENTS.md` (and a `CLAUDE.md` that includes it) in the Autopilot's

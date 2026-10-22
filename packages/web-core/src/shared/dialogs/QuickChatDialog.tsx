@@ -510,6 +510,16 @@ const QuickChatDialogImpl = create<NoProps>(() => {
         ))}
       </div>
 
+      {isAutopilotMode && autopilotQuery.isLoading && (
+        <p className="text-sm text-low">Checking this host's Autopilot…</p>
+      )}
+      {isAutopilotMode && autopilotQuery.isError && (
+        <p className="text-sm text-error">
+          {getErrorMessage(autopilotQuery.error) ||
+            'Could not check this host for an Autopilot.'}
+        </p>
+      )}
+
       {isAutopilotMode && existingAutopilot && (
         <div className="flex flex-col gap-half rounded-md border border-border bg-secondary p-base">
           <div className="flex items-center gap-base">
