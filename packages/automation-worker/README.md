@@ -166,11 +166,14 @@ A `vibe_events` connector polls each host's agent journal
 (`GET /api/events/journal`) through the Vibe connector's `hostBridges` and feeds
 the events into the same ingest path as `POST /api/events`. The first poll only
 seeds the per-host cursor at the journal's end (no replay); cursors live in the
-runtime `cursors` field. With `excludeAutopilot` (default `true`) the host's own
-Autopilot workspace is looked up (`GET /api/workspaces/autopilot`, once per
-poll) and its events are dropped, so an Autopilot turn never wakes the Autopilot again.
-Cloud notifications are matched through their payload's `workspace_id`, so the
-Autopilot should send its own with `vk notify send ... --ws autopilot`.
+runtime `cursors` field. With `excludeAutopilot` (default `true`) every polled
+host's Autopilot workspace is looked up (`GET /api/workspaces/autopilot`, once
+per poll) and their events are dropped from every host's journal, so an
+Autopilot turn never wakes an Autopilot again. Cloud notifications reach every
+host's journal: they are matched through their payload's `workspace_id` (so the
+Autopilot should send its own with `vk notify send ... --ws autopilot`) and
+deduplicated by notification id. A host that cannot be reached is logged and
+skipped without moving its cursor; the other hosts still poll.
 
 ```json
 {

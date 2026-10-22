@@ -56,6 +56,12 @@ test('journal events become worker events with a human title', () => {
   assert.equal(event.title, 'process.failed · vk/47fd · exit 101');
 });
 
+test('a cloud notification relayed by two hosts maps to one event id', () => {
+  const raw = (cursor) => journal(cursor, 'cloud.notification', { workspace_id: undefined, data: { id: 'n-1' } });
+  assert.equal(journalEventToWorkerEvent('host-a', raw(5)).id, 'cloud:n-1');
+  assert.equal(journalEventToWorkerEvent('host-b', raw(90)).id, 'cloud:n-1');
+});
+
 test('prompt template renders batches and single events', () => {
   const a = journalEventToWorkerEvent('host-a', journal(1, 'process.completed', { execution_id: null }));
   const b = journalEventToWorkerEvent('host-b', journal(7, 'approval.pending', { session_id: null, execution_id: null }));

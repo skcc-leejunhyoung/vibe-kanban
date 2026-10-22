@@ -57,7 +57,12 @@ export function journalEventToWorkerEvent(hostId, event) {
     .filter(Boolean)
     .join(' · ');
   return {
-    id: `${hostId}:${event.cursor}`,
+    // Every host's journal relays the same cloud notification; keying it by
+    // the notification lets the receipt dedupe drop the other hosts' copies.
+    id:
+      event.kind === 'cloud.notification' && data.id
+        ? `cloud:${data.id}`
+        : `${hostId}:${event.cursor}`,
     source: 'vibe',
     type: 'vk_event',
     kind: String(event.kind || ''),
