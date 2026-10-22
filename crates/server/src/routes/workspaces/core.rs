@@ -7,7 +7,6 @@ use axum::{
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
-    pending_rate_limit_resume::PendingRateLimitResume,
     requests::AutopilotWorkspaceResponse,
     scheduled_resume::ScheduledResume,
     session::Session,
@@ -179,12 +178,10 @@ async fn silence_autopilot(deployment: &DeploymentImpl, workspace: &Workspace) {
     };
     // Clear before killing: the kill's exit handler would drain the queue.
     deployment.queued_message_service().clear_queue(session.id);
-    // Pending wakeups would otherwise fire into the paused Autopilot.
+    // Pending wakeups would otherwise fire into the paused Autopilot (the
+    // rate-limit watcher drops its resume itself and runs the deferred cleanup).
     if let Err(error) = ScheduledResume::cancel_pending_for_session(pool, session.id).await {
         tracing::warn!(workspace_id = %workspace.id, %error, "Could not cancel the Autopilot's scheduled resumes");
-    }
-    if let Err(error) = PendingRateLimitResume::delete_by_session_id(pool, session.id).await {
-        tracing::warn!(workspace_id = %workspace.id, %error, "Could not cancel the Autopilot's rate-limit resume");
     }
     let running = match ExecutionProcess::find_running(pool).await {
         Ok(running) => running,

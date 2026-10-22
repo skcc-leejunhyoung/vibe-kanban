@@ -191,7 +191,7 @@ fn toggle_for(method: &Method, path: &str) -> Option<Toggle> {
             _,
             "git",
             "target-branch",
-            "push" | "pull-and-push" | "update-from-base" | "merge-remote",
+            "push" | "pull-and-push" | "update-from-base" | "merge-remote" | "pull",
         ]
         | ["repos", _, "push"] => Toggle::GitMerge,
         ["workspaces", _, "git", ..] | ["workspaces", _, "pull-requests", ..] => Toggle::GitWrite,
@@ -275,8 +275,8 @@ pub fn unmask_secrets(config: &mut Config, current: &Config) {
 }
 
 /// Maps whose values are credentials: executor profile `env` and MCP server
-/// `env`/`headers` (API keys, bearer tokens).
-const SECRET_MAP_KEYS: &[&str] = &["env", "headers"];
+/// `env`/`headers` (Codex `http_headers`, OpenCode `environment`).
+const SECRET_MAP_KEYS: &[&str] = &["env", "headers", "http_headers", "environment"];
 
 /// Mask every string under a [`SECRET_MAP_KEYS`] map, at any depth, for an
 /// agent reading profiles or MCP config.
@@ -323,6 +323,19 @@ pub fn unmask_secret_maps(value: &mut serde_json::Value, current: &serde_json::V
             }
         }
         _ => {}
+    }
+}
+
+/// Whether a mask is still left after [`unmask_secret_maps`]: the agent moved
+/// a masked value to a new path (renamed server, copied variant), and saving
+/// it would store `***` as the credential.
+pub fn has_masked_secret(value: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match value {
+        Value::String(text) => text == SECRET_MASK,
+        Value::Object(map) => map.values().any(has_masked_secret),
+        Value::Array(items) => items.iter().any(has_masked_secret),
+        _ => false,
     }
 }
 
@@ -470,6 +483,7 @@ mod tests {
             "/api/workspaces/abc/git/target-branch/pull-and-push",
             "/api/workspaces/abc/git/target-branch/update-from-base",
             "/api/workspaces/abc/git/target-branch/merge-remote",
+            "/api/workspaces/abc/git/target-branch/pull",
             "/api/repos/abc/push",
         ] {
             assert_eq!(
@@ -518,6 +532,10 @@ mod tests {
             (Method::POST, "/api/relay-auth/client/pair"),
             (Method::POST, "/api/workspaces/abc/git/push/force"),
             (Method::POST, "/api/workspaces/abc/git/reset-to-remote"),
+            (
+                Method::POST,
+                "/api/workspaces/abc/git/target-branch/reset-to-remote",
+            ),
             (Method::DELETE, "/api/repos/abc"),
             (Method::DELETE, "/api/organizations/abc"),
             (Method::DELETE, "/api/organizations/abc/members/u"),
@@ -572,9 +590,14 @@ mod tests {
         // A new value the agent typed is kept; masked ones come back.
         sent["CODEX"]["DEFAULT"]["CODEX"]["env"]["NEW"] = "n".into();
         unmask_secret_maps(&mut sent, &stored);
+        assert!(!has_masked_secret(&sent));
         assert_eq!(sent["CODEX"]["DEFAULT"]["CODEX"]["env"]["TOKEN"], "t0k");
         assert_eq!(sent["CODEX"]["DEFAULT"]["CODEX"]["env"]["NEW"], "n");
         assert_eq!(sent["servers"][0]["headers"]["Authorization"], "Bearer x");
+        // A masked value moved to a new name has nothing to come back from.
+        let mut renamed = serde_json::json!({"other": {"env": {"TOKEN": SECRET_MASK}}});
+        unmask_secret_maps(&mut renamed, &stored);
+        assert!(has_masked_secret(&renamed));
     }
 
     #[test]

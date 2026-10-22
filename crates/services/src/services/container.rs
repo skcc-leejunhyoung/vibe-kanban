@@ -373,9 +373,14 @@ pub trait ContainerService {
     /// Finalize workspace execution by sending notifications
     async fn finalize_task(&self, ctx: &ExecutionContext) {
         // Skip notification if process was intentionally killed by user. The
-        // Autopilot runs a turn per event batch and sends its own notices.
+        // Autopilot runs a turn per event batch and reports its own results;
+        // a failed turn cannot, so that one still notifies.
         if matches!(ctx.execution_process.status, ExecutionProcessStatus::Killed)
-            || ctx.workspace.autopilot
+            || (ctx.workspace.autopilot
+                && matches!(
+                    ctx.execution_process.status,
+                    ExecutionProcessStatus::Completed
+                ))
         {
             return;
         }
@@ -2081,7 +2086,10 @@ pub trait ContainerService {
             .await
             .insert(execution_process.id, Arc::new(MsgStore::new()));
         // From here on a failure must not leave the row running with no child.
+        // The Autopilot passed the pause check above; un-archiving it here
+        // would undo a pause that landed in between.
         if *run_reason != ExecutionProcessRunReason::ArchiveScript
+            && !workspace.autopilot
             && let Err(e) = Workspace::set_archived(&self.db().pool, workspace.id, false).await
         {
             self.fail_execution_start(

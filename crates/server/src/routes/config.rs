@@ -503,6 +503,13 @@ async fn update_mcp_servers(
                 crate::middleware::unmask_secret_maps(server, stored);
             }
         }
+        if payload
+            .servers
+            .values()
+            .any(crate::middleware::has_masked_secret)
+        {
+            return Ok(ResponseJson(ApiResponse::error(MASKED_SECRET_MOVED)));
+        }
     }
     match update_mcp_servers_in_config(&config_path, &mcpc, payload.servers).await {
         Ok(message) => Ok(ResponseJson(ApiResponse::success(message))),
@@ -614,16 +621,19 @@ fn masked_profiles(profiles: &ExecutorConfigs) -> ExecutorConfigs {
         .unwrap_or_else(ExecutorConfigs::from_defaults)
 }
 
-/// An agent's profiles write with its masked `env` values restored.
-fn unmasked_profiles(profiles: ExecutorConfigs) -> ExecutorConfigs {
-    let (Ok(mut value), Ok(current)) = (
-        serde_json::to_value(&profiles),
-        serde_json::to_value(ExecutorConfigs::get_cached()),
-    ) else {
-        return profiles;
-    };
+const MASKED_SECRET_MOVED: &str =
+    "A masked secret (***) cannot be saved under a new name; set the real value in the app";
+
+/// An agent's profiles write with its masked `env` values restored; `None`
+/// when a mask has nothing to come back from.
+fn unmasked_profiles(profiles: ExecutorConfigs) -> Option<ExecutorConfigs> {
+    let mut value = serde_json::to_value(&profiles).ok()?;
+    let current = serde_json::to_value(ExecutorConfigs::get_cached()).ok()?;
     crate::middleware::unmask_secret_maps(&mut value, &current);
-    serde_json::from_value(value).unwrap_or(profiles)
+    if crate::middleware::has_masked_secret(&value) {
+        return None;
+    }
+    serde_json::from_value(value).ok()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -698,7 +708,16 @@ async fn update_profiles(
         CompatibleUpdateProfilesRequest::Legacy(profiles) => (profiles, None),
     };
     let executor_profiles = if crate::middleware::is_agent_request(&headers) {
-        unmasked_profiles(executor_profiles)
+        match unmasked_profiles(executor_profiles) {
+            Some(profiles) => profiles,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    ResponseJson(ApiResponse::<String>::error(MASKED_SECRET_MOVED)),
+                )
+                    .into_response();
+            }
+        }
     } else {
         executor_profiles
     };

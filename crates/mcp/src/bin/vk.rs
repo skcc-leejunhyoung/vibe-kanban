@@ -4112,8 +4112,9 @@ impl Ctx {
             };
             return Ok(serde_json::to_value(page).unwrap_or_default());
         }
+        // Past every cursor the journal answers with its latest one, no events.
         let since: u64 = if now {
-            u64::MAX
+            self.client.events_list(u64::MAX, &kinds, 1).await?.cursor
         } else {
             since.trim().parse().map_err(|_| {
                 VkError::message(
