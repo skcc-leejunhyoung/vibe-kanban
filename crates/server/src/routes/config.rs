@@ -181,7 +181,8 @@ async fn get_user_system_info(
     // still matches it on `PUT /config`.
     let config_revision = revision(&config);
     let mut config = config;
-    if crate::middleware::is_agent_request(&headers) {
+    let is_agent = crate::middleware::is_agent_request(&headers);
+    if is_agent {
         crate::middleware::mask_secrets(&mut config);
     }
     let user_system_info = UserSystemInfo {
@@ -192,7 +193,11 @@ async fn get_user_system_info(
         login_status,
         remote_auth_degraded: deployment.auth_context().remote_auth_degraded_slug().await,
         profiles_revision: cached_profiles.revision(),
-        profiles: cached_profiles,
+        profiles: if is_agent {
+            masked_profiles(&cached_profiles)
+        } else {
+            cached_profiles
+        },
         environment: Environment::new(),
         capabilities: {
             let mut caps: HashMap<String, Vec<BaseAgentCapability>> = HashMap::new();
@@ -420,6 +425,7 @@ pub struct UpdateMcpServersBody {
 
 async fn get_mcp_servers(
     State(_deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
     Query(query): Query<McpServerQuery>,
 ) -> Result<ResponseJson<ApiResponse<GetMcpServerResponse>>, ApiError> {
     let coding_agent = ExecutorConfigs::get_cached()
@@ -446,7 +452,12 @@ async fn get_mcp_servers(
 
     let mut mcpc = coding_agent.get_mcp_config();
     let raw_config = read_agent_config(&config_path, &mcpc).await?;
-    let servers = get_mcp_servers_from_config_path(&raw_config, &mcpc.servers_path);
+    let mut servers = get_mcp_servers_from_config_path(&raw_config, &mcpc.servers_path);
+    if crate::middleware::is_agent_request(&headers) {
+        servers
+            .values_mut()
+            .for_each(crate::middleware::mask_secret_maps);
+    }
     mcpc.set_servers(servers);
     Ok(ResponseJson(ApiResponse::success(GetMcpServerResponse {
         mcp_config: mcpc,
@@ -456,8 +467,9 @@ async fn get_mcp_servers(
 
 async fn update_mcp_servers(
     State(_deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
     Query(query): Query<McpServerQuery>,
-    Json(payload): Json<UpdateMcpServersBody>,
+    Json(mut payload): Json<UpdateMcpServersBody>,
 ) -> Result<ResponseJson<ApiResponse<String>>, ApiError> {
     let profiles = ExecutorConfigs::get_cached();
     let agent = profiles
@@ -483,6 +495,15 @@ async fn update_mcp_servers(
     };
 
     let mcpc = agent.get_mcp_config();
+    if crate::middleware::is_agent_request(&headers) {
+        let raw_config = read_agent_config(&config_path, &mcpc).await?;
+        let current = get_mcp_servers_from_config_path(&raw_config, &mcpc.servers_path);
+        for (name, server) in payload.servers.iter_mut() {
+            if let Some(stored) = current.get(name) {
+                crate::middleware::unmask_secret_maps(server, stored);
+            }
+        }
+    }
     match update_mcp_servers_in_config(&config_path, &mcpc, payload.servers).await {
         Ok(message) => Ok(ResponseJson(ApiResponse::success(message))),
         Err(e) => Ok(ResponseJson(ApiResponse::error(&format!(
@@ -582,6 +603,29 @@ fn set_mcp_servers_in_config_path(
     Ok(())
 }
 
+/// Profiles as an agent may read them: `env` values masked.
+fn masked_profiles(profiles: &ExecutorConfigs) -> ExecutorConfigs {
+    serde_json::to_value(profiles)
+        .ok()
+        .and_then(|mut value| {
+            crate::middleware::mask_secret_maps(&mut value);
+            serde_json::from_value(value).ok()
+        })
+        .unwrap_or_else(ExecutorConfigs::from_defaults)
+}
+
+/// An agent's profiles write with its masked `env` values restored.
+fn unmasked_profiles(profiles: ExecutorConfigs) -> ExecutorConfigs {
+    let (Ok(mut value), Ok(current)) = (
+        serde_json::to_value(&profiles),
+        serde_json::to_value(ExecutorConfigs::get_cached()),
+    ) else {
+        return profiles;
+    };
+    crate::middleware::unmask_secret_maps(&mut value, &current);
+    serde_json::from_value(value).unwrap_or(profiles)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProfilesContent {
     pub content: String,
@@ -591,11 +635,19 @@ pub struct ProfilesContent {
 
 async fn get_profiles(
     State(_deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
 ) -> ResponseJson<ApiResponse<ProfilesContent>> {
     let profiles_path = utils::assets::profiles_path();
 
     // Use cached data to ensure consistency with runtime and PUT updates
     let profiles = ExecutorConfigs::get_cached();
+    // The revision stays the real one so a masked round trip still matches.
+    let revision = profiles.revision();
+    let profiles = if crate::middleware::is_agent_request(&headers) {
+        masked_profiles(&profiles)
+    } else {
+        profiles
+    };
 
     let content = serde_json::to_string_pretty(&profiles).unwrap_or_else(|e| {
         tracing::error!("Failed to serialize profiles to JSON: {}", e);
@@ -604,7 +656,7 @@ async fn get_profiles(
     });
 
     ResponseJson(ApiResponse::success(ProfilesContent {
-        revision: profiles.revision(),
+        revision,
         content,
         path: profiles_path.display().to_string(),
     }))
@@ -644,6 +696,11 @@ async fn update_profiles(
             }
         }
         CompatibleUpdateProfilesRequest::Legacy(profiles) => (profiles, None),
+    };
+    let executor_profiles = if crate::middleware::is_agent_request(&headers) {
+        unmasked_profiles(executor_profiles)
+    } else {
+        executor_profiles
     };
 
     match expected_revision {

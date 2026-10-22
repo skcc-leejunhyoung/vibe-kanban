@@ -57,20 +57,30 @@ impl JournalQuery {
 /// phases, workspace lifecycle, queue changes, scheduled resumes, cloud
 /// notifications), newest last, after a cursor.
 async fn journal(Query(query): Query<JournalQuery>) -> ResponseJson<ApiResponse<JournalPage>> {
-    ResponseJson(ApiResponse::success(agent_journal::list(
+    ResponseJson(ApiResponse::success(owner_scoped(agent_journal::list(
         query.since,
         &query.kinds(),
         query.limit(),
-    )))
+    ))))
+}
+
+/// Cloud notifications are the host owner's own (fetched with the host's
+/// central session); another account operating this host must not read them.
+fn owner_scoped(mut page: JournalPage) -> JournalPage {
+    if deployment::host_cloud_session_denied() {
+        page.events
+            .retain(|event| !event.kind.starts_with("cloud."));
+    }
+    page
 }
 
 /// Like `journal`, but holds the request open until a matching event lands or
 /// the timeout passes.
 async fn wait(Query(query): Query<JournalQuery>) -> ResponseJson<ApiResponse<JournalPage>> {
     let timeout = Duration::from_secs(query.timeout.unwrap_or(DEFAULT_WAIT_SECS));
-    ResponseJson(ApiResponse::success(
+    ResponseJson(ApiResponse::success(owner_scoped(
         agent_journal::wait(query.since, &query.kinds(), query.limit(), timeout).await,
-    ))
+    )))
 }
 
 async fn events(

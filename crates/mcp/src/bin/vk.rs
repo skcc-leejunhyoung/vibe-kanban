@@ -1032,17 +1032,6 @@ const COMMANDS: &[Cmd] = &[
             opt("hash", "Content hash", Where::Query, Kind::Str),
         ],
     ),
-    special(
-        &["session", "artifacts", "bundle"],
-        "Download the process's artifacts as a zip",
-        "session.artifacts.bundle",
-        &[
-            EXEC,
-            req("ws", "Workspace id", Where::Local, Kind::Str),
-            req("session", "Session id", Where::Local, Kind::Str),
-            short(req("out", "Output file path", Where::Local, Kind::Str), 'o'),
-        ],
-    ),
     cmd(
         &["session", "subagent", "transcript"],
         "Transcript of a subagent (Codex thread / Claude task)",
@@ -1053,7 +1042,7 @@ const COMMANDS: &[Cmd] = &[
             keyed(
                 req(
                     "target",
-                    "Target JSON, e.g. {\"type\":\"codex\",\"thread_id\":\"...\"}",
+                    "Target JSON, e.g. {\"executor\":\"codex\",\"thread_id\":\"...\"} or {\"executor\":\"claude_code\",\"task_id\":\"...\"}",
                     Where::Raw,
                     Kind::Json,
                 ),
@@ -1682,7 +1671,7 @@ const COMMANDS: &[Cmd] = &[
             opt("tag", "Tag id", Where::Local, Kind::Str),
             opt(
                 "simple-id",
-                "Simple id, e.g. SKC-5016",
+                "Simple id, e.g. ABC-123",
                 Where::Local,
                 Kind::Str,
             ),
@@ -2702,7 +2691,7 @@ const COMMANDS: &[Cmd] = &[
         &[
             opt(
                 "since",
-                "Cursor to start after (default 0 = all buffered). With --all-hosts: host=cursor,host=cursor",
+                "Cursor to start after (default 0 = all buffered; `now` = only new events). With --all-hosts: host=cursor,host=cursor",
                 Where::Local,
                 Kind::Str,
             ),
@@ -3243,7 +3232,11 @@ impl Ctx {
                             route = route.replace(&format!("{{{}}}", arg.name), &id);
                         }
                         Where::Query => {
-                            let value = self.resolve_id_arg(arg, &raw).await?;
+                            let mut value = self.resolve_id_arg(arg, &raw).await?;
+                            // The server takes `CLAUDE_CODE`, not `claude-code`.
+                            if arg.name == "executor" {
+                                value = value.trim().replace('-', "_").to_ascii_uppercase();
+                            }
                             query.push((key, value));
                         }
                         Where::Body => {
@@ -3727,38 +3720,6 @@ impl Ctx {
                     )
                     .await
             }
-            "session.artifacts.bundle" => {
-                let exec = parse_uuid(&arg_str(m, "exec").unwrap_or_default(), "exec")?;
-                let out = PathBuf::from(arg_str(m, "out").unwrap_or_default());
-                let url = format!(
-                    "{}?workspace_id={}&session_id={}",
-                    self.client
-                        .api_url(&format!("/execution-processes/{exec}/artifacts/bundle")),
-                    arg_str(m, "ws").unwrap_or_default(),
-                    arg_str(m, "session").unwrap_or_default()
-                );
-                let response = self
-                    .client
-                    .request(reqwest::Method::GET, url)
-                    .timeout(self.timeout)
-                    .send()
-                    .await
-                    .map_err(|e| VkError::Connect(e.to_string()))?;
-                if !response.status().is_success() {
-                    return Err(VkError::Api {
-                        status: response.status().as_u16(),
-                        message: response.text().await.unwrap_or_default(),
-                    });
-                }
-                let bytes = response
-                    .bytes()
-                    .await
-                    .map_err(|e| VkError::Parse(e.to_string()))?;
-                std::fs::write(&out, &bytes).map_err(|e| {
-                    VkError::message(format!("Cannot write {}: {e}", out.display()))
-                })?;
-                Ok(json!({ "written": out, "bytes": bytes.len() }))
-            }
             "session.approvals.respond" => {
                 let id = arg_str(m, "id").unwrap_or_default();
                 let exec = parse_uuid(&arg_str(m, "exec").unwrap_or_default(), "--exec")?;
@@ -4135,7 +4096,11 @@ impl Ctx {
         let limit = arg_usize(m, "limit", 100)?;
         let timeout = Duration::from_secs(arg_usize(m, "timeout", 30)?.clamp(1, 600) as u64);
         let since = arg_str(m, "since").unwrap_or_else(|| "0".to_string());
+        // `now`: skip the backlog and start at each journal's latest cursor.
+        let now = since.trim() == "now";
         if arg_flag(m, "all-hosts") {
+            // An empty cursor makes every host start at its latest.
+            let since = if now { String::new() } else { since };
             let page = if wait {
                 self.client
                     .events_wait_all_hosts(&since, &kinds, limit, timeout)
@@ -4147,9 +4112,15 @@ impl Ctx {
             };
             return Ok(serde_json::to_value(page).unwrap_or_default());
         }
-        let since: u64 = since.trim().parse().map_err(|_| {
-            VkError::message("--since must be a cursor number (host=cursor pairs need --all-hosts)")
-        })?;
+        let since: u64 = if now {
+            u64::MAX
+        } else {
+            since.trim().parse().map_err(|_| {
+                VkError::message(
+                    "--since must be a cursor number or `now` (host=cursor pairs need --all-hosts)",
+                )
+            })?
+        };
         let page = if wait {
             self.client
                 .events_wait(since, &kinds, limit, timeout)

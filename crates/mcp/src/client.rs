@@ -58,6 +58,16 @@ struct Envelope<T> {
     success: bool,
     data: Option<T>,
     message: Option<String>,
+    #[serde(default)]
+    error_data: Option<Value>,
+}
+
+/// Failure text of a `success: false` envelope: its message, else the typed
+/// `error_data` (git push/rebase/PR failures carry only that).
+fn envelope_error(message: Option<String>, error_data: Option<&Value>) -> String {
+    message
+        .or_else(|| error_data.filter(|d| !d.is_null()).map(Value::to_string))
+        .unwrap_or_else(|| "Vibe Kanban API returned an error".to_string())
 }
 
 #[derive(Debug, Error)]
@@ -248,9 +258,7 @@ impl VkClient {
         if !envelope.success {
             return Err(VkError::Api {
                 status: 200,
-                message: envelope
-                    .message
-                    .unwrap_or_else(|| "Vibe Kanban API returned an error".to_string()),
+                message: envelope_error(envelope.message, envelope.error_data.as_ref()),
             });
         }
         envelope
@@ -284,11 +292,13 @@ impl VkClient {
             Some(true) => Ok(value.get("data").cloned().unwrap_or(Value::Null)),
             Some(false) => Err(VkError::Api {
                 status: 200,
-                message: value
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Vibe Kanban API returned an error")
-                    .to_string(),
+                message: envelope_error(
+                    value
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    value.get("error_data"),
+                ),
             }),
             None => Ok(value),
         }

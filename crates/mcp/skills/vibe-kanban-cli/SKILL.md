@@ -46,12 +46,13 @@ in; `<session>` accepts a session id or `.` for the current session (`VK_SESSION
 | Tell the user | `vk notify send -t "Title" -m "Message" --ws <ws>` |
 | Start work | `vk ws start --repo <id> --branch main --name "..." --executor CLAUDE_CODE -m "..."`, `vk ws quick-chat <repo-path> -m "..."` |
 | The host's Autopilot | `vk ws autopilot` (its workspace, single session, executor config; 404 = none or paused); `autopilot` works as `<ws>`/`<session>`: `vk session send autopilot --queue -m "..."`, `vk ws status autopilot`; create one with `vk ws quick-chat <path> --autopilot -m "..."` |
-| Another machine | `vk hosts list`; add `--host i9` (name prefix works) to any command |
+| Another machine | `vk hosts list`; add `--host <name>` (name prefix works) to any command |
 
 ## Events (the polling loop)
 
-`vk events list --since 0` returns everything buffered and a `cursor`; keep the cursor
-and call `vk events wait --since <cursor>` to block until the next matching event.
+`vk events list --since now` returns the latest `cursor` without the backlog
+(`--since 0` returns everything buffered, up to `--limit`); keep the cursor and call
+`vk events wait --since <cursor>` to block until the next matching event.
 Kinds: `process.started|completed|failed|killed`, `approval.pending|resolved`,
 `workspace.created|archived|unarchived|deleted|status_note`, `vibe.phase`,
 `queue.changed`, `resume.fired`, `cloud.notification`. `--all-hosts` merges every
@@ -60,7 +61,7 @@ paired host; its cursor is `self=<n>,<host-id>=<n>` and must be passed back verb
 Autopilot shape:
 
 ```
-cursor=$(vk events list --since 0 --json | jq -r .cursor)
+cursor=$(vk events list --since now --json | jq -r .cursor)
 while :; do
   page=$(vk events wait --since "$cursor" --kinds process.,approval.pending --timeout 300 --json)
   cursor=$(jq -r .cursor <<<"$page")

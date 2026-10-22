@@ -191,7 +191,7 @@ fn toggle_for(method: &Method, path: &str) -> Option<Toggle> {
             _,
             "git",
             "target-branch",
-            "push" | "pull-and-push",
+            "push" | "pull-and-push" | "update-from-base" | "merge-remote",
         ]
         | ["repos", _, "push"] => Toggle::GitMerge,
         ["workspaces", _, "git", ..] | ["workspaces", _, "pull-requests", ..] => Toggle::GitWrite,
@@ -220,9 +220,11 @@ pub fn classify(method: &Method, path: &str) -> Decision {
     // Judge the path the relay proxy forwards: decoded, every paired-host hop
     // removed, and no dot segments a downstream URL join would resolve.
     let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
-    if decoded
-        .split('/')
-        .any(|s| s == "." || s == ".." || s.contains('\\'))
+    // A decoded `?`/`#` would end the path for the relay proxy's re-parse.
+    if decoded.contains(['?', '#'])
+        || decoded
+            .split('/')
+            .any(|s| s == "." || s == ".." || s.contains('\\'))
     {
         return Decision::Forbidden;
     }
@@ -269,6 +271,58 @@ pub fn unmask_secrets(config: &mut Config, current: &Config) {
     }
     if config.github.oauth_token.as_deref() == Some(SECRET_MASK) {
         config.github.oauth_token = current.github.oauth_token.clone();
+    }
+}
+
+/// Maps whose values are credentials: executor profile `env` and MCP server
+/// `env`/`headers` (API keys, bearer tokens).
+const SECRET_MAP_KEYS: &[&str] = &["env", "headers"];
+
+/// Mask every string under a [`SECRET_MAP_KEYS`] map, at any depth, for an
+/// agent reading profiles or MCP config.
+pub fn mask_secret_maps(value: &mut serde_json::Value) {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                match child {
+                    Value::Object(entries) if SECRET_MAP_KEYS.contains(&key.as_str()) => {
+                        for entry in entries.values_mut().filter(|v| v.is_string()) {
+                            *entry = Value::String(SECRET_MASK.to_string());
+                        }
+                    }
+                    _ => mask_secret_maps(child),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(mask_secret_maps),
+        _ => {}
+    }
+}
+
+/// Put back, from `current`, every `***` an agent's masked round trip carries
+/// at the same path.
+pub fn unmask_secret_maps(value: &mut serde_json::Value, current: &serde_json::Value) {
+    use serde_json::Value;
+    match (value, current) {
+        (Value::Object(map), Value::Object(current)) => {
+            for (key, child) in map.iter_mut() {
+                let Some(stored) = current.get(key) else {
+                    continue;
+                };
+                if child.as_str() == Some(SECRET_MASK) {
+                    *child = stored.clone();
+                } else {
+                    unmask_secret_maps(child, stored);
+                }
+            }
+        }
+        (Value::Array(items), Value::Array(current)) => {
+            for (item, stored) in items.iter_mut().zip(current) {
+                unmask_secret_maps(item, stored);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -414,6 +468,8 @@ mod tests {
         for path in [
             "/api/workspaces/abc/git/target-branch/push",
             "/api/workspaces/abc/git/target-branch/pull-and-push",
+            "/api/workspaces/abc/git/target-branch/update-from-base",
+            "/api/workspaces/abc/git/target-branch/merge-remote",
             "/api/repos/abc/push",
         ] {
             assert_eq!(
@@ -444,6 +500,14 @@ mod tests {
             format!("/api/host/{host}/workspaces/%2e%2e/terminal/ws"),
         ] {
             assert_eq!(gated(Method::GET, &path), Decision::Forbidden, "{path}");
+        }
+        // An encoded `?` would cut the path short on the next hop.
+        for path in [
+            format!("/api/host/{host}/workspaces/abc/git/push/force%3F"),
+            format!("/api/host/{host}/workspaces/abc%3F/seen"),
+            format!("/api/host/{host}/workspaces/abc%23/seen"),
+        ] {
+            assert_eq!(gated(Method::POST, &path), Decision::Forbidden, "{path}");
         }
     }
 
@@ -489,6 +553,28 @@ mod tests {
         unmask_secrets(&mut sent, &stored);
         assert_eq!(sent.github.pat.as_deref(), Some("ghp_secret"));
         assert_eq!(sent.github.oauth_token, None);
+    }
+
+    #[test]
+    fn masked_env_and_headers_round_trip_to_the_stored_values() {
+        let stored = serde_json::json!({
+            "CODEX": {"DEFAULT": {"CODEX": {"env": {"TOKEN": "t0k"}, "model": "m"}}},
+            "servers": [{"headers": {"Authorization": "Bearer x"}, "url": "u"}],
+        });
+        let mut sent = stored.clone();
+        mask_secret_maps(&mut sent);
+        assert_eq!(
+            sent["CODEX"]["DEFAULT"]["CODEX"]["env"]["TOKEN"],
+            SECRET_MASK
+        );
+        assert_eq!(sent["servers"][0]["headers"]["Authorization"], SECRET_MASK);
+        assert_eq!(sent["CODEX"]["DEFAULT"]["CODEX"]["model"], "m");
+        // A new value the agent typed is kept; masked ones come back.
+        sent["CODEX"]["DEFAULT"]["CODEX"]["env"]["NEW"] = "n".into();
+        unmask_secret_maps(&mut sent, &stored);
+        assert_eq!(sent["CODEX"]["DEFAULT"]["CODEX"]["env"]["TOKEN"], "t0k");
+        assert_eq!(sent["CODEX"]["DEFAULT"]["CODEX"]["env"]["NEW"], "n");
+        assert_eq!(sent["servers"][0]["headers"]["Authorization"], "Bearer x");
     }
 
     #[test]
