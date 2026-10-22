@@ -37,6 +37,7 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { useCreateAttachments } from '@/shared/hooks/useCreateAttachments';
 import { toPrettyCase } from '@/shared/lib/string';
+import { formatRelativeTime } from '@/shared/lib/date';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
@@ -526,6 +527,24 @@ const QuickChatDialogImpl = create<NoProps>(() => {
               {existingAutopilot.is_running ? 'Running' : 'Idle'}
             </span>
           </div>
+          <div className="flex flex-wrap items-center gap-base text-sm text-low">
+            {existingAutopilot.executor_config && (
+              <span className="rounded-sm border border-border px-1">
+                {toPrettyCase(existingAutopilot.executor_config.executor)}
+                {existingAutopilot.executor_config.model_id
+                  ? ` · ${existingAutopilot.executor_config.model_id}`
+                  : ''}
+              </span>
+            )}
+            {existingAutopilot.workspace.status_updated_at && (
+              <span>
+                Last summary{' '}
+                {formatRelativeTime(
+                  existingAutopilot.workspace.status_updated_at
+                )}
+              </span>
+            )}
+          </div>
           {existingAutopilot.workspace.status_note && (
             <p className="text-sm text-normal">
               {existingAutopilot.workspace.status_note}
@@ -547,9 +566,18 @@ const QuickChatDialogImpl = create<NoProps>(() => {
             >
               {pausing ? 'Pausing…' : 'Pause'}
             </button>
+            <button
+              type="button"
+              onClick={pauseAutopilot}
+              disabled={pausing}
+              title="Pause this Autopilot and start a new one with a different folder or model"
+              className="rounded-md border border-border px-base py-half text-sm text-normal hover:text-high disabled:opacity-50"
+            >
+              Recreate…
+            </button>
             <span className="text-sm text-low">
-              One per host. Pausing archives it; start a new one afterwards to
-              change the folder or model.
+              One per host. Pausing archives it (the conversation stays in the
+              archive).
             </span>
           </div>
           {error && <p className="text-sm text-error">{error}</p>}
@@ -558,6 +586,13 @@ const QuickChatDialogImpl = create<NoProps>(() => {
 
       {showForm && (
         <>
+          {isAutopilotMode && (
+            <p className="text-sm text-low">
+              Writes a starter AGENTS.md (its standing rules) into the folder if
+              there is none. One Autopilot per host; pause it to change the
+              folder or model later.
+            </p>
+          )}
           <label className="flex items-center gap-base rounded-md border border-border bg-secondary px-base py-half">
             {selectedHostId ? (
               <ComputerTowerIcon className="size-icon-sm shrink-0 text-low" />

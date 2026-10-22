@@ -30,6 +30,18 @@ export function kindMatches(kind, prefixes) {
   });
 }
 
+// The workspace a journal event belongs to. Cloud notifications carry it in
+// the notification payload (the Autopilot sends its own with `--ws autopilot`),
+// not on the event, so excluding the Autopilot's own output needs both.
+export function eventWorkspaceId(event) {
+  return (
+    event?.workspace_id ||
+    event?.data?.payload?.workspace_id ||
+    event?.data?.workspace_id ||
+    null
+  );
+}
+
 export function journalEventToWorkerEvent(hostId, event) {
   const data = event?.data && typeof event.data === 'object' ? event.data : {};
   const exit = data.exit_code;
@@ -48,7 +60,7 @@ export function journalEventToWorkerEvent(hostId, event) {
     kind: String(event.kind || ''),
     cursor: event.cursor,
     hostId,
-    workspaceId: event.workspace_id || null,
+    workspaceId: eventWorkspaceId(event),
     sessionId: event.session_id || null,
     executionId: event.execution_id || null,
     at: event.at || null,

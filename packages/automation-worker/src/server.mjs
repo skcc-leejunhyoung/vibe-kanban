@@ -69,6 +69,7 @@ import { fetchWithRetry } from './fetch-retry.mjs';
 import {
   DEFAULT_KINDS,
   createCoalescer,
+  eventWorkspaceId,
   journalEventToWorkerEvent,
   renderPromptTemplate,
 } from './vibe-events.mjs';
@@ -1273,7 +1274,7 @@ async function pollVibeEvents(connector) {
       );
       const events = Array.isArray(page?.data?.events) ? page.data.events : [];
       for (const raw of events) {
-        if (excludeId && raw.workspace_id === excludeId) continue;
+        if (excludeId && eventWorkspaceId(raw) === excludeId) continue;
         const event = { ...journalEventToWorkerEvent(hostId, raw), connectorId: connector.id };
         const key = automationEventKey(event);
         if (state.eventReceipts[key]) continue;

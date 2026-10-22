@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  eventWorkspaceId,
   COALESCE_DEFAULTS,
   createCoalescer,
   journalEventToWorkerEvent,
@@ -120,4 +121,13 @@ test('maxPerHour holds and merges extra flushes', async () => {
   await clock.advance(3_600_000);
   assert.equal(flushes.length, 3);
   assert.equal(flushes[2].count, 2, 'held events merge into the next flush');
+});
+
+test('eventWorkspaceId reads the cloud notification payload', () => {
+  assert.equal(eventWorkspaceId({ workspace_id: 'ws-1' }), 'ws-1');
+  assert.equal(
+    eventWorkspaceId({ kind: 'cloud.notification', data: { payload: { workspace_id: 'ws-2' } } }),
+    'ws-2'
+  );
+  assert.equal(eventWorkspaceId({ kind: 'cloud.notification', data: {} }), null);
 });

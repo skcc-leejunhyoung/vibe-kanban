@@ -169,6 +169,8 @@ seeds the per-host cursor at the journal's end (no replay); cursors live in the
 runtime `cursors` field. With `excludeAutopilot` (default `true`) the host's own
 Autopilot workspace is looked up (`GET /api/workspaces/autopilot`, cached 60s)
 and its events are dropped, so an Autopilot turn never wakes the Autopilot again.
+Cloud notifications are matched through their payload's `workspace_id`, so the
+Autopilot should send its own with `vk notify send ... --ws autopilot`.
 
 ```json
 {

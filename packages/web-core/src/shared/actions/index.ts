@@ -730,8 +730,16 @@ export const Actions = {
 
   ArchiveWorkspace: {
     id: 'archive-workspace',
+    // Archiving the Autopilot is how it pauses (automation skips an archived
+    // one), so the menu says what it does.
     label: (workspace?: Workspace) =>
-      workspace?.archived ? 'Unarchive' : 'Archive',
+      workspace?.autopilot
+        ? workspace.archived
+          ? 'Resume Autopilot'
+          : 'Pause Autopilot'
+        : workspace?.archived
+          ? 'Unarchive'
+          : 'Archive',
     icon: ArchiveIcon,
     shortcut: 'W A',
     requiresTarget: ActionTargetType.WORKSPACE,
