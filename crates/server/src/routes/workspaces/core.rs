@@ -7,7 +7,9 @@ use axum::{
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
+    pending_rate_limit_resume::PendingRateLimitResume,
     requests::AutopilotWorkspaceResponse,
+    scheduled_resume::ScheduledResume,
     session::Session,
     task::Task,
     workspace::{Workspace, WorkspaceError},
@@ -66,9 +68,7 @@ pub async fn get_autopilot(
     let session = Session::find_latest_by_workspace_id(pool, workspace.id).await?;
     let (executor_config, is_running) = match &session {
         Some(session) => (
-            crate::scheduled_resume_watcher::latest_executor_config(pool, session.id)
-                .await
-                .map_err(|e| ApiError::BadRequest(e.to_string()))?,
+            ExecutionProcess::latest_executor_config_for_session(pool, session.id).await?,
             ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
                 .await?,
         ),
@@ -179,6 +179,13 @@ async fn silence_autopilot(deployment: &DeploymentImpl, workspace: &Workspace) {
     };
     // Clear before killing: the kill's exit handler would drain the queue.
     deployment.queued_message_service().clear_queue(session.id);
+    // Pending wakeups would otherwise fire into the paused Autopilot.
+    if let Err(error) = ScheduledResume::cancel_pending_for_session(pool, session.id).await {
+        tracing::warn!(workspace_id = %workspace.id, %error, "Could not cancel the Autopilot's scheduled resumes");
+    }
+    if let Err(error) = PendingRateLimitResume::delete_by_session_id(pool, session.id).await {
+        tracing::warn!(workspace_id = %workspace.id, %error, "Could not cancel the Autopilot's rate-limit resume");
+    }
     let running = match ExecutionProcess::find_running(pool).await {
         Ok(running) => running,
         Err(error) => {

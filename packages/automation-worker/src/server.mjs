@@ -885,7 +885,13 @@ async function runDueRoutines() {
 }
 
 async function dispatchRoutineEvent(event) {
-  event = { ...(state.routineOrigins[event.id] || {}), ...event };
+  // Webhook events carry the execution id as `id`; journal events (`host:cursor`)
+  // carry it as `executionId`.
+  event = {
+    ...(state.routineOrigins[event.id] || {}),
+    ...(event.executionId ? state.routineOrigins[event.executionId] || {} : {}),
+    ...event,
+  };
   for (const routine of state.routines || []) {
     if (!eventMatchesRoutine(routine, event)) continue;
     try {

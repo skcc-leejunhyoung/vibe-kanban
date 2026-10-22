@@ -7291,3 +7291,93 @@ mod cleanup_failure_queue_tests {
             .await;
     }
 }
+
+#[cfg(test)]
+mod paused_autopilot_tests {
+    use db::models::workspace::CreateWorkspace;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_start_does_not_unpause_an_archived_autopilot() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(dir.path().join("db.sqlite"))
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let container = super::tests::container_on(pool.clone());
+        let workspace = Workspace::create(
+            &pool,
+            &CreateWorkspace {
+                branch: "vk/autopilot".into(),
+                name: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE workspaces SET autopilot = TRUE, archived = TRUE WHERE id = ?")
+            .bind(workspace.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // The caller's copy predates the pause (a queue drain, a resume).
+        let stale = Workspace {
+            autopilot: true,
+            archived: false,
+            ..workspace
+        };
+        let session = Session::create(
+            &pool,
+            &CreateSession {
+                executor: None,
+                variant: None,
+                name: None,
+            },
+            Uuid::new_v4(),
+            stale.id,
+        )
+        .await
+        .unwrap();
+        let action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: "wake up".into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+                working_dir: None,
+                handoff_from: None,
+                handoff_session_id: None,
+                handoff_user_prompt: None,
+            }),
+            None,
+        );
+
+        let error = container
+            .start_execution(
+                &stale,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("paused"), "{error}");
+        let row = Workspace::find_by_id(&pool, stale.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.archived);
+        assert!(
+            ExecutionProcess::find_by_session_id(&pool, session.id, false)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}

@@ -96,6 +96,11 @@ async fn process_one(deployment: &DeploymentImpl, row: &ScheduledResume) -> anyh
         ScheduledResume::mark_fired(pool, row.id).await?;
         return Ok(());
     };
+    // A paused Autopilot would refuse the start on every tick.
+    if workspace.autopilot && workspace.archived {
+        ScheduledResume::mark_fired(pool, row.id).await?;
+        return Ok(());
+    }
 
     // Recover the agent session id (for --resume / thread_fork) and the executor
     // config from the session's most recent coding-agent run, so the resume

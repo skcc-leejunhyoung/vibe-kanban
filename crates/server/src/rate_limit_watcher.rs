@@ -110,8 +110,9 @@ async fn process_one(
     }
 
     let workspace = match Workspace::find_by_id(pool, session.workspace_id).await? {
-        Some(w) => w,
-        None => {
+        // A paused Autopilot would refuse the start on every tick.
+        Some(w) if !(w.autopilot && w.archived) => w,
+        _ => {
             abandon_resume(deployment, pool, row).await;
             return Ok(());
         }

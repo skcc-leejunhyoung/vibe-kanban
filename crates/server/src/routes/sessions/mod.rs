@@ -199,8 +199,12 @@ pub async fn create_session(
             "Workspace not found".to_string(),
         )))?;
     // The Autopilot is addressed by automation as "its session", so it keeps
-    // exactly one.
-    if workspace.autopilot {
+    // exactly one (a failed creation may have left it with none).
+    if workspace.autopilot
+        && Session::find_latest_by_workspace_id(pool, workspace.id)
+            .await?
+            .is_some()
+    {
         return Err(ApiError::Conflict(
             "An Autopilot keeps a single session; send the message in its existing session."
                 .to_string(),

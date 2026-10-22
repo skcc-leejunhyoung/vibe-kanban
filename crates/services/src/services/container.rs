@@ -372,8 +372,11 @@ pub trait ContainerService {
 
     /// Finalize workspace execution by sending notifications
     async fn finalize_task(&self, ctx: &ExecutionContext) {
-        // Skip notification if process was intentionally killed by user
-        if matches!(ctx.execution_process.status, ExecutionProcessStatus::Killed) {
+        // Skip notification if process was intentionally killed by user. The
+        // Autopilot runs a turn per event batch and sends its own notices.
+        if matches!(ctx.execution_process.status, ExecutionProcessStatus::Killed)
+            || ctx.workspace.autopilot
+        {
             return;
         }
 
@@ -2018,6 +2021,18 @@ pub trait ContainerService {
         executor_action: &ExecutorAction,
         run_reason: &ExecutionProcessRunReason,
     ) -> Result<ExecutionProcess, ContainerError> {
+        // Archiving pauses an Autopilot; a resume, queue drain or message must
+        // not un-archive it below (re-read: callers may hold a stale row).
+        if workspace.autopilot
+            && *run_reason != ExecutionProcessRunReason::ArchiveScript
+            && Workspace::find_by_id(&self.db().pool, workspace.id)
+                .await?
+                .is_none_or(|w| w.archived)
+        {
+            return Err(ContainerError::Workspace(WorkspaceError::ValidationError(
+                "The Autopilot is paused; resume it first".to_string(),
+            )));
+        }
         let repositories =
             WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
         if repositories.is_empty() {

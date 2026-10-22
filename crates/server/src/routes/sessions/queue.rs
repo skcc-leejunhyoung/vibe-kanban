@@ -1,6 +1,7 @@
 use axum::{
     Extension, Json, Router,
     extract::{Query, State},
+    http::HeaderMap,
     middleware::{from_fn, from_fn_with_state},
     response::Json as ResponseJson,
     routing::{get, post},
@@ -47,7 +48,32 @@ struct CancelQuery {
 async fn queue_message(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
     Json(payload): Json<QueueMessageRequest>,
+) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
+    // An automation retry after a lost response must not queue the prompt twice.
+    let pool = deployment.db().pool.clone();
+    let key = match crate::routes::automation::claim_action::<ApiResponse<QueueStatus>>(
+        &pool,
+        &headers,
+        "queue_prompt",
+    )
+    .await?
+    {
+        crate::routes::automation::ActionClaim::Execute(key) => key,
+        crate::routes::automation::ActionClaim::Replay(response) => {
+            return Ok(ResponseJson(response));
+        }
+    };
+    let response = queue_message_inner(session, deployment, payload).await?;
+    crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?;
+    Ok(response)
+}
+
+async fn queue_message_inner(
+    session: Session,
+    deployment: DeploymentImpl,
+    payload: QueueMessageRequest,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
     let data = DraftFollowUpData {
         message: payload.message,
