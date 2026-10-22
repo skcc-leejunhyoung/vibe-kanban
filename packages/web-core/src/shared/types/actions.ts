@@ -155,6 +155,11 @@ export interface ActionVisibilityContext {
   workspaceArchived: boolean;
   /** Quick-chat ("in-place") workspace — runs on the user's existing branch. */
   isInPlace: boolean;
+  /**
+   * The host's Autopilot: a pinned single-session in-place workspace driven by
+   * automation. Git, session and dev-server actions are hidden for it.
+   */
+  isAutopilot: boolean;
 
   // Diff state
   hasDiffs: boolean;
@@ -298,12 +303,49 @@ const IN_PLACE_HIDDEN_ACTION_IDS = new Set<string>([
   'git-rebase',
 ]);
 
+// The Autopilot is a watcher, not a coding workspace: its folder holds rules
+// and notes, it keeps exactly one session (automation addresses "the
+// Autopilot's session"), and it is always pinned. Everything git-, session-,
+// review- or dev-server-shaped is hidden; chat, stop, model handoff, Changes,
+// Logs, attachments, archive (= pause) and delete stay.
+const AUTOPILOT_HIDDEN_ACTION_IDS = new Set<string>([
+  ...IN_PLACE_HIDDEN_ACTION_IDS,
+  'git-commit',
+  'git-open-pr',
+  'git-view-pr-details',
+  'git-open-pr-in-pull-requests',
+  'git-link-pr',
+  'git-link-pr-by-url',
+  'git-unlink-pr',
+  'git-pull',
+  'git-update-from-base',
+  'git-update-target-from-base',
+  'git-change-target',
+  'git-push',
+  'git-fetch-target',
+  'git-push-target',
+  'new-session',
+  'rename-session',
+  'delete-session',
+  'view-workspace-sessions',
+  'start-review',
+  'start-review-and-create-pr',
+  'add-review-comments',
+  'spin-off-workspace',
+  'duplicate-workspace',
+  'pin-workspace',
+  'toggle-dev-server',
+]);
+
 // Pure action helper functions
 export function isActionVisible(
   action: ActionDefinition,
   ctx: ActionVisibilityContext
 ): boolean {
   if (ctx.isInPlace && IN_PLACE_HIDDEN_ACTION_IDS.has(action.id)) {
+    return false;
+  }
+  if (ctx.isAutopilot && AUTOPILOT_HIDDEN_ACTION_IDS.has(action.id)) {
     return false;
   }
   return action.isVisible ? action.isVisible(ctx) : true;

@@ -248,6 +248,12 @@ ephemeral: boolean,
  */
 in_place: boolean,
 /**
+ * The host's Autopilot: an in-place, pinned workspace with a single
+ * session that automation routines address as `target: autopilot`. At
+ * most one is active (non-archived) per host; archiving it pauses it.
+ */
+autopilot: boolean,
+/**
  * Why automatic expiry cleanup refuses to touch this workspace. `None`
  * means eligible. Set when the uncommitted-change check cannot run at all
  * (directory present but not a usable git worktree), which would otherwise
@@ -276,6 +282,12 @@ ephemeral: boolean,
  * expiry/delete cleanup is skipped so it can never remove the real repo.
  */
 in_place: boolean,
+/**
+ * The host's Autopilot: an in-place, pinned workspace with a single
+ * session that automation routines address as `target: autopilot`. At
+ * most one is active (non-archived) per host; archiving it pauses it.
+ */
+autopilot: boolean,
 /**
  * Why automatic expiry cleanup refuses to touch this workspace. `None`
  * means eligible. Set when the uncommitted-change check cannot run at all
@@ -857,7 +869,24 @@ name: string | null,
  * Attachments uploaded before the workspace existed. Copied into
  * `.vibe-attachments/` inside the repo's checkout so the agent can read them.
  */
-attachment_ids: Array<string> | null, };
+attachment_ids: Array<string> | null,
+/**
+ * Create the host's Autopilot instead of a plain quick chat: pinned,
+ * single-session, addressed by automation as `target: autopilot`. Rejected
+ * with 409 while an active Autopilot exists.
+ */
+autopilot: boolean, };
+
+export type AutopilotWorkspaceResponse = { workspace: Workspace,
+/**
+ * Its single session (absent only between creation and the first start).
+ */
+session: Session | null,
+/**
+ * Executor config of the latest coding-agent turn, for callers that queue
+ * prompts without choosing a model themselves.
+ */
+executor_config: ExecutorConfig | null, is_running: boolean, };
 
 export type GenerateSpecRequest = {
 /**

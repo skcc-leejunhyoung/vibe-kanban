@@ -8,6 +8,7 @@ import {
   DotsThreeIcon,
   LightningIcon,
   ListChecksIcon,
+  RobotIcon,
   HourglassIcon,
   WarningIcon,
 } from '@phosphor-icons/react';
@@ -86,6 +87,8 @@ export interface WorkspaceSummaryProps {
   isDraft?: boolean;
   /** Quick-chat ("in-place") workspace — shows a lightning tag before the name. */
   isInPlace?: boolean;
+  /** The host's Autopilot — shows a robot tag before the name. */
+  isAutopilot?: boolean;
   /**
    * Why automatic cleanup skipped this workspace (its uncommitted changes could
    * not be verified). Null when eligible. Shown as a warning tag so the user
@@ -175,6 +178,7 @@ const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
   summary = false,
   isDraft = false,
   isInPlace = false,
+  isAutopilot = false,
   cleanupBlockedReason = null,
   onOpenWorkspaceActions,
   isFocused = false,
@@ -247,14 +251,24 @@ const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
         )}
       >
         <div className="flex w-full items-center gap-base">
-          {isInPlace && (
+          {isAutopilot ? (
             <span
               className="inline-flex h-4 shrink-0 items-center rounded-sm bg-brand/10 px-1 text-brand"
-              title="Quick chat — runs directly in your existing checkout"
-              aria-label="Quick chat"
+              title="Autopilot — watches every host and acts on events"
+              aria-label="Autopilot"
             >
-              <LightningIcon className="size-icon-xs" weight="fill" />
+              <RobotIcon className="size-icon-xs" weight="fill" />
             </span>
+          ) : (
+            isInPlace && (
+              <span
+                className="inline-flex h-4 shrink-0 items-center rounded-sm bg-brand/10 px-1 text-brand"
+                title="Quick chat — runs directly in your existing checkout"
+                aria-label="Quick chat"
+              >
+                <LightningIcon className="size-icon-xs" weight="fill" />
+              </span>
+            )
           )}
           {cleanupBlockedReason && (
             <span

@@ -287,7 +287,11 @@ export const WorkspaceDetail = forwardRef<
                       isLoading={isLoading}
                       isSessionsLoading={isSessionsLoading}
                       isNewSessionMode={isNewSessionMode}
-                      onStartNewSession={startNewSession}
+                      onStartNewSession={
+                        selectedWorkspace?.autopilot
+                          ? undefined
+                          : startNewSession
+                      }
                       autoFocus={
                         isPaneActive &&
                         lastFocusedMainPanel === 'chat' &&

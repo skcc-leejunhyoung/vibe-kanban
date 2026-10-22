@@ -15,6 +15,7 @@ use std::{
 };
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use db::models::requests::AutopilotWorkspaceResponse;
 use mcp::client::{
     CreateIssueInput, SendPromptOptions, StartWorkspaceInput, UpdateIssueInput, VkClient, VkError,
     WorkspaceFilter, discover_base_url,
@@ -321,6 +322,13 @@ const COMMANDS: &[Cmd] = &[
         "/workspaces/{ws}",
         &[WS],
     ),
+    cmd(
+        &["ws", "autopilot"],
+        "This host's Autopilot workspace, its single session and executor config (404 when none or paused)",
+        "GET",
+        "/workspaces/autopilot",
+        &[],
+    ),
     special(
         &["ws", "create"],
         "Create a workspace without starting a session",
@@ -397,6 +405,12 @@ const COMMANDS: &[Cmd] = &[
                 "Workspace name (defaults to the prompt's first line)",
                 Where::Local,
                 Kind::Str,
+            ),
+            opt(
+                "autopilot",
+                "Create this host's Autopilot instead: pinned, single session, addressed by automation as target 'autopilot'",
+                Where::Local,
+                Kind::Flag,
             ),
             MODEL_OPTS[0],
             MODEL_OPTS[1],
@@ -3041,10 +3055,13 @@ fn typed_value(spec: &ArgSpec, raw: &str) -> Result<Value, VkError> {
 }
 
 impl Ctx {
-    /// `.`: the workspace this shell runs in; a UUID as is; otherwise a
-    /// workspace whose name matches.
+    /// `.`: the workspace this shell runs in; `autopilot`: the host's
+    /// Autopilot; a UUID as is; otherwise a workspace whose name matches.
     async fn workspace_id(&self, raw: &str) -> Result<Uuid, VkError> {
         let raw = raw.trim();
+        if raw.eq_ignore_ascii_case("autopilot") {
+            return Ok(self.autopilot().await?.workspace.id);
+        }
         if raw == "." || raw.eq_ignore_ascii_case("current") {
             if let Ok(id) = std::env::var("VK_WORKSPACE_ID")
                 && let Ok(id) = id.parse()
@@ -3115,6 +3132,28 @@ impl Ctx {
         }
     }
 
+    /// The host's active Autopilot, or a clear error when there is none.
+    async fn autopilot(&self) -> Result<AutopilotWorkspaceResponse, VkError> {
+        self.client.autopilot().await?.ok_or_else(|| {
+            VkError::message(
+                "This host has no active Autopilot (create one from the Quick chat dialog's Autopilot tab or `vk ws quick-chat <path> --autopilot -m ...`; a paused one is archived)",
+            )
+        })
+    }
+
+    /// `session_id` plus the `autopilot` alias (the Autopilot's single session).
+    async fn session_arg(&self, raw: &str) -> Result<Uuid, VkError> {
+        if raw.trim().eq_ignore_ascii_case("autopilot") {
+            return self
+                .autopilot()
+                .await?
+                .session
+                .map(|session| session.id)
+                .ok_or_else(|| VkError::message("The Autopilot has no session yet"));
+        }
+        Self::session_id(raw)
+    }
+
     fn session_id(raw: &str) -> Result<Uuid, VkError> {
         let raw = raw.trim();
         if raw == "." || raw.eq_ignore_ascii_case("current") {
@@ -3134,7 +3173,7 @@ impl Ctx {
     async fn resolve_id_arg(&self, spec: &ArgSpec, raw: &str) -> Result<String, VkError> {
         Ok(match spec.name {
             "ws" => self.workspace_id(raw).await?.to_string(),
-            "session" => Self::session_id(raw)?.to_string(),
+            "session" => self.session_arg(raw).await?.to_string(),
             _ => raw.trim().to_string(),
         })
     }
@@ -3473,6 +3512,7 @@ impl Ctx {
                     "prompt": arg_str(m, "message").unwrap_or_default(),
                     "name": arg_str(m, "name"),
                     "attachment_ids": null,
+                    "autopilot": arg_flag(m, "autopilot"),
                 });
                 self.client
                     .exec(
@@ -3561,8 +3601,9 @@ impl Ctx {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "upload".to_string());
-                let session =
-                    Self::session_id(&arg_str(m, "session").unwrap_or_else(|| ".".to_string()))?;
+                let session = self
+                    .session_arg(&arg_str(m, "session").unwrap_or_else(|| ".".to_string()))
+                    .await?;
                 let part = reqwest::multipart::Part::bytes(bytes).file_name(name);
                 let form = reqwest::multipart::Form::new().part("image", part);
                 let request = self
@@ -3578,7 +3619,9 @@ impl Ctx {
                 self.client.send_value(request).await
             }
             "session.send" => {
-                let session = Self::session_id(&arg_str(m, "session").unwrap_or_default())?;
+                let session = self
+                    .session_arg(&arg_str(m, "session").unwrap_or_default())
+                    .await?;
                 let outcome = self
                     .client
                     .send_prompt(
@@ -3590,7 +3633,9 @@ impl Ctx {
                 Ok(serde_json::to_value(outcome).unwrap_or_default())
             }
             "session.handoff" => {
-                let session = Self::session_id(&arg_str(m, "session").unwrap_or_default())?;
+                let session = self
+                    .session_arg(&arg_str(m, "session").unwrap_or_default())
+                    .await?;
                 let executor = arg_str(m, "executor")
                     .unwrap_or_default()
                     .replace('-', "_")
@@ -3611,7 +3656,9 @@ impl Ctx {
                     .await
             }
             "session.review" => {
-                let session = Self::session_id(&arg_str(m, "session").unwrap_or_default())?;
+                let session = self
+                    .session_arg(&arg_str(m, "session").unwrap_or_default())
+                    .await?;
                 let row = self.client.session(session).await?;
                 let executor = mcp::client::executor_name(arg_str(m, "executor").as_deref(), &row)?;
                 let payload = json!({

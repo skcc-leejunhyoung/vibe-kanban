@@ -58,6 +58,8 @@ export interface SidebarWorkspace {
   isArchived?: boolean;
   /** Quick-chat ("in-place") workspace: runs in an existing checkout, no worktree. */
   isInPlace?: boolean;
+  /** The host's Autopilot: pinned, single-session watcher driven by automation. */
+  isAutopilot?: boolean;
   /**
    * Set when automatic expiry cleanup could not verify this workspace's
    * uncommitted changes and quarantined it. Only an explicit delete reclaims
@@ -182,6 +184,7 @@ export function toSidebarWorkspace(
     isPinned: ws.pinned,
     isArchived: ws.archived,
     isInPlace: ws.in_place,
+    isAutopilot: ws.autopilot,
     cleanupBlockedReason: ws.cleanup_blocked_reason,
     // Additional data from summary
     isWaiting: summary?.is_waiting_on_blockers ?? undefined,

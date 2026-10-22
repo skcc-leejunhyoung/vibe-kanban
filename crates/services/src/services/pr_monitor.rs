@@ -486,6 +486,7 @@ mod tests {
                     archived INTEGER NOT NULL, pinned INTEGER NOT NULL,
                     name TEXT, worktree_deleted INTEGER NOT NULL,
                     ephemeral INTEGER NOT NULL, in_place INTEGER NOT NULL,
+                    autopilot INTEGER NOT NULL DEFAULT 0,
                     cleanup_blocked_reason TEXT, status_note TEXT, status_updated_at TEXT
                 );",
             )

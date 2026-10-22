@@ -61,6 +61,10 @@ pub struct Workspace {
     /// edits stay uncommitted in the user's working tree, and the destructive
     /// expiry/delete cleanup is skipped so it can never remove the real repo.
     pub in_place: bool,
+    /// The host's Autopilot: an in-place, pinned workspace with a single
+    /// session that automation routines address as `target: autopilot`. At
+    /// most one is active (non-archived) per host; archiving it pauses it.
+    pub autopilot: bool,
     /// Why automatic expiry cleanup refuses to touch this workspace. `None`
     /// means eligible. Set when the uncommitted-change check cannot run at all
     /// (directory present but not a usable git worktree), which would otherwise
@@ -109,6 +113,7 @@ struct WorkspaceStatusRow {
     worktree_deleted: bool,
     ephemeral: bool,
     in_place: bool,
+    autopilot: bool,
     cleanup_blocked_reason: Option<String>,
     status_note: Option<String>,
     status_updated_at: Option<DateTime<Utc>>,
@@ -159,6 +164,7 @@ impl Workspace {
                           worktree_deleted AS "worktree_deleted!: bool",
                           ephemeral AS "ephemeral!: bool",
                           in_place AS "in_place!: bool",
+                          autopilot AS "autopilot!: bool",
                           cleanup_blocked_reason,
                           status_note,
                           status_updated_at AS "status_updated_at: DateTime<Utc>"
@@ -303,6 +309,7 @@ impl Workspace {
                        worktree_deleted  AS "worktree_deleted!: bool",
                        ephemeral         AS "ephemeral!: bool",
                        in_place          AS "in_place!: bool",
+                       autopilot         AS "autopilot!: bool",
                        cleanup_blocked_reason,
                        status_note,
                        status_updated_at AS "status_updated_at: DateTime<Utc>"
@@ -330,6 +337,7 @@ impl Workspace {
                        worktree_deleted  AS "worktree_deleted!: bool",
                        ephemeral         AS "ephemeral!: bool",
                        in_place          AS "in_place!: bool",
+                       autopilot         AS "autopilot!: bool",
                        cleanup_blocked_reason,
                        status_note,
                        status_updated_at AS "status_updated_at: DateTime<Utc>"
@@ -521,7 +529,7 @@ impl Workspace {
             Workspace,
             r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name)
                VALUES ($1, $2, $3, $4, $5, $6)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason, status_note, status_updated_at as "status_updated_at: DateTime<Utc>""#,
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", autopilot as "autopilot!: bool", cleanup_blocked_reason, status_note, status_updated_at as "status_updated_at: DateTime<Utc>""#,
             id,
             Option::<Uuid>::None,
             Option::<String>::None,
@@ -545,7 +553,7 @@ impl Workspace {
             Workspace,
             r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, ephemeral)
                VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason, status_note, status_updated_at as "status_updated_at: DateTime<Utc>""#,
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", autopilot as "autopilot!: bool", cleanup_blocked_reason, status_note, status_updated_at as "status_updated_at: DateTime<Utc>""#,
             id,
             Option::<Uuid>::None,
             Option::<String>::None,
@@ -566,20 +574,53 @@ impl Workspace {
         data: &CreateWorkspace,
         id: Uuid,
         container_ref: &str,
+        autopilot: bool,
     ) -> Result<Self, WorkspaceError> {
+        // An Autopilot is always pinned so it stays at the top of the list.
         Ok(sqlx::query_as!(
             Workspace,
-            r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, in_place)
-               VALUES ($1, $2, $3, $4, $5, $6, TRUE)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", cleanup_blocked_reason, status_note, status_updated_at as "status_updated_at: DateTime<Utc>""#,
+            r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name, in_place, pinned, autopilot)
+               VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $7)
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool", ephemeral as "ephemeral!: bool", in_place as "in_place!: bool", autopilot as "autopilot!: bool", cleanup_blocked_reason, status_note, status_updated_at as "status_updated_at: DateTime<Utc>""#,
             id,
             Option::<Uuid>::None,
             container_ref,
             data.branch,
             Option::<DateTime<Utc>>::None,
-            data.name
+            data.name,
+            autopilot
         )
         .fetch_one(pool)
+        .await?)
+    }
+
+    /// The host's active (non-archived) Autopilot workspace, if any. The partial
+    /// unique index guarantees there is at most one.
+    pub async fn find_active_autopilot(pool: &SqlitePool) -> Result<Option<Self>, WorkspaceError> {
+        Ok(sqlx::query_as!(
+            Workspace,
+            r#"SELECT id AS "id!: Uuid",
+                      task_id AS "task_id: Uuid",
+                      container_ref,
+                      branch,
+                      setup_completed_at AS "setup_completed_at: DateTime<Utc>",
+                      created_at AS "created_at!: DateTime<Utc>",
+                      updated_at AS "updated_at!: DateTime<Utc>",
+                      archived AS "archived!: bool",
+                      pinned AS "pinned!: bool",
+                      name,
+                      worktree_deleted AS "worktree_deleted!: bool",
+                      ephemeral AS "ephemeral!: bool",
+                      in_place AS "in_place!: bool",
+                      autopilot AS "autopilot!: bool",
+                      cleanup_blocked_reason,
+                      status_note,
+                      status_updated_at AS "status_updated_at: DateTime<Utc>"
+               FROM workspaces
+               WHERE autopilot = TRUE AND archived = FALSE
+               LIMIT 1"#
+        )
+        .fetch_optional(pool)
         .await?)
     }
 
@@ -600,6 +641,7 @@ impl Workspace {
                       worktree_deleted AS "worktree_deleted!: bool",
                       ephemeral AS "ephemeral!: bool",
                       in_place AS "in_place!: bool",
+                      autopilot AS "autopilot!: bool",
                       cleanup_blocked_reason,
                       status_note,
                       status_updated_at AS "status_updated_at: DateTime<Utc>"
@@ -820,6 +862,7 @@ impl Workspace {
                 w.worktree_deleted AS "worktree_deleted!: bool",
                 w.ephemeral AS "ephemeral!: bool",
                 w.in_place AS "in_place!: bool",
+                w.autopilot AS "autopilot!: bool",
                 w.cleanup_blocked_reason,
                 w.status_note,
                 w.status_updated_at AS "status_updated_at: DateTime<Utc>",
@@ -869,6 +912,7 @@ impl Workspace {
                 w.worktree_deleted AS "worktree_deleted!: bool",
                 w.ephemeral AS "ephemeral!: bool",
                 w.in_place AS "in_place!: bool",
+                w.autopilot AS "autopilot!: bool",
                 w.cleanup_blocked_reason,
                 w.status_note,
                 w.status_updated_at AS "status_updated_at: DateTime<Utc>",
@@ -918,6 +962,7 @@ impl Workspace {
                     worktree_deleted: rec.worktree_deleted,
                     ephemeral: rec.ephemeral,
                     in_place: rec.in_place,
+                    autopilot: rec.autopilot,
                     cleanup_blocked_reason: rec.cleanup_blocked_reason,
                     status_note: rec.status_note,
                     status_updated_at: rec.status_updated_at,
@@ -974,6 +1019,7 @@ impl Workspace {
                 w.worktree_deleted AS "worktree_deleted!: bool",
                 w.ephemeral AS "ephemeral!: bool",
                 w.in_place AS "in_place!: bool",
+                w.autopilot AS "autopilot!: bool",
                 w.cleanup_blocked_reason,
                 w.status_note,
                 w.status_updated_at AS "status_updated_at: DateTime<Utc>",
@@ -1024,6 +1070,7 @@ impl Workspace {
                 worktree_deleted: rec.worktree_deleted,
                 ephemeral: rec.ephemeral,
                 in_place: rec.in_place,
+                autopilot: rec.autopilot,
                 cleanup_blocked_reason: rec.cleanup_blocked_reason,
                 status_note: rec.status_note,
                 status_updated_at: rec.status_updated_at,
@@ -1050,7 +1097,82 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
     use uuid::Uuid;
 
-    use super::Workspace;
+    use super::{CreateWorkspace, Workspace};
+
+    #[tokio::test]
+    async fn only_one_active_autopilot_per_host() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE workspaces (
+                id BLOB PRIMARY KEY, task_id BLOB, container_ref TEXT,
+                branch TEXT NOT NULL, setup_completed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                archived INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0,
+                name TEXT, worktree_deleted INTEGER NOT NULL DEFAULT 0,
+                ephemeral INTEGER NOT NULL DEFAULT 0, in_place INTEGER NOT NULL DEFAULT 0,
+                autopilot INTEGER NOT NULL DEFAULT 0,
+                cleanup_blocked_reason TEXT, status_note TEXT, status_updated_at TEXT
+            );
+            CREATE UNIQUE INDEX idx_workspaces_single_active_autopilot
+                ON workspaces(autopilot) WHERE autopilot = 1 AND archived = 0;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let data = CreateWorkspace {
+            branch: "main".to_string(),
+            name: Some("Autopilot".to_string()),
+        };
+
+        assert!(
+            Workspace::find_active_autopilot(&pool)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let first = Workspace::create_in_place(&pool, &data, Uuid::new_v4(), "/tmp/me", true)
+            .await
+            .unwrap();
+        assert!(first.autopilot && first.pinned && first.in_place);
+        assert_eq!(
+            Workspace::find_active_autopilot(&pool)
+                .await
+                .unwrap()
+                .map(|w| w.id),
+            Some(first.id)
+        );
+        // The partial unique index refuses a second active Autopilot.
+        assert!(
+            Workspace::create_in_place(&pool, &data, Uuid::new_v4(), "/tmp/me", true)
+                .await
+                .is_err()
+        );
+        // Plain quick chats are unaffected and not pinned.
+        let chat = Workspace::create_in_place(&pool, &data, Uuid::new_v4(), "/tmp/me", false)
+            .await
+            .unwrap();
+        assert!(!chat.autopilot && !chat.pinned && chat.in_place);
+        // Pausing (archiving) frees the slot.
+        sqlx::query("UPDATE workspaces SET archived = 1 WHERE id = ?")
+            .bind(first.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            Workspace::find_active_autopilot(&pool)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        Workspace::create_in_place(&pool, &data, Uuid::new_v4(), "/tmp/me", true)
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn cleanup_selects_expired_workspaces_and_keeps_recent_or_protected_ones() {
@@ -1067,6 +1189,7 @@ mod tests {
                 archived INTEGER NOT NULL, pinned INTEGER NOT NULL,
                 name TEXT, worktree_deleted INTEGER NOT NULL,
                 ephemeral INTEGER NOT NULL, in_place INTEGER NOT NULL,
+                autopilot INTEGER NOT NULL DEFAULT 0,
                 cleanup_blocked_reason TEXT, status_note TEXT, status_updated_at TEXT
             );
             CREATE TABLE sessions (id BLOB PRIMARY KEY, workspace_id BLOB);

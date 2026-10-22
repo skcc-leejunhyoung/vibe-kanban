@@ -1,0 +1,116 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!: Uuid\",\n                          task_id AS \"task_id: Uuid\",\n                          container_ref,\n                          branch,\n                          setup_completed_at AS \"setup_completed_at: DateTime<Utc>\",\n                          created_at AS \"created_at!: DateTime<Utc>\",\n                          updated_at AS \"updated_at!: DateTime<Utc>\",\n                          archived AS \"archived!: bool\",\n                          pinned AS \"pinned!: bool\",\n                          name,\n                          worktree_deleted AS \"worktree_deleted!: bool\",\n                          ephemeral AS \"ephemeral!: bool\",\n                          in_place AS \"in_place!: bool\",\n                          autopilot AS \"autopilot!: bool\",\n                          cleanup_blocked_reason,\n                          status_note,\n                          status_updated_at AS \"status_updated_at: DateTime<Utc>\"\n                   FROM workspaces\n                   ORDER BY created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "task_id: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "container_ref",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "branch",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "setup_completed_at: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "archived!: bool",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "pinned!: bool",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "worktree_deleted!: bool",
+        "ordinal": 10,
+        "type_info": "Bool"
+      },
+      {
+        "name": "ephemeral!: bool",
+        "ordinal": 11,
+        "type_info": "Bool"
+      },
+      {
+        "name": "in_place!: bool",
+        "ordinal": 12,
+        "type_info": "Bool"
+      },
+      {
+        "name": "autopilot!: bool",
+        "ordinal": 13,
+        "type_info": "Bool"
+      },
+      {
+        "name": "cleanup_blocked_reason",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "status_note",
+        "ordinal": 15,
+        "type_info": "Text"
+      },
+      {
+        "name": "status_updated_at: DateTime<Utc>",
+        "ordinal": 16,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "69e7f9a0d3a862d17aa7d745b6db50c0a1f5568138831d353fc36080d7688448"
+}

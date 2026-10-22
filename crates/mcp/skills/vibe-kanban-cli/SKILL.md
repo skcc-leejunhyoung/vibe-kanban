@@ -45,6 +45,7 @@ in; `<session>` accepts a session id or `.` for the current session (`VK_SESSION
 | Wait for something | `vk events wait --since <cursor> --kinds process.,approval.pending --timeout 120` |
 | Tell the user | `vk notify send -t "Title" -m "Message" --ws <ws>` |
 | Start work | `vk ws start --repo <id> --branch main --name "..." --executor CLAUDE_CODE -m "..."`, `vk ws quick-chat <repo-path> -m "..."` |
+| The host's Autopilot | `vk ws autopilot` (its workspace, single session, executor config; 404 = none or paused); `autopilot` works as `<ws>`/`<session>`: `vk session send autopilot --queue -m "..."`, `vk ws status autopilot`; create one with `vk ws quick-chat <path> --autopilot -m "..."` |
 | Another machine | `vk hosts list`; add `--host i9` (name prefix works) to any command |
 
 ## Events (the polling loop)

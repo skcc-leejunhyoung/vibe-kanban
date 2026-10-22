@@ -171,6 +171,7 @@ function CommandBarContent({
             workspaceArchived:
               workspace?.archived ?? visibilityContext.workspaceArchived,
             isInPlace: workspace?.in_place ?? visibilityContext.isInPlace,
+            isAutopilot: workspace?.autopilot ?? visibilityContext.isAutopilot,
           }
         : visibilityContext,
     [

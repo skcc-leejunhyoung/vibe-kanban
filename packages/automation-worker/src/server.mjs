@@ -66,6 +66,12 @@ import {
   validateRoutineScope,
 } from './routines.mjs';
 import { fetchWithRetry } from './fetch-retry.mjs';
+import {
+  DEFAULT_KINDS,
+  createCoalescer,
+  journalEventToWorkerEvent,
+  renderPromptTemplate,
+} from './vibe-events.mjs';
 
 // Every worker call (GitHub, Vibe remote, token endpoint, Slack) shares one
 // timeout/retry policy; shadowing the global keeps the call sites unchanged.
@@ -77,6 +83,7 @@ const STATE_PATH = path.join(DATA_DIR, 'state.json');
 const LOG_PATH = path.join(DATA_DIR, 'logs.json');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const MAX_LOGS = 500;
+const HOUR_MS = 3600000;
 // Cap request bodies so an authenticated client can't exhaust memory with one
 // giant POST (the only writes are connector/rule edits, which stay tiny).
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -265,7 +272,7 @@ const defaultState = {
 let state = structuredClone(defaultState);
 let logs = [];
 const timers = new Map();
-const POLLABLE_TYPES = new Set(['slack', 'github']);
+const POLLABLE_TYPES = new Set(['slack', 'github', 'vibe_events']);
 // Caches accessed during the initial poll/rule runs that bootstrap() kicks off,
 // declared before `await bootstrap()` to avoid a temporal-dead-zone access.
 const githubLoginCache = new Map();
@@ -280,6 +287,16 @@ const pollInFlight = new Map();
 const retryInFlight = new Set();
 const routineInFlight = new Set();
 const routineHostInFlight = new Set();
+// Routines with `coalesce` buffer their matching events here and run once per
+// flush (see flushCoalescedRoutine). Declared before bootstrap like the caches.
+const routineCoalescer = createCoalescer({
+  onFlush: (routineId, batch) => flushCoalescedRoutine(routineId, batch),
+  onError: (error) =>
+    log('error', 'coalesced routine run failed', { error: errorMessage(error) }),
+});
+// hostId -> { workspaceId, at }: the host's Autopilot workspace, so its own
+// turns are not fed back to it as events (60s cache).
+const autopilotCache = new Map();
 const eventInFlight = new Map();
 const githubIssueLinkInFlight = new Map();
 // ponytail: keep comment snapshots in memory; use an indexed persistent store
@@ -629,6 +646,7 @@ function safeEqual(a, b) {
 // authoritative so operators can reset cursors/dedup maps from the web UI.
 const RUNTIME_CONFIG_KEYS = [
   'cursorTs',
+  'cursors',
   'seenIds',
   'seenNumbers',
   'issueMap',
@@ -795,8 +813,14 @@ function scheduleAll() {
     if (!connector.enabled || !POLLABLE_TYPES.has(connector.type)) continue;
     // Guard against a non-numeric config value: Number("abc") is NaN, and
     // setInterval(fn, NaN) coerces the delay to 0, spinning the timer.
-    const intervalSeconds = Number(connector.config?.intervalSeconds);
-    const safeSeconds = Number.isFinite(intervalSeconds) ? intervalSeconds : 60;
+    const intervalSeconds = Number(
+      connector.config?.intervalSeconds ?? connector.config?.pollSeconds
+    );
+    const safeSeconds = Number.isFinite(intervalSeconds)
+      ? intervalSeconds
+      : connector.type === 'vibe_events'
+        ? 15
+        : 60;
     const intervalMs = Math.max(safeSeconds, 10) * 1000;
     const timer = setInterval(() => {
       pollConnector(connector.id, false).catch((error) => {
@@ -867,10 +891,24 @@ async function dispatchRoutineEvent(event) {
       });
       continue;
     }
+    if (routine.coalesce && event.type !== 'vk_event_batch') {
+      routineCoalescer.add(routine, event);
+      continue;
+    }
     const key = routineEventKey(routine.id, event);
     const result = await runRoutine(routine, event, key);
     if (result.status === 'busy') await queueRoutineEvent(routine.id, event, key);
   }
+}
+
+// A coalesced batch runs through the normal routine path, keyed by the batch id
+// (first..last event), so busy targets queue it like any other event.
+async function flushCoalescedRoutine(routineId, batch) {
+  const routine = state.routines.find((item) => item.id === routineId);
+  if (!routine?.enabled) return;
+  const key = routineEventKey(routine.id, batch);
+  const result = await runRoutine(routine, batch, key);
+  if (result.status === 'busy') await queueRoutineEvent(routine.id, batch, key);
 }
 
 async function processAutomationEvent(key, event) {
@@ -1031,16 +1069,51 @@ async function executeRoutineAction(routine, event) {
     return result;
   }
   if (action.type === 'send_prompt') {
-    if (!input.sessionId) throw new Error('sessionId is required');
-    const { sessionId, scope: _scope, ...payload } = input;
-    const result = await vibeApi(
-      connector,
-      'POST',
-      `/api/sessions/${encodeURIComponent(sessionId)}/follow-up`,
-      payload,
-      bridge.baseUrl,
-      meta
-    );
+    const { sessionId: explicitSessionId, target, scope: _scope, queue, prompt, ...payload } = input;
+    let sessionId = explicitSessionId;
+    let executorConfig = payload.executor_config;
+    if (!sessionId) {
+      if (target !== 'autopilot') throw new Error('sessionId or target "autopilot" is required');
+      const autopilot = await vibeApi(
+        connector,
+        'GET',
+        '/api/workspaces/autopilot',
+        undefined,
+        bridge.baseUrl
+      ).catch((error) => {
+        if (error?.status === 404) return null;
+        throw error;
+      });
+      if (!autopilot?.data?.session?.id) {
+        await log('info', 'send_prompt skipped: no active autopilot', {
+          routineId: routine.id,
+          targetHostId: action.targetHostId,
+        });
+        return { skipped: 'no active autopilot' };
+      }
+      sessionId = autopilot.data.session.id;
+      executorConfig ||= autopilot.data.executor_config;
+      if (!executorConfig?.executor)
+        throw new Error('autopilot executor config is unavailable; set input.executor_config');
+    }
+    const message = renderPromptTemplate(prompt, event);
+    const result = queue
+      ? await vibeApi(
+          connector,
+          'POST',
+          `/api/sessions/${encodeURIComponent(sessionId)}/queue`,
+          { message, executor_config: executorConfig },
+          bridge.baseUrl,
+          meta
+        )
+      : await vibeApi(
+          connector,
+          'POST',
+          `/api/sessions/${encodeURIComponent(sessionId)}/follow-up`,
+          { ...payload, prompt: message, executor_config: executorConfig },
+          bridge.baseUrl,
+          meta
+        );
     await rememberRoutineOrigin(result?.data?.id, meta);
     return result;
   }
@@ -1142,7 +1215,110 @@ async function runPoll(id, manual) {
   await processRetryQueue({ connectorId: id });
   if (connector.type === 'slack') return pollSlack(connector);
   if (connector.type === 'github') return pollGithub(connector);
+  if (connector.type === 'vibe_events') return pollVibeEvents(connector);
   throw new Error(`poll not supported for ${connector.type}`);
+}
+
+// Read each host's agent journal (through the Vibe connector's host bridge)
+// after the stored cursor and feed the events through the same ingest path as
+// `POST /api/events` (rules, then routines, with receipt dedupe). The first
+// poll only seeds the cursor at the journal's end so enabling the connector
+// never replays history. The host's own Autopilot events are dropped so an
+// Autopilot turn cannot wake the Autopilot again.
+async function pollVibeEvents(connector) {
+  const config = connector.config || {};
+  const hosts = Array.isArray(config.hosts) ? config.hosts.map(String).filter(Boolean) : [];
+  if (!hosts.length) throw new Error('vibe_events hosts are required');
+  const vibe = findConnector(String(config.vibeConnectorId || 'vibe-default'));
+  if (!vibe.enabled || vibe.type !== 'vibe_kanban')
+    throw new Error('enabled Vibe connector is required');
+  const kinds = Array.isArray(config.kinds) && config.kinds.length ? config.kinds : DEFAULT_KINDS;
+  const limit = Math.min(Math.max(Number(config.limit) || 200, 1), 1000);
+  const cursors = (config.cursors =
+    config.cursors && typeof config.cursors === 'object' ? config.cursors : {});
+  const journalPath = (since, pageLimit) =>
+    `/api/events/journal?since=${encodeURIComponent(since)}&kinds=${encodeURIComponent(
+      kinds.join(',')
+    )}&limit=${pageLimit}`;
+  let processed = 0;
+  for (const hostId of hosts) {
+    const bridge = vibe.config?.hostBridges?.[hostId];
+    if (!bridge?.baseUrl) {
+      await log('warn', 'vibe_events host has no bridge', { connectorId: connector.id, hostId });
+      continue;
+    }
+    if (!Number.isFinite(Number(cursors[hostId]))) {
+      const page = await vibeApi(
+        vibe,
+        'GET',
+        journalPath(Number.MAX_SAFE_INTEGER, 1),
+        undefined,
+        bridge.baseUrl
+      );
+      cursors[hostId] = Number(page?.data?.cursor) || 0;
+      await persistState();
+      continue;
+    }
+    const excludeId =
+      config.excludeAutopilot === false
+        ? null
+        : await autopilotWorkspaceId(vibe, bridge.baseUrl, hostId);
+    for (let pages = 0; pages < 10; pages += 1) {
+      const page = await vibeApi(
+        vibe,
+        'GET',
+        journalPath(cursors[hostId], limit),
+        undefined,
+        bridge.baseUrl
+      );
+      const events = Array.isArray(page?.data?.events) ? page.data.events : [];
+      for (const raw of events) {
+        if (excludeId && raw.workspace_id === excludeId) continue;
+        const event = { ...journalEventToWorkerEvent(hostId, raw), connectorId: connector.id };
+        const key = automationEventKey(event);
+        if (state.eventReceipts[key]) continue;
+        await processAutomationEvent(key, event);
+        processed += 1;
+      }
+      cursors[hostId] = Number(page?.data?.cursor) || cursors[hostId];
+      await persistState();
+      if (events.length < limit) break;
+    }
+  }
+  pruneEventReceipts();
+  if (processed > 0) {
+    await log('info', 'vibe journal events processed', {
+      connectorId: connector.id,
+      processed,
+    });
+  }
+  return { ok: true, processed, cursors: { ...cursors } };
+}
+
+async function autopilotWorkspaceId(vibe, baseUrl, hostId) {
+  const cached = autopilotCache.get(hostId);
+  if (cached && cached.at > Date.now() - 60000) return cached.workspaceId;
+  let workspaceId = null;
+  try {
+    const autopilot = await vibeApi(vibe, 'GET', '/api/workspaces/autopilot', undefined, baseUrl);
+    workspaceId = autopilot?.data?.workspace?.id || null;
+  } catch (error) {
+    if (error?.status !== 404) throw error;
+  }
+  autopilotCache.set(hostId, { workspaceId, at: Date.now() });
+  return workspaceId;
+}
+
+// ponytail: journal events arrive far more often than issue events, so drop
+// receipts older than a week once the map is large; move receipts to a DB if
+// the state file still grows too much.
+function pruneEventReceipts() {
+  const entries = Object.entries(state.eventReceipts || {});
+  if (entries.length < 5000) return;
+  const cutoff = Date.now() - 7 * 24 * HOUR_MS;
+  for (const [key, receipt] of entries) {
+    if ((receipt?.receivedAt || 0) < cutoff) delete state.eventReceipts[key];
+  }
 }
 
 async function pollSlack(connector) {

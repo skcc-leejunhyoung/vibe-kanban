@@ -230,7 +230,9 @@ export function WorkspacesLayout({
                   isLoading={isLoading}
                   isSessionsLoading={isSessionsLoading}
                   isNewSessionMode={isNewSessionMode}
-                  onStartNewSession={startNewSession}
+                  onStartNewSession={
+                    selectedWorkspace?.autopilot ? undefined : startNewSession
+                  }
                   autoFocus={mobileTab === 'chat'}
                 />
               )}

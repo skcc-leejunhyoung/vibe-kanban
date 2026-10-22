@@ -24,8 +24,8 @@ use chrono::{DateTime, Utc};
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessRunReason},
     requests::{
-        ContainerQuery, CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse,
-        LinkedIssueInfo, WorkingBranchInput, WorkspaceRepoInput,
+        AutopilotWorkspaceResponse, ContainerQuery, CreateAndStartWorkspaceRequest,
+        CreateAndStartWorkspaceResponse, LinkedIssueInfo, WorkingBranchInput, WorkspaceRepoInput,
     },
     session::Session,
     tag::Tag,
@@ -556,6 +556,10 @@ pub struct WorkspaceListItem {
     pub pinned: bool,
     #[schemars(description = "Quick chat run directly in an existing checkout")]
     pub in_place: bool,
+    #[schemars(
+        description = "The host's Autopilot: pinned single-session watcher driven by automation"
+    )]
+    pub autopilot: bool,
     #[schemars(description = "The agent's latest live summary of the workspace")]
     pub status_note: Option<String>,
     pub status_updated_at: Option<DateTime<Utc>>,
@@ -640,6 +644,19 @@ pub struct StartWorkspaceInput {
 }
 
 impl VkClient {
+    /// The selected host's active Autopilot (`None` when there is none or it
+    /// is paused): the `autopilot` alias of `<ws>`/`<session>` arguments.
+    pub async fn autopilot(&self) -> Result<Option<AutopilotWorkspaceResponse>, VkError> {
+        match self
+            .get::<AutopilotWorkspaceResponse>("/workspaces/autopilot")
+            .await
+        {
+            Ok(found) => Ok(Some(found)),
+            Err(error) if error.status() == Some(404) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Workspaces on the selected host with the summaries merged in: status
     /// note, latest process state, pending approval, blocker wait, PR state.
     pub async fn list_workspaces(
@@ -683,6 +700,7 @@ impl VkClient {
                     archived: workspace.archived,
                     pinned: workspace.pinned,
                     in_place: workspace.in_place,
+                    autopilot: workspace.autopilot,
                     status_note: workspace.status_note,
                     status_updated_at: workspace.status_updated_at,
                     is_running,

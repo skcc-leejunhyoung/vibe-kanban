@@ -139,6 +139,7 @@ function WorkspaceRows({
           githubIssues={workspace.githubIssues}
           latestPrompt={workspace.latestPrompt}
           isInPlace={workspace.isInPlace}
+          isAutopilot={workspace.isAutopilot}
           cleanupBlockedReason={workspace.cleanupBlockedReason}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
           onClick={(event) =>

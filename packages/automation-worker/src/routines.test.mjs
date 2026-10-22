@@ -83,3 +83,27 @@ test('routine condition and action input require object shapes', () => {
   assert.throws(() => normalizeRoutine({ trigger: { type: 'issue_created' }, condition: [], action }), /condition/);
   assert.throws(() => normalizeRoutine({ trigger: { type: 'issue_created' }, action: { ...action, input: [] } }), /action input/);
 });
+
+test('vk_event routines accept kind/host filters and coalesce settings', () => {
+  const routine = normalizeRoutine({ id: 'autopilot-wake', enabled: true, trigger: { type: 'vk_event', kinds: ['process.', 'approval.pending'], hosts: ['host-a'] }, coalesce: { windowSeconds: 10, immediate: ['approval.pending'] }, action: { type: 'send_prompt', connectorId: 'vibe', targetHostId: 'host-a', input: { target: 'autopilot', queue: true, prompt: '{{events}}' } } });
+  assert.deepEqual(routine.coalesce, { windowSeconds: 10, minIntervalSeconds: 120, maxPerHour: 20, immediate: ['approval.pending'] });
+  assert.equal(eventMatchesRoutine(routine, { type: 'vk_event', kind: 'process.failed', hostId: 'host-a' }), true);
+  assert.equal(eventMatchesRoutine(routine, { type: 'vk_event', kind: 'workspace.status_note', hostId: 'host-a' }), false);
+  assert.equal(eventMatchesRoutine(routine, { type: 'vk_event', kind: 'process.failed', hostId: 'host-b' }), false);
+  assert.equal(normalizeRoutine({ trigger: { type: 'issue_created' }, action: { type: 'create_issue', connectorId: 'vibe', input: { title: 'a' } } }).coalesce, null);
+  assert.throws(() => normalizeRoutine({ trigger: { type: 'vk_event', kinds: 'process.' }, action: { type: 'notification', connectorId: 'vibe', targetHostId: 'h', input: { title: 'a', message: 'b' } } }), /kinds/);
+  assert.throws(() => normalizeRoutine({ trigger: { type: 'vk_event' }, coalesce: { windowSeconds: -1 }, action: { type: 'notification', connectorId: 'vibe', targetHostId: 'h', input: { title: 'a', message: 'b' } } }), /windowSeconds/);
+});
+
+test('send_prompt needs a session id or the autopilot target', () => {
+  const action = (input) => ({ trigger: { type: 'vk_event' }, action: { type: 'send_prompt', connectorId: 'vibe', targetHostId: 'h', input } });
+  assert.throws(() => normalizeRoutine(action({ prompt: 'x' })), /sessionId or target/);
+  assert.throws(() => normalizeRoutine(action({ target: 'other', prompt: 'x' })), /target must be/);
+  assert.throws(() => normalizeRoutine(action({ target: 'autopilot', prompt: 'x', queue: 'yes' })), /queue/);
+  assert.doesNotThrow(() => normalizeRoutine(action({ target: 'autopilot', prompt: 'x' })));
+  assert.throws(() => normalizeRoutine(action({ sessionId: 's', prompt: 'x' })), /executor/);
+});
+
+test('run history keeps journal routing fields for batch events', () => {
+  assert.deepEqual(routineRunTrigger({ id: 'batch:h:1..h:2', type: 'vk_event_batch', source: 'vibe', count: 2, cursor: 2, events: [{ title: 'private' }] }), { id: 'batch:h:1..h:2', type: 'vk_event_batch', source: 'vibe', cursor: 2, count: 2 });
+});

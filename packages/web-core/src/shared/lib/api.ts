@@ -117,6 +117,7 @@ import {
   PrCheckoutStatus,
   CreateAndStartWorkspaceRequest,
   CreateAndStartWorkspaceResponse,
+  AutopilotWorkspaceResponse,
   CreateQuickChatRequest,
   GenerateSpecRequest,
   GenerateSpecResponse,
@@ -737,6 +738,21 @@ export const workspacesApi = {
       }
     );
     return handleApiResponse<CreateAndStartWorkspaceResponse>(response);
+  },
+
+  /**
+   * The host's active Autopilot with its single session; null when there is
+   * none or it is paused (archived).
+   */
+  getAutopilot: async (
+    hostId?: string | null
+  ): Promise<AutopilotWorkspaceResponse | null> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/autopilot`,
+      hostId
+    );
+    if (response.status === 404) return null;
+    return handleApiResponse<AutopilotWorkspaceResponse>(response);
   },
 
   getAll: async (taskId: string): Promise<Workspace[]> => {

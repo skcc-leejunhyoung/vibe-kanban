@@ -184,6 +184,7 @@ export function useActionVisibilityContext(
       isCurrentWorkspaceTarget: !!workspace,
       workspaceArchived: workspace?.archived ?? false,
       isInPlace: workspace?.in_place ?? false,
+      isAutopilot: workspace?.autopilot ?? false,
       hasDiffs: diffPathsSet.size > 0,
       diffViewMode,
       editorType: config?.editor?.editor_type ?? null,

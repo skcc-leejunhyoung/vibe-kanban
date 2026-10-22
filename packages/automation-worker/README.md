@@ -159,3 +159,78 @@ and a maximum execution time. Routine event claims, pending busy events,
 retries, origin chains, and execution deadlines are persisted in `state.json`
 so worker restarts resume them. Action requests carry an `Idempotency-Key`
 header for target APIs that support durable side-effect deduplication.
+
+## Autopilot: journal events → one prompt
+
+A `vibe_events` connector polls each host's agent journal
+(`GET /api/events/journal`) through the Vibe connector's `hostBridges` and feeds
+the events into the same ingest path as `POST /api/events`. The first poll only
+seeds the per-host cursor at the journal's end (no replay); cursors live in the
+runtime `cursors` field. With `excludeAutopilot` (default `true`) the host's own
+Autopilot workspace is looked up (`GET /api/workspaces/autopilot`, cached 60s)
+and its events are dropped, so an Autopilot turn never wakes the Autopilot again.
+
+```json
+{
+  "id": "vibe-events",
+  "type": "vibe_events",
+  "enabled": true,
+  "config": {
+    "vibeConnectorId": "vibe-default",
+    "hosts": ["<host uuid>"],
+    "pollSeconds": 15,
+    "kinds": ["process.", "approval.", "workspace.status_note", "vibe.phase", "cloud.notification"],
+    "excludeAutopilot": true
+  }
+}
+```
+
+A routine with trigger `vk_event` (optional `kinds` prefixes and `hosts`
+filters) and a `coalesce` block runs **once per burst**: the buffer flushes
+`windowSeconds` after the last matching event, right away for `immediate`
+kinds, never sooner than `minIntervalSeconds` after the previous flush and at
+most `maxPerHour` times per rolling hour (held events merge into the next
+flush). The run receives a `vk_event_batch` event; `send_prompt` renders
+`{{count}}`, `{{cursor}}`, `{{hostIds}}` and `{{events}}` (one line per event)
+into the prompt. `target: "autopilot"` resolves the host's Autopilot session
+(and its executor config) at run time instead of a `sessionId` — a host without
+an active Autopilot is skipped — and `queue: true` posts to
+`/api/sessions/{id}/queue` so a busy session takes the prompt after its
+current turn instead of failing with 409.
+
+```json
+{
+  "id": "autopilot-wake",
+  "enabled": true,
+  "trigger": { "type": "vk_event", "connectorId": "vibe-events" },
+  "coalesce": { "windowSeconds": 30, "minIntervalSeconds": 120, "maxPerHour": 20, "immediate": ["approval.pending", "process.failed"] },
+  "action": {
+    "type": "send_prompt",
+    "connectorId": "vibe-default",
+    "targetHostId": "<host uuid>",
+    "input": {
+      "target": "autopilot",
+      "queue": true,
+      "prompt": "이벤트 {{count}}건:\n{{events}}\nAGENTS.md 규칙대로 처리하고 vibe-status로 끝내라. cursor={{cursor}}"
+    }
+  }
+}
+```
+
+Without the connector, a schedule routine gives a cheaper first step: the
+Autopilot reads the journal itself (`vk events list --since <cursor>`) on each
+tick, at the cost of a turn even when nothing changed.
+
+```json
+{
+  "id": "autopilot-poll",
+  "enabled": true,
+  "trigger": { "type": "schedule", "cron": "*/10 * * * *", "timezone": "Asia/Seoul" },
+  "action": {
+    "type": "send_prompt",
+    "connectorId": "vibe-default",
+    "targetHostId": "<host uuid>",
+    "input": { "target": "autopilot", "queue": true, "prompt": "autopilot/cursor 이후 이벤트를 vk events list --since 로 읽어 AGENTS.md대로 처리. 없으면 '변화 없음' 한 줄." }
+  }
+}
+```

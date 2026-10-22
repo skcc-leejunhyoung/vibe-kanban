@@ -48,7 +48,8 @@ function ChatBoxWithDiffStats({
   isNewSessionMode: boolean;
   sessions: Session[];
   onSelectSession: (sessionId: string) => void;
-  onStartNewSession: () => void;
+  /** Absent for the Autopilot, which keeps a single session. */
+  onStartNewSession: (() => void) | undefined;
   onScrollToPreviousMessage: () => void;
   onScrollToBottom: (behavior?: 'auto' | 'smooth') => void;
   onScrollToUserMessage: (patchKey: string) => void;
@@ -106,7 +107,8 @@ interface WorkspacesMainContainerProps {
   isLoading: boolean;
   isSessionsLoading?: boolean;
   isNewSessionMode: boolean;
-  onStartNewSession: () => void;
+  /** Absent for the Autopilot, which keeps a single session. */
+  onStartNewSession: (() => void) | undefined;
   autoFocus?: boolean;
 }
 
@@ -201,7 +203,9 @@ export const WorkspacesMainContainer = forwardRef<
       isNewSessionMode={isNewSessionMode}
       sessions={sessions}
       onSelectSession={onSelectSession}
-      onStartNewSession={onStartNewSession}
+      onStartNewSession={
+        workspaceWithSession?.autopilot ? undefined : onStartNewSession
+      }
       onScrollToPreviousMessage={handleScrollToPreviousMessage}
       onScrollToBottom={handleScrollToBottom}
       onScrollToUserMessage={handleScrollToUserMessage}

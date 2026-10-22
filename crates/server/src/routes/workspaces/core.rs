@@ -7,6 +7,8 @@ use axum::{
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    requests::AutopilotWorkspaceResponse,
+    session::Session,
     task::Task,
     workspace::{Workspace, WorkspaceError},
 };
@@ -49,6 +51,37 @@ pub async fn get_workspace(
     Extension(workspace): Extension<Workspace>,
 ) -> Result<ResponseJson<ApiResponse<Workspace>>, ApiError> {
     Ok(ResponseJson(ApiResponse::success(workspace)))
+}
+
+/// This host's active Autopilot with its single session and the executor
+/// config of its latest turn. 404 while there is none (or it is paused, i.e.
+/// archived), which is how automation learns to skip a run.
+pub async fn get_autopilot(
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<AutopilotWorkspaceResponse>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let Some(workspace) = Workspace::find_active_autopilot(pool).await? else {
+        return Err(ApiError::Workspace(WorkspaceError::WorkspaceNotFound));
+    };
+    let session = Session::find_latest_by_workspace_id(pool, workspace.id).await?;
+    let (executor_config, is_running) = match &session {
+        Some(session) => (
+            crate::scheduled_resume_watcher::latest_executor_config(pool, session.id)
+                .await
+                .map_err(|e| ApiError::BadRequest(e.to_string()))?,
+            ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
+                .await?,
+        ),
+        None => (None, false),
+    };
+    Ok(ResponseJson(ApiResponse::success(
+        AutopilotWorkspaceResponse {
+            workspace,
+            session,
+            executor_config,
+            is_running,
+        },
+    )))
 }
 
 pub async fn update_workspace(

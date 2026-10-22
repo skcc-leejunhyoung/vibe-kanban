@@ -225,6 +225,7 @@ describe('command palette navigation actions', () => {
     layoutMode: 'kanban',
     hasWorkspace: true,
     isInPlace: false,
+    isAutopilot: false,
   } as ActionVisibilityContext;
 
   it('keeps pull request linking visible when the workspace has an open PR', () => {
@@ -249,6 +250,32 @@ describe('command palette navigation actions', () => {
       true
     );
     expect(getPageActions('repoActions')).toContain(Actions.GitLinkPRByUrl);
+  });
+
+  it('hides git, session and dev-server actions for the Autopilot', () => {
+    const autopilotContext = {
+      ...openWorkspaceContext,
+      hasGitRepos: true,
+      isInPlace: true,
+      isAutopilot: true,
+    };
+
+    for (const action of [
+      Actions.GitCommit,
+      Actions.GitPush,
+      Actions.GitLinkPR,
+      Actions.NewSession,
+      Actions.ToggleDevServer,
+      Actions.PinWorkspace,
+    ]) {
+      expect(isActionVisible(action, autopilotContext)).toBe(false);
+    }
+    expect(isActionVisible(Actions.ArchiveWorkspace, autopilotContext)).toBe(
+      isActionVisible(Actions.ArchiveWorkspace, openWorkspaceContext)
+    );
+    expect(isActionVisible(Actions.DeleteWorkspace, autopilotContext)).toBe(
+      isActionVisible(Actions.DeleteWorkspace, openWorkspaceContext)
+    );
   });
 
   it('links a pull request by URL without listing branch matches', async () => {
@@ -603,6 +630,7 @@ describe('command palette navigation actions', () => {
       isCurrentWorkspaceTarget: true,
       hasSelectedKanbanIssue: true,
       isInPlace: false,
+      isAutopilot: false,
     } as ActionVisibilityContext;
 
     expect(isActionVisible(action, base)).toBe(true);
@@ -622,6 +650,7 @@ describe('command palette navigation actions', () => {
       hasWorkspace: true,
       isCurrentWorkspaceTarget: false,
       isInPlace: false,
+      isAutopilot: false,
     } as ActionVisibilityContext;
 
     expect(isActionVisible(action, ctx)).toBe(false);

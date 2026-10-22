@@ -185,7 +185,7 @@ async fn process_one(deployment: &DeploymentImpl, row: &ScheduledResume) -> anyh
 }
 
 /// Pull the executor config from the session's most recent coding-agent run.
-async fn latest_executor_config(
+pub(crate) async fn latest_executor_config(
     pool: &SqlitePool,
     session_id: Uuid,
 ) -> anyhow::Result<Option<ExecutorConfig>> {

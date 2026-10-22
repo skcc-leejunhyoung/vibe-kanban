@@ -137,6 +137,24 @@ pub struct CreateQuickChatRequest {
     /// Attachments uploaded before the workspace existed. Copied into
     /// `.vibe-attachments/` inside the repo's checkout so the agent can read them.
     pub attachment_ids: Option<Vec<Uuid>>,
+    /// Create the host's Autopilot instead of a plain quick chat: pinned,
+    /// single-session, addressed by automation as `target: autopilot`. Rejected
+    /// with 409 while an active Autopilot exists.
+    #[serde(default)]
+    pub autopilot: bool,
+}
+
+/// This host's Autopilot (`GET /api/workspaces/autopilot`): the one always-on
+/// in-place workspace that automation routines address as `target: autopilot`.
+#[derive(Debug, Serialize, Deserialize, TS)]
+pub struct AutopilotWorkspaceResponse {
+    pub workspace: Workspace,
+    /// Its single session (absent only between creation and the first start).
+    pub session: Option<Session>,
+    /// Executor config of the latest coding-agent turn, for callers that queue
+    /// prompts without choosing a model themselves.
+    pub executor_config: Option<ExecutorConfig>,
+    pub is_running: bool,
 }
 
 /// Request to expand a rough brief into a development-ready technical task by

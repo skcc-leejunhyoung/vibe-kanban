@@ -193,11 +193,19 @@ pub async fn create_session(
     let pool = &deployment.db().pool;
 
     // Verify workspace exists
-    let _workspace = Workspace::find_by_id(pool, payload.workspace_id)
+    let workspace = Workspace::find_by_id(pool, payload.workspace_id)
         .await?
         .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
             "Workspace not found".to_string(),
         )))?;
+    // The Autopilot is addressed by automation as "its session", so it keeps
+    // exactly one.
+    if workspace.autopilot {
+        return Err(ApiError::Conflict(
+            "An Autopilot keeps a single session; send the message in its existing session."
+                .to_string(),
+        ));
+    }
 
     // `Session::create` seeds the per-session auto-resume toggle from the
     // agent's default setting (the `auto_resume_on_limit` option in the agent
@@ -239,6 +247,16 @@ pub async fn delete_session(
 ) -> Result<(StatusCode, ResponseJson<ApiResponse<()>>), ApiError> {
     let pool = &deployment.db().pool;
     let session_id = session.id;
+
+    if Workspace::find_by_id(pool, session.workspace_id)
+        .await?
+        .is_some_and(|workspace| workspace.autopilot)
+    {
+        return Err(ApiError::Conflict(
+            "The Autopilot's session cannot be deleted; pause (archive) or delete the Autopilot workspace instead."
+                .to_string(),
+        ));
+    }
 
     // Refuse deletion while non-dev-server processes are still running.
     if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session_id).await? {

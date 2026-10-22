@@ -71,6 +71,8 @@ export interface WorkspacesSidebarWorkspace {
   statusHeadline?: string;
   /** Quick-chat ("in-place") workspace — runs in an existing checkout. */
   isInPlace?: boolean;
+  /** The host's Autopilot — shown with a robot tag at the top of the list. */
+  isAutopilot?: boolean;
   /** Non-null when automatic cleanup quarantined this workspace. */
   cleanupBlockedReason?: string | null;
   /**
@@ -277,6 +279,7 @@ function WorkspaceList({
           pullRequests={workspace.pullRequests}
           githubIssues={workspace.githubIssues}
           isInPlace={workspace.isInPlace}
+          isAutopilot={workspace.isAutopilot}
           cleanupBlockedReason={workspace.cleanupBlockedReason}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
           onClick={(event) =>
@@ -550,6 +553,7 @@ export function WorkspacesSidebar({
                   pullRequests={workspace.pullRequests}
                   githubIssues={workspace.githubIssues}
                   isInPlace={workspace.isInPlace}
+                  isAutopilot={workspace.isAutopilot}
                   cleanupBlockedReason={workspace.cleanupBlockedReason}
                   onOpenWorkspaceActions={handleOpenWorkspaceActions}
                   onClick={(event) =>
@@ -720,6 +724,7 @@ export function WorkspacesSidebar({
                 pullRequests={workspace.pullRequests}
                 githubIssues={workspace.githubIssues}
                 isInPlace={workspace.isInPlace}
+                isAutopilot={workspace.isAutopilot}
                 cleanupBlockedReason={workspace.cleanupBlockedReason}
                 onOpenWorkspaceActions={handleOpenWorkspaceActions}
                 onClick={(event) =>

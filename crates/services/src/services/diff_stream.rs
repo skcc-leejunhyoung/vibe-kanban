@@ -1502,6 +1502,7 @@ mod tests {
             },
             Uuid::new_v4(),
             repo_path.to_str().unwrap(),
+            false,
         )
         .await
         .unwrap();

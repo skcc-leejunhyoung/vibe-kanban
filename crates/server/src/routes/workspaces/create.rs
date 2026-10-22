@@ -987,7 +987,29 @@ pub async fn create_and_start_quick_chat(
         prompt,
         name,
         attachment_ids,
+        autopilot,
     } = payload;
+
+    if autopilot
+        && Workspace::find_active_autopilot(&deployment.db().pool)
+            .await?
+            .is_some()
+    {
+        return Err(ApiError::Conflict(
+            "This host already has an active Autopilot. Open it, or pause it before creating another."
+                .to_string(),
+        ));
+    }
+    // The Autopilot's name is its identity in the list; only fall back when the
+    // caller sent nothing.
+    let name = if autopilot {
+        Some(
+            name.filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| "Autopilot".to_string()),
+        )
+    } else {
+        name
+    };
 
     let prompt = normalize_prompt(&prompt).ok_or_else(|| {
         ApiError::BadRequest("A prompt is required. Provide a non-empty `prompt`.".to_string())
@@ -1010,6 +1032,10 @@ pub async fn create_and_start_quick_chat(
             ))
         })?;
 
+    if autopilot {
+        seed_autopilot_instructions(&repo.path).await;
+    }
+
     let container_ref = repo.path.to_string_lossy().to_string();
     let workspace = Workspace::create_in_place(
         &deployment.db().pool,
@@ -1019,6 +1045,7 @@ pub async fn create_and_start_quick_chat(
         },
         Uuid::new_v4(),
         &container_ref,
+        autopilot,
     )
     .await?;
 
@@ -1069,6 +1096,56 @@ pub async fn create_and_start_quick_chat(
             execution_process,
         },
     )))
+}
+
+/// Default operating rules for a new Autopilot folder. Written only when the
+/// folder has no `AGENTS.md` yet (never overwritten): the file *is* the
+/// Autopilot's configuration, so the user edits it, and the agent itself may
+/// amend it when told to.
+const AUTOPILOT_AGENTS_MD: &str = r#"# Autopilot
+
+너는 이 호스트의 Autopilot이다. vibe-kanban의 모든 호스트에서 진행 중인 작업을 지켜보고, 요약하고, 필요한 조치를 취하는 상시 에이전트다. `vk` CLI와 MCP 도구를 모두 쓸 수 있다(`vk --help`).
+
+## 턴의 형식
+- 한 턴 = 자동화 루틴이 보낸 이벤트 묶음 1건 또는 사용자 메시지 1건.
+- 상태 확인은 `vk ws list --json --all-hosts`로 시작한다. 로그가 필요하면 `vk session log <exec> --limit 60`.
+- 끝은 반드시 ```vibe-status 한 문단(1000자 이내, 첫 문장 = 무엇을 지켜보고 어디까지 왔는지). 조치는 본문에 한 줄씩: 알림 / 조향 / 이슈 / 건너뜀(이유).
+
+## 알림 정책
+- 묶음당 `vk notify send` 최대 1건. 제목은 "완료 n · 실패 n · 승인 대기 n · 리뷰 n". 변화가 없으면 보내지 않는다.
+- 23:00–07:00에는 보내지 않고 `autopilot/held.md`에 적어 두었다가 아침 루틴에서 1건으로 묶는다.
+
+## 조향 정책
+- process.failed: 실패 로그 꼬리를 읽고 원인이 분명하면 그 세션에 `vk session send <session> --queue -m "..."`로 재시도 지시. 같은 세션에 하루 2회까지.
+- approval.pending: 파일 삭제·force push·외부 전송은 승인하지 않고 링크만 전달한다. 테스트 실행·읽기·설치는 `vk session approvals respond --approve`.
+- 사용자 세션이 진행 중이면 steer 대신 queue.
+
+## 이슈 정책
+- 세션 완료 + 테스트 통과 + 커밋 있음 → 연결 이슈에 코멘트 1건. 상태 변경은 하지 않는다(vibe 파이프라인 몫).
+
+## 비용
+- 변화가 없으면 도구를 더 부르지 말고 "변화 없음" 한 줄 + vibe-status.
+
+## 기억·루틴
+- 규칙 변경은 이 파일의 해당 절을 고친다(날짜·출처 한 줄). 일지는 `autopilot/journal.md`.
+- 너를 깨우는 루틴은 `vk automation routines list|upsert`로 네가 관리한다. "조용히 해" = 루틴 비활성.
+"#;
+
+/// Seed `AGENTS.md` (and a `CLAUDE.md` that includes it) in the Autopilot's
+/// folder when they are missing. Failures only log: the agent still starts.
+async fn seed_autopilot_instructions(repo_path: &std::path::Path) {
+    for (file, body) in [
+        ("AGENTS.md", AUTOPILOT_AGENTS_MD),
+        ("CLAUDE.md", "@AGENTS.md\n"),
+    ] {
+        let path = repo_path.join(file);
+        if path.exists() {
+            continue;
+        }
+        if let Err(error) = tokio::fs::write(&path, body).await {
+            tracing::warn!(?error, path = %path.display(), "Could not seed Autopilot instructions");
+        }
+    }
 }
 
 #[cfg(test)]

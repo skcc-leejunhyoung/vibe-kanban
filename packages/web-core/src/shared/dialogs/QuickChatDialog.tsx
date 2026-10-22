@@ -7,6 +7,7 @@ import {
   ComputerTowerIcon,
   DesktopIcon,
   LightningIcon,
+  RobotIcon,
   StarIcon,
 } from '@phosphor-icons/react';
 import {
@@ -56,6 +57,11 @@ import {
  * folder. On send it creates an in-place workspace (no `vk/` worktree, no new
  * branch — the agent edits the real working tree) and navigates into the
  * standard workspace conversation view.
+ *
+ * The "Autopilot" tab reuses the same form to create the host's single
+ * always-on watcher workspace (pinned, one session, woken by automation). While
+ * one exists the tab shows it instead of the form: open it, or pause (archive)
+ * it to start another with a different folder or model.
  *
  * The input reuses the workspace-create card (`CreateChatBox`) for a consistent
  * look: WYSIWYG editor, agent + model selectors, attachments, and the primary
@@ -118,6 +124,20 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   const stopRequestedRef = useRef(false);
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<'quick' | 'autopilot'>('quick');
+  const isAutopilotMode = mode === 'autopilot';
+  // The host's current Autopilot (null = none or paused). Only fetched while
+  // the Autopilot tab is open; refetched after a pause so the form appears.
+  const autopilotQuery = useQuery({
+    queryKey: ['autopilot', selectedHostId],
+    queryFn: () => workspacesApi.getAutopilot(selectedHostId),
+    enabled: modal.visible && isAutopilotMode,
+    staleTime: 10 * 1000,
+  });
+  const existingAutopilot = isAutopilotMode
+    ? (autopilotQuery.data ?? null)
+    : null;
+  const [pausing, setPausing] = useState(false);
 
   const favorites = useFolderFavoritesStore((s) => s.favorites);
   const addFavorite = useFolderFavoritesStore((s) => s.addFavorite);
@@ -315,6 +335,53 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     SettingsDialog.show({ initialSection: 'agents' });
   }, []);
 
+  // Route to a workspace and close. Used after a send and by "Open" on the
+  // Autopilot card.
+  const openWorkspace = useCallback(
+    (workspaceId: string) => {
+      const goToDocument = () =>
+        appNavigation.goToWorkspace(workspaceId, { hostId: selectedHostId });
+      // Route the chat before hiding: the dialog's close focus restore fires
+      // as soon as the hide flushes, and it has to already know that a pane
+      // took focus — otherwise it pulls the caret back to its opener.
+      keepPaneFocusRef.current =
+        !!openInNewPane &&
+        openDestinationInOwnPane(
+          { kind: 'workspace', workspaceId, hostId: selectedHostId },
+          appNavigation,
+          runtime,
+          goToDocument
+        );
+      if (!openInNewPane) goToDocument();
+      modal.resolve(workspaceId);
+      // Commit the hide together with the pane's (sync) focus: left to the
+      // scheduler, WebKit runs the dialog focus guard's deferred reclaim
+      // first and pulls focus back out of the pane.
+      flushSync(() => modal.hide());
+    },
+    [appNavigation, selectedHostId, openInNewPane, runtime, modal]
+  );
+
+  // Pause = archive: automation skips an archived Autopilot and the tab
+  // offers the form again, so a new one can take a different folder or model.
+  const pauseAutopilot = useCallback(async () => {
+    if (!existingAutopilot) return;
+    setPausing(true);
+    setError(null);
+    try {
+      await workspacesApi.update(
+        existingAutopilot.workspace.id,
+        { archived: true },
+        selectedHostId
+      );
+      await autopilotQuery.refetch();
+    } catch (e) {
+      setError(getErrorMessage(e) || 'Failed to pause the Autopilot.');
+    } finally {
+      setPausing(false);
+    }
+  }, [existingAutopilot, selectedHostId, autopilotQuery]);
+
   const handleSend = useCallback(async () => {
     if (!repo || !executorConfig || !prompt.trim()) return;
     setSubmitting(true);
@@ -328,8 +395,9 @@ const QuickChatDialogImpl = create<NoProps>(() => {
             repo_id: repo.id,
             executor_config: executorConfig,
             prompt: prompt.trim(),
-            name: null,
+            name: isAutopilotMode ? 'Autopilot' : null,
             attachment_ids: getAttachmentIds(),
+            autopilot: isAutopilotMode,
           },
           selectedHostId
         );
@@ -354,46 +422,30 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       // Sent: the draft is now the workspace's first message, so drop it.
       setPrompt('');
       clearAttachments();
-      const goToDocument = () =>
-        appNavigation.goToWorkspace(workspace.id, { hostId: selectedHostId });
-      // Route the new chat before hiding: the dialog's close focus restore
-      // fires as soon as the hide flushes, and it has to already know that a
-      // pane took focus — otherwise it pulls the caret back to its opener.
-      keepPaneFocusRef.current =
-        !!openInNewPane &&
-        openDestinationInOwnPane(
-          {
-            kind: 'workspace',
-            workspaceId: workspace.id,
-            hostId: selectedHostId,
-          },
-          appNavigation,
-          runtime,
-          goToDocument
-        );
-      if (!openInNewPane) goToDocument();
-      modal.resolve(workspace.id);
-      // Commit the hide together with the pane's (sync) focus: left to the
-      // scheduler, WebKit runs the dialog focus guard's deferred reclaim
-      // first and pulls focus back out of the pane.
-      flushSync(() => modal.hide());
+      openWorkspace(workspace.id);
     } catch (e) {
-      setError(getErrorMessage(e) || 'Failed to start quick chat.');
+      setError(
+        getErrorMessage(e) ||
+          (isAutopilotMode
+            ? 'Failed to start the Autopilot.'
+            : 'Failed to start quick chat.')
+      );
       setSubmitting(false);
     }
   }, [
     repo,
     executorConfig,
     prompt,
+    isAutopilotMode,
     getAttachmentIds,
     clearAttachments,
-    modal,
     queryClient,
-    openInNewPane,
-    appNavigation,
-    runtime,
     selectedHostId,
+    openWorkspace,
   ]);
+
+  const showForm =
+    !isAutopilotMode || (!existingAutopilot && !autopilotQuery.isLoading);
 
   return (
     <Dialog
@@ -414,167 +466,259 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     >
       <DialogHeader>
         <DialogTitle className="flex items-center gap-base">
-          <LightningIcon weight="fill" className="size-icon-sm text-brand" />
-          Quick chat
+          {isAutopilotMode ? (
+            <RobotIcon weight="fill" className="size-icon-sm text-brand" />
+          ) : (
+            <LightningIcon weight="fill" className="size-icon-sm text-brand" />
+          )}
+          {isAutopilotMode ? 'Autopilot' : 'Quick chat'}
         </DialogTitle>
         <DialogDescription>
-          Run an agent in an existing folder — no new branch, no isolation.
-          Edits land directly in your working tree.
+          {isAutopilotMode
+            ? "An always-on agent for this host: pinned, one session, woken by automation when sessions finish, fail or wait for approval. Its standing rules live in the folder's AGENTS.md."
+            : 'Run an agent in an existing folder — no new branch, no isolation. Edits land directly in your working tree.'}
         </DialogDescription>
       </DialogHeader>
 
-      <label className="flex items-center gap-base rounded-md border border-border bg-secondary px-base py-half">
-        {selectedHostId ? (
-          <ComputerTowerIcon className="size-icon-sm shrink-0 text-low" />
-        ) : (
-          <DesktopIcon className="size-icon-sm shrink-0 text-low" />
-        )}
-        <span className="text-sm text-low">Run on</span>
-        <select
-          value={selectedHostId ?? ''}
-          onChange={(event) => {
-            setSelectedHostId(event.target.value || null);
-            setRepo(null);
-            setError(null);
-            // Uploaded to the previous host's cache — those ids mean nothing here.
-            clearAttachments();
-          }}
-          className="min-w-0 flex-1 bg-transparent text-sm text-high outline-none"
-          aria-label="Quick chat host"
-        >
-          {runtime === 'local' && <option value="">This machine</option>}
-          {onlineHosts.map((host) => (
-            <option key={host.id} value={host.id}>
-              {host.name}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div
+        role="tablist"
+        aria-label="Quick chat mode"
+        className="inline-flex self-start rounded-md border border-border bg-secondary p-half text-sm"
+      >
+        {(
+          [
+            ['quick', 'Quick chat', LightningIcon],
+            ['autopilot', 'Autopilot', RobotIcon],
+          ] as const
+        ).map(([value, label, Icon]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={mode === value}
+            onClick={() => setMode(value)}
+            className={`inline-flex items-center gap-half rounded px-base py-half ${
+              mode === value
+                ? 'bg-panel text-high shadow-[inset_0_-2px_0_hsl(var(--brand))]'
+                : 'text-low hover:text-normal'
+            }`}
+          >
+            <Icon weight="fill" className="size-icon-xs" />
+            {label}
+          </button>
+        ))}
+      </div>
 
-      <div className="flex flex-wrap items-center gap-base">
-        <button
-          type="button"
-          onClick={toggleFavorite}
-          disabled={!repo}
-          title={
-            isRepoFavorite
-              ? 'Remove this folder from favorites'
-              : 'Add this folder to favorites'
-          }
-          aria-label={
-            isRepoFavorite
-              ? 'Remove this folder from favorites'
-              : 'Add this folder to favorites'
-          }
-          className="inline-flex items-center rounded-md border border-border p-half text-normal hover:text-high disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <StarIcon
-            weight={isRepoFavorite ? 'fill' : 'regular'}
-            className={`size-icon-sm ${isRepoFavorite ? 'text-brand' : ''}`}
-          />
-        </button>
-        {visibleFavorites.map((fav) => {
-          const isActive = repo?.path === fav.path;
-          return (
+      {isAutopilotMode && existingAutopilot && (
+        <div className="flex flex-col gap-half rounded-md border border-border bg-secondary p-base">
+          <div className="flex items-center gap-base">
+            <RobotIcon weight="fill" className="size-icon-sm text-brand" />
+            <span className="font-medium text-high">
+              {existingAutopilot.workspace.name ?? 'Autopilot'}
+            </span>
+            <span
+              className="min-w-0 truncate text-sm text-low"
+              title={existingAutopilot.workspace.container_ref ?? ''}
+            >
+              {existingAutopilot.workspace.container_ref}
+            </span>
+            <span className="ml-auto shrink-0 text-sm text-low">
+              {existingAutopilot.is_running ? 'Running' : 'Idle'}
+            </span>
+          </div>
+          {existingAutopilot.workspace.status_note && (
+            <p className="text-sm text-normal">
+              {existingAutopilot.workspace.status_note}
+            </p>
+          )}
+          <div className="flex items-center gap-base pt-half">
             <button
               type="button"
-              key={fav.path}
-              onClick={() => selectFavorite(fav.path)}
-              title={fav.path}
-              className={`inline-flex items-center gap-half rounded-full border px-base py-half text-sm ${
-                isActive
-                  ? 'border-brand text-high'
-                  : 'border-border text-normal'
-              } max-w-[200px] truncate hover:text-high`}
+              onClick={() => openWorkspace(existingAutopilot.workspace.id)}
+              className="rounded-md bg-brand px-base py-half text-sm font-medium text-on-brand hover:bg-brand-hover"
             >
-              {fav.name}
+              Open
             </button>
-          );
-        })}
-      </div>
+            <button
+              type="button"
+              onClick={pauseAutopilot}
+              disabled={pausing}
+              className="rounded-md border border-border px-base py-half text-sm text-normal hover:text-high disabled:opacity-50"
+            >
+              {pausing ? 'Pausing…' : 'Pause'}
+            </button>
+            <span className="text-sm text-low">
+              One per host. Pausing archives it; start a new one afterwards to
+              change the folder or model.
+            </span>
+          </div>
+          {error && <p className="text-sm text-error">{error}</p>}
+        </div>
+      )}
 
-      <div className="@container">
-        <CreateChatBox
-          editor={{ value: prompt, onChange: setPrompt }}
-          renderEditor={({
-            value,
-            onChange,
-            onCmdEnter,
-            disabled,
-            repoIds,
-            repoId,
-            executor,
-            onPasteFiles,
-            localAttachments,
-          }) => (
-            <WYSIWYGEditor
-              placeholder="What can the agent help with?"
-              value={value}
-              onChange={onChange}
-              onCmdEnter={onCmdEnter}
-              disabled={disabled}
-              className="min-h-double max-h-[40vh] overflow-y-auto"
-              repoIds={repoIds}
-              repoId={repoId}
-              executor={executor}
-              hostId={selectedHostId}
-              onPasteFiles={onPasteFiles}
-              localAttachments={localAttachments}
-              autoFocus
-              // Quick chat always keeps Return available for line breaks. Unlike
-              // regular workspace chat, it only starts an agent on Cmd/Ctrl+Return.
-              sendShortcut="ModifierEnter"
-            />
-          )}
-          agentIcon={
-            <AgentIcon agent={effectiveExecutor} className="size-icon-base" />
-          }
-          onSend={handleSend}
-          isSending={submitting}
-          onStop={() => {
-            stopRequestedRef.current = true;
-            setIsStopRequested(true);
-          }}
-          isStopRequested={isStopRequested}
-          disabled={!repo || !effectiveExecutor}
-          executor={{
-            selected: effectiveExecutor,
-            options: executorOptions,
-            onChange: handleExecutorChange,
-          }}
-          formatExecutorLabel={toPrettyCase}
-          error={error}
-          repoId={repo?.id}
-          repoIds={repo ? [repo.id] : []}
-          modelSelector={
-            effectiveExecutor ? (
-              <ModelSelectorContainer
-                variant="ghost"
-                agent={effectiveExecutor}
-                workspaceId={undefined}
-                hostId={selectedHostId}
-                onAdvancedSettings={handleCustomise}
-                presets={variantOptions}
-                selectedPreset={selectedVariant}
-                onPresetSelect={handlePresetSelect}
-                onOverrideChange={setOverrides}
-                executorConfig={executorConfig}
-                presetOptions={presetOptions}
+      {showForm && (
+        <>
+          <label className="flex items-center gap-base rounded-md border border-border bg-secondary px-base py-half">
+            {selectedHostId ? (
+              <ComputerTowerIcon className="size-icon-sm shrink-0 text-low" />
+            ) : (
+              <DesktopIcon className="size-icon-sm shrink-0 text-low" />
+            )}
+            <span className="text-sm text-low">Run on</span>
+            <select
+              value={selectedHostId ?? ''}
+              onChange={(event) => {
+                setSelectedHostId(event.target.value || null);
+                setRepo(null);
+                setError(null);
+                // Uploaded to the previous host's cache — those ids mean nothing here.
+                clearAttachments();
+              }}
+              className="min-w-0 flex-1 bg-transparent text-sm text-high outline-none"
+              aria-label="Quick chat host"
+            >
+              {runtime === 'local' && <option value="">This machine</option>}
+              {onlineHosts.map((host) => (
+                <option key={host.id} value={host.id}>
+                  {host.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="flex flex-wrap items-center gap-base">
+            <button
+              type="button"
+              onClick={toggleFavorite}
+              disabled={!repo}
+              title={
+                isRepoFavorite
+                  ? 'Remove this folder from favorites'
+                  : 'Add this folder to favorites'
+              }
+              aria-label={
+                isRepoFavorite
+                  ? 'Remove this folder from favorites'
+                  : 'Add this folder to favorites'
+              }
+              className="inline-flex items-center rounded-md border border-border p-half text-normal hover:text-high disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <StarIcon
+                weight={isRepoFavorite ? 'fill' : 'regular'}
+                className={`size-icon-sm ${isRepoFavorite ? 'text-brand' : ''}`}
               />
-            ) : undefined
-          }
-          onEditRepos={pickFolder}
-          repoSummaryLabel={
-            repo ? repo.display_name || repo.name : 'Select a folder…'
-          }
-          repoSummaryTitle={repo?.path ?? 'Select a folder'}
-          onPasteFiles={uploadFiles}
-          localAttachments={localAttachments}
-          dropzone={{ getRootProps, getInputProps, isDragActive }}
-          sendLabel="Send"
-          sendingLabel="Starting…"
-        />
-      </div>
+            </button>
+            {visibleFavorites.map((fav) => {
+              const isActive = repo?.path === fav.path;
+              return (
+                <button
+                  type="button"
+                  key={fav.path}
+                  onClick={() => selectFavorite(fav.path)}
+                  title={fav.path}
+                  className={`inline-flex items-center gap-half rounded-full border px-base py-half text-sm ${
+                    isActive
+                      ? 'border-brand text-high'
+                      : 'border-border text-normal'
+                  } max-w-[200px] truncate hover:text-high`}
+                >
+                  {fav.name}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="@container">
+            <CreateChatBox
+              editor={{ value: prompt, onChange: setPrompt }}
+              renderEditor={({
+                value,
+                onChange,
+                onCmdEnter,
+                disabled,
+                repoIds,
+                repoId,
+                executor,
+                onPasteFiles,
+                localAttachments,
+              }) => (
+                <WYSIWYGEditor
+                  placeholder={
+                    isAutopilotMode
+                      ? 'First instructions for the Autopilot (its standing rules live in AGENTS.md)…'
+                      : 'What can the agent help with?'
+                  }
+                  value={value}
+                  onChange={onChange}
+                  onCmdEnter={onCmdEnter}
+                  disabled={disabled}
+                  className="min-h-double max-h-[40vh] overflow-y-auto"
+                  repoIds={repoIds}
+                  repoId={repoId}
+                  executor={executor}
+                  hostId={selectedHostId}
+                  onPasteFiles={onPasteFiles}
+                  localAttachments={localAttachments}
+                  autoFocus
+                  // Quick chat always keeps Return available for line breaks. Unlike
+                  // regular workspace chat, it only starts an agent on Cmd/Ctrl+Return.
+                  sendShortcut="ModifierEnter"
+                />
+              )}
+              agentIcon={
+                <AgentIcon
+                  agent={effectiveExecutor}
+                  className="size-icon-base"
+                />
+              }
+              onSend={handleSend}
+              isSending={submitting}
+              onStop={() => {
+                stopRequestedRef.current = true;
+                setIsStopRequested(true);
+              }}
+              isStopRequested={isStopRequested}
+              disabled={!repo || !effectiveExecutor}
+              executor={{
+                selected: effectiveExecutor,
+                options: executorOptions,
+                onChange: handleExecutorChange,
+              }}
+              formatExecutorLabel={toPrettyCase}
+              error={error}
+              repoId={repo?.id}
+              repoIds={repo ? [repo.id] : []}
+              modelSelector={
+                effectiveExecutor ? (
+                  <ModelSelectorContainer
+                    variant="ghost"
+                    agent={effectiveExecutor}
+                    workspaceId={undefined}
+                    hostId={selectedHostId}
+                    onAdvancedSettings={handleCustomise}
+                    presets={variantOptions}
+                    selectedPreset={selectedVariant}
+                    onPresetSelect={handlePresetSelect}
+                    onOverrideChange={setOverrides}
+                    executorConfig={executorConfig}
+                    presetOptions={presetOptions}
+                  />
+                ) : undefined
+              }
+              onEditRepos={pickFolder}
+              repoSummaryLabel={
+                repo ? repo.display_name || repo.name : 'Select a folder…'
+              }
+              repoSummaryTitle={repo?.path ?? 'Select a folder'}
+              onPasteFiles={uploadFiles}
+              localAttachments={localAttachments}
+              dropzone={{ getRootProps, getInputProps, isDragActive }}
+              sendLabel={isAutopilotMode ? 'Start Autopilot' : 'Send'}
+              sendingLabel="Starting…"
+            />
+          </div>
+        </>
+      )}
     </Dialog>
   );
 });

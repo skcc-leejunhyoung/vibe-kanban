@@ -1,3 +1,5 @@
+import { COALESCE_DEFAULTS, kindMatches } from './vibe-events.mjs';
+
 const CRON_PARTS = [
   [0, 59],
   [0, 23],
@@ -17,9 +19,17 @@ export function normalizeRoutine(input) {
   if (!input || typeof input !== 'object') throw new Error('invalid routine');
   const trigger = input.trigger || {};
   const action = input.action || {};
-  if (!['schedule', 'issue_created', 'execution_completed', 'workspace_archived'].includes(trigger.type)) {
+  if (!['schedule', 'issue_created', 'execution_completed', 'workspace_archived', 'vk_event'].includes(trigger.type)) {
     throw new Error('unsupported routine trigger');
   }
+  if (trigger.type === 'vk_event') {
+    for (const key of ['kinds', 'hosts']) {
+      if (trigger[key] === undefined) continue;
+      if (!Array.isArray(trigger[key]) || !trigger[key].every((item) => typeof item === 'string' && item))
+        throw new Error(`vk_event ${key} must be an array of strings`);
+    }
+  }
+  const coalesce = normalizeCoalesce(input.coalesce);
   if (!['create_issue', 'start_workspace', 'send_prompt', 'notification'].includes(action.type)) {
     throw new Error('unsupported routine action');
   }
@@ -58,8 +68,17 @@ export function normalizeRoutine(input) {
       throw new Error('start_workspace max execution time is required');
   }
   if (action.type === 'send_prompt') {
-    if (!actionInput.sessionId || !actionInput.prompt)
-      throw new Error('send_prompt sessionId and prompt are required');
+    if (!actionInput.prompt) throw new Error('send_prompt prompt is required');
+    if (actionInput.target !== undefined && actionInput.target !== 'autopilot')
+      throw new Error('send_prompt target must be "autopilot"');
+    if (!actionInput.sessionId && actionInput.target !== 'autopilot')
+      throw new Error('send_prompt sessionId or target "autopilot" is required');
+    if (actionInput.queue !== undefined && typeof actionInput.queue !== 'boolean')
+      throw new Error('send_prompt queue must be a boolean');
+  }
+  // The explicit-session form keeps its scope and safety requirements; the
+  // Autopilot target resolves the session (and its executor) on the host.
+  if (action.type === 'send_prompt' && actionInput.sessionId) {
     if (!actionInput.executor_config?.executor)
       throw new Error('send_prompt executor is required');
     if (!actionInput.scope?.projectId || !actionInput.scope?.repositoryIds?.length)
@@ -86,10 +105,31 @@ export function normalizeRoutine(input) {
     enabled: Boolean(input.enabled),
     trigger: structuredClone(trigger),
     condition: input.condition ? structuredClone(input.condition) : null,
+    coalesce,
     action: structuredClone(action),
     createdAt: Number(input.createdAt) || Date.now(),
     updatedAt: Date.now(),
   };
+}
+
+function normalizeCoalesce(input) {
+  if (input === undefined || input === null) return null;
+  if (typeof input !== 'object' || Array.isArray(input))
+    throw new Error('coalesce must be an object');
+  const result = { ...COALESCE_DEFAULTS };
+  for (const key of ['windowSeconds', 'minIntervalSeconds', 'maxPerHour']) {
+    if (input[key] === undefined) continue;
+    const value = Number(input[key]);
+    if (!Number.isFinite(value) || value < 0)
+      throw new Error(`coalesce ${key} must be a non-negative number`);
+    result[key] = value;
+  }
+  if (input.immediate !== undefined) {
+    if (!Array.isArray(input.immediate) || !input.immediate.every((item) => typeof item === 'string' && item))
+      throw new Error('coalesce immediate must be an array of kind prefixes');
+    result.immediate = [...input.immediate];
+  }
+  return result;
 }
 
 export function scheduleOccurrence(routine, now = new Date()) {
@@ -181,6 +221,12 @@ export function eventMatchesRoutine(routine, event) {
     event.routineChain?.includes(routine.id)
   )
     return false;
+  if (routine.trigger.type === 'vk_event') {
+    const { kinds, hosts, connectorId } = routine.trigger;
+    if (!kindMatches(event.kind, kinds)) return false;
+    if (hosts?.length && !hosts.includes(event.hostId)) return false;
+    if (connectorId && event.connectorId && event.connectorId !== connectorId) return false;
+  }
   const condition = routine.condition;
   if (!condition) return true;
   return Object.entries(condition).every(
@@ -250,6 +296,10 @@ export function routineRunTrigger(event) {
     'workspaceId',
     'projectId',
     'sessionId',
+    'kind',
+    'hostId',
+    'cursor',
+    'count',
   ];
   return Object.fromEntries(
     keys

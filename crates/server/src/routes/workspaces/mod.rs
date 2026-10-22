@@ -66,6 +66,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             post(pr::create_workspace_from_pr).layer(from_fn(finish_after_disconnect)),
         )
         .route("/from-pr/status", get(pr::get_pr_checkout_status))
+        .route("/autopilot", get(core::get_autopilot))
         .route("/streams/ws", get(streams::stream_workspaces_ws))
         .route("/streams/sse", get(streams::stream_workspaces_sse))
         .route(

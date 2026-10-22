@@ -220,6 +220,7 @@ fn generate_types_content() -> String {
         db::models::requests::CreateAndStartWorkspaceRequest::decl(),
         db::models::requests::CreateAndStartWorkspaceResponse::decl(),
         db::models::requests::CreateQuickChatRequest::decl(),
+        db::models::requests::AutopilotWorkspaceResponse::decl(),
         db::models::requests::GenerateSpecRequest::decl(),
         db::models::requests::GenerateSpecResponse::decl(),
         db::models::requests::CreateWorkspaceWithoutStartingRequest::decl(),

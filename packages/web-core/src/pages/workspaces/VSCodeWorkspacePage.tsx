@@ -41,7 +41,8 @@ function VSCodeChatBox({
   isNewSessionMode: boolean;
   sessions: Session[];
   onSelectSession: (sessionId: string) => void;
-  onStartNewSession: () => void;
+  /** Absent for the Autopilot, which keeps a single session. */
+  onStartNewSession: (() => void) | undefined;
   onScrollToPreviousMessage: () => void;
   onScrollToBottom: (behavior?: 'auto' | 'smooth') => void;
   onScrollToUserMessage: (patchKey: string) => void;
@@ -221,7 +222,9 @@ export function VSCodeWorkspacePage() {
                       isNewSessionMode={isNewSessionMode}
                       sessions={sessions}
                       onSelectSession={selectSession}
-                      onStartNewSession={startNewSession}
+                      onStartNewSession={
+                        workspace?.autopilot ? undefined : startNewSession
+                      }
                       onScrollToPreviousMessage={handleScrollToPreviousMessage}
                       onScrollToBottom={handleScrollToBottom}
                       onScrollToUserMessage={handleScrollToUserMessage}
