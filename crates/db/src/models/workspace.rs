@@ -146,6 +146,15 @@ pub struct CreateWorkspace {
     pub name: Option<String>,
 }
 
+/// An in-place workspace's session, from [`Workspace::in_place_sessions`].
+#[derive(Debug, Clone, FromRow)]
+pub struct InPlaceSession {
+    pub session_id: Uuid,
+    pub name: String,
+    pub folder: String,
+    pub running: bool,
+}
+
 impl Workspace {
     /// Fetch all workspaces. Newest first.
     pub async fn fetch_all(pool: &SqlitePool) -> Result<Vec<Self>, WorkspaceError> {
@@ -592,6 +601,33 @@ impl Workspace {
         )
         .fetch_one(pool)
         .await?)
+    }
+
+    /// Every active in-place workspace with its folder, display name, the
+    /// session to point at (a running one, else the newest) and whether any of
+    /// its sessions is running (dev servers aside), newest activity first.
+    /// These are who may be editing an existing checkout.
+    pub async fn in_place_sessions(pool: &SqlitePool) -> Result<Vec<InPlaceSession>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT s.id AS session_id, COALESCE(w.name, w.branch) AS name, \
+                    w.container_ref AS folder, \
+                    EXISTS (SELECT 1 FROM execution_processes ep \
+                            JOIN sessions rs ON rs.id = ep.session_id \
+                            WHERE rs.workspace_id = w.id AND ep.status = 'running' \
+                              AND ep.run_reason != 'devserver') AS running \
+             FROM workspaces w \
+             JOIN sessions s ON s.id = ( \
+                 SELECT s2.id FROM sessions s2 WHERE s2.workspace_id = w.id \
+                 ORDER BY EXISTS (SELECT 1 FROM execution_processes ep \
+                                  WHERE ep.session_id = s2.id AND ep.status = 'running' \
+                                    AND ep.run_reason != 'devserver') DESC, \
+                          s2.created_at DESC \
+                 LIMIT 1) \
+             WHERE w.in_place = TRUE AND w.archived = FALSE AND w.container_ref IS NOT NULL \
+             ORDER BY w.updated_at DESC",
+        )
+        .fetch_all(pool)
+        .await
     }
 
     /// The host's active (non-archived) Autopilot workspace, if any. The partial

@@ -2887,6 +2887,20 @@ impl LocalContainerService {
                 self.vibe_tag(client, task_id, vibe_orchestrator::TAG_BLOCK)
                     .await;
                 tracing::warn!("vibe: workspace {} blocked ({:?})", workspace_id, reason);
+                // The review session gave up on a merge failure it was handed:
+                // leave the reason where a human looks, as an exhausted retry
+                // budget does.
+                if phase == VibePhase::Merging
+                    && let Some(detail) = vibe_run.last_error.as_deref()
+                {
+                    self.vibe_comment(
+                        client,
+                        task_id,
+                        &vibe_orchestrator::merge_blocked_comment(detail, Some(ctx.session.id)),
+                    )
+                    .await;
+                    self.vibe_notify_merge_failed(&ctx.workspace, detail).await;
+                }
             }
 
             VibeAction::AttemptMerge { retry } => {
@@ -3302,24 +3316,22 @@ impl LocalContainerService {
     /// and whether a session is running in a checkout whose edits block it.
     async fn vibe_perform_merge(&self, workspace: &Workspace) -> (MergeOutcome, String, bool) {
         let workspace_id = workspace.id;
+        let failed = |message: String| {
+            let outcome = if vibe_orchestrator::is_transient_git_error(&message) {
+                MergeOutcome::Transient
+            } else {
+                MergeOutcome::OtherFailure
+            };
+            (outcome, message, false)
+        };
 
         let workspace_repos =
             match WorkspaceRepo::find_by_workspace_id(&self.db.pool, workspace_id).await {
                 Ok(v) if !v.is_empty() => v,
-                Ok(_) => {
-                    return (
-                        MergeOutcome::OtherFailure,
-                        "workspace has no repos to merge".to_string(),
-                        false,
-                    );
-                }
+                Ok(_) => return failed("workspace has no repos to merge".to_string()),
                 Err(e) => {
                     tracing::error!("vibe merge: load workspace_repos failed: {}", e);
-                    return (
-                        MergeOutcome::OtherFailure,
-                        format!("load workspace repos failed: {e}"),
-                        false,
-                    );
+                    return failed(format!("load workspace repos failed: {e}"));
                 }
             };
 
@@ -3327,11 +3339,7 @@ impl LocalContainerService {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("vibe merge: ensure container failed: {}", e);
-                return (
-                    MergeOutcome::OtherFailure,
-                    format!("ensure container failed: {e}"),
-                    false,
-                );
+                return failed(format!("ensure container failed: {e}"));
             }
         };
         let workspace_path = Path::new(&container_ref);
@@ -3339,9 +3347,7 @@ impl LocalContainerService {
         let mut any_conflict = false;
         let mut any_dirty_base = false;
         let mut base_busy = false;
-        let mut any_transient = false;
-        let mut any_other_failure = false;
-        let mut failures: Vec<String> = Vec::new();
+        let mut failures = MergeFailures::default();
         // Whether at least one repo reached a review-ready state: freshly merged,
         // already merged, or carrying an open PR. Without this, a run where every
         // repo is skipped would fall through to `Success` and mark the issue In
@@ -3353,14 +3359,12 @@ impl LocalContainerService {
                 Ok(Some(r)) => r,
                 Ok(None) => {
                     tracing::warn!("vibe merge: repo {} not found", workspace_repo.repo_id);
-                    failures.push(format!("repo {} not found", workspace_repo.repo_id));
-                    any_other_failure = true;
+                    failures.other(format!("repo {} not found", workspace_repo.repo_id));
                     continue;
                 }
                 Err(e) => {
                     tracing::error!("vibe merge: load repo failed: {}", e);
-                    failures.push(format!("load repo failed: {e}"));
-                    any_other_failure = true;
+                    failures.other(format!("load repo failed: {e}"));
                     continue;
                 }
             };
@@ -3374,8 +3378,7 @@ impl LocalContainerService {
                 {
                     Ok(merges) => merges,
                     Err(e) => {
-                        failures.push(format!("{}: load merges failed: {e}", repo.name));
-                        any_other_failure = true;
+                        failures.other(format!("{}: load merges failed: {e}", repo.name));
                         continue;
                     }
                 };
@@ -3414,8 +3417,7 @@ impl LocalContainerService {
                             repo.name,
                             e
                         );
-                        failures.push(format!("{}: branch status failed: {e}", repo.name));
-                        any_other_failure = true;
+                        failures.other(format!("{}: branch status failed: {e}", repo.name));
                         continue;
                     }
                 }
@@ -3432,8 +3434,7 @@ impl LocalContainerService {
                         repo.name,
                         e
                     );
-                    failures.push(format!("{}: is_remote_branch failed: {e}", repo.name));
-                    any_other_failure = true;
+                    failures.other(format!("{}: is_remote_branch failed: {e}", repo.name));
                     continue;
                 }
             };
@@ -3454,11 +3455,10 @@ impl LocalContainerService {
                             repo.name,
                             e
                         );
-                        failures.push(format!(
+                        failures.other(format!(
                             "{}: materialize remote target failed: {e}",
                             repo.name
                         ));
-                        any_other_failure = true;
                         continue;
                     }
                 }
@@ -3532,11 +3532,10 @@ impl LocalContainerService {
                             repo.name,
                             e
                         );
-                        failures.push(format!(
+                        failures.other(format!(
                             "{}: persist materialized target failed: {e}",
                             repo.name
                         ));
-                        any_other_failure = true;
                         continue;
                     }
                     if let Err(e) = Merge::create_direct(
@@ -3549,8 +3548,7 @@ impl LocalContainerService {
                     .await
                     {
                         tracing::error!("vibe merge: record merge failed for {}: {}", repo.name, e);
-                        failures.push(format!("{}: record merge failed: {e}", repo.name));
-                        any_other_failure = true;
+                        failures.other(format!("{}: record merge failed: {e}", repo.name));
                     } else {
                         any_review_ready = true;
                     }
@@ -3558,7 +3556,9 @@ impl LocalContainerService {
                 Err(GitServiceError::MergeConflicts { .. })
                 | Err(GitServiceError::BranchesDiverged(_)) => {
                     tracing::warn!("vibe merge: conflict merging {}", repo.name);
-                    failures.push(format!("{}: merge conflict", repo.name));
+                    failures
+                        .messages
+                        .push(format!("{}: merge conflict", repo.name));
                     any_conflict = true;
                 }
                 Err(GitServiceError::WorktreeDirty(branch, files)) if branch == target_branch => {
@@ -3571,7 +3571,7 @@ impl LocalContainerService {
                         files,
                         holders
                     );
-                    failures.push(format!(
+                    failures.messages.push(format!(
                         "{}: '{branch}' checkout has uncommitted changes: {files}{holders}",
                         repo.name
                     ));
@@ -3580,13 +3580,7 @@ impl LocalContainerService {
                 }
                 Err(e) => {
                     tracing::warn!("vibe merge: merge_changes failed for {}: {}", repo.name, e);
-                    let message = e.to_string();
-                    if vibe_orchestrator::is_transient_git_error(&message) {
-                        any_transient = true;
-                    } else {
-                        any_other_failure = true;
-                    }
-                    failures.push(format!("{}: {message}", repo.name));
+                    failures.other(format!("{}: {e}", repo.name));
                 }
             }
         }
@@ -3595,52 +3589,85 @@ impl LocalContainerService {
         // escalates; only then is waiting worth it.
         let outcome = if any_conflict {
             MergeOutcome::Conflict
-        } else if any_other_failure {
+        } else if failures.lasting {
             MergeOutcome::OtherFailure
         } else if any_dirty_base {
             MergeOutcome::DirtyBase
-        } else if any_transient {
+        } else if failures.transient {
             MergeOutcome::Transient
         } else if any_review_ready {
             MergeOutcome::Success
         } else {
             // Nothing merged and no review artifact. Escalate to a human instead
             // of silently marking the issue as merged.
-            failures.push("nothing merged and no open PR".to_string());
+            failures
+                .messages
+                .push("nothing merged and no open PR".to_string());
             MergeOutcome::OtherFailure
         };
-        (outcome, failures.join("; "), base_busy)
+        (outcome, failures.messages.join("; "), base_busy)
     }
 
-    /// Where the dirty `branch` checkout of `repo_path` is and which sessions
-    /// are running in it, appended to the merge failure so a human or the
-    /// review session can tell whose work it is. `true` when one is running.
+    /// Where the dirty `branch` checkout of `repo_path` is and which in-place
+    /// sessions work in it (running ones first), appended to the merge failure
+    /// so a human or the review session can tell whose edits they likely are.
+    /// `true` when one of them is running.
     async fn vibe_dirty_checkout_holders(&self, repo_path: &Path, branch: &str) -> (String, bool) {
+        const MAX_SHOWN: usize = 5;
         let Ok(Some((checkout, _))) = self.git.dirty_checkout_of_branch(repo_path, branch) else {
             return (String::new(), false);
         };
         let checkout = std::fs::canonicalize(&checkout).unwrap_or(checkout);
-        let running = ExecutionProcess::running_session_dirs(&self.db.pool)
-            .await
-            .unwrap_or_default();
         // In-place sessions run in the checkout itself (or a folder above it).
-        let sessions: Vec<String> = running
+        let mut holders: Vec<_> = Workspace::in_place_sessions(&self.db.pool)
+            .await
+            .unwrap_or_default()
             .into_iter()
-            .filter(|(_, _, dir)| {
-                let dir = PathBuf::from(dir);
-                checkout.starts_with(std::fs::canonicalize(&dir).unwrap_or(dir))
+            .filter(|holder| {
+                let folder = PathBuf::from(&holder.folder);
+                checkout.starts_with(std::fs::canonicalize(&folder).unwrap_or(folder))
             })
-            .map(|(id, name, _)| format!("'{name}' session {id}"))
             .collect();
-        let holders = if sessions.is_empty() {
-            "no session is running there".to_string()
+        holders.sort_by_key(|holder| !holder.running);
+        let busy = holders.first().is_some_and(|holder| holder.running);
+        let shown: Vec<String> = holders
+            .iter()
+            .take(MAX_SHOWN)
+            .map(|holder| {
+                let running = if holder.running { " (running)" } else { "" };
+                format!("'{}' session {}{running}", holder.name, holder.session_id)
+            })
+            .collect();
+        let holders = if shown.is_empty() {
+            "no in-place session works there".to_string()
         } else {
-            format!("running there: {}", sessions.join(", "))
+            format!("in-place sessions there: {}", shown.join(", "))
         };
         (
             format!(" (checkout {}; {holders})", checkout.display()),
-            !sessions.is_empty(),
+            busy,
         )
+    }
+}
+
+/// A merge attempt's failure messages, split by whether waiting may clear them.
+#[derive(Default)]
+struct MergeFailures {
+    messages: Vec<String>,
+    transient: bool,
+    lasting: bool,
+}
+
+impl MergeFailures {
+    /// A failure other than a conflict or a dirty base: transient (a lock, the
+    /// network) or lasting, by its message.
+    fn other(&mut self, message: String) {
+        if vibe_orchestrator::is_transient_git_error(&message) {
+            self.transient = true;
+        } else {
+            self.lasting = true;
+        }
+        self.messages.push(message);
     }
 }
 
@@ -5603,7 +5630,7 @@ done
         assert!(
             error.contains("uncommitted changes: shared.txt")
                 && error.contains(&format!(
-                    "running there: 'chat' session {}",
+                    "in-place sessions there: 'chat' session {} (running)",
                     chat_session.id
                 )),
             "{error}"
@@ -5625,11 +5652,14 @@ done
         assert_eq!(still.phase, "merging");
         assert_eq!(still.merge_wait_attempts, 2);
         assert_eq!(still.merge_wait_since, waiting.merge_wait_since);
+        // It still names whose edits they likely are.
+        let error = still.last_error.unwrap();
         assert!(
-            still
-                .last_error
-                .unwrap()
-                .contains("no session is running there")
+            error.ends_with(&format!(
+                "in-place sessions there: 'chat' session {})",
+                chat_session.id
+            )),
+            "{error}"
         );
         assert_eq!(status(), wip_status);
 
@@ -5645,6 +5675,67 @@ done
             merged,
             shared(Some((1, "line 1 local"))).replace("line 10\n", "line 10 feature\n")
         );
+    }
+
+    /// A run blocked after spending its merge budget merges on a manual retry
+    /// once the blocker is gone, with the budget started over.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn manual_retry_merges_a_blocked_run_with_a_fresh_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("repo");
+        git(dir.path(), &["init", "-b", "main", "repo"]);
+        git(&repo_path, &["commit", "--allow-empty", "-m", "init"]);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let repo = Repo::find_or_create(&pool, &repo_path, "repo")
+            .await
+            .unwrap();
+        let container = container_on(pool.clone());
+        let workspace = task_workspace(&container, &repo, dir.path(), "a").await;
+        let review = Session::create(
+            &pool,
+            &CreateSession {
+                executor: Some(BaseCodingAgent::ClaudeCode.to_string()),
+                variant: None,
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        VibeRun::get_or_create(&pool, workspace.id, Uuid::new_v4())
+            .await
+            .unwrap();
+        VibeRun::begin_review(&pool, workspace.id, review.id)
+            .await
+            .unwrap();
+        VibeRun::set_merge_retries(&pool, workspace.id, 3)
+            .await
+            .unwrap();
+        VibeRun::record_merge_failure(
+            &pool,
+            workspace.id,
+            "blocked",
+            "repo: 'main' checkout has uncommitted changes: a.txt",
+            None,
+        )
+        .await
+        .unwrap();
+
+        container.vibe_retry_merge(&workspace, true).await.unwrap();
+
+        let run = VibeRun::find_by_workspace_id(&pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.phase, "done");
+        assert_eq!(run.merge_retries, 0);
+        assert!(run.last_error.is_none());
     }
 
     /// A follow-up for `agent`; anything but Claude Code fails to start in the

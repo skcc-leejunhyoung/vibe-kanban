@@ -107,12 +107,13 @@ pub fn merge_blocked_comment(detail: &str, review_session_id: Option<uuid::Uuid>
     )
 }
 
-/// Git failures that clear by themselves — another git process holding a
-/// lock, a dropped connection — and are worth waiting out.
+/// Failures that clear by themselves — another git process holding a lock, a
+/// busy database, a dropped connection — and are worth waiting out.
 pub fn is_transient_git_error(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     [
         "index.lock",
+        "database is locked",
         "another git process",
         "cannot lock ref",
         "unable to lock",
@@ -460,6 +461,11 @@ pub fn decide_finalize_action(input: &FinalizeInput) -> VibeAction {
     use ExecutionProcessRunReason as RR;
     use ExecutionProcessStatus as St;
 
+    // A turn's terminal completion: its coding agent, or the cleanup script
+    // chained after it (which is what finalizes when the repo has one).
+    let terminal_success = matches!(input.status, St::Completed)
+        && matches!(input.run_reason, RR::CodingAgent | RR::CleanupScript);
+
     // Terminal phases never act again — except that a run blocked by a failed
     // merge merges again when its review session approves anew (someone asked
     // it to look again). It is a fresh attempt with the full retry budget.
@@ -468,8 +474,7 @@ pub fn decide_finalize_action(input: &FinalizeInput) -> VibeAction {
         VibePhase::Blocked => {
             let reapproved = input.merge_failed
                 && input.session_is_review
-                && matches!(input.status, St::Completed)
-                && matches!(input.run_reason, RR::CodingAgent)
+                && terminal_success
                 && matches!(input.result, VibeResult::Approve);
             return if reapproved {
                 VibeAction::AttemptMerge { retry: 0 }
@@ -505,8 +510,6 @@ pub fn decide_finalize_action(input: &FinalizeInput) -> VibeAction {
     // successful terminal completion of a coding-agent or cleanup turn. Failed
     // / killed coding turns, dev-server, and archive-script completions are
     // left untouched (conservative: a human decides).
-    let terminal_success = matches!(input.status, St::Completed)
-        && matches!(input.run_reason, RR::CodingAgent | RR::CleanupScript);
     if !terminal_success {
         return VibeAction::Nothing;
     }
@@ -797,11 +800,21 @@ mod tests {
             merge_failed: true,
             ..input()
         };
-        // A fresh attempt: the spent budget does not carry over.
-        assert_eq!(
-            decide_finalize_action(&reapprove),
-            VibeAction::AttemptMerge { retry: 0 }
-        );
+        // A fresh attempt: the spent budget does not carry over. A repo with a
+        // cleanup script finalizes the turn on the script's completion.
+        for run_reason in [
+            ExecutionProcessRunReason::CodingAgent,
+            ExecutionProcessRunReason::CleanupScript,
+        ] {
+            let i = FinalizeInput {
+                run_reason,
+                ..reapprove.clone()
+            };
+            assert_eq!(
+                decide_finalize_action(&i),
+                VibeAction::AttemptMerge { retry: 0 }
+            );
+        }
         // Blocked for another reason, by another session, or without approve:
         // still terminal.
         for i in [
@@ -1223,6 +1236,7 @@ mod tests {
             "Another git process seems to be running in this repository",
             "error: cannot lock ref 'refs/heads/main': is at abc but expected def",
             "ssh: Could not resolve host: github.com",
+            "load merges failed: error returned from database: database is locked",
         ] {
             assert!(is_transient_git_error(message), "{message}");
         }
@@ -1251,12 +1265,12 @@ mod tests {
     #[test]
     fn merge_handoff_prompt_carries_the_reason_and_the_ban() {
         let p = merge_handoff_prompt(
-            "repo: 'main' checkout has uncommitted changes: vk.rs (checkout /r; running there: 'chat' session s1)",
+            "repo: 'main' checkout has uncommitted changes: vk.rs (checkout /r; in-place sessions there: 'chat' session s1)",
             30,
         );
         assert!(p.contains("30분"));
         assert!(p.contains("vk.rs"));
-        assert!(p.contains("running there: 'chat' session s1"));
+        assert!(p.contains("in-place sessions there: 'chat' session s1"));
         assert!(p.contains("`VIBE_RESULT: approve`"));
         assert!(p.contains("`VIBE_RESULT: blocked`"));
         assert!(p.contains("commit·stash·restore·checkout·삭제하지 마"));

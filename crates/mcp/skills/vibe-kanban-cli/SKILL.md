@@ -97,7 +97,8 @@ by agent access.
   stopping or merging anything; prefer `--queue` over `--steer` unless interrupting is the point.
 - **Destructive commands need the user's explicit ask in the current task:** `ws delete`,
   `ws stop` (stops every running turn of the workspace, yours included, and clears queues),
-  `git merge`, `git abort`, `session reset`, `session delete`, `issue delete`, `pr unlink`,
+  `git merge`, `session vibe-review retry-merge`, `git abort`, `session reset`,
+  `session delete`, `issue delete`, `pr unlink`,
   `automation routines delete`, `config set`, `issue statuses update`. Say what you are about to
   run, then run it. Never retry a call that was denied by agent access.
 - **Approvals:** only answer an approval the user asked you to handle. Never approve your own

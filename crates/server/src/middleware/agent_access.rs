@@ -197,7 +197,9 @@ fn toggle_for(method: &Method, path: &str) -> Option<Toggle> {
             "target-branch",
             "push" | "pull-and-push" | "update-from-base" | "merge-remote" | "pull",
         ]
-        | ["repos", _, "push"] => Toggle::GitMerge,
+        | ["repos", _, "push"]
+        // Merges the approved vibe branch into its base.
+        | ["sessions", _, "vibe-review", "retry-merge"] => Toggle::GitMerge,
         ["workspaces", _, "git", ..] | ["workspaces", _, "pull-requests", ..] => Toggle::GitWrite,
         ["repos", _, "fetch"] | ["repos", _, "branches", ..] => Toggle::GitWrite,
         ["repos", "pr-comments", ..] => Toggle::GitWrite,
@@ -444,6 +446,10 @@ mod tests {
         );
         assert_eq!(
             gated(Method::POST, "/api/workspaces/abc/git/merge"),
+            Decision::Gated(Toggle::GitMerge)
+        );
+        assert_eq!(
+            gated(Method::POST, "/api/sessions/s/vibe-review/retry-merge"),
             Decision::Gated(Toggle::GitMerge)
         );
         assert_eq!(
