@@ -2932,6 +2932,16 @@ impl LocalContainerService {
         let pool = &self.db.pool;
         let workspace_id = workspace.id;
         let task_id = vibe_run.task_id;
+        // Only a merge already in `merging` carries its wait on; an approve
+        // from review or a re-approve after blocked starts a new one.
+        let (wait_since, wait_attempts) = if vibe_run.phase == VibePhase::Merging.as_str() {
+            (
+                vibe_run.merge_wait_since,
+                vibe_run.merge_wait_attempts as u32,
+            )
+        } else {
+            (None, 0)
+        };
         let _ = VibeRun::set_phase(pool, workspace_id, VibePhase::Merging.as_str()).await;
         // A fresh attempt (approve, manual retry) restarts the budget; the
         // scheduled retries of its wait read it back from the row.
@@ -2951,10 +2961,8 @@ impl LocalContainerService {
         let now = Utc::now();
         let state = MergeRetryState {
             merge_retries: retry,
-            waited: vibe_run
-                .merge_wait_since
-                .map(|since| (now - since).to_std().unwrap_or_default()),
-            wait_attempts: vibe_run.merge_wait_attempts as u32,
+            waited: wait_since.map(|since| (now - since).to_std().unwrap_or_default()),
+            wait_attempts,
             base_busy,
         };
         let merging = VibePhase::Merging.as_str();
@@ -2984,7 +2992,7 @@ impl LocalContainerService {
             }
             PostMergeAction::Wait { attempt, delay } => {
                 let wait = MergeWait {
-                    since: vibe_run.merge_wait_since.unwrap_or(now),
+                    since: wait_since.unwrap_or(now),
                     attempts: attempt as i64,
                     retry_at: now + chrono::Duration::from_std(delay).unwrap_or_default(),
                 };
@@ -4520,6 +4528,11 @@ impl ContainerService for LocalContainerService {
             };
             (run, 0)
         } else {
+            // The caller saw a due wait; a finalize may have merged or blocked
+            // the run since.
+            if run.phase != VibePhase::Merging.as_str() || run.merge_retry_at.is_none() {
+                return Ok(());
+            }
             let retry = run.merge_retries as u32;
             (run, retry)
         };
@@ -5663,6 +5676,21 @@ done
         );
         assert_eq!(status(), wip_status);
 
+        // Blocked mid-wait, then re-approved: a new wait, not the old clock.
+        VibeRun::set_phase(&pool, workspace.id, "blocked")
+            .await
+            .unwrap();
+        container
+            .vibe_attempt_merge(None, &workspace, &review, &run().await, 0)
+            .await
+            .unwrap();
+        let rewait = run().await;
+        assert_eq!(
+            (rewait.phase.as_str(), rewait.merge_wait_attempts),
+            ("merging", 1)
+        );
+        assert!(rewait.merge_wait_since > waiting.merge_wait_since);
+
         // The owner commits: the retry rebases onto it and fast-forwards.
         git(&repo_path, &["commit", "-am", "wip"]);
         container.vibe_retry_merge(&workspace, false).await.unwrap();
@@ -5726,6 +5754,20 @@ done
         )
         .await
         .unwrap();
+        let phase = || {
+            let pool = pool.clone();
+            async move {
+                VibeRun::find_by_workspace_id(&pool, workspace.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .phase
+            }
+        };
+
+        // A scheduled retry only continues a waiting merge.
+        container.vibe_retry_merge(&workspace, false).await.unwrap();
+        assert_eq!(phase().await, "blocked");
 
         container.vibe_retry_merge(&workspace, true).await.unwrap();
 

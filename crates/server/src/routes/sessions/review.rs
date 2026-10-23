@@ -48,7 +48,7 @@ pub struct VibeReviewRequest {
 pub enum ReviewError {
     ProcessAlreadyRunning,
     NoLinkedIssue,
-    /// No blocked or merging vibe run with a review session to merge from.
+    /// No merging vibe run, or one blocked by a failed merge, to merge again.
     NothingToMerge,
 }
 
@@ -88,9 +88,19 @@ pub async fn vibe_review_status(
     Ok(ResponseJson(ApiResponse::success(run.into())))
 }
 
-/// Merge a `vibe` run again after it was blocked (or while it waits on a
-/// retryable failure): a fresh attempt with the full retry budget. A human
-/// asks for it, so any blocked run with a review session qualifies.
+/// Whether a manual retry may merge `run`: an approved run still merging, or
+/// one blocked by a failed merge. A run its review blocked was never approved.
+fn can_retry_merge(run: &VibeRun) -> bool {
+    run.review_session_id.is_some()
+        && match run.phase.as_str() {
+            "merging" => true,
+            "blocked" => run.last_error.is_some(),
+            _ => false,
+        }
+}
+
+/// Merge a `vibe` run again after a failed merge blocked it (or while it waits
+/// on a retryable failure): a fresh attempt with the full retry budget.
 #[axum::debug_handler]
 pub async fn vibe_retry_merge(
     Extension(session): Extension<Session>,
@@ -100,10 +110,7 @@ pub async fn vibe_retry_merge(
     let run = VibeRun::find_by_workspace_id(pool, session.workspace_id)
         .await
         .map_err(vibe_run_error)?;
-    let retryable = run.as_ref().is_some_and(|run| {
-        matches!(run.phase.as_str(), "blocked" | "merging") && run.review_session_id.is_some()
-    });
-    if !retryable {
+    if !run.as_ref().is_some_and(can_retry_merge) {
         return Ok(ResponseJson(ApiResponse::error_with_data(
             ReviewError::NothingToMerge,
         )));
@@ -294,4 +301,43 @@ pub async fn vibe_review(
         .await?;
 
     Ok(ResponseJson(ApiResponse::success(review_session)))
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::*;
+
+    #[test]
+    fn manual_retry_merges_only_approved_runs() {
+        let run = |phase: &str, last_error: Option<&str>| VibeRun {
+            workspace_id: Uuid::nil(),
+            task_id: Uuid::nil(),
+            phase: phase.to_string(),
+            review_session_id: Some(Uuid::nil()),
+            coding_turns: 0,
+            review_turns: 0,
+            merge_retries: 0,
+            last_result: None,
+            last_error: last_error.map(str::to_string),
+            merge_wait_since: None,
+            merge_wait_attempts: 0,
+            merge_retry_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        assert!(can_retry_merge(&run("merging", None)));
+        assert!(can_retry_merge(&run(
+            "blocked",
+            Some("repo: merge conflict")
+        )));
+        // Blocked by its review (never approved), or not at the merge yet.
+        assert!(!can_retry_merge(&run("blocked", None)));
+        assert!(!can_retry_merge(&run("review", None)));
+        assert!(!can_retry_merge(&VibeRun {
+            review_session_id: None,
+            ..run("merging", None)
+        }));
+    }
 }
