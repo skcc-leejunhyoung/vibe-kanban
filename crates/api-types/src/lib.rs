@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Deserializer};
 
+pub mod agent_event;
 pub mod agent_memory;
 pub mod attachment;
 pub mod auth;
@@ -39,6 +40,7 @@ pub mod user_web_settings;
 pub mod workspace;
 pub mod workspaces;
 
+pub use agent_event::*;
 pub use agent_memory::*;
 pub use attachment::*;
 pub use auth::*;

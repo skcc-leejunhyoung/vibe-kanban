@@ -7,7 +7,6 @@ export const DEFAULT_KINDS = [
   'approval.',
   'workspace.status_note',
   'vibe.phase',
-  'cloud.notification',
 ];
 
 export const COALESCE_DEFAULTS = {
@@ -33,19 +32,9 @@ export function kindMatches(kind, prefixes) {
   });
 }
 
-// The workspace a journal event belongs to. Cloud notifications carry it in
-// the notification payload (the Autopilot sends its own with `--ws autopilot`),
-// not on the event, so excluding the Autopilot's own output needs both.
-export function eventWorkspaceId(event) {
-  return (
-    event?.workspace_id ||
-    event?.data?.payload?.workspace_id ||
-    event?.data?.workspace_id ||
-    null
-  );
-}
-
-export function journalEventToWorkerEvent(hostId, event) {
+// One event from the remote server's central stream (`GET /v1/agent-events`),
+// which every signed-in host pushes its journal into.
+export function journalEventToWorkerEvent(event) {
   const data = event?.data && typeof event.data === 'object' ? event.data : {};
   const exit = data.exit_code;
   const title = [
@@ -57,18 +46,14 @@ export function journalEventToWorkerEvent(hostId, event) {
     .filter(Boolean)
     .join(' · ');
   return {
-    // Every host's journal relays the same cloud notification; keying it by
-    // the notification lets the receipt dedupe drop the other hosts' copies.
-    id:
-      event.kind === 'cloud.notification' && data.id
-        ? `cloud:${data.id}`
-        : `${hostId}:${event.cursor}`,
+    id: `agent-event:${event.cursor}`,
     source: 'vibe',
     type: 'vk_event',
     kind: String(event.kind || ''),
     cursor: event.cursor,
-    hostId,
-    workspaceId: eventWorkspaceId(event),
+    hostId: event.host_id || null,
+    hostName: event.host_name || null,
+    workspaceId: event.workspace_id || null,
     sessionId: event.session_id || null,
     executionId: event.execution_id || null,
     at: event.at || null,
@@ -86,7 +71,7 @@ export function eventLine(event) {
     .filter(([, value]) => value)
     .map(([label, value]) => `${label} ${value}`)
     .join(', ');
-  const head = [event.kind || event.type, event.hostId, event.title]
+  const head = [event.hostName || event.hostId, event.title || event.kind || event.type]
     .filter(Boolean)
     .join(' ');
   return `- ${head}${ids ? ` (${ids})` : ''}`;

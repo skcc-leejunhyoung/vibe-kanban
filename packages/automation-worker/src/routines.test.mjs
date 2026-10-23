@@ -92,6 +92,8 @@ test('vk_event routines accept kind/host filters and coalesce settings', () => {
   assert.equal(eventMatchesRoutine(routine, { type: 'vk_event', kind: 'process.failed', hostId: 'host-a' }), true);
   assert.equal(eventMatchesRoutine(routine, { type: 'vk_event', kind: 'workspace.status_note', hostId: 'host-a' }), false);
   assert.equal(eventMatchesRoutine(routine, { type: 'vk_event', kind: 'process.failed', hostId: 'host-b' }), false);
+  // Central events carry the host's name too, so filters may use either.
+  assert.equal(eventMatchesRoutine(routine, { type: 'vk_event', kind: 'process.failed', hostId: 'uuid-a', hostName: 'host-a' }), true);
   assert.equal(normalizeRoutine({ trigger: { type: 'issue_created' }, action: { type: 'create_issue', connectorId: 'vibe', input: { title: 'a' } } }).coalesce, null);
   assert.throws(() => normalizeRoutine({ trigger: { type: 'vk_event', kinds: 'process.' }, action: { type: 'notification', connectorId: 'vibe', targetHostId: 'h', input: { title: 'a', message: 'b' } } }), /kinds/);
   assert.throws(() => normalizeRoutine({ trigger: { type: 'vk_event' }, coalesce: { windowSeconds: -1 }, action: { type: 'notification', connectorId: 'vibe', targetHostId: 'h', input: { title: 'a', message: 'b' } } }), /windowSeconds/);

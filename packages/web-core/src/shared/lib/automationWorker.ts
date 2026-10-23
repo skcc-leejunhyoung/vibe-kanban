@@ -87,7 +87,7 @@ export type AutomationRoutineTrigger =
   | {
       type: 'issue_created' | 'execution_completed' | 'workspace_archived';
     }
-  /** Host journal events polled by a `vibe_events` connector (prefix filters). */
+  /** Central agent events read by a `vibe_events` connector (prefix filters). */
   | {
       type: 'vk_event';
       connectorId?: string;

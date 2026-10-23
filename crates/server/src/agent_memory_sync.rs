@@ -222,7 +222,7 @@ pub fn spawn(deployment: DeploymentImpl) {
     });
 }
 
-async fn current_remote_host(
+pub(crate) async fn current_remote_host(
     deployment: &DeploymentImpl,
 ) -> anyhow::Result<relay_types::RelayHost> {
     let machine_id = deployment.user_id().to_string();

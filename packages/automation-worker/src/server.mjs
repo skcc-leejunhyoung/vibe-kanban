@@ -69,7 +69,6 @@ import { fetchWithRetry } from './fetch-retry.mjs';
 import {
   DEFAULT_KINDS,
   createCoalescer,
-  eventWorkspaceId,
   journalEventToWorkerEvent,
   renderPromptTemplate,
 } from './vibe-events.mjs';
@@ -652,7 +651,7 @@ function safeEqual(a, b) {
 // authoritative so operators can reset cursors/dedup maps from the web UI.
 const RUNTIME_CONFIG_KEYS = [
   'cursorTs',
-  'cursors',
+  'cursor',
   'seenIds',
   'seenNumbers',
   'issueMap',
@@ -1241,83 +1240,44 @@ async function runPoll(id, manual) {
   throw new Error(`poll not supported for ${connector.type}`);
 }
 
-// Read each host's agent journal (through the Vibe connector's host bridge)
-// after the stored cursor and feed the events through the same ingest path as
-// `POST /api/events` (rules, then routines, with receipt dedupe). The first
-// poll only seeds the cursor at the journal's end so enabling the connector
-// never replays history. Every polled host's Autopilot events are dropped so an
-// Autopilot turn cannot wake an Autopilot again (cloud notifications reach
-// every host's journal, so one host's lookup is not enough). A host that fails
-// is logged and skipped without advancing its cursor; the others still poll.
+// Read the central agent-event stream on the remote server (every signed-in
+// host pushes its journal there) after the stored cursor and feed the events
+// through the same ingest path as `POST /api/events` (rules, then routines,
+// with receipt dedupe). The first poll only seeds the cursor at the stream's
+// end so enabling the connector never replays history. Events a host tagged
+// as its Autopilot's are dropped so an Autopilot turn cannot wake an Autopilot.
 async function pollVibeEvents(connector) {
-  const config = connector.config || {};
-  const hosts = Array.isArray(config.hosts) ? config.hosts.map(String).filter(Boolean) : [];
-  if (!hosts.length) throw new Error('vibe_events hosts are required');
+  const config = (connector.config ||= {});
   const vibe = findConnector(String(config.vibeConnectorId || 'vibe-default'));
   if (!vibe.enabled || vibe.type !== 'vibe_kanban')
     throw new Error('enabled Vibe connector is required');
   const kinds = Array.isArray(config.kinds) && config.kinds.length ? config.kinds : DEFAULT_KINDS;
   const limit = Math.min(Math.max(Number(config.limit) || 200, 1), 1000);
-  const cursors = (config.cursors =
-    config.cursors && typeof config.cursors === 'object' ? config.cursors : {});
-  const journalPath = (since, pageLimit) =>
-    `/api/events/journal?since=${encodeURIComponent(since)}&kinds=${encodeURIComponent(
+  const eventsPath = (since, pageLimit) =>
+    `/v1/agent-events?since=${encodeURIComponent(since)}&kinds=${encodeURIComponent(
       kinds.join(',')
     )}&limit=${pageLimit}`;
+  if (!Number.isFinite(Number(config.cursor))) {
+    const page = await vibeApi(vibe, 'GET', eventsPath(Number.MAX_SAFE_INTEGER, 1));
+    config.cursor = Number(page?.cursor) || 0;
+    await persistState();
+    return { ok: true, processed: 0, cursor: config.cursor };
+  }
   let processed = 0;
-  const failedHosts = [];
-  const hostFailed = async (hostId, error) => {
-    failedHosts.push(hostId);
-    await log('warn', 'vibe_events host poll failed', {
-      connectorId: connector.id,
-      hostId,
-      error: errorMessage(error),
-    });
-  };
-  const bridged = [];
-  for (const hostId of hosts) {
-    const baseUrl = vibe.config?.hostBridges?.[hostId]?.baseUrl;
-    if (baseUrl) bridged.push({ hostId, baseUrl });
-    else await log('warn', 'vibe_events host has no bridge', { connectorId: connector.id, hostId });
-  }
-  const excludeIds = new Set();
-  if (config.excludeAutopilot !== false) {
-    for (const { hostId, baseUrl } of bridged) {
-      try {
-        const id = await autopilotWorkspaceId(vibe, baseUrl);
-        if (id) excludeIds.add(id);
-      } catch (error) {
-        await hostFailed(hostId, error);
-      }
+  for (let pages = 0; pages < 10; pages += 1) {
+    const page = await vibeApi(vibe, 'GET', eventsPath(config.cursor, limit));
+    const events = Array.isArray(page?.events) ? page.events : [];
+    for (const raw of events) {
+      if (raw.autopilot && config.excludeAutopilot !== false) continue;
+      const event = { ...journalEventToWorkerEvent(raw), connectorId: connector.id };
+      const key = automationEventKey(event);
+      if (state.eventReceipts[key]) continue;
+      await processAutomationEvent(key, event);
+      processed += 1;
     }
-  }
-  for (const { hostId, baseUrl } of bridged) {
-    if (failedHosts.includes(hostId)) continue;
-    try {
-      if (!Number.isFinite(Number(cursors[hostId]))) {
-        const page = await vibeApi(vibe, 'GET', journalPath(Number.MAX_SAFE_INTEGER, 1), undefined, baseUrl);
-        cursors[hostId] = Number(page?.data?.cursor) || 0;
-        await persistState();
-        continue;
-      }
-      for (let pages = 0; pages < 10; pages += 1) {
-        const page = await vibeApi(vibe, 'GET', journalPath(cursors[hostId], limit), undefined, baseUrl);
-        const events = Array.isArray(page?.data?.events) ? page.data.events : [];
-        for (const raw of events) {
-          if (excludeIds.has(eventWorkspaceId(raw))) continue;
-          const event = { ...journalEventToWorkerEvent(hostId, raw), connectorId: connector.id };
-          const key = automationEventKey(event);
-          if (state.eventReceipts[key]) continue;
-          await processAutomationEvent(key, event);
-          processed += 1;
-        }
-        cursors[hostId] = Number(page?.data?.cursor) || cursors[hostId];
-        await persistState();
-        if (events.length < limit) break;
-      }
-    } catch (error) {
-      await hostFailed(hostId, error);
-    }
+    config.cursor = Number(page?.cursor) || config.cursor;
+    await persistState();
+    if (events.length < limit) break;
   }
   pruneEventReceipts();
   if (processed > 0) {
@@ -1326,19 +1286,7 @@ async function pollVibeEvents(connector) {
       processed,
     });
   }
-  return { ok: !failedHosts.length, processed, failedHosts, cursors: { ...cursors } };
-}
-
-// Looked up once per poll (no cache): a paused-then-recreated Autopilot must
-// not receive its own events even for one interval.
-async function autopilotWorkspaceId(vibe, baseUrl) {
-  try {
-    const autopilot = await vibeApi(vibe, 'GET', '/api/workspaces/autopilot', undefined, baseUrl);
-    return autopilot?.data?.workspace?.id || null;
-  } catch (error) {
-    if (error?.status !== 404) throw error;
-    return null;
-  }
+  return { ok: true, processed, cursor: config.cursor };
 }
 
 // ponytail: journal events arrive far more often than issue events, so drop

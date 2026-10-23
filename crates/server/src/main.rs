@@ -101,6 +101,9 @@ async fn main() -> Result<(), VibeKanbanError> {
     // Background poller that mirrors new cloud notifications into the agent
     // event journal (`/api/events/journal`).
     server::cloud_notification_watcher::spawn(deployment.clone());
+    // Pushes this host's journal to the remote server's central event stream,
+    // which automation reads to wake the Autopilot for every host.
+    server::agent_events_push::spawn(deployment.clone());
     // One-time background backfill of the session message search index for
     // executions that finished before indexing existed (or missed at exit).
     {

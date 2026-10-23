@@ -1,3 +1,4 @@
+pub mod agent_events_push;
 pub mod agent_memory_sync;
 pub mod blocker_watcher;
 pub mod cloud_notification_watcher;

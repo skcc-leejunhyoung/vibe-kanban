@@ -224,7 +224,8 @@ export function eventMatchesRoutine(routine, event) {
   if (routine.trigger.type === 'vk_event') {
     const { kinds, hosts, connectorId } = routine.trigger;
     if (!kindMatches(event.kind, kinds)) return false;
-    if (hosts?.length && !hosts.includes(event.hostId)) return false;
+    if (hosts?.length && !hosts.includes(event.hostId) && !hosts.includes(event.hostName))
+      return false;
     if (connectorId && event.connectorId && event.connectorId !== connectorId) return false;
   }
   const condition = routine.condition;
@@ -299,6 +300,7 @@ export function routineRunTrigger(event) {
     'sessionId',
     'kind',
     'hostId',
+    'hostName',
     'hostIds',
     'cursor',
     'count',

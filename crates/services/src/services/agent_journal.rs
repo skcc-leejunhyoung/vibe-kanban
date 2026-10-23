@@ -178,6 +178,10 @@ fn kind_matches(kind: &str, filters: &[String]) -> bool {
 /// matches everything.
 pub fn list(since: u64, kinds: &[String], limit: usize) -> JournalPage {
     LAST_READ.store(Utc::now().timestamp(), Ordering::Relaxed);
+    page(since, kinds, limit)
+}
+
+fn page(since: u64, kinds: &[String], limit: usize) -> JournalPage {
     let ring = journal()
         .ring
         .lock()
@@ -206,10 +210,21 @@ pub fn list(since: u64, kinds: &[String], limit: usize) -> JournalPage {
 /// Like [`list`], but waits up to `timeout` (capped at [`MAX_WAIT`]) for a
 /// matching event to arrive when none is pending.
 pub async fn wait(since: u64, kinds: &[String], limit: usize, timeout: Duration) -> JournalPage {
+    LAST_READ.store(Utc::now().timestamp(), Ordering::Relaxed);
+    wait_page(since, kinds, limit, timeout).await
+}
+
+/// [`wait`] for in-process followers (the central push). It does not count as
+/// an agent reading, so it keeps no read-gated watcher awake.
+pub async fn follow(since: u64, limit: usize, timeout: Duration) -> JournalPage {
+    wait_page(since, &[], limit, timeout).await
+}
+
+async fn wait_page(since: u64, kinds: &[String], limit: usize, timeout: Duration) -> JournalPage {
     let deadline = tokio::time::Instant::now() + timeout.min(MAX_WAIT);
     let mut latest = journal().latest.subscribe();
     loop {
-        let page = list(since, kinds, limit);
+        let page = page(since, kinds, limit);
         if !page.events.is_empty() {
             return page;
         }

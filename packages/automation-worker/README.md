@@ -162,18 +162,16 @@ header for target APIs that support durable side-effect deduplication.
 
 ## Autopilot: journal events → one prompt
 
-A `vibe_events` connector polls each host's agent journal
-(`GET /api/events/journal`) through the Vibe connector's `hostBridges` and feeds
-the events into the same ingest path as `POST /api/events`. The first poll only
-seeds the per-host cursor at the journal's end (no replay); cursors live in the
-runtime `cursors` field. With `excludeAutopilot` (default `true`) every polled
-host's Autopilot workspace is looked up (`GET /api/workspaces/autopilot`, once
-per poll) and their events are dropped from every host's journal, so an
-Autopilot turn never wakes an Autopilot again. Cloud notifications reach every
-host's journal: they are matched through their payload's `workspace_id` (so the
-Autopilot should send its own with `vk notify send ... --ws autopilot`) and
-deduplicated by notification id. A host that cannot be reached is logged and
-skipped without moving its cursor; the other hosts still poll.
+Every signed-in host pushes its agent journal (`process.*`, `approval.*`,
+`workspace.*`, `vibe.phase`, ...) to the remote server, which keeps the
+owner's hosts as one stream for a few days (`GET /v1/agent-events`). A
+`vibe_events` connector reads that stream with the Vibe connector's remote
+credentials, so adding a host needs no port, bridge or config here. Events
+feed the same ingest path as `POST /api/events`. The first poll only seeds the
+runtime `cursor` at the stream's end (no replay). Hosts tag their Autopilot's
+own events, and with `excludeAutopilot` (default `true`) those are dropped, so
+an Autopilot turn never wakes an Autopilot. Cloud notifications are not part of
+the stream (the Autopilot reads them with `vk notify list` when it needs them).
 
 ```json
 {
@@ -182,16 +180,19 @@ skipped without moving its cursor; the other hosts still poll.
   "enabled": true,
   "config": {
     "vibeConnectorId": "vibe-default",
-    "hosts": ["<host uuid>"],
     "pollSeconds": 15,
-    "kinds": ["process.", "approval.", "workspace.status_note", "vibe.phase", "cloud.notification"],
+    "kinds": ["process.completed", "process.failed", "approval.pending", "vibe.phase"],
     "excludeAutopilot": true
   }
 }
 ```
 
+Delivering the prompt still goes through the host that runs the Autopilot:
+`send_prompt` needs that host in the Vibe connector's `hostBridges` (keyed by
+the `hostId` of its `GET /api/automation-actions/status`).
+
 A routine with trigger `vk_event` (optional `kinds` prefixes and `hosts`
-filters) and a `coalesce` block runs **once per burst**: the buffer flushes
+filters by host id or name) and a `coalesce` block runs **once per burst**: the buffer flushes
 `windowSeconds` after the last matching event (but no later than
 `maxWaitSeconds`, default 300, after the first one; `0` removes that cap), right away for `immediate`
 kinds, never sooner than `minIntervalSeconds` after the previous flush and at
@@ -214,7 +215,7 @@ current turn instead of failing with 409.
   "action": {
     "type": "send_prompt",
     "connectorId": "vibe-default",
-    "targetHostId": "<host uuid>",
+    "targetHostId": "<Autopilot host's hostId>",
     "input": {
       "target": "autopilot",
       "queue": true,

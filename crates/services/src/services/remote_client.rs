@@ -17,7 +17,7 @@ use api_types::{
     ListIssueRelationshipsResponse, ListIssueTagsResponse, ListIssuesResponse, ListMembersResponse,
     ListOrganizationsResponse, ListProjectStatusesResponse, ListProjectsResponse,
     ListPullRequestsResponse, ListTagsResponse, LocalLoginRequest, LocalLoginResponse,
-    MutationResponse, Organization, ProfileResponse, PullRequest,
+    MutationResponse, Organization, ProfileResponse, PullRequest, PushAgentEventsRequest,
     RecordAgentMemoryMutationReceiptRequest, RecordAgentMemoryReceiptRequest,
     RegisterAgentMemorySyncTargetRequest, RegisterGitHubCredentialRequest,
     ReportAgentMemorySyncJobRequest, RevokeInvitationRequest, SearchIssuesRequest, Tag,
@@ -427,6 +427,21 @@ impl RemoteClient {
                 body,
                 workspace_id,
             }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Pushes a batch of this host's journal events to the central stream.
+    pub async fn push_agent_events(
+        &self,
+        request: &PushAgentEventsRequest,
+    ) -> Result<(), RemoteClientError> {
+        self.send(
+            reqwest::Method::POST,
+            "/v1/agent-events",
+            true,
+            Some(request),
         )
         .await?;
         Ok(())

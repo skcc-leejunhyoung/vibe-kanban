@@ -11,6 +11,7 @@ use tracing::{Level, Span, field};
 
 use crate::{AppState, auth::require_session};
 
+mod agent_events;
 mod agent_memory;
 pub mod attachments;
 pub(crate) mod electric_proxy;
@@ -105,6 +106,7 @@ pub fn router(state: AppState) -> Router {
     let v1_public = v1_public.merge(host_connections::host_router());
 
     let v1_protected = Router::<AppState>::new()
+        .merge(agent_events::router())
         .merge(agent_memory::router())
         .merge(identity::router())
         .merge(hosts::router())
