@@ -101,6 +101,7 @@ import {
   Workspace,
   StartReviewRequest,
   VibeReviewRequest,
+  VibeReviewStatus,
   ReviewError,
   GitRemote,
   ListPrsError,
@@ -524,12 +525,25 @@ export const sessionsApi = {
   getVibeReviewStatus: async (
     sessionId: string,
     hostId?: string | null
-  ): Promise<{ phase: string | null }> => {
+  ): Promise<VibeReviewStatus> => {
     const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/vibe-review/status`,
       hostId
     );
-    return handleApiResponse<{ phase: string | null }>(response);
+    return handleApiResponse<VibeReviewStatus>(response);
+  },
+
+  /** Merge a blocked (or waiting) automated `vibe` run again. */
+  vibeRetryMerge: async (
+    sessionId: string,
+    hostId?: string | null
+  ): Promise<VibeReviewStatus> => {
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/vibe-review/retry-merge`,
+      hostId,
+      { method: 'POST' }
+    );
+    return handleApiResponse<VibeReviewStatus, ReviewError>(response);
   },
 
   reset: async (

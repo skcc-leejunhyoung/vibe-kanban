@@ -619,7 +619,17 @@ export type StartReviewRequest = { executor_config: ExecutorConfig, additional_p
 
 export type VibeReviewRequest = { executor_config: ExecutorConfig | null, };
 
-export type ReviewError = { "type": "process_already_running" } | { "type": "no_linked_issue" };
+export type ReviewError = { "type": "process_already_running" } | { "type": "no_linked_issue" } | { "type": "nothing_to_merge" };
+
+export type VibeReviewStatus = { phase: string | null,
+/**
+ * Why the last auto-merge attempt failed, until a merge lands.
+ */
+last_error: string | null,
+/**
+ * When a merge waiting on a retryable failure is tried again.
+ */
+merge_retry_at: string | null, };
 
 export type OpenEditorRequest = { editor_type: string | null, file_path: string | null, repo_id?: string,
 /**

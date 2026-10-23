@@ -8,23 +8,23 @@ use api_types::{
     AgentMemorySyncSession, AgentMemorySyncSessionTarget, AgentMemorySyncTarget,
     AuthMethodsResponse, CreateAgentMemoryMutationRequest, CreateAgentMemorySyncSessionRequest,
     CreateInvitationRequest, CreateInvitationResponse, CreateIssueAssigneeRequest,
-    CreateIssueRelationshipRequest, CreateIssueRequest, CreateIssueTagRequest,
-    CreateOrganizationRequest, CreateOrganizationResponse, CreateTagRequest,
+    CreateIssueCommentRequest, CreateIssueRelationshipRequest, CreateIssueRequest,
+    CreateIssueTagRequest, CreateOrganizationRequest, CreateOrganizationResponse, CreateTagRequest,
     CreateWorkspaceRequest, DeleteResponse, DeleteWorkspaceRequest, GetInvitationResponse,
     GetOrganizationResponse, GitHubCredentialStatus, HandoffInitRequest, HandoffInitResponse,
-    HandoffRedeemRequest, HandoffRedeemResponse, Issue, IssueAssignee, IssueRelationship, IssueTag,
-    ListAttachmentsResponse, ListInvitationsResponse, ListIssueAssigneesResponse,
-    ListIssueRelationshipsResponse, ListIssueTagsResponse, ListIssuesResponse, ListMembersResponse,
-    ListOrganizationsResponse, ListProjectStatusesResponse, ListProjectsResponse,
-    ListPullRequestsResponse, ListTagsResponse, LocalLoginRequest, LocalLoginResponse,
-    MutationResponse, Organization, ProfileResponse, PullRequest, PushAgentEventsRequest,
-    RecordAgentMemoryMutationReceiptRequest, RecordAgentMemoryReceiptRequest,
-    RegisterAgentMemorySyncTargetRequest, RegisterGitHubCredentialRequest,
-    ReportAgentMemorySyncJobRequest, RevokeInvitationRequest, SearchIssuesRequest, Tag,
-    TokenRefreshRequest, TokenRefreshResponse, UpdateIssueRequest, UpdateMemberRoleRequest,
-    UpdateMemberRoleResponse, UpdateOrganizationRequest, UpdatePullRequestApiRequest,
-    UpdateWorkspaceRequest, UpsertAgentMemorySnapshotRequest, UpsertAgentMemorySnapshotResponse,
-    UpsertPullRequestRequest, Workspace,
+    HandoffRedeemRequest, HandoffRedeemResponse, Issue, IssueAssignee, IssueComment,
+    IssueRelationship, IssueTag, ListAttachmentsResponse, ListInvitationsResponse,
+    ListIssueAssigneesResponse, ListIssueRelationshipsResponse, ListIssueTagsResponse,
+    ListIssuesResponse, ListMembersResponse, ListOrganizationsResponse,
+    ListProjectStatusesResponse, ListProjectsResponse, ListPullRequestsResponse, ListTagsResponse,
+    LocalLoginRequest, LocalLoginResponse, MutationResponse, Organization, ProfileResponse,
+    PullRequest, PushAgentEventsRequest, RecordAgentMemoryMutationReceiptRequest,
+    RecordAgentMemoryReceiptRequest, RegisterAgentMemorySyncTargetRequest,
+    RegisterGitHubCredentialRequest, ReportAgentMemorySyncJobRequest, RevokeInvitationRequest,
+    SearchIssuesRequest, Tag, TokenRefreshRequest, TokenRefreshResponse, UpdateIssueRequest,
+    UpdateMemberRoleRequest, UpdateMemberRoleResponse, UpdateOrganizationRequest,
+    UpdatePullRequestApiRequest, UpdateWorkspaceRequest, UpsertAgentMemorySnapshotRequest,
+    UpsertAgentMemorySnapshotResponse, UpsertPullRequestRequest, Workspace,
 };
 use backon::{ExponentialBuilder, Retryable};
 use bytes::Bytes;
@@ -1434,6 +1434,14 @@ impl RemoteClient {
         request: &CreateIssueTagRequest,
     ) -> Result<MutationResponse<IssueTag>, RemoteClientError> {
         self.post_authed("/v1/issue_tags", Some(request)).await
+    }
+
+    /// Adds a comment to an issue as the signed-in user.
+    pub async fn create_issue_comment(
+        &self,
+        request: &CreateIssueCommentRequest,
+    ) -> Result<MutationResponse<IssueComment>, RemoteClientError> {
+        self.post_authed("/v1/issue_comments", Some(request)).await
     }
 
     /// Removes a tag from an issue.

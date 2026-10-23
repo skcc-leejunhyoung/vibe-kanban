@@ -944,6 +944,13 @@ const COMMANDS: &[Cmd] = &[
         &[SESSION],
     ),
     cmd(
+        &["session", "vibe-review", "retry-merge"],
+        "Merge a blocked (or waiting) vibe run again",
+        "POST",
+        "/sessions/{session}/vibe-review/retry-merge",
+        &[SESSION],
+    ),
+    cmd(
         &["session", "executions"],
         "Execution processes of a session",
         "GET",

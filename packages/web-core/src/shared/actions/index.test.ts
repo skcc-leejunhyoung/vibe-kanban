@@ -37,6 +37,17 @@ vi.mock('@/shared/lib/api', () => ({
   sessionsApi: {
     getByWorkspace: vi.fn(),
     vibeReview: vi.fn(),
+    vibeRetryMerge: vi.fn(),
+  },
+  ApiError: class ApiError extends Error {
+    constructor(
+      message: string,
+      public statusCode?: number,
+      public response?: Response,
+      public error_data?: unknown
+    ) {
+      super(message);
+    }
   },
 }));
 vi.mock('@/shared/lib/remoteApi', () => ({
@@ -87,6 +98,7 @@ import {
 } from './index';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import {
+  ApiError,
   relayApi,
   scratchApi,
   sessionsApi,
@@ -136,6 +148,7 @@ const reservePrWindow = vi.mocked(reserveExternalWindow);
 const openWorkspaceInSplitPane = vi.mocked(openUrlInSplitPane);
 const getSessionsByWorkspace = vi.mocked(sessionsApi.getByWorkspace);
 const vibeReview = vi.mocked(sessionsApi.vibeReview);
+const vibeRetryMerge = vi.mocked(sessionsApi.vibeRetryMerge);
 const showPrDetails = vi.mocked(PrDetailsDialog.show);
 const showSelection = vi.mocked(SelectionDialog.show);
 const showLinkPrByUrl = vi.mocked(LinkPrByUrlDialog.show);
@@ -818,6 +831,57 @@ describe('Actions.StartReview', () => {
       'remote-host'
     );
     expect(selectSession).toHaveBeenCalledWith('review-session');
+  });
+});
+
+describe('Actions.RetryVibeMerge', () => {
+  const ctxFor = () =>
+    makeCtx(
+      { id: 'ws1' },
+      { currentHostId: 'current-host', currentSessionId: 'session-1' }
+    ).ctx;
+
+  it('stays quiet when the merge lands', async () => {
+    vibeRetryMerge.mockResolvedValue({
+      phase: 'done',
+      last_error: null,
+      merge_retry_at: null,
+    });
+
+    await Actions.RetryVibeMerge.execute(ctxFor(), 'ws1');
+
+    expect(vibeRetryMerge).toHaveBeenCalledWith('session-1', 'current-host');
+    expect(showConfirm).not.toHaveBeenCalled();
+  });
+
+  it('shows why the merge is still waiting and when it tries next', async () => {
+    vibeRetryMerge.mockResolvedValue({
+      phase: 'merging',
+      last_error: "repo: 'main' checkout has uncommitted changes: vk.rs",
+      merge_retry_at: '2026-10-23T09:30:00Z',
+    });
+
+    await Actions.RetryVibeMerge.execute(ctxFor(), 'ws1');
+
+    expect(showConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Merge has not landed yet',
+        message: expect.stringContaining(
+          `uncommitted changes: vk.rs\n\nNext try: ${formatDateShortWithTime('2026-10-23T09:30:00Z')}`
+        ),
+        showCancelButton: false,
+      })
+    );
+  });
+
+  it('explains a workspace with nothing to merge', async () => {
+    vibeRetryMerge.mockRejectedValue(
+      new ApiError('failed', 200, undefined, { type: 'nothing_to_merge' })
+    );
+
+    await expect(
+      Actions.RetryVibeMerge.execute(ctxFor(), 'ws1')
+    ).rejects.toThrow('This workspace has no blocked automated merge');
   });
 });
 

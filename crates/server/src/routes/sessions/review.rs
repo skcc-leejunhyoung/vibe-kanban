@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use axum::{Extension, Json, extract::State, response::Json as ResponseJson};
+use chrono::{DateTime, Utc};
 use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessRunReason},
@@ -47,11 +48,33 @@ pub struct VibeReviewRequest {
 pub enum ReviewError {
     ProcessAlreadyRunning,
     NoLinkedIssue,
+    /// No blocked or merging vibe run with a review session to merge from.
+    NothingToMerge,
 }
 
 #[derive(Debug, Serialize, TS)]
 pub struct VibeReviewStatus {
     pub phase: Option<String>,
+    /// Why the last auto-merge attempt failed, until a merge lands.
+    pub last_error: Option<String>,
+    /// When a merge waiting on a retryable failure is tried again.
+    pub merge_retry_at: Option<DateTime<Utc>>,
+}
+
+impl From<Option<VibeRun>> for VibeReviewStatus {
+    fn from(run: Option<VibeRun>) -> Self {
+        Self {
+            phase: run.as_ref().map(|run| run.phase.clone()),
+            last_error: run.as_ref().and_then(|run| run.last_error.clone()),
+            merge_retry_at: run.and_then(|run| run.merge_retry_at),
+        }
+    }
+}
+
+fn vibe_run_error(error: VibeRunError) -> ApiError {
+    match error {
+        VibeRunError::Database(error) => ApiError::Database(error),
+    }
 }
 
 #[axum::debug_handler]
@@ -61,12 +84,55 @@ pub async fn vibe_review_status(
 ) -> Result<ResponseJson<ApiResponse<VibeReviewStatus>>, ApiError> {
     let run = VibeRun::find_by_workspace_id(&deployment.db().pool, session.workspace_id)
         .await
-        .map_err(|error| match error {
-            VibeRunError::Database(error) => ApiError::Database(error),
-        })?;
-    Ok(ResponseJson(ApiResponse::success(VibeReviewStatus {
-        phase: run.map(|run| run.phase),
-    })))
+        .map_err(vibe_run_error)?;
+    Ok(ResponseJson(ApiResponse::success(run.into())))
+}
+
+/// Merge a `vibe` run again after it was blocked (or while it waits on a
+/// retryable failure): a fresh attempt with the full retry budget. A human
+/// asks for it, so any blocked run with a review session qualifies.
+#[axum::debug_handler]
+pub async fn vibe_retry_merge(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<VibeReviewStatus, ReviewError>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let run = VibeRun::find_by_workspace_id(pool, session.workspace_id)
+        .await
+        .map_err(vibe_run_error)?;
+    let retryable = run.as_ref().is_some_and(|run| {
+        matches!(run.phase.as_str(), "blocked" | "merging") && run.review_session_id.is_some()
+    });
+    if !retryable {
+        return Ok(ResponseJson(ApiResponse::error_with_data(
+            ReviewError::NothingToMerge,
+        )));
+    }
+    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(
+        pool,
+        session.workspace_id,
+    )
+    .await?
+    {
+        return Ok(ResponseJson(ApiResponse::error_with_data(
+            ReviewError::ProcessAlreadyRunning,
+        )));
+    }
+    let workspace = Workspace::find_by_id(pool, session.workspace_id)
+        .await?
+        .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
+            "Workspace not found".to_string(),
+        )))?;
+
+    deployment
+        .container()
+        .vibe_retry_merge(&workspace, true)
+        .await?;
+
+    let run = VibeRun::find_by_workspace_id(pool, session.workspace_id)
+        .await
+        .map_err(vibe_run_error)?;
+    Ok(ResponseJson(ApiResponse::success(run.into())))
 }
 
 #[axum::debug_handler]

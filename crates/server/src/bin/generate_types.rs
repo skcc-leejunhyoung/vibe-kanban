@@ -167,6 +167,7 @@ fn generate_types_content() -> String {
         server::routes::sessions::review::StartReviewRequest::decl(),
         server::routes::sessions::review::VibeReviewRequest::decl(),
         server::routes::sessions::review::ReviewError::decl(),
+        server::routes::sessions::review::VibeReviewStatus::decl(),
         server::routes::workspaces::integration::OpenEditorRequest::decl(),
         server::routes::workspaces::integration::OpenEditorResponse::decl(),
         desktop_bridge::service::OpenRemoteEditorResponse::decl(),

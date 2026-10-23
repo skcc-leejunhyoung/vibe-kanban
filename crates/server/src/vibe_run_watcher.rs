@@ -8,6 +8,10 @@
 //! runs and escalates any that have no live execution and have not advanced for
 //! a while to `Blocked` (+ the `vibe-block` tag), so a human is signalled
 //! instead of the run stalling silently.
+//!
+//! It also drives merges waiting on a retryable failure: when a waiting run's
+//! `merge_retry_at` comes due, it tries the merge again. The schedule lives in
+//! the row, so a wait survives restarts.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -15,9 +19,12 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use db::models::{execution_process::ExecutionProcess, session::Session, vibe_run::VibeRun};
+use db::models::{
+    execution_process::ExecutionProcess, session::Session, vibe_run::VibeRun, workspace::Workspace,
+};
 use deployment::Deployment;
 use services::services::{
+    container::ContainerService,
     remote_client::RemoteClient,
     vibe_orchestrator::{TAG_BLOCK, VibePhase},
     vibe_tags,
@@ -50,9 +57,42 @@ pub fn spawn(deployment: DeploymentImpl) {
 }
 
 async fn tick(deployment: &DeploymentImpl) -> anyhow::Result<()> {
+    // Retries first: a wait that came due while the server was down counts as
+    // stale below until it has been retried.
+    retry_due_merges(deployment, Utc::now()).await?;
     let pool = &deployment.db().pool;
     let client = deployment.remote_client().ok();
     block_orphaned_runs(pool, Utc::now(), client.as_ref()).await
+}
+
+/// Try again every waiting merge whose retry is due. A workspace with a live
+/// execution (someone is talking to its review session) waits a tick.
+async fn retry_due_merges(deployment: &DeploymentImpl, now: DateTime<Utc>) -> anyhow::Result<()> {
+    let pool = &deployment.db().pool;
+    for run in VibeRun::find_non_terminal(pool).await? {
+        let due = run.phase == VibePhase::Merging.as_str()
+            && run.merge_retry_at.is_some_and(|at| at <= now);
+        if !due
+            || ExecutionProcess::has_running_non_dev_server_processes_for_workspace(
+                pool,
+                run.workspace_id,
+            )
+            .await?
+        {
+            continue;
+        }
+        let Some(workspace) = Workspace::find_by_id(pool, run.workspace_id).await? else {
+            continue;
+        };
+        if let Err(e) = deployment
+            .container()
+            .vibe_retry_merge(&workspace, false)
+            .await
+        {
+            tracing::warn!("vibe: merge retry for {} failed: {}", run.workspace_id, e);
+        }
+    }
+    Ok(())
 }
 
 async fn block_orphaned_runs(
@@ -82,8 +122,12 @@ async fn block_orphaned_runs(
 
     for run in runs {
         let is_active = active_workspaces.contains(&run.workspace_id);
-        let latest_execution_activity_at =
-            latest_execution_activity.get(&run.workspace_id).cloned();
+        // A scheduled merge retry is activity to come: not stale until it is
+        // overdue (the retry above keeps failing to run).
+        let latest_execution_activity_at = latest_execution_activity
+            .get(&run.workspace_id)
+            .cloned()
+            .max(run.merge_retry_at);
         if !should_escalate(is_active, run.updated_at, latest_execution_activity_at, now) {
             continue;
         }
@@ -341,10 +385,50 @@ mod tests {
                 coding_turns: run.coding_turns as u32,
                 review_turns: run.review_turns as u32,
                 merge_retries: run.merge_retries as u32,
+                merge_failed: run.last_error.is_some(),
                 bounds: VibeBounds::default(),
             }),
             VibeAction::AttemptMerge { retry: 0 }
         );
+    }
+
+    // A merge waiting on another checkout's edits is not orphaned while its
+    // retry is scheduled; one whose retry never ran is.
+    #[tokio::test]
+    async fn waiting_merge_is_left_alone_until_its_retry_is_overdue() {
+        let pool = test_pool().await;
+        let now = ts("2026-06-19T12:00:00Z");
+        let (waiting, _) = seed_review_run(&pool, ts("2026-06-19T11:30:00Z")).await;
+        let (overdue, _) = seed_review_run(&pool, ts("2026-06-19T11:00:00Z")).await;
+        for (workspace_id, retry_at) in [
+            (waiting, ts("2026-06-19T12:05:00Z")),
+            (overdue, ts("2026-06-19T11:40:00Z")),
+        ] {
+            sqlx::query(
+                "UPDATE vibe_runs SET phase = 'merging', merge_retry_at = ? \
+                 WHERE workspace_id = ?",
+            )
+            .bind(retry_at)
+            .bind(workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        block_orphaned_runs(&pool, now, None).await.unwrap();
+
+        let phase = |workspace_id| {
+            let pool = pool.clone();
+            async move {
+                VibeRun::find_by_workspace_id(&pool, workspace_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .phase
+            }
+        };
+        assert_eq!(phase(waiting).await, "merging");
+        assert_eq!(phase(overdue).await, "blocked");
     }
 
     #[tokio::test]

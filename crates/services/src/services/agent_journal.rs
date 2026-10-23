@@ -368,6 +368,8 @@ pub fn observe_vibe_run(run: &VibeRun, inserted: bool) {
             "review_turns": run.review_turns,
             "merge_retries": run.merge_retries,
             "last_result": run.last_result,
+            "last_error": run.last_error,
+            "merge_retry_at": run.merge_retry_at,
         }),
     );
 }

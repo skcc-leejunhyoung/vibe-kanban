@@ -1079,6 +1079,47 @@ fn merge_refuses_uncommitted_base_edits_overlapping_branch_files() {
     );
 }
 
+// The auto-merge now retries while another checkout's uncommitted edits block
+// it. However often it retries, and rebases the task branch when the base
+// moves, the base checkout's edits, index, stash and ref stay as they were.
+#[test]
+fn retried_merges_never_touch_base_uncommitted_edits() {
+    let td = TempDir::new().unwrap();
+    let (repo_path, worktree_path) = setup_overlapping_edit_repo(&td, 1);
+    let s = GitService::new();
+    let git = GitCli::new();
+    // The base moves on underneath the WIP, so the first retry rebases.
+    write_file(&repo_path, "other.txt", "other\n");
+    git.git(&repo_path, ["add", "other.txt"]).unwrap();
+    git.git(&repo_path, ["commit", "-m", "base moves"]).unwrap();
+    let snapshot = || {
+        (
+            git.git(&repo_path, ["status", "--porcelain"]).unwrap(),
+            std::fs::read_to_string(repo_path.join("shared.txt")).unwrap(),
+            git.git(&repo_path, ["stash", "list"]).unwrap(),
+            s.get_branch_oid(&repo_path, "main").unwrap(),
+        )
+    };
+    let before = snapshot();
+
+    let mut blocked = 0;
+    for _ in 0..3 {
+        match s.merge_changes(&repo_path, &worktree_path, "feature", "main") {
+            Err(git::GitServiceError::BranchesDiverged(_)) => {
+                s.rebase_branch(&repo_path, &worktree_path, "main", "main", "feature")
+                    .unwrap();
+            }
+            Err(git::GitServiceError::WorktreeDirty(branch, files)) => {
+                assert_eq!((branch.as_str(), files.as_str()), ("main", "shared.txt"));
+                blocked += 1;
+            }
+            other => panic!("expected the merge to stay blocked, got {other:?}"),
+        }
+        assert_eq!(snapshot(), before);
+    }
+    assert_eq!(blocked, 2);
+}
+
 #[test]
 fn dirty_checkout_of_branch_reports_only_dirty_checked_out_branches() {
     let td = TempDir::new().unwrap();

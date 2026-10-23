@@ -5,6 +5,7 @@ import type {
   Merge,
   PullRequestDetail,
   RepoBranchStatus,
+  ReviewError,
   Session,
   Workspace,
 } from 'shared/types';
@@ -84,6 +85,7 @@ import {
   relayApi,
   repoApi,
   sessionsApi,
+  ApiError,
 } from '@/shared/lib/api';
 import {
   bulkUpdateIssues,
@@ -220,6 +222,30 @@ function currentSessionForWorkspace(
     ctx.currentWorkspaceId === workspaceId &&
     (hostId === undefined || hostId === ctx.currentHostId);
   return isCurrentWorkspace ? (ctx.currentSessionId ?? undefined) : undefined;
+}
+
+// The host and session an automated-review action runs against: the open
+// session for the current workspace, otherwise the target's latest session.
+async function resolveReviewTarget(
+  ctx: ActionExecutorContext,
+  workspaceId: string,
+  hostId?: string | null
+): Promise<{
+  isCurrentWorkspace: boolean;
+  targetHostId: string | null;
+  targetSessionId: string | null | undefined;
+}> {
+  const isCurrentWorkspace = ctx.currentWorkspaceId === workspaceId;
+  const targetHostId =
+    hostId === undefined
+      ? isCurrentWorkspace
+        ? ctx.currentHostId
+        : null
+      : hostId;
+  const targetSessionId = isCurrentWorkspace
+    ? ctx.currentSessionId
+    : (await sessionsApi.getByWorkspace(workspaceId, targetHostId))[0]?.id;
+  return { isCurrentWorkspace, targetHostId, targetSessionId };
 }
 
 function workspaceNavigationHostId(
@@ -998,16 +1024,8 @@ export const Actions = {
     isVisible: (ctx) => ctx.hasWorkspace,
     getTooltip: () => 'Start an automated review',
     execute: async (ctx, workspaceId, hostId) => {
-      const isCurrentWorkspace = ctx.currentWorkspaceId === workspaceId;
-      const targetHostId =
-        hostId === undefined
-          ? isCurrentWorkspace
-            ? ctx.currentHostId
-            : null
-          : hostId;
-      const targetSessionId = isCurrentWorkspace
-        ? ctx.currentSessionId
-        : (await sessionsApi.getByWorkspace(workspaceId, targetHostId))[0]?.id;
+      const { isCurrentWorkspace, targetHostId, targetSessionId } =
+        await resolveReviewTarget(ctx, workspaceId, hostId);
       if (!targetSessionId) {
         throw new Error('Select a chat session before starting a review');
       }
@@ -1023,6 +1041,59 @@ export const Actions = {
         ctx.selectWorkspace(workspaceId, targetHostId);
       }
       ctx.selectSession(reviewSession.id);
+    },
+  },
+
+  RetryVibeMerge: {
+    id: 'retry-vibe-merge',
+    label: 'Retry Vibe Merge',
+    icon: GitMergeIcon,
+    keywords: ['vibe', 'merge', 'retry', 'blocked'],
+    requiresTarget: ActionTargetType.WORKSPACE,
+    isVisible: (ctx) => ctx.hasWorkspace,
+    getTooltip: () => 'Merge a blocked automated review again',
+    execute: async (ctx, workspaceId, hostId) => {
+      const { targetHostId, targetSessionId } = await resolveReviewTarget(
+        ctx,
+        workspaceId,
+        hostId
+      );
+      if (!targetSessionId) {
+        throw new Error('This workspace has no session');
+      }
+      let status;
+      try {
+        status = await sessionsApi.vibeRetryMerge(
+          targetSessionId,
+          targetHostId
+        );
+      } catch (error) {
+        const data =
+          error instanceof ApiError
+            ? (error.error_data as ReviewError | undefined)
+            : undefined;
+        if (data?.type === 'nothing_to_merge') {
+          throw new Error('This workspace has no blocked automated merge');
+        }
+        if (data?.type === 'process_already_running') {
+          throw new Error('Wait for the running turn to finish, then retry');
+        }
+        throw error;
+      }
+      if (status.phase === 'done') return;
+      const nextTry = status.merge_retry_at
+        ? `\n\nNext try: ${formatDateShortWithTime(status.merge_retry_at)}`
+        : '';
+      await ConfirmDialog.show({
+        title:
+          status.phase === 'blocked'
+            ? 'Merge is still blocked'
+            : 'Merge has not landed yet',
+        message: `${status.last_error ?? 'See the review session.'}${nextTry}`,
+        confirmText: 'OK',
+        showCancelButton: false,
+        variant: 'info',
+      });
     },
   },
 

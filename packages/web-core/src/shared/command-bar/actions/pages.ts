@@ -94,6 +94,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
         items: [
           { type: 'action', action: Actions.StartReview },
           { type: 'action', action: Actions.StartReviewAndCreatePR },
+          { type: 'action', action: Actions.RetryVibeMerge },
           { type: 'action', action: Actions.ViewWorkspaceSessions },
           { type: 'action', action: Actions.NewSession },
           { type: 'action', action: Actions.RenameSession },

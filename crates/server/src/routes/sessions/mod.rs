@@ -886,6 +886,10 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             post(review::vibe_review).layer(from_fn(finish_after_disconnect)),
         )
         .route("/vibe-review/status", get(review::vibe_review_status))
+        .route(
+            "/vibe-review/retry-merge",
+            post(review::vibe_retry_merge).layer(from_fn(finish_after_disconnect)),
+        )
         .route("/message-slice", get(search::get_session_message_slice))
         .layer(from_fn_with_state(
             deployment.clone(),

@@ -1068,6 +1068,15 @@ pub trait ContainerService {
         executor_config: Option<ExecutorConfig>,
     ) -> Result<Session, ContainerError>;
 
+    /// Try the merge of a `vibe` run again: a waiting merge whose retry is due
+    /// (`fresh = false`), or a manual retry of a blocked or waiting run, which
+    /// starts over with the full retry budget and a new wait (`fresh = true`).
+    async fn vibe_retry_merge(
+        &self,
+        workspace: &Workspace,
+        fresh: bool,
+    ) -> Result<(), ContainerError>;
+
     async fn start_execution_inner(
         &self,
         workspace: &Workspace,

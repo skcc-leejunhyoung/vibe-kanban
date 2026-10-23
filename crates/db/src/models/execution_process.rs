@@ -359,6 +359,23 @@ impl ExecutionProcess {
         Ok(count > 0)
     }
 
+    /// Sessions with a running process (dev servers aside), with their
+    /// workspace's name and folder: who may be editing which checkout now.
+    pub async fn running_session_dirs(
+        pool: &SqlitePool,
+    ) -> Result<Vec<(Uuid, String, String)>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT DISTINCT s.id, COALESCE(w.name, w.branch), w.container_ref \
+             FROM execution_processes ep \
+             JOIN sessions s ON s.id = ep.session_id \
+             JOIN workspaces w ON w.id = s.workspace_id \
+             WHERE ep.status = 'running' AND ep.run_reason != 'devserver' \
+               AND w.container_ref IS NOT NULL",
+        )
+        .fetch_all(pool)
+        .await
+    }
+
     /// Check if there are running processes (excluding dev servers) for a session
     pub async fn has_running_non_dev_server_processes_for_session(
         pool: &SqlitePool,
