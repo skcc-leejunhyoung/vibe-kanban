@@ -2711,7 +2711,7 @@ const COMMANDS: &[Cmd] = &[
             opt("limit", "Max events (default 100)", Where::Local, Kind::Int),
             opt(
                 "all-hosts",
-                "Merge this machine and every paired host",
+                "Merge this machine and every other host",
                 Where::Local,
                 Kind::Flag,
             ),
@@ -2743,7 +2743,7 @@ const COMMANDS: &[Cmd] = &[
             opt("limit", "Max events (default 100)", Where::Local, Kind::Int),
             opt(
                 "all-hosts",
-                "Watch this machine and every paired host",
+                "Watch this machine and every other host",
                 Where::Local,
                 Kind::Flag,
             ),
@@ -2912,7 +2912,7 @@ fn build_cli() -> Command {
         .long_about(
             "Vibe Kanban from the shell. Every command talks to the local server (VIBE_BACKEND_URL, \
              BACKEND_PORT, or the port file) and prints a table; add --json for raw JSON. Pass \
-             --host <id|name> to act on a paired host. Writes are gated by the user's agent-access \
+             --host <id|name> to act on another of your hosts. Writes are gated by the user's agent-access \
              settings; a denied call explains which toggle is off.",
         )
         .subcommand_required(true)

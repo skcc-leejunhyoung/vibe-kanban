@@ -15,7 +15,9 @@ use super::{McpServer, ToolError};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct ListEventsRequest {
-    #[schemars(description = "Optional paired host ID to read from. Omit for this machine.")]
+    #[schemars(
+        description = "Optional host ID (from list_workspace_hosts) to read from. Omit for this machine."
+    )]
     host_id: Option<Uuid>,
     #[schemars(
         description = "Return events after this cursor (a previous page's `cursor`). Omit or \"0\" for everything still buffered. With all_hosts the cursor is `self=N,<host-id>=N`; pass it back verbatim."
@@ -28,14 +30,16 @@ struct ListEventsRequest {
     #[schemars(description = "Max events to return (default 100, max 1000)")]
     limit: Option<u32>,
     #[schemars(
-        description = "Merge this machine and every paired host (cursor becomes `self=N,<host-id>=N`)"
+        description = "Merge this machine and every host (cursor becomes `self=N,<host-id>=N`)"
     )]
     all_hosts: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct WaitForEventsRequest {
-    #[schemars(description = "Optional paired host ID to wait on. Omit for this machine.")]
+    #[schemars(
+        description = "Optional host ID (from list_workspace_hosts) to wait on. Omit for this machine."
+    )]
     host_id: Option<Uuid>,
     #[schemars(
         description = "Return events after this cursor (a previous page's `cursor`). Pass the latest cursor you have seen; \"0\" returns the buffered backlog at once. With all_hosts pass the `self=N,<host-id>=N` cursor back verbatim."
@@ -49,7 +53,7 @@ struct WaitForEventsRequest {
     timeout_seconds: Option<u64>,
     #[schemars(description = "Max events to return (default 100)")]
     limit: Option<u32>,
-    #[schemars(description = "Watch this machine and every paired host")]
+    #[schemars(description = "Watch this machine and every host")]
     all_hosts: Option<bool>,
 }
 
@@ -65,7 +69,9 @@ struct NotifyUserRequest {
         description = "Deliver only on this host (OS notifier / local browser), not to the user's phone via cloud web push"
     )]
     local_only: Option<bool>,
-    #[schemars(description = "Optional paired host ID to notify from. Omit for this machine.")]
+    #[schemars(
+        description = "Optional host ID (from list_workspace_hosts) to notify from. Omit for this machine."
+    )]
     host_id: Option<Uuid>,
 }
 

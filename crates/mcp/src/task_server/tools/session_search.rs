@@ -13,7 +13,9 @@ struct SearchSessionsRequest {
         description = "Substring to find in past session conversations (user prompts, assistant/thinking messages, tool-use summary lines, error messages). Case-insensitive for ASCII; matches inside words, so short Korean fragments work. May be omitted when session_id is given, which then lists that session's entries."
     )]
     query: Option<String>,
-    #[schemars(description = "Optional paired host ID to search on. Omit for this machine.")]
+    #[schemars(
+        description = "Optional host ID (from list_workspace_hosts) to search on. Omit for this machine."
+    )]
     host_id: Option<Uuid>,
     #[schemars(description = "Optional repo ID: only sessions whose workspace contains this repo")]
     repo_id: Option<Uuid>,
@@ -61,7 +63,7 @@ struct GetSessionSliceRequest {
     #[schemars(description = "Session ID (from a search_sessions hit)")]
     session_id: Uuid,
     #[schemars(
-        description = "Optional paired host ID the session lives on. Omit for this machine."
+        description = "Optional host ID (from list_workspace_hosts) the session lives on. Omit for this machine."
     )]
     host_id: Option<Uuid>,
     #[schemars(description = "Execution ID of the hit (from search_sessions)")]
@@ -122,7 +124,7 @@ struct GetSessionSliceResponse {
 #[tool_router(router = session_search_tools_router, vis = "pub")]
 impl McpServer {
     #[tool(
-        description = "Search past session conversations by content across all workspaces (including finished and archived ones) on this machine or a paired host. Returns top matches, newest first, with session/workspace context and a snippet. Narrow with session_id once you know the session; follow up with get_session_slice to read the conversation around a hit."
+        description = "Search past session conversations by content across all workspaces (including finished and archived ones) on this machine or another host. Returns top matches, newest first, with session/workspace context and a snippet. Narrow with session_id once you know the session; follow up with get_session_slice to read the conversation around a hit."
     )]
     async fn search_sessions(
         &self,

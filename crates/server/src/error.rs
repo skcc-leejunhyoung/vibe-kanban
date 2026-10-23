@@ -643,3 +643,28 @@ impl From<RelayPairingClientError> for ApiError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{http::StatusCode, response::IntoResponse};
+
+    use super::*;
+
+    #[test]
+    fn host_lookup_refusals_keep_their_status() {
+        let status = |err| ApiError::from(err).into_response().status();
+        // Another user's host or one with remote access off.
+        assert_eq!(
+            status(RelayHostLookupError::AccessDenied),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(RelayHostLookupError::Migrating),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status(RelayHostLookupError::Unavailable("down".into())),
+            StatusCode::BAD_GATEWAY
+        );
+    }
+}

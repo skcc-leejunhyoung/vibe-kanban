@@ -11,7 +11,9 @@ use crate::client::{PairedHost, SyncBranchOutcome, WorkspaceFilter, WorkspaceLis
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct McpListWorkspacesRequest {
-    #[schemars(description = "Optional paired host ID. Omit to list this machine.")]
+    #[schemars(
+        description = "Optional host ID (from list_workspace_hosts). Omit to list this machine."
+    )]
     host_id: Option<Uuid>,
     #[schemars(description = "Filter by archived state")]
     archived: Option<bool>,
@@ -110,7 +112,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List workspaces on this machine or a paired host with their live state: the agent's status note, whether a turn is running, the latest process status, pending approvals and blocker waits, PR state. Supports filters and pagination."
+        description = "List workspaces on this machine or another host with their live state: the agent's status note, whether a turn is running, the latest process status, pending approvals and blocker waits, PR state. Supports filters and pagination."
     )]
     async fn list_workspaces(
         &self,

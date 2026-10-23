@@ -18,7 +18,9 @@ struct McpWorkspaceRepoInput {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct StartWorkspaceRequest {
-    #[schemars(description = "Optional paired host ID. Omit to create on this machine.")]
+    #[schemars(
+        description = "Optional host ID (from list_workspace_hosts). Omit to create on this machine."
+    )]
     host_id: Option<Uuid>,
     #[schemars(description = "Name for the workspace")]
     name: String,
@@ -47,7 +49,9 @@ struct StartWorkspaceResponse {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct LinkWorkspaceIssueRequest {
-    #[schemars(description = "Optional paired host ID. Omit for this machine.")]
+    #[schemars(
+        description = "Optional host ID (from list_workspace_hosts). Omit for this machine."
+    )]
     host_id: Option<Uuid>,
     #[schemars(description = "The workspace ID to link")]
     workspace_id: Uuid,

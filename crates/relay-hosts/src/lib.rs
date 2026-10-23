@@ -606,6 +606,15 @@ impl RelayHost {
         let opened = async {
             let approval =
                 open_or_replace(cached.as_ref().map(|cached| cached.connection_id), open).await?;
+            // Keep the approved id even if the host step fails: a retry then
+            // renews it instead of opening yet another connection. Stale
+            // until the host accepts it.
+            *slot = Some(AccountConnection {
+                owner,
+                connection_id: approval.connection_id,
+                signing: signing.clone(),
+                expires_at: Utc::now(),
+            });
             let client = RelayApiClient::new(relay_base_url, access_token, signing.clone())?;
             let session = client
                 .start_account_session(self.host_id, approval.connection_id, &approval.grant)
@@ -615,12 +624,9 @@ impl RelayHost {
         .await;
         match opened {
             Ok((approval, client, session_id)) => {
-                *slot = Some(AccountConnection {
-                    owner,
-                    connection_id: approval.connection_id,
-                    signing,
-                    expires_at: approval.expires_at,
-                });
+                if let Some(connection) = slot.as_mut() {
+                    connection.expires_at = approval.expires_at;
+                }
                 Ok(RelayHostTransport::account(
                     client,
                     self.host_id,
