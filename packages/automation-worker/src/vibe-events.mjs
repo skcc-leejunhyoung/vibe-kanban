@@ -7,6 +7,7 @@ export const DEFAULT_KINDS = [
   'approval.',
   'workspace.status_note',
   'vibe.phase',
+  'cloud.notification',
 ];
 
 export const COALESCE_DEFAULTS = {
@@ -36,12 +37,16 @@ export function kindMatches(kind, prefixes) {
 // which every signed-in host pushes its journal into.
 export function journalEventToWorkerEvent(event) {
   const data = event?.data && typeof event.data === 'object' ? event.data : {};
+  // Notifications (`cloud.notification`) carry theirs as `{ id, type, payload }`.
+  const note = event.kind === 'cloud.notification' && data.payload ? data.payload : {};
   const exit = data.exit_code;
   const title = [
     event.kind,
-    data.name || data.title,
+    note.title ? null : data.type,
+    data.name || data.title || note.title || note.issue_title,
     exit !== undefined && exit !== null ? `exit ${exit}` : null,
-    data.status_note ? String(data.status_note).slice(0, 120) : null,
+    data.status_note ? String(data.status_note).slice(0, 280) : null,
+    note.comment_preview ? String(note.comment_preview).slice(0, 160) : null,
   ]
     .filter(Boolean)
     .join(' · ');

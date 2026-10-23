@@ -170,8 +170,10 @@ credentials, so adding a host needs no port, bridge or config here. Events
 feed the same ingest path as `POST /api/events`. The first poll only seeds the
 runtime `cursor` at the stream's end (no replay). Hosts tag their Autopilot's
 own events, and with `excludeAutopilot` (default `true`) those are dropped, so
-an Autopilot turn never wakes an Autopilot. Cloud notifications are not part of
-the stream (the Autopilot reads them with `vk notify list` when it needs them).
+an Autopilot turn never wakes an Autopilot. The user's notifications (task
+completed, PR comments, review requests) join the stream as
+`cloud.notification` events with host `cloud`; one posted for an Autopilot
+workspace is tagged the same way and dropped.
 
 ```json
 {
@@ -181,7 +183,7 @@ the stream (the Autopilot reads them with `vk notify list` when it needs them).
   "config": {
     "vibeConnectorId": "vibe-default",
     "pollSeconds": 15,
-    "kinds": ["process.completed", "process.failed", "approval.pending", "vibe.phase"],
+    "kinds": ["process.failed", "approval.pending", "vibe.phase", "workspace.status_note", "cloud.notification"],
     "excludeAutopilot": true
   }
 }

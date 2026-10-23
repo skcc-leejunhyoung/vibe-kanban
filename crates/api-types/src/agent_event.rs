@@ -39,7 +39,9 @@ pub struct AgentEvent {
     pub cursor: i64,
     pub at: DateTime<Utc>,
     pub kind: String,
-    pub host_id: Uuid,
+    /// `None` for events from the remote server itself (`cloud.notification`).
+    pub host_id: Option<Uuid>,
+    /// The host's name, or `cloud`.
     pub host_name: String,
     pub workspace_id: Option<Uuid>,
     pub session_id: Option<Uuid>,

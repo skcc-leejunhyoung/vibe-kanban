@@ -8,7 +8,8 @@ use uuid::Uuid;
 /// reader's cursor never jumps past a row that commits later.
 // ponytail: one global lock serializes pushes from every host; shard it per
 // owner if push volume ever makes it contend.
-const AGENT_EVENTS_LOCK: i64 = 0x5641_4745_4e54; // "VAGENT"
+// Also taken by the `agent_events_from_notification` trigger (same number).
+const AGENT_EVENTS_LOCK: i64 = 0x5641_4745_4e54; // "VAGENT" = 94838368587348
 
 /// How long events stay readable.
 const RETENTION_DAYS: i32 = 3;
@@ -62,7 +63,7 @@ struct AgentEventRow {
     id: i64,
     occurred_at: DateTime<Utc>,
     kind: String,
-    host_id: Uuid,
+    host_id: Option<Uuid>,
     host_name: String,
     workspace_id: Option<Uuid>,
     session_id: Option<Uuid>,
@@ -91,10 +92,10 @@ pub async fn list(
         .collect();
     let rows = sqlx::query_as::<_, AgentEventRow>(
         "SELECT e.id, e.occurred_at, e.kind, e.host_id,
-                COALESCE(h.custom_name, h.name) AS host_name,
+                COALESCE(h.custom_name, h.name, 'cloud') AS host_name,
                 e.workspace_id, e.session_id, e.execution_id, e.autopilot, e.data
          FROM agent_events e
-         JOIN hosts h ON h.id = e.host_id
+         LEFT JOIN hosts h ON h.id = e.host_id
          WHERE e.owner_user_id = $1
            AND e.id > $2
            AND (cardinality($3::text[]) = 0 OR e.kind LIKE ANY($3))
@@ -256,5 +257,82 @@ mod tests {
         assert_eq!(page_cursor, first[0].cursor);
         let (rest, _) = list(&pool, owner, page_cursor, &[], 100).await.unwrap();
         assert_eq!(rest.len(), 2);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AGENT_EVENTS_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+    async fn notifications_join_the_stream_and_the_autopilots_own_are_tagged() {
+        let url = std::env::var("AGENT_EVENTS_TEST_DATABASE_URL")
+            .expect("provide a migrated disposable PostgreSQL database");
+        let pool = PgPool::connect(&url).await.unwrap();
+        let (owner, host) = user_with_host(&pool, "main").await;
+        let org = Uuid::new_v4();
+        sqlx::query("INSERT INTO organizations (id, name, slug) VALUES ($1, 'test', $2)")
+            .bind(org)
+            .bind(org.to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let notify = |payload: serde_json::Value| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, Uuid>(
+                    "INSERT INTO notifications (organization_id, user_id, notification_type, payload)
+                     VALUES ($1, $2, 'workspace_task_completed', $3) RETURNING id",
+                )
+                .bind(org)
+                .bind(owner)
+                .bind(payload)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let autopilot_ws = Uuid::new_v4();
+        let (_, start) = list(&pool, owner, i64::MAX, &[], 1).await.unwrap();
+        // The Autopilot's own turn was pushed (tagged) before it notified.
+        let mut own = event(1, "process.started");
+        own.workspace_id = Some(autopilot_ws);
+        own.autopilot = true;
+        insert_batch(&pool, owner, host, &[own]).await.unwrap();
+
+        let other = notify(json!({ "title": "done", "workspace_id": Uuid::new_v4() })).await;
+        notify(json!({ "title": "mine", "workspace_id": autopilot_ws })).await;
+        // A malformed id still stores the notification (and an untagged event).
+        notify(json!({ "title": "odd", "workspace_id": "not-a-uuid" })).await;
+        // Re-raising (merged notifications bump created_at) emits again.
+        sqlx::query("UPDATE notifications SET created_at = NOW() WHERE id = $1")
+            .bind(other)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (events, _) = list(&pool, owner, start, &["cloud.".to_string()], 100)
+            .await
+            .unwrap();
+        let seen: Vec<(String, bool, Option<Uuid>)> = events
+            .iter()
+            .map(|e| {
+                (
+                    e.data["payload"]["title"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    e.autopilot,
+                    e.host_id,
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("done".to_string(), false, None),
+                ("mine".to_string(), true, None),
+                ("odd".to_string(), false, None),
+                ("done".to_string(), false, None),
+            ]
+        );
+        assert!(events.iter().all(|e| e.host_name == "cloud"));
+        assert_eq!(events[0].data["type"], "workspace_task_completed");
     }
 }
