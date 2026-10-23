@@ -2752,7 +2752,7 @@ const COMMANDS: &[Cmd] = &[
     // ---- hosts --------------------------------------------------------------
     special(
         &["hosts", "list"],
-        "Paired hosts (plus this machine's own id)",
+        "Your other hosts with status (plus this machine's own id)",
         "hosts.list",
         &[],
     ),
@@ -4059,7 +4059,15 @@ impl Ctx {
                     .list_hosts()
                     .await?
                     .into_iter()
-                    .map(|h| json!({ "host_id": h.host_id, "name": h.host_name, "self": false }))
+                    .map(|h| {
+                        json!({
+                            "host_id": h.host_id,
+                            "name": h.host_name,
+                            "status": h.status,
+                            "auth_mode": h.auth_mode,
+                            "self": false,
+                        })
+                    })
                     .collect();
                 if let Some(self_id) = self.client.self_host_id().await {
                     hosts.insert(

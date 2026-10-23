@@ -7,8 +7,8 @@ description: Read and control Vibe Kanban from the shell with the `vk` CLI — w
 
 `vk` is on PATH in every Vibe Kanban agent session (it ships next to the server and
 finds it through `VIBE_BACKEND_URL`, `BACKEND_PORT`, or the port file). Every command
-prints a table; add `--json` for raw JSON. `--host <id|name>` runs the command on a
-paired host (`vk hosts list`). Reads are always allowed; writes are gated by the
+prints a table; add `--json` for raw JSON. `--host <id|name>` runs the command on
+another of your hosts (`vk hosts list`). Reads are always allowed; writes are gated by the
 user's **agent access** settings and a denied call says which toggle is off
 (`agent_access.<toggle>`) — report that to the user instead of working around it.
 
@@ -57,7 +57,8 @@ in; `<session>` accepts a session id or `.` for the current session (`VK_SESSION
 Kinds: `process.started|completed|failed|killed`, `approval.pending|resolved`,
 `workspace.created|archived|unarchived|deleted|status_note`, `vibe.phase`,
 `queue.changed`, `resume.fired`, `cloud.notification`. `--all-hosts` merges every
-paired host; its cursor is `self=<n>,<host-id>=<n>` and must be passed back verbatim.
+host; its cursor is `self=<n>,<host-id>=<n>` and must be passed back verbatim, and
+`failed_hosts` lists hosts left out (offline or failing).
 
 Autopilot shape:
 

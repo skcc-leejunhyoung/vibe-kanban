@@ -443,11 +443,12 @@ impl VkClient {
 pub struct PairedHost {
     pub host_id: Uuid,
     pub host_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PairedHostsResponse {
-    hosts: Vec<PairedHost>,
+    /// `online`/`offline`; absent when the central host list is unreachable.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// `account`, `legacy_pairing` or `migrating`.
+    #[serde(default)]
+    pub auth_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -456,10 +457,9 @@ struct SelfHostResponse {
 }
 
 impl VkClient {
-    /// Paired hosts reachable through the relay.
+    /// Other hosts reachable through the relay (this machine excluded).
     pub async fn list_hosts(&self) -> Result<Vec<PairedHost>, VkError> {
-        let response: PairedHostsResponse = self.get_local("/relay-auth/client/hosts").await?;
-        Ok(response.hosts)
+        self.get_local("/relay-auth/client/reachable-hosts").await
     }
 
     /// This machine's own cloud host id, when it is registered.
@@ -477,7 +477,7 @@ impl VkClient {
         response.host_id
     }
 
-    /// `self`/`local`/empty → this machine; a UUID as is; otherwise a paired
+    /// `self`/`local`/empty → this machine; a UUID as is; otherwise a known
     /// host whose name matches (case-insensitive, prefix allowed).
     pub async fn resolve_host(&self, name_or_id: &str) -> Result<Option<Uuid>, VkError> {
         let needle = name_or_id.trim();
@@ -509,7 +509,7 @@ impl VkClient {
                 "Host '{needle}' is ambiguous; use the host id (vk hosts list)"
             ))),
             (None, _) => Err(VkError::message(format!(
-                "Unknown host '{needle}'. Paired hosts: {}",
+                "Unknown host '{needle}'. Known hosts: {}",
                 hosts
                     .iter()
                     .map(|h| format!(
@@ -1602,6 +1602,17 @@ pub fn issue_priority_label(priority: IssuePriority) -> &'static str {
 pub struct MultiHostJournalPage {
     pub events: Vec<JournalEvent>,
     pub cursor: String,
+    /// Hosts left out of this page (offline or failing); their cursors are
+    /// kept so a later call resumes them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_hosts: Vec<FailedHost>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FailedHost {
+    pub host_id: Uuid,
+    pub host_name: Option<String>,
+    pub error: String,
 }
 
 /// `"12"` → this machine at 12; `"self=12,<uuid>=40"` → one cursor per host.
@@ -1648,23 +1659,43 @@ impl VkClient {
         timeout: Option<Duration>,
     ) -> Result<MultiHostJournalPage, VkError> {
         let mut cursors = parse_multi_cursor(since)?;
-        let mut targets: Vec<(String, Option<Uuid>)> = vec![("self".to_string(), None)];
+        let mut targets: Vec<(String, Option<Uuid>, Option<String>)> =
+            vec![("self".to_string(), None, None)];
+        let mut failed_hosts = Vec::new();
         match self.host(None).list_hosts().await {
             Ok(hosts) => {
                 for host in hosts {
-                    targets.push((host.host_id.to_string(), Some(host.host_id)));
+                    // Opening an offline host would only fail after a central
+                    // approval, on every poll.
+                    if host.status.as_deref() == Some("offline") {
+                        failed_hosts.push(FailedHost {
+                            host_id: host.host_id,
+                            host_name: host.host_name,
+                            error: "offline".to_string(),
+                        });
+                    } else {
+                        targets.push((
+                            host.host_id.to_string(),
+                            Some(host.host_id),
+                            host.host_name,
+                        ));
+                    }
                 }
             }
             // No relay (or it is down): this machine alone still works.
             Err(error) => {
-                tracing::warn!(%error, "paired hosts unavailable; watching this host only")
+                tracing::warn!(%error, "other hosts unavailable; watching this host only")
             }
         }
         let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         loop {
             let mut merged: Vec<JournalEvent> = Vec::new();
             let mut next: BTreeMap<String, u64> = BTreeMap::new();
-            for (label, host) in &targets {
+            // Hosts that failed in an earlier round are not retried this call.
+            targets.retain(|(_, host, _)| {
+                host.is_none_or(|id| !failed_hosts.iter().any(|f| f.host_id == id))
+            });
+            for (label, host, name) in &targets {
                 let client = self.host(*host);
                 let page = match cursors.get(label) {
                     Some(since) => client.events_list(*since, kinds, limit).await,
@@ -1685,8 +1716,13 @@ impl VkClient {
                     }
                     Err(error) => {
                         tracing::warn!(%error, host = %label, "journal unavailable on host");
-                        if let Some(cursor) = cursors.get(label) {
-                            next.insert(label.clone(), *cursor);
+                        match host {
+                            Some(host_id) => failed_hosts.push(FailedHost {
+                                host_id: *host_id,
+                                host_name: name.clone(),
+                                error: error.to_string(),
+                            }),
+                            None => return Err(error),
                         }
                     }
                 }
@@ -1704,6 +1740,13 @@ impl VkClient {
                         .or_insert(rewind);
                 }
             }
+            // Skipped hosts keep the cursor they came with.
+            for failed in &failed_hosts {
+                let label = failed.host_id.to_string();
+                if let Some(cursor) = cursors.get(&label) {
+                    next.entry(label).or_insert(*cursor);
+                }
+            }
             let cursor = next
                 .iter()
                 .map(|(host, cursor)| format!("{host}={cursor}"))
@@ -1714,6 +1757,7 @@ impl VkClient {
                 return Ok(MultiHostJournalPage {
                     events: merged,
                     cursor,
+                    failed_hosts,
                 });
             }
             cursors = next;
@@ -1880,6 +1924,87 @@ mod tests {
         assert_eq!(keyed.get("self"), Some(&3));
         assert_eq!(keyed.get(&host.to_string()), Some(&40));
         assert!(parse_multi_cursor("self=x").is_err());
+    }
+
+    #[tokio::test]
+    async fn all_hosts_reports_offline_and_failing_hosts() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (online, offline, failing) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let hosts = json!([
+            {"host_id": online, "host_name": "i9-mbp", "status": "online", "auth_mode": "account"},
+            {"host_id": offline, "host_name": "old", "status": "offline", "auth_mode": "account"},
+            {"host_id": failing, "host_name": "flaky", "status": "online", "auth_mode": "account"},
+        ]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let offline_called = Arc::new(AtomicBool::new(false));
+        let called = offline_called.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0; 8192];
+                let n = socket.read(&mut buf).await.unwrap();
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("");
+                let path = path.split('?').next().unwrap_or("");
+                let ok = |data: Value| json!({"success": true, "data": data}).to_string();
+                let (status, body) = if path == "/api/relay-auth/client/reachable-hosts" {
+                    ("200 OK", ok(hosts.clone()))
+                } else if path == "/api/events/journal" {
+                    let page = json!({"events": [], "cursor": 5, "oldest_cursor": 0});
+                    ("200 OK", ok(page))
+                } else if path == format!("/api/host/{online}/events/journal") {
+                    let event = json!({"cursor": 3, "at": "2026-10-23T00:00:00Z",
+                        "kind": "process.completed", "data": {}});
+                    let page = json!({"events": [event], "cursor": 3, "oldest_cursor": 0});
+                    ("200 OK", ok(page))
+                } else {
+                    if path.contains(&offline.to_string()) {
+                        called.store(true, Ordering::SeqCst);
+                    }
+                    let error = json!({"success": false, "message": "Relay transport failed"});
+                    ("502 Bad Gateway", error.to_string())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let client = VkClient::new(&base, "test/1");
+        let page = client
+            .events_list_all_hosts(&format!("self=1,{online}=2,{failing}=9"), &[], 50)
+            .await
+            .unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].host_id, Some(online));
+        let cursors = parse_multi_cursor(&page.cursor).unwrap();
+        assert_eq!(cursors.get("self"), Some(&5));
+        assert_eq!(cursors.get(&online.to_string()), Some(&3));
+        // A failing host keeps the cursor it came with.
+        assert_eq!(cursors.get(&failing.to_string()), Some(&9));
+        let failed: Vec<_> = page
+            .failed_hosts
+            .iter()
+            .map(|f| (f.host_id, f.host_name.clone()))
+            .collect();
+        assert_eq!(
+            failed,
+            vec![
+                (offline, Some("old".to_string())),
+                (failing, Some("flaky".to_string()))
+            ]
+        );
+        assert_eq!(page.failed_hosts[0].error, "offline");
+        assert!(!offline_called.load(Ordering::SeqCst));
     }
 
     #[test]

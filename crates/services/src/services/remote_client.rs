@@ -29,7 +29,9 @@ use api_types::{
 use backon::{ExponentialBuilder, Retryable};
 use bytes::Bytes;
 use chrono::Duration as ChronoDuration;
-use relay_types::{ListRelayHostsResponse, RelayHost};
+use relay_types::{
+    HostConnectionApproval, ListRelayHostsResponse, OpenHostConnectionRequest, RelayHost,
+};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -920,6 +922,19 @@ impl RemoteClient {
     pub async fn list_relay_hosts(&self) -> Result<Vec<RelayHost>, RemoteClientError> {
         let response: ListRelayHostsResponse = self.get_authed("/v1/hosts").await?;
         Ok(response.hosts)
+    }
+
+    /// Central approval for a direct connection to an account host. `Auth`
+    /// covers both revoked access and an expired `connection_id`.
+    pub async fn open_host_connection(
+        &self,
+        host_id: Uuid,
+        request: &OpenHostConnectionRequest,
+    ) -> Result<HostConnectionApproval, RemoteClientError> {
+        let response: api_types::MutationResponse<HostConnectionApproval> = self
+            .post_authed(&format!("/v1/hosts/{host_id}/connections"), Some(request))
+            .await?;
+        Ok(response.data)
     }
 
     pub async fn upsert_agent_memory_snapshot(

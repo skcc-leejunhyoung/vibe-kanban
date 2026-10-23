@@ -95,7 +95,9 @@ struct McpSyncWorkspaceBranchRequest {
 
 #[tool_router(router = workspaces_tools_router, vis = "pub")]
 impl McpServer {
-    #[tool(description = "List paired hosts that can run remote workspace operations.")]
+    #[tool(
+        description = "List your other hosts (name, online status, auth mode) that can run remote workspace operations."
+    )]
     async fn list_workspace_hosts(&self) -> Result<CallToolResult, ErrorData> {
         let hosts = match self.client.list_hosts().await {
             Ok(hosts) => hosts,

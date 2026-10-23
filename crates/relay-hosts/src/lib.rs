@@ -1,8 +1,15 @@
-use std::{collections::HashMap, io, pin::Pin, sync::Arc};
+use std::{
+    collections::HashMap,
+    io,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::extract::ws::WebSocket as AxumWebSocket;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures_util::{Stream, StreamExt, stream};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 pub use relay_client::RelayApiError;
@@ -11,13 +18,16 @@ use relay_control::signing::{
     NONCE_HEADER, REQUEST_SIGNATURE_HEADER, RelaySigningService, SIGNING_SESSION_HEADER,
     TIMESTAMP_HEADER,
 };
-use relay_types::{PairRelayHostRequest, RelayAuthState, RelayPairedHost, RemoteSession};
+use relay_types::{
+    OpenHostConnectionRequest, PairRelayHostRequest, RelayAuthState, RelayHost as CloudHost,
+    RelayPairedHost, RemoteSession,
+};
 use relay_webrtc::{DataChannelResponse, DataChannelWsStream, WebRtcClient};
 use relay_ws::SignedTungsteniteSocket;
 use remote_info::RemoteInfo;
 use serde::{Deserialize, Serialize};
 use services::services::remote_client::{RemoteClient, RemoteClientError};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use trusted_key_auth::trusted_keys::parse_public_key_base64;
 use utils::{assets::relay_host_credentials_path, response::ApiResponse};
@@ -51,6 +61,12 @@ pub enum RelayHostLookupError {
     MissingClientMetadata,
     #[error("This host pairing is missing required signing metadata. Re-pair it.")]
     MissingSigningMetadata,
+    #[error("This account has no access to the host, or its remote access is off")]
+    AccessDenied,
+    #[error("The host is switching to account access; retry shortly")]
+    Migrating,
+    #[error("Cannot look up the host: {0}")]
+    Unavailable(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -216,6 +232,71 @@ impl RelaySessionCache {
     }
 }
 
+/// Central host list: decides account vs. legacy per host. Holding the lock
+/// while fetching makes concurrent lookups share one request.
+#[derive(Clone, Default)]
+struct CloudHostCache(Arc<Mutex<Option<CachedCloudHosts>>>);
+
+type CachedCloudHosts = (Instant, Vec<CloudHost>);
+
+const CLOUD_HOSTS_TTL: Duration = Duration::from_secs(30);
+
+impl CloudHostCache {
+    async fn get(&self, remote_client: &RemoteClient) -> Result<Vec<CloudHost>, RemoteClientError> {
+        let mut cache = self.0.lock().await;
+        if let Some((fetched_at, hosts)) = cache.as_ref()
+            && fetched_at.elapsed() < CLOUD_HOSTS_TTL
+        {
+            return Ok(hosts.clone());
+        }
+        let hosts = remote_client.list_relay_hosts().await?;
+        *cache = Some((Instant::now(), hosts.clone()));
+        Ok(hosts)
+    }
+}
+
+/// An approved connection to one account host. Its ephemeral key and id are
+/// reused on refresh so the host keeps the session.
+#[derive(Clone)]
+struct AccountConnection {
+    /// Cache namespace (token subject), not authorization.
+    owner: Option<Uuid>,
+    connection_id: Uuid,
+    signing: RelaySigningService,
+    expires_at: DateTime<Utc>,
+}
+
+/// Refresh this long before the central grant expires.
+const ACCOUNT_REFRESH_LEEWAY_SECS: i64 = 60;
+
+impl AccountConnection {
+    fn is_fresh(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at - chrono::Duration::seconds(ACCOUNT_REFRESH_LEEWAY_SECS) > now
+    }
+}
+
+/// One slot per host; holding a slot while opening makes concurrent callers
+/// share one approval.
+#[derive(Clone, Default)]
+struct AccountConnections(Arc<Mutex<HashMap<Uuid, AccountSlot>>>);
+
+type AccountSlot = Arc<Mutex<Option<AccountConnection>>>;
+
+impl AccountConnections {
+    async fn slot(&self, host_id: Uuid) -> AccountSlot {
+        self.0.lock().await.entry(host_id).or_default().clone()
+    }
+}
+
+/// A host listed for `vk hosts list` / MCP `list_workspace_hosts`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReachableHost {
+    pub host_id: Uuid,
+    pub host_name: Option<String>,
+    pub status: Option<String>,
+    pub auth_mode: Option<String>,
+}
+
 pub type ProxiedBodyStream = Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>>;
 
 /// Normalized HTTP response returned from relay-hosts, independent of whether
@@ -232,6 +313,8 @@ pub struct RelayHosts {
     sessions: RelaySessionCache,
     runtime: RelayRuntime,
     webrtc: WebRtcConnectionCache,
+    cloud_hosts: CloudHostCache,
+    accounts: AccountConnections,
 }
 
 #[derive(Clone)]
@@ -244,10 +327,13 @@ struct RelayRuntime {
 
 #[derive(Clone)]
 pub struct RelayHost {
-    identity: RelayHostIdentity,
+    host_id: Uuid,
+    /// Saved pairing for legacy hosts; `None` for account hosts.
+    identity: Option<RelayHostIdentity>,
     sessions: RelaySessionCache,
     runtime: RelayRuntime,
     webrtc: WebRtcConnectionCache,
+    accounts: AccountConnections,
 }
 
 /// A WebSocket connection proxied upstream (via relay, WebRTC, etc.).
@@ -320,17 +406,66 @@ impl RelayHosts {
                 tunnel_manager: TunnelManager::new(shutdown.clone()),
             },
             webrtc: WebRtcConnectionCache::new(shutdown),
+            cloud_hosts: CloudHostCache::default(),
+            accounts: AccountConnections::default(),
         }
     }
 
+    /// Account hosts connect with this backend's account; legacy hosts with
+    /// the pairing saved here. Without the central list only a pairing works.
     pub async fn host(&self, host_id: Uuid) -> Result<RelayHost, RelayHostLookupError> {
-        let identity = self.repository.load_identity(host_id).await?;
+        let identity = match self.cloud_hosts.get(&self.runtime.remote_client).await {
+            Ok(hosts) if is_account_host(&hosts, host_id)? => None,
+            Ok(_) => Some(self.repository.load_identity(host_id).await?),
+            Err(error) => Some(
+                self.repository
+                    .load_identity(host_id)
+                    .await
+                    .map_err(|_| RelayHostLookupError::Unavailable(error.to_string()))?,
+            ),
+        };
         Ok(RelayHost {
+            host_id,
             identity,
             sessions: self.sessions.clone(),
             runtime: self.runtime.clone(),
             webrtc: self.webrtc.clone(),
+            accounts: self.accounts.clone(),
         })
+    }
+
+    /// Hosts [`Self::host`] can open: the account's cloud hosts under their
+    /// real names, minus legacy hosts not paired here. Without the central
+    /// list, the saved pairings.
+    pub async fn reachable_hosts(&self) -> Vec<ReachableHost> {
+        let paired = self.list_hosts().await;
+        match self.cloud_hosts.get(&self.runtime.remote_client).await {
+            Ok(hosts) => hosts
+                .into_iter()
+                .filter(|host| {
+                    host.auth_mode != "legacy_pairing"
+                        || paired.iter().any(|pair| pair.host_id == host.id)
+                })
+                .map(|host| ReachableHost {
+                    host_id: host.id,
+                    host_name: Some(host.name),
+                    status: Some(host.status),
+                    auth_mode: Some(host.auth_mode),
+                })
+                .collect(),
+            Err(error) => {
+                tracing::debug!(%error, "central host list unavailable; listing pairings");
+                paired
+                    .into_iter()
+                    .map(|pair| ReachableHost {
+                        host_id: pair.host_id,
+                        host_name: pair.host_name,
+                        status: None,
+                        auth_mode: None,
+                    })
+                    .collect()
+            }
+        }
     }
 
     pub async fn pair_host(
@@ -393,6 +528,9 @@ impl RelayHosts {
 
 impl RelayHost {
     async fn open_relay_transport(&self) -> Result<RelayHostTransport, RelayConnectionError> {
+        let Some(identity) = &self.identity else {
+            return self.open_account_transport(false).await;
+        };
         let remote_client = self.runtime.remote_client.clone();
         let relay_base_url = self
             .runtime
@@ -400,7 +538,7 @@ impl RelayHost {
             .get_relay_api_base()
             .ok_or(RelayConnectionError::NotConfigured)?;
         let access_token = remote_client.access_token().await?;
-        let cached_auth_state = self.sessions.load_auth_state(self.identity.host_id).await;
+        let cached_auth_state = self.sessions.load_auth_state(self.host_id).await;
         let relay_client = RelayApiClient::new(
             relay_base_url,
             access_token,
@@ -408,7 +546,7 @@ impl RelayHost {
         )?;
         let transport = RelayHostTransport::bootstrap(
             relay_client,
-            self.identity.clone(),
+            identity.clone(),
             cached_auth_state
                 .as_ref()
                 .map(|value| value.remote_session.clone()),
@@ -419,6 +557,86 @@ impl RelayHost {
         Ok(transport)
     }
 
+    /// Reuse the cached approval until a minute before it expires; otherwise
+    /// approve centrally and prove the key to the host (as the web app does).
+    async fn open_account_transport(
+        &self,
+        refresh: bool,
+    ) -> Result<RelayHostTransport, RelayConnectionError> {
+        let relay_base_url = self
+            .runtime
+            .remote_info
+            .get_relay_api_base()
+            .ok_or(RelayConnectionError::NotConfigured)?;
+        let remote_client = &self.runtime.remote_client;
+        let access_token = remote_client.access_token().await?;
+        let owner = utils::jwt::extract_subject(&access_token).ok();
+        let slot = self.accounts.slot(self.host_id).await;
+        let mut slot = slot.lock().await;
+        let cached = slot.clone().filter(|cached| cached.owner == owner);
+        if let Some(cached) = &cached
+            && !refresh
+            && cached.is_fresh(Utc::now())
+        {
+            let client = RelayApiClient::new(relay_base_url, access_token, cached.signing.clone())?;
+            return Ok(RelayHostTransport::account(
+                client,
+                self.host_id,
+                cached.connection_id,
+            ));
+        }
+
+        let signing = cached
+            .as_ref()
+            .map_or_else(RelaySigningService::ephemeral, |cached| {
+                cached.signing.clone()
+            });
+        let public_key_b64 = BASE64_STANDARD.encode(signing.server_public_key().as_bytes());
+        let open = |connection_id: Option<Uuid>| {
+            let request = OpenHostConnectionRequest {
+                public_key_b64: public_key_b64.clone(),
+                connection_id,
+            };
+            async move {
+                remote_client
+                    .open_host_connection(self.host_id, &request)
+                    .await
+            }
+        };
+        let opened = async {
+            let approval =
+                open_or_replace(cached.as_ref().map(|cached| cached.connection_id), open).await?;
+            let client = RelayApiClient::new(relay_base_url, access_token, signing.clone())?;
+            let session = client
+                .start_account_session(self.host_id, approval.connection_id, &approval.grant)
+                .await?;
+            Ok::<_, RelayConnectionError>((approval, client, session.signing_session_id))
+        }
+        .await;
+        match opened {
+            Ok((approval, client, session_id)) => {
+                *slot = Some(AccountConnection {
+                    owner,
+                    connection_id: approval.connection_id,
+                    signing,
+                    expires_at: approval.expires_at,
+                });
+                Ok(RelayHostTransport::account(
+                    client,
+                    self.host_id,
+                    session_id,
+                ))
+            }
+            Err(error) => {
+                // Revoked access drops the key; network failures keep it.
+                if is_account_rejection(&error) {
+                    *slot = None;
+                }
+                Err(error)
+            }
+        }
+    }
+
     async fn send_http_via_relay(
         &self,
         method: &Method,
@@ -427,12 +645,30 @@ impl RelayHost {
         body: &[u8],
     ) -> Result<ProxiedResponse, RelayConnectionError> {
         let mut transport = self.open_relay_transport().await?;
-        let result = transport
+        let mut result = transport
             .send_http(method, target_path, headers, body)
             .await;
-        self.persist_auth_state(&transport).await;
-        if result.is_ok() {
-            self.maybe_start_webrtc(transport).await;
+        if self.identity.is_none() {
+            // The host forgets account sessions on restart. Reopen, but resend
+            // only reads: a write whose outcome is unknown is never repeated.
+            if result
+                .as_ref()
+                .is_ok_and(|response| response.status() == StatusCode::UNAUTHORIZED)
+            {
+                let reopened = self.open_account_transport(true).await;
+                if let Ok(mut transport) = reopened
+                    && matches!(*method, Method::GET | Method::HEAD)
+                {
+                    result = transport
+                        .send_http(method, target_path, headers, body)
+                        .await;
+                }
+            }
+        } else {
+            self.persist_auth_state(&transport).await;
+            if result.is_ok() {
+                self.maybe_start_webrtc(transport).await;
+            }
         }
         let response = result.map_err(RelayConnectionError::from)?;
         let status = response.status();
@@ -455,6 +691,20 @@ impl RelayHost {
         target_path: &str,
         protocols: Option<&str>,
     ) -> Result<ProxiedWsConnection, RelayConnectionError> {
+        // A handshake cannot surface a 401 for a retry, so account hosts
+        // reopen first: the host may have restarted and forgotten the session.
+        // ponytail: streams outlive the 5-minute grant only via legacy pairing;
+        // add a background refresh when a backend stream to an account host
+        // must last longer.
+        if self.identity.is_none() {
+            let mut transport = self.open_account_transport(true).await?;
+            let (upstream_socket, selected_protocol) =
+                transport.connect_ws(target_path, protocols).await?;
+            return Ok(ProxiedWsConnection {
+                selected_protocol,
+                upstream: UpstreamWs::Relay(Box::new(upstream_socket)),
+            });
+        }
         let mut transport = self.open_relay_transport().await?;
         let result = transport.connect_ws(target_path, protocols).await;
         self.persist_auth_state(&transport).await;
@@ -470,7 +720,7 @@ impl RelayHost {
 
     async fn persist_auth_state(&self, transport: &RelayHostTransport) {
         self.sessions
-            .cache_auth_state(self.identity.host_id, transport.auth_state())
+            .cache_auth_state(self.host_id, transport.auth_state())
             .await;
     }
 
@@ -486,7 +736,9 @@ impl RelayHost {
         // (`send_request` waits for the full body). A stream never completes, so
         // the request would hang forever. Force the relay tunnel, which streams
         // the response body incrementally.
-        if !is_event_stream_request(headers) {
+        // Account hosts are relay-only, like the web app: a WebRTC channel left
+        // from an earlier pairing would sign with a session the host rejects.
+        if self.identity.is_some() && !is_event_stream_request(headers) {
             // Try direct WebRTC data channel first.
             if let Some(response) = self
                 .try_webrtc_proxy(method, target_path, headers, body)
@@ -510,7 +762,7 @@ impl RelayHost {
         headers: &HeaderMap,
         body: &[u8],
     ) -> Option<ProxiedResponse> {
-        let client = self.webrtc.get(self.identity.host_id).await?;
+        let client = self.webrtc.get(self.host_id).await?;
 
         // The host re-adds the `x-vk-relayed` marker to WebRTC-forwarded
         // requests (see relay-webrtc peer proxy), so its backend enforces
@@ -520,7 +772,7 @@ impl RelayHost {
         // let the relay-tunnel fallback establish one.
         let signing_session_id = self
             .sessions
-            .load_auth_state(self.identity.host_id)
+            .load_auth_state(self.host_id)
             .await?
             .signing_session_id;
         let signature = self.runtime.relay_signing.sign_request(
@@ -571,7 +823,7 @@ impl RelayHost {
     /// direct connection to this host. Reuses the provided transport so
     /// no extra relay sessions are created.
     async fn maybe_start_webrtc(&self, transport: RelayHostTransport) {
-        let host_id = self.identity.host_id;
+        let host_id = self.host_id;
 
         if !self.webrtc.start_connecting(host_id).await {
             return;
@@ -622,7 +874,9 @@ impl RelayHost {
         protocols: Option<&str>,
     ) -> Result<ProxiedWsConnection, RelayConnectionError> {
         // Try direct WebRTC data channel first.
-        if let Some(conn) = self.try_webrtc_ws(target_path, protocols).await {
+        if self.identity.is_some()
+            && let Some(conn) = self.try_webrtc_ws(target_path, protocols).await
+        {
             return Ok(conn);
         }
 
@@ -635,12 +889,12 @@ impl RelayHost {
         target_path: &str,
         protocols: Option<&str>,
     ) -> Option<ProxiedWsConnection> {
-        let client = self.webrtc.get(self.identity.host_id).await?;
+        let client = self.webrtc.get(self.host_id).await?;
         let ws = match client.open_ws(target_path, protocols).await {
             Ok(Ok(conn)) => conn,
             Ok(Err(reason)) => {
                 tracing::debug!(
-                    host_id = %self.identity.host_id,
+                    host_id = %self.host_id,
                     %reason,
                     "Remote host WS open failed, falling back to relay"
                 );
@@ -649,7 +903,7 @@ impl RelayHost {
             Err(e) => {
                 tracing::debug!(
                     ?e,
-                    host_id = %self.identity.host_id,
+                    host_id = %self.host_id,
                     "WebRTC WS transport error, falling back to relay"
                 );
                 return None;
@@ -667,6 +921,50 @@ impl RelayHost {
             .tunnel_manager
             .get_or_create_ssh_tunnel(self.clone())
             .await
+    }
+}
+
+/// Whether the central list puts `host_id` in account mode. Hosts this account
+/// cannot see, account hosts with remote access off and hosts mid-migration
+/// are refused before any connection is opened.
+fn is_account_host(hosts: &[CloudHost], host_id: Uuid) -> Result<bool, RelayHostLookupError> {
+    let host = hosts
+        .iter()
+        .find(|host| host.id == host_id)
+        .ok_or(RelayHostLookupError::AccessDenied)?;
+    match host.auth_mode.as_str() {
+        "account" if host.remote_access_enabled => Ok(true),
+        "account" => Err(RelayHostLookupError::AccessDenied),
+        "migrating" => Err(RelayHostLookupError::Migrating),
+        _ => Ok(false),
+    }
+}
+
+/// Renew the cached connection, or approve a new one when the center refuses
+/// it (HOST_CONNECTION_EXPIRED: a revoked id is never revived).
+async fn open_or_replace<F, Fut>(
+    cached: Option<Uuid>,
+    open: F,
+) -> Result<relay_types::HostConnectionApproval, RemoteClientError>
+where
+    F: Fn(Option<Uuid>) -> Fut,
+    Fut: std::future::Future<Output = Result<relay_types::HostConnectionApproval, RemoteClientError>>,
+{
+    match open(cached).await {
+        Err(RemoteClientError::Auth) if cached.is_some() => open(None).await,
+        result => result,
+    }
+}
+
+/// Central or host refusal (revoked access, logged-out account), as opposed to
+/// a network failure.
+fn is_account_rejection(error: &RelayConnectionError) -> bool {
+    match error {
+        RelayConnectionError::RemoteClient(RemoteClientError::Auth) => true,
+        RelayConnectionError::Relay(RelayApiError::Request(error)) => error
+            .status()
+            .is_some_and(|status| status.as_u16() == 401 || status.as_u16() == 403),
+        _ => false,
     }
 }
 
@@ -792,4 +1090,107 @@ async fn persist_relay_host_credentials_map(
         .await
         .map_err(RelayPairingClientError::Store)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex as StdMutex;
+
+    use relay_types::HostConnectionApproval;
+
+    use super::*;
+
+    fn cloud_host(id: Uuid, auth_mode: &str, remote_access_enabled: bool) -> CloudHost {
+        CloudHost {
+            id,
+            owner_user_id: Uuid::new_v4(),
+            machine_id: String::new(),
+            name: "i9".into(),
+            status: "online".into(),
+            last_seen_at: None,
+            agent_version: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            access_role: "owner".into(),
+            auth_mode: auth_mode.into(),
+            auth_generation: 1,
+            remote_access_enabled,
+            capabilities: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn auth_mode_picks_the_connection_flow() {
+        let id = Uuid::new_v4();
+        let route = |mode, enabled| is_account_host(&[cloud_host(id, mode, enabled)], id);
+        assert!(route("account", true).unwrap());
+        assert!(!route("legacy_pairing", true).unwrap());
+        assert!(matches!(
+            route("account", false),
+            Err(RelayHostLookupError::AccessDenied)
+        ));
+        assert!(matches!(
+            route("migrating", true),
+            Err(RelayHostLookupError::Migrating)
+        ));
+        // Another user's host is not in this account's list.
+        assert!(matches!(
+            is_account_host(&[cloud_host(Uuid::new_v4(), "account", true)], id),
+            Err(RelayHostLookupError::AccessDenied)
+        ));
+    }
+
+    #[test]
+    fn refreshes_a_minute_before_the_grant_expires() {
+        let now = Utc::now();
+        let connection = |secs| AccountConnection {
+            owner: None,
+            connection_id: Uuid::new_v4(),
+            signing: RelaySigningService::ephemeral(),
+            expires_at: now + chrono::Duration::seconds(secs),
+        };
+        assert!(connection(61).is_fresh(now));
+        assert!(!connection(60).is_fresh(now));
+        assert!(!connection(-1).is_fresh(now));
+    }
+
+    fn approval(connection_id: Uuid) -> HostConnectionApproval {
+        HostConnectionApproval {
+            connection_id,
+            grant: "grant".into(),
+            expires_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_connection_is_replaced_by_a_new_one() {
+        let cached = Uuid::new_v4();
+        let fresh = Uuid::new_v4();
+        let calls = StdMutex::new(Vec::new());
+        let result = open_or_replace(Some(cached), |id| {
+            calls.lock().unwrap().push(id);
+            async move {
+                match id {
+                    Some(_) => Err(RemoteClientError::Auth),
+                    None => Ok(approval(fresh)),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.connection_id, fresh);
+        assert_eq!(*calls.lock().unwrap(), vec![Some(cached), None]);
+    }
+
+    #[tokio::test]
+    async fn refused_new_connection_is_not_retried() {
+        let calls = StdMutex::new(0);
+        let result = open_or_replace(None, |_| {
+            *calls.lock().unwrap() += 1;
+            async { Err(RemoteClientError::Auth) }
+        })
+        .await;
+        assert!(matches!(result, Err(RemoteClientError::Auth)));
+        assert_eq!(*calls.lock().unwrap(), 1);
+    }
 }

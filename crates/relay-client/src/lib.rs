@@ -10,7 +10,8 @@ use relay_control::signing::{
 use relay_types::{
     FinishSpake2EnrollmentRequest, FinishSpake2EnrollmentResponse, PairRelayHostRequest,
     RefreshRelaySigningSessionRequest, RefreshRelaySigningSessionResponse, RelayAuthState,
-    RemoteSession, StartSpake2EnrollmentRequest, StartSpake2EnrollmentResponse,
+    RemoteSession, StartAccountSessionRequest, StartAccountSessionResponse,
+    StartSpake2EnrollmentRequest, StartSpake2EnrollmentResponse,
 };
 use relay_ws::{SignedTungsteniteSocket, signed_tungstenite_websocket};
 use reqwest::Client;
@@ -160,6 +161,42 @@ impl RelayApiClient {
         .await
     }
 
+    /// Prove the connection key to the host with the central grant. Sent
+    /// without the account bearer token: the relay forwards headers to the host.
+    pub async fn start_account_session(
+        &self,
+        host_id: Uuid,
+        connection_id: Uuid,
+        grant: &str,
+    ) -> Result<StartAccountSessionResponse, RelayApiError> {
+        let url = format!(
+            "{}/api/relay-auth/account/session",
+            relay_session_url(&self.base_url, host_id, connection_id)
+        );
+        let response = self
+            .http
+            .post(url)
+            .header("X-Client-Version", env!("CARGO_PKG_VERSION"))
+            .header("X-Client-Type", "local-backend")
+            .json(&StartAccountSessionRequest {
+                grant: grant.to_string(),
+                proof_b64: account_session_proof(&self.signing, grant),
+            })
+            .send()
+            .await?
+            .error_for_status()?;
+        let session = response
+            .json::<RelayApiResponse<StartAccountSessionResponse>>()
+            .await?
+            .data;
+        let server_verify_key = parse_public_key_base64(&session.server_public_key_b64)
+            .map_err(|_| RelayApiError::Other("invalid host public key".to_string()))?;
+        self.signing
+            .register_session(session.signing_session_id, server_verify_key)
+            .await;
+        Ok(session)
+    }
+
     pub async fn pair_host(
         &self,
         request: &PairRelayHostRequest,
@@ -259,7 +296,8 @@ pub struct RelayHostIdentity {
 
 pub struct RelayHostTransport {
     api_client: RelayApiClient,
-    identity: RelayHostIdentity,
+    /// `None` for account connections, which cannot refresh in place.
+    identity: Option<RelayHostIdentity>,
     auth_state: RelayAuthState,
 }
 
@@ -289,12 +327,28 @@ impl RelayHostTransport {
 
         Ok(Self {
             api_client,
-            identity,
+            identity: Some(identity),
             auth_state: RelayAuthState {
                 remote_session,
                 signing_session_id,
             },
         })
+    }
+
+    /// A connection started with [`RelayApiClient::start_account_session`].
+    /// Auth failures come back as is; the caller reopens the connection.
+    pub fn account(api_client: RelayApiClient, host_id: Uuid, session_id: Uuid) -> Self {
+        Self {
+            api_client,
+            identity: None,
+            auth_state: RelayAuthState {
+                remote_session: RemoteSession {
+                    host_id,
+                    id: session_id,
+                },
+                signing_session_id: session_id,
+            },
+        }
     }
 
     pub fn auth_state(&self) -> &RelayAuthState {
@@ -308,7 +362,7 @@ impl RelayHostTransport {
     pub fn relay_url(&self) -> String {
         relay_session_url(
             self.relay_base_url(),
-            self.identity.host_id,
+            self.auth_state.remote_session.host_id,
             self.auth_state.remote_session.id,
         )
     }
@@ -323,7 +377,7 @@ impl RelayHostTransport {
         let first = self
             .send_http_once(method, target_path, headers, body)
             .await?;
-        if !is_auth_failure_status(first.status().as_u16()) {
+        if self.identity.is_none() || !is_auth_failure_status(first.status().as_u16()) {
             return Ok(first);
         }
 
@@ -357,7 +411,7 @@ impl RelayHostTransport {
     ) -> Result<(SignedTungsteniteSocket, Option<String>), RelayApiError> {
         let mut last_auth_error = match self.connect_ws_once(target_path, protocols).await {
             Ok(result) => return Ok(result),
-            Err(e) if is_ws_auth_failure(&e) => e,
+            Err(e) if self.identity.is_some() && is_ws_auth_failure(&e) => e,
             Err(e) => return Err(e),
         };
 
@@ -477,29 +531,39 @@ impl RelayHostTransport {
         Ok((upstream_socket, selected_protocol))
     }
 
+    #[allow(clippy::result_large_err)]
+    fn legacy_identity(&self) -> Result<RelayHostIdentity, RelayApiError> {
+        self.identity
+            .clone()
+            .ok_or_else(|| RelayApiError::Other("account connections cannot refresh".into()))
+    }
+
     async fn refresh_signing_session(&mut self) -> Result<(), RelayApiError> {
+        let identity = self.legacy_identity()?;
         let refreshed = self
             .api_client
-            .refresh_signing_session(&self.auth_state.remote_session, self.identity.client_id)
+            .refresh_signing_session(&self.auth_state.remote_session, identity.client_id)
             .await?;
         self.auth_state.signing_session_id = refreshed.signing_session_id;
         self.api_client
             .signing()
-            .register_session(
-                refreshed.signing_session_id,
-                self.identity.server_verify_key,
-            )
+            .register_session(refreshed.signing_session_id, identity.server_verify_key)
             .await;
         Ok(())
     }
 
     async fn rotate_remote_session(&mut self) -> Result<(), RelayApiError> {
-        self.auth_state.remote_session = self
-            .api_client
-            .create_session(self.identity.host_id)
-            .await?;
+        let identity = self.legacy_identity()?;
+        self.auth_state.remote_session = self.api_client.create_session(identity.host_id).await?;
         Ok(())
     }
+}
+
+/// The connection key's signature over the grant, checked by the host's
+/// `relay_control::account::verify_session_proof`.
+fn account_session_proof(signing: &RelaySigningService, grant: &str) -> String {
+    let message = relay_control::account::session_proof_message(grant);
+    BASE64_STANDARD.encode(signing.sign_bytes(message.as_bytes()).to_bytes())
 }
 
 fn relay_session_url(base_url: &str, host_id: Uuid, session_id: Uuid) -> String {
@@ -597,4 +661,43 @@ struct CreateRelaySessionResponse {
 #[derive(Debug, Deserialize)]
 struct RelayApiResponse<T> {
     data: T,
+}
+
+#[cfg(test)]
+mod tests {
+    use relay_types::HostGrantClaims;
+
+    use super::*;
+
+    #[test]
+    fn account_proof_matches_the_host_verifier() {
+        let signing = RelaySigningService::ephemeral();
+        let public_key_b64 = BASE64_STANDARD.encode(signing.server_public_key().as_bytes());
+        let claims = HostGrantClaims {
+            issuer: "https://central.example".into(),
+            kind: relay_control::account::grant_kind().into(),
+            audience: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            auth_session_id: Uuid::new_v4(),
+            host_generation: 1,
+            grant_version: 0,
+            public_key_thumbprint: relay_control::account::thumbprint(&public_key_b64).unwrap(),
+            public_key_b64,
+            issued_at: 0,
+            expires_at: 300,
+            jti: Uuid::new_v4(),
+        };
+        // Same domain line as the web app (`accountHostConnection.ts`).
+        assert_eq!(
+            relay_control::account::session_proof_message("g.r.a.n.t"),
+            "vk-host-account-session-v1\ng.r.a.n.t"
+        );
+        let proof = account_session_proof(&signing, "g.r.a.n.t");
+        assert!(relay_control::account::verify_session_proof("g.r.a.n.t", &proof, &claims).is_ok());
+        assert!(relay_control::account::verify_session_proof("other", &proof, &claims).is_err());
+        let other = account_session_proof(&RelaySigningService::ephemeral(), "g.r.a.n.t");
+        assert!(
+            relay_control::account::verify_session_proof("g.r.a.n.t", &other, &claims).is_err()
+        );
+    }
 }

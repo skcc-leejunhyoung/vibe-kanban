@@ -23,6 +23,10 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/relay-auth/client/hosts", get(list_relay_paired_hosts))
         .route("/relay-auth/client/self-host", get(get_self_relay_host))
         .route(
+            "/relay-auth/client/reachable-hosts",
+            get(list_reachable_hosts),
+        )
+        .route(
             "/relay-auth/client/hosts/{host_id}",
             delete(remove_relay_paired_host),
         )
@@ -60,6 +64,18 @@ pub async fn list_relay_paired_hosts(
     Ok(ResponseJson(ApiResponse::success(
         ListRelayPairedHostsResponse { hosts },
     )))
+}
+
+/// Other hosts `/api/host/{id}` can reach, for the agent CLI/MCP. Unlike
+/// `/hosts` (pairings saved here) this lists account hosts by their real name.
+pub async fn list_reachable_hosts(
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Vec<relay_hosts::ReachableHost>>>, ApiError> {
+    let mut hosts = deployment.relay_hosts()?.reachable_hosts().await;
+    if let Some(self_id) = self_relay_host_id(&deployment).await {
+        hosts.retain(|host| host.host_id != self_id);
+    }
+    Ok(ResponseJson(ApiResponse::success(hosts)))
 }
 
 /// Cloud relay host id of this machine itself, so the local web app can route

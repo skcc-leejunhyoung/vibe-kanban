@@ -208,6 +208,11 @@ impl RelaySigningService {
         }
     }
 
+    /// In-memory identity with a fresh key, e.g. one account host connection.
+    pub fn ephemeral() -> Self {
+        Self::new(SigningKey::generate(&mut OsRng))
+    }
+
     pub fn load_or_generate(key_path: &Path) -> io::Result<Self> {
         let key = if let Ok(bytes) = fs::read(key_path) {
             let arr: [u8; 32] = bytes.try_into().map_err(|_| {

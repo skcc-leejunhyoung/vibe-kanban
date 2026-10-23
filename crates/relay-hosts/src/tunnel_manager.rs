@@ -27,7 +27,7 @@ impl TunnelManager {
     }
 
     pub async fn get_or_create_ssh_tunnel(&self, relay_host: RelayHost) -> std::io::Result<u16> {
-        let host_id = relay_host.identity.host_id;
+        let host_id = relay_host.host_id;
 
         {
             let tunnels = self.tunnels.lock().await;

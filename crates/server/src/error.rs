@@ -591,7 +591,12 @@ impl From<RepoServiceError> for ApiError {
 
 impl From<RelayHostLookupError> for ApiError {
     fn from(err: RelayHostLookupError) -> Self {
-        ApiError::BadRequest(err.to_string())
+        match err {
+            RelayHostLookupError::AccessDenied => ApiError::Forbidden(err.to_string()),
+            RelayHostLookupError::Migrating => ApiError::Conflict(err.to_string()),
+            RelayHostLookupError::Unavailable(_) => ApiError::BadGateway(err.to_string()),
+            _ => ApiError::BadRequest(err.to_string()),
+        }
     }
 }
 

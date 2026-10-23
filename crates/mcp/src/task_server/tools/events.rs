@@ -86,7 +86,7 @@ fn single_host_cursor(since: Option<&str>) -> Result<u64, ToolError> {
 #[tool_router(router = events_tools_router, vis = "pub")]
 impl McpServer {
     #[tool(
-        description = "Read the event journal: process starts and ends, approvals pending/resolved, workspace status-note changes, vibe-run phase changes, workspace lifecycle, queue changes, scheduled resumes and cloud notifications, after a cursor. Returns the next cursor to pass back. all_hosts merges every paired host."
+        description = "Read the event journal: process starts and ends, approvals pending/resolved, workspace status-note changes, vibe-run phase changes, workspace lifecycle, queue changes, scheduled resumes and cloud notifications, after a cursor. Returns the next cursor to pass back. all_hosts merges every host and lists the ones left out in failed_hosts."
     )]
     async fn list_events(
         &self,
@@ -126,7 +126,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Block until a matching event lands in the journal (or the timeout passes), then return the events and the next cursor. Use this instead of polling to wait for a turn to finish, an approval to appear, or a status note to change. all_hosts watches every paired host too."
+        description = "Block until a matching event lands in the journal (or the timeout passes), then return the events and the next cursor. Use this instead of polling to wait for a turn to finish, an approval to appear, or a status note to change. all_hosts watches every host too (failed_hosts lists the ones left out)."
     )]
     async fn wait_for_events(
         &self,

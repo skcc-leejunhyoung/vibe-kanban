@@ -148,7 +148,11 @@ fn is_forbidden(method: &Method, path: &str) -> bool {
         return true;
     }
     if path.starts_with("/relay-auth/client/") {
-        let readable = ["/relay-auth/client/hosts", "/relay-auth/client/self-host"];
+        let readable = [
+            "/relay-auth/client/hosts",
+            "/relay-auth/client/reachable-hosts",
+            "/relay-auth/client/self-host",
+        ];
         return !(read && readable.contains(&path));
     }
     if read {
@@ -548,6 +552,10 @@ mod tests {
         }
         assert_eq!(
             gated(Method::GET, "/api/relay-auth/client/hosts"),
+            Decision::Allow
+        );
+        assert_eq!(
+            gated(Method::GET, "/api/relay-auth/client/reachable-hosts"),
             Decision::Allow
         );
         assert_eq!(
