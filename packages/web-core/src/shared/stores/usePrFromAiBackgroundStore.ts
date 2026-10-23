@@ -133,6 +133,20 @@ export const usePrFromAiBackgroundStore = create<PrFromAiBackgroundState>()((
       setStatus(workspaceId, repoId, 'generating');
 
       try {
+        const effectiveHead = opts.headBranch?.trim() || opts.workBranch;
+        // GitHub rejects head == base. For a feature head with no repo default
+        // target the callers resolve the base to the workspace target, which is
+        // the head itself; stop before spending a model response on it.
+        if (opts.targetBranch?.trim() === effectiveHead) {
+          clearStatus(workspaceId, repoId);
+          showErrorDialog(
+            i18n.t('tasks:git.prFromAi.sameHeadAndBase', {
+              branch: effectiveHead,
+            })
+          );
+          return false;
+        }
+
         // A PR for this exact head is a normal business condition, not an
         // AI-generation failure. Check it before starting the detached agent so
         // we neither spend a model response nor later surface the git-host's
@@ -146,7 +160,6 @@ export const usePrFromAiBackgroundStore = create<PrFromAiBackgroundState>()((
         const repoStatus = branchStatus.find(
           (status) => status.repo_id === repoId
         );
-        const effectiveHead = opts.headBranch?.trim() || opts.workBranch;
         const existingPr = repoStatus?.merges.find(
           (merge) =>
             merge.type === 'pr' &&
@@ -208,7 +221,11 @@ export const usePrFromAiBackgroundStore = create<PrFromAiBackgroundState>()((
           setStatus(workspaceId, repoId, 'error');
           scheduleClear(workspaceId, repoId, ERROR_CLEAR_MS);
           showErrorDialog(
-            result.message || i18n.t('tasks:git.prFromAi.errorGeneric')
+            result.error?.type === 'same_head_and_base_branch'
+              ? i18n.t('tasks:git.prFromAi.sameHeadAndBase', {
+                  branch: result.error.branch,
+                })
+              : result.message || i18n.t('tasks:git.prFromAi.errorGeneric')
           );
           return false;
         }

@@ -272,6 +272,7 @@
       "errorGeneric": "풀 리퀘스트를 생성하지 못했습니다.",
       "prAlreadyExists": "이 저장소에는 이미 PR #{{number}}이(가) 열려 있습니다.",
       "noCommits": "풀 리퀘스트에 포함할 커밋이 없습니다.",
+      "sameHeadAndBase": "base 브랜치가 소스 브랜치 '{{branch}}'와 같아 PR을 만들 수 없습니다. 저장소 설정에서 기본 대상 브랜치를 지정하거나, Pull Request 생성 다이얼로그에서 base 브랜치를 고르세요.",
       "fallbackTitle": "풀 리퀘스트"
     }
   },

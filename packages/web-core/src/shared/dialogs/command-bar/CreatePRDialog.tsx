@@ -830,7 +830,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
                     }
                   />
                   {!branchesLoading && baseMissing && (
-                    <p className="text-sm text-destructive">
+                    <p className="text-sm text-error">
                       {t('createPrDialog.errors.baseBranchRequired')}
                     </p>
                   )}

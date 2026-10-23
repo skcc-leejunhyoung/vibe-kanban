@@ -359,6 +359,7 @@
       "errorGeneric": "Failed to create the pull request.",
       "prAlreadyExists": "Pull request #{{number}} is already open for this repository.",
       "noCommits": "There are no commits to include in a pull request.",
+      "sameHeadAndBase": "The base branch would be the same as the source branch '{{branch}}', so the pull request can't be created. Set the repository's Default Target Branch, or pick a base branch in Create Pull Request.",
       "fallbackTitle": "Pull request"
     }
   },

@@ -198,6 +198,54 @@ describe('usePrFromAiBackgroundStore', () => {
     );
   });
 
+  it('stops before the agent when the base resolves to the head branch', async () => {
+    // Feature head with no repo default target: callers pass the workspace
+    // target, which is the feature branch itself.
+    const result = await usePrFromAiBackgroundStore
+      .getState()
+      .startCreateFromAi('ws-same-base', 'repo1', {
+        ...opts,
+        targetBranch: 'feature-a',
+        headBranch: 'feature-a',
+      });
+
+    expect(result).toBe(false);
+    expect(getBranchStatus).not.toHaveBeenCalled();
+    expect(generatePrDescription).not.toHaveBeenCalled();
+    expect(createPR).not.toHaveBeenCalled();
+    expect(errorDialogShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'tasks:git.prFromAi.sameHeadAndBase',
+      })
+    );
+    expect(
+      usePrFromAiBackgroundStore.getState().byWorkspace['ws-same-base']
+    ).toBeUndefined();
+  });
+
+  it('explains a backend head == base rejection instead of a generic error', async () => {
+    generatePrDescription.mockResolvedValue({ title: 'T', description: 'D' });
+    createPR.mockResolvedValue({
+      success: false,
+      error: { type: 'same_head_and_base_branch', branch: 'feature-a' },
+    });
+
+    const result = await usePrFromAiBackgroundStore
+      .getState()
+      .startCreateFromAi('ws-same-base-be', 'repo1', {
+        ...opts,
+        targetBranch: null,
+        headBranch: 'feature-a',
+      });
+
+    expect(result).toBe(false);
+    expect(errorDialogShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'tasks:git.prFromAi.sameHeadAndBase',
+      })
+    );
+  });
+
   it('surfaces a generation failure as an error state with a dialog', async () => {
     generatePrDescription.mockRejectedValue(new Error('agent failed'));
 
