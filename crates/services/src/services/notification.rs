@@ -1,7 +1,10 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use db::models::web_push_subscription::{WebPushSubscription, WebPushSubscriptionModel};
+use db::models::{
+    web_push_subscription::{WebPushSubscription, WebPushSubscriptionModel},
+    workspace::Workspace,
+};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -167,9 +170,21 @@ impl NotificationService {
         };
         let title = title.to_string();
         let message = message.to_string();
+        let pool = self.pool.clone();
         tokio::spawn(async move {
+            let autopilot = match workspace_id {
+                Some(id) => match Workspace::find_by_id(&pool, id).await {
+                    Ok(Some(workspace)) => workspace.autopilot,
+                    Ok(None) => true,
+                    Err(error) => {
+                        tracing::warn!(?error, "failed to classify workspace notification");
+                        true
+                    }
+                },
+                None => false,
+            };
             if let Err(error) = client
-                .send_self_web_push(&title, &message, workspace_id)
+                .send_self_web_push(&title, &message, workspace_id, autopilot)
                 .await
             {
                 // This is the only route by which a notification for a workspace
@@ -725,6 +740,90 @@ mod tests {
         build_web_push_click_url, local_notification_url, normalize_local_web_push_base_url,
         normalize_remote_notification_url, workspace_path_from_template,
     };
+
+    #[tokio::test]
+    async fn forwarded_notifications_capture_local_autopilot_without_journal_uploads() {
+        use std::{sync::Arc, time::Duration};
+
+        use axum::{Json, Router, http::StatusCode, routing::post};
+        use serde_json::{Value, json};
+        use sqlx::sqlite::SqlitePoolOptions;
+        use tokio::sync::{RwLock, mpsc};
+
+        use super::{Config, NotificationService, RemoteClient};
+        use crate::services::{
+            auth::AuthContext,
+            oauth_credentials::{Credentials, OAuthCredentials},
+        };
+
+        let (sender, mut received) = mpsc::channel(2);
+        let router = Router::new().route(
+            "/v1/web-push/self",
+            post(move |Json(body): Json<Value>| {
+                let sender = sender.clone();
+                async move {
+                    sender.send(body).await.unwrap();
+                    StatusCode::ACCEPTED
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let auth = AuthContext::new(
+            Arc::new(OAuthCredentials::new(dir.path().join("credentials.json"))),
+            Arc::new(RwLock::new(None)),
+        );
+        auth.save_credentials(&Credentials {
+            access_token: Some("test-access-token".into()),
+            refresh_token: "test-refresh-token".into(),
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+        })
+        .await
+        .unwrap();
+        let client = RemoteClient::new(&format!("http://{address}"), auth, "test".into()).unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let service = NotificationService::new(
+            Arc::new(RwLock::new(Config::default())),
+            pool.clone(),
+            Some(client),
+        );
+        for autopilot in [true, false] {
+            let workspace = Uuid::new_v4();
+            sqlx::query("INSERT INTO workspaces (id, branch, autopilot) VALUES (?, 'vk/test', ?)")
+                .bind(workspace)
+                .bind(autopilot)
+                .execute(&pool)
+                .await
+                .unwrap();
+            service.forward_to_remote_web_push("title", "body", Some(workspace));
+            let payload = tokio::time::timeout(Duration::from_secs(5), received.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(payload["workspace_id"], json!(workspace));
+            assert_eq!(payload["autopilot"], json!(autopilot));
+        }
+        // Unknown sources still deliver the alert, but never wake automation.
+        for close_pool in [false, true] {
+            if close_pool {
+                pool.close().await;
+            }
+            service.forward_to_remote_web_push("title", "body", Some(Uuid::new_v4()));
+            let payload = tokio::time::timeout(Duration::from_secs(5), received.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(payload["autopilot"], json!(true));
+        }
+        server.abort();
+    }
 
     #[test]
     fn local_notification_url_targets_localhost_root() {

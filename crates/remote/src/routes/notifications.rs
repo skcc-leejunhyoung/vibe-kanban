@@ -219,15 +219,15 @@ async fn list_notifications(
 
 #[instrument(
     name = "notifications.get",
-    skip(state, ctx),
+    skip(pool, ctx),
     fields(notification_id = %notification_id, user_id = %ctx.user.id)
 )]
 async fn get_notification(
-    State(state): State<AppState>,
+    State(pool): State<sqlx::PgPool>,
     Extension(ctx): Extension<RequestContext>,
     Path(notification_id): Path<Uuid>,
 ) -> Result<Json<Notification>, ErrorResponse> {
-    let notification = NotificationRepository::find_by_id(state.pool(), notification_id)
+    let notification = NotificationRepository::find_by_id(&pool, notification_id)
         .await
         .map_err(|error| {
             tracing::error!(?error, %notification_id, "failed to load notification");
@@ -447,4 +447,93 @@ async fn bulk_update_notifications(
         data: results,
         txid,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::response::IntoResponse;
+    use chrono::Utc;
+    use sqlx::PgPool;
+
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires AGENT_EVENTS_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+    async fn notification_lookup_returns_full_text_only_to_its_owner() {
+        let url = std::env::var("AGENT_EVENTS_TEST_DATABASE_URL").unwrap();
+        let pool = PgPool::connect(&url).await.unwrap();
+        let owner = Uuid::new_v4();
+        let stranger = Uuid::new_v4();
+        for id in [owner, stranger] {
+            sqlx::query("INSERT INTO users (id, email) VALUES ($1, $2)")
+                .bind(id)
+                .bind(format!("{id}@example.test"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let org = Uuid::new_v4();
+        sqlx::query("INSERT INTO organizations (id, name, slug) VALUES ($1, 'test', $2)")
+            .bind(org)
+            .bind(org.to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let body = "untrusted full notification text ".repeat(100);
+        let notification = NotificationRepository::create(
+            &pool,
+            org,
+            owner,
+            NotificationType::WorkspaceTaskCompleted,
+            NotificationPayload {
+                title: Some("test".into()),
+                body: Some(body.clone()),
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        for user_id in [stranger, owner] {
+            let user = sqlx::query_as::<_, api_types::User>(
+                "SELECT id, email, first_name, last_name, username, created_at, updated_at FROM users WHERE id = $1")
+                .bind(user_id).fetch_one(&pool).await.unwrap();
+            let ctx = RequestContext {
+                user,
+                session_id: Uuid::new_v4(),
+                access_token_expires_at: Utc::now() + chrono::Duration::hours(1),
+            };
+            let result = get_notification(
+                State(pool.clone()),
+                Extension(ctx.clone()),
+                Path(notification.id),
+            )
+            .await;
+            if user_id == owner {
+                assert_eq!(
+                    result.unwrap().0.payload.body.as_deref(),
+                    Some(body.as_str())
+                );
+                sqlx::query("DELETE FROM notifications WHERE id = $1")
+                    .bind(notification.id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    get_notification(State(pool.clone()), Extension(ctx), Path(notification.id))
+                        .await
+                        .unwrap_err()
+                        .into_response()
+                        .status(),
+                    StatusCode::NOT_FOUND
+                );
+            } else {
+                assert_eq!(
+                    result.unwrap_err().into_response().status(),
+                    StatusCode::NOT_FOUND
+                );
+            }
+        }
+    }
 }

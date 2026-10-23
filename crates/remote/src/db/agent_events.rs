@@ -14,6 +14,25 @@ const AGENT_EVENTS_LOCK: i64 = 0x5641_4745_4e54; // "VAGENT" = 94838368587348
 /// How long events stay readable.
 const RETENTION_DAYS: i32 = 3;
 
+pub async fn prune_expired(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM agent_events WHERE created_at < NOW() - make_interval(days => $1)")
+        .bind(RETENTION_DAYS)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub fn spawn_retention(pool: PgPool) {
+    tokio::spawn(async move {
+        loop {
+            if let Err(error) = prune_expired(&pool).await {
+                tracing::warn!(?error, "Agent event retention deferred");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        }
+    });
+}
+
 /// Store a host's batch; already stored `(host_id, host_cursor)` pairs are
 /// skipped, so a retried push is harmless. Returns the number of new rows.
 pub async fn insert_batch(
@@ -50,10 +69,6 @@ pub async fn insert_batch(
         .await?
         .rows_affected();
     }
-    sqlx::query("DELETE FROM agent_events WHERE created_at < NOW() - make_interval(days => $1)")
-        .bind(RETENTION_DAYS)
-        .execute(&mut *tx)
-        .await?;
     tx.commit().await?;
     Ok(inserted)
 }
@@ -98,6 +113,7 @@ pub async fn list(
          LEFT JOIN hosts h ON h.id = e.host_id
          WHERE e.owner_user_id = $1
            AND e.id > $2
+           AND e.created_at >= NOW() - make_interval(days => $5)
            AND (cardinality($3::text[]) = 0 OR e.kind LIKE ANY($3))
          ORDER BY e.id
          LIMIT $4",
@@ -106,6 +122,7 @@ pub async fn list(
     .bind(since)
     .bind(&patterns)
     .bind(limit)
+    .bind(RETENTION_DAYS)
     .fetch_all(&mut *tx)
     .await?;
     // A full page may have more behind it; otherwise everything up to the
@@ -265,7 +282,7 @@ mod tests {
         let url = std::env::var("AGENT_EVENTS_TEST_DATABASE_URL")
             .expect("provide a migrated disposable PostgreSQL database");
         let pool = PgPool::connect(&url).await.unwrap();
-        let (owner, host) = user_with_host(&pool, "main").await;
+        let (owner, _) = user_with_host(&pool, "main").await;
         let org = Uuid::new_v4();
         sqlx::query("INSERT INTO organizations (id, name, slug) VALUES ($1, 'test', $2)")
             .bind(org)
@@ -290,16 +307,24 @@ mod tests {
         };
         let autopilot_ws = Uuid::new_v4();
         let (_, start) = list(&pool, owner, i64::MAX, &[], 1).await.unwrap();
-        // The Autopilot's own turn was pushed (tagged) before it notified.
-        let mut own = event(1, "process.started");
-        own.workspace_id = Some(autopilot_ws);
-        own.autopilot = true;
-        insert_batch(&pool, owner, host, &[own]).await.unwrap();
-
-        let other = notify(json!({ "title": "done", "workspace_id": Uuid::new_v4() })).await;
-        notify(json!({ "title": "mine", "workspace_id": autopilot_ws })).await;
-        // A malformed id still stores the notification (and an untagged event).
-        notify(json!({ "title": "odd", "workspace_id": "not-a-uuid" })).await;
+        // No host event exists yet: the source flag must be sufficient.
+        let mine =
+            notify(json!({ "title": "mine", "workspace_id": autopilot_ws, "autopilot": true }))
+                .await;
+        let regular_ws = Uuid::new_v4();
+        let (stranger, stranger_host) = user_with_host(&pool, "stranger").await;
+        let mut misleading = event(1, "process.started");
+        misleading.workspace_id = Some(regular_ws);
+        misleading.autopilot = true;
+        insert_batch(&pool, stranger, stranger_host, &[misleading])
+            .await
+            .unwrap();
+        let other = notify(
+            json!({ "title": "private title", "body": "private body", "workspace_id": regular_ws }),
+        )
+        .await;
+        // A malformed workspace id still stores a metadata-only notification event.
+        let odd = notify(json!({ "title": "odd", "workspace_id": "not-a-uuid" })).await;
         // Re-raising (merged notifications bump created_at) emits again.
         sqlx::query("UPDATE notifications SET created_at = NOW() WHERE id = $1")
             .bind(other)
@@ -310,29 +335,70 @@ mod tests {
         let (events, _) = list(&pool, owner, start, &["cloud.".to_string()], 100)
             .await
             .unwrap();
-        let seen: Vec<(String, bool, Option<Uuid>)> = events
+        let seen: Vec<(Value, bool, Option<Uuid>)> = events
             .iter()
-            .map(|e| {
-                (
-                    e.data["payload"]["title"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    e.autopilot,
-                    e.host_id,
-                )
-            })
+            .map(|e| (e.data["id"].clone(), e.autopilot, e.host_id))
             .collect();
         assert_eq!(
             seen,
             [
-                ("done".to_string(), false, None),
-                ("mine".to_string(), true, None),
-                ("odd".to_string(), false, None),
-                ("done".to_string(), false, None),
+                (json!(mine), true, None),
+                (json!(other), false, None),
+                (json!(odd), false, None),
+                (json!(other), false, None),
             ]
         );
         assert!(events.iter().all(|e| e.host_name == "cloud"));
         assert_eq!(events[0].data["type"], "workspace_task_completed");
+        assert!(
+            events
+                .iter()
+                .all(|event| event.data.as_object().unwrap().len() == 2)
+        );
+        assert!(!serde_json::to_string(&events).unwrap().contains("private"));
+
+        // Original text remains available on demand, never copied into events.
+        let original = crate::db::notifications::NotificationRepository::find_by_id(&pool, other)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(original.payload.body.as_deref(), Some("private body"));
+        sqlx::query("DELETE FROM notifications WHERE id = $1")
+            .bind(other)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (remaining, _) = list(&pool, owner, start, &["cloud.".into()], 100)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert!(
+            remaining
+                .iter()
+                .all(|event| event.data["id"] != json!(other))
+        );
+
+        // Retention works with cloud-only activity and no further host pushes.
+        sqlx::query("UPDATE agent_events SET created_at = NOW() - INTERVAL '4 days' WHERE notification_id = $1")
+            .bind(mine).execute(&pool).await.unwrap();
+        let (visible, cursor) = list(&pool, owner, start, &["cloud.".into()], 100)
+            .await
+            .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert!(cursor >= visible[0].cursor);
+        prune_expired(&pool).await.unwrap();
+        let expired: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_events WHERE notification_id = $1")
+                .bind(mine)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(expired, 0);
+        assert!(
+            crate::db::notifications::NotificationRepository::find_by_id(&pool, mine)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

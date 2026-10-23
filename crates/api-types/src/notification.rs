@@ -90,6 +90,10 @@ pub struct NotificationPayload {
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<Uuid>,
+    /// Whether the sending host's workspace is an Autopilot. Captured at send
+    /// time so notification filtering never depends on journal upload order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autopilot: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

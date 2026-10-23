@@ -1,4 +1,4 @@
-import { COALESCE_DEFAULTS, kindMatches } from './vibe-events.mjs';
+import { COALESCE_DEFAULTS, kindMatches, sanitizeNotificationEvent } from './vibe-events.mjs';
 
 const CRON_PARTS = [
   [0, 59],
@@ -248,10 +248,17 @@ export function isIndeterminateActionError(error) {
 }
 
 export function recoverInterruptedAutomationState(state) {
+  for (const buffer of Object.values(state.routineBuffers || {}))
+    buffer.events = (buffer.events || []).map(sanitizeNotificationEvent);
+  for (const item of [...(state.pendingRoutineEvents || []), ...(state.retryQueue || [])]) {
+    item.event = sanitizeNotificationEvent(item.event);
+    if (item.event?.kind === 'cloud.notification') item.label = item.event.title;
+  }
   for (const receipt of Object.values(state.eventReceipts || {})) {
     if (receipt.status === 'running') receipt.status = 'indeterminate';
   }
   for (const run of state.routineRuns || []) {
+    if (run.trigger) run.trigger = sanitizeNotificationEvent(run.trigger);
     if (run.status !== 'running' || !run.idempotencyKey) continue;
     run.status = 'exhausted';
     run.error = 'interrupted with an indeterminate action outcome; review the target before running again';
@@ -280,6 +287,7 @@ export function redactEvent(value, key = '') {
   if (Array.isArray(value))
     return value.map((item) => redactEvent(item)).filter((item) => item !== undefined);
   if (!value || typeof value !== 'object') return value;
+  value = sanitizeNotificationEvent(value);
   return Object.fromEntries(
     Object.entries(value)
       .map(([childKey, child]) => [childKey, redactEvent(child, childKey)])
@@ -288,6 +296,7 @@ export function redactEvent(value, key = '') {
 }
 
 export function routineRunTrigger(event) {
+  event = sanitizeNotificationEvent(event);
   const keys = [
     'id',
     'type',
@@ -304,6 +313,8 @@ export function routineRunTrigger(event) {
     'hostIds',
     'cursor',
     'count',
+    'notificationId',
+    'notificationType',
   ];
   const trigger = Object.fromEntries(
     keys

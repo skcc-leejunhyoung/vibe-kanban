@@ -72,6 +72,23 @@ test('interrupted automation keeps its claims and is not retried automatically',
   assert.equal(state.routineClaims['key-1'].status, 'exhausted');
 });
 
+test('recovery scrubs legacy notification text while preserving lookup and dedupe', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const event = { id: 'event', kind: 'cloud.notification', title: 'private', data: { id, type: 'workspace_task_completed', payload: { body: 'private' } } };
+  const state = {
+    routineBuffers: { r: { events: [event] } },
+    pendingRoutineEvents: [{ event, idempotencyKey: 'keep-me' }],
+    retryQueue: [{ event, label: 'private' }],
+    routineRuns: [{ trigger: { events: [event] } }],
+  };
+  recoverInterruptedAutomationState(state);
+  assert(!JSON.stringify(state).includes('private'));
+  assert.equal(state.pendingRoutineEvents[0].idempotencyKey, 'keep-me');
+  const trigger = routineRunTrigger({ type: 'vk_event_batch', events: [event] });
+  assert(!JSON.stringify(trigger).includes('private'));
+  assert(renderPromptTemplate('{{events}}', trigger).includes(`vk notify get ${id} --json`));
+});
+
 test('host scope denies projects and repositories unless explicitly allowed', () => {
   const input = { linked_issue: { remote_project_id: 'project' }, repos: [{ repo_id: 'repo' }] };
   assert.throws(() => validateRoutineScope({}, input), /project/);

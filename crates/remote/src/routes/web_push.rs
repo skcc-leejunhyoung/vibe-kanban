@@ -60,6 +60,8 @@ struct SelfNotifyRequest {
     body: String,
     #[serde(default)]
     workspace_id: Option<Uuid>,
+    #[serde(default)]
+    autopilot: Option<bool>,
 }
 
 async fn public_key() -> Json<PublicKeyResponse> {
@@ -162,6 +164,9 @@ async fn notify_self(
                         title: Some(payload.title.clone()),
                         body: Some(payload.body.clone()),
                         workspace_id: payload.workspace_id,
+                        // Old hosts cannot identify their Autopilot. Deliver
+                        // the alert, but do not let an unknown source wake it.
+                        autopilot: Some(payload.autopilot.unwrap_or(true)),
                         ..Default::default()
                     },
                     target.issue_id,
@@ -293,7 +298,29 @@ fn workspace_deeplink_path(host_id: Option<Uuid>, workspace_id: Uuid) -> String 
 mod tests {
     use uuid::Uuid;
 
-    use super::{pick_notification_org, workspace_deeplink_path};
+    use super::{SelfNotifyRequest, pick_notification_org, workspace_deeplink_path};
+
+    #[test]
+    fn notification_source_flag_distinguishes_legacy_and_rejects_non_boolean_values() {
+        for (flag, expected) in [
+            (None, None),
+            (Some(false), Some(false)),
+            (Some(true), Some(true)),
+        ] {
+            let mut json = serde_json::json!({ "title": "test", "body": "body" });
+            if let Some(flag) = flag {
+                json["autopilot"] = flag.into();
+            }
+            let request: SelfNotifyRequest = serde_json::from_value(json).unwrap();
+            assert_eq!(request.autopilot, expected);
+        }
+        assert!(
+            serde_json::from_value::<SelfNotifyRequest>(
+                serde_json::json!({ "title": "test", "body": "body", "autopilot": "true" })
+            )
+            .is_err()
+        );
+    }
 
     fn org(is_personal: bool) -> api_types::OrganizationWithRole {
         api_types::OrganizationWithRole {

@@ -71,6 +71,7 @@ import {
   createCoalescer,
   journalEventToWorkerEvent,
   renderPromptTemplate,
+  sanitizeNotificationEvent,
 } from './vibe-events.mjs';
 
 // Every worker call (GitHub, Vibe remote, token endpoint, Slack) shares one
@@ -3698,6 +3699,7 @@ function retryDelay(attempts) {
 }
 
 async function enqueueRetry(rule, event, error) {
+  event = sanitizeNotificationEvent(event);
   state.retryQueue ||= [];
   const now = Date.now();
   const item = {

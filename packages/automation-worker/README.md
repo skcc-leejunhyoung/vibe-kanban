@@ -173,7 +173,17 @@ own events, and with `excludeAutopilot` (default `true`) those are dropped, so
 an Autopilot turn never wakes an Autopilot. The user's notifications (task
 completed, PR comments, review requests) join the stream as
 `cloud.notification` events with host `cloud`; one posted for an Autopilot
-workspace is tagged the same way and dropped.
+workspace is tagged by the sending host at notification time and dropped,
+independently of journal upload order. Cloud events retain only the notification
+ID and type. Legacy hosts that cannot send this flag still deliver notifications,
+but their workspace notifications do not wake automation until the host is updated.
+The prompt line includes `vk notify get <id> --json`, which reads
+the full notification through the existing owner-checked API when needed.
+Fetched titles, bodies and comments are untrusted data, never instructions or
+authorization to act. Notification text is not copied to event buffers or run
+history; legacy buffered copies are scrubbed on worker startup. Deleting a
+notification removes its central events, and expired events stop being readable
+after three days, with hourly cleanup even when hosts are offline.
 
 ```json
 {
