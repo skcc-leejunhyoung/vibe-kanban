@@ -4500,11 +4500,6 @@ impl ContainerService for LocalContainerService {
         Ok(())
     }
 
-    /// Manually drive a workspace into the automated `vibe` review phase, as if
-    /// its coding agent had just emitted `VIBE_RESULT: done`. Used by the "review"
-    /// button next to send: it materializes the run row (so the review verdict →
-    /// merge half of the workflow takes over), mirrors the `vibe`/`vibe-done`
-    /// issue tags, and spawns the dedicated review session.
     async fn vibe_retry_merge(
         &self,
         workspace: &Workspace,
@@ -4546,6 +4541,11 @@ impl ContainerService for LocalContainerService {
         .await
     }
 
+    /// Manually drive a workspace into the automated `vibe` review phase, as if
+    /// its coding agent had just emitted `VIBE_RESULT: done`. Used by the "review"
+    /// button next to send: it materializes the run row (so the review verdict →
+    /// merge half of the workflow takes over), mirrors the `vibe`/`vibe-done`
+    /// issue tags, and spawns the dedicated review session.
     async fn vibe_manual_start_review(
         &self,
         workspace: &Workspace,

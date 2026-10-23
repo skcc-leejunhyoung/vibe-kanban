@@ -84,6 +84,11 @@ async fn retry_due_merges(deployment: &DeploymentImpl, now: DateTime<Utc>) -> an
         let Some(workspace) = Workspace::find_by_id(pool, run.workspace_id).await? else {
             continue;
         };
+        // Archiving abandons the wait: a retry would merge or un-archive it.
+        // The orphan check below blocks it once the retry is overdue.
+        if workspace.archived {
+            continue;
+        }
         if let Err(e) = deployment
             .container()
             .vibe_retry_merge(&workspace, false)

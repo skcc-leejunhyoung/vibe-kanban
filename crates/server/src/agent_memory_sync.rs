@@ -605,9 +605,24 @@ async fn run_all_online_inner(
             run_if_opted_in(local, "global").await
         }));
         for target in &targets {
-            let relay_host = deployment.relay_hosts()?.host(target.id).await?;
             let target_id = target.id;
             let target_name = target.name.clone();
+            // One host the central list refuses (remote access off, migrating)
+            // must not stop the others.
+            let relay_host = match deployment.relay_hosts()?.host(target_id).await {
+                Ok(relay_host) => relay_host,
+                Err(error) => {
+                    let result = AgentMemoryHostRunResult {
+                        host_id: Some(target_id),
+                        host_name: target_name,
+                        executed: false,
+                        succeeded: false,
+                        error: Some(error.to_string()),
+                    };
+                    runs.push(tokio::spawn(async move { result }));
+                    continue;
+                }
+            };
             runs.push(tokio::spawn(async move {
                 match relay_host
                     .proxy_http(
