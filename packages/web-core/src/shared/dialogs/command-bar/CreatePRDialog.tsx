@@ -393,7 +393,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       const pick = candidates.find(
         (c): c is string => !!c && exists(c) && c !== prHeadBranch
       );
-      // Leave empty when nothing resolves; backend falls back to repo target branch.
+      // Leave empty when nothing resolves; the user must pick one (see baseMissing).
       setPrBaseBranch(pick ?? '');
     }, [
       branches,
@@ -406,6 +406,11 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       attempt.branch,
     ]);
 
+    // An empty base makes the backend fall back to the workspace target branch,
+    // which is the head itself when the head is a feature branch. Require an
+    // explicit base that differs from the head.
+    const baseMissing = !prBaseBranch || prBaseBranch === prHeadBranch;
+
     const isMacEnvironment = useMemo(
       () => environment?.os_type?.toLowerCase().includes('mac'),
       [environment?.os_type]
@@ -414,7 +419,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     // Kick off PR creation in the background store so it survives the dialog
     // being dismissed with X / ESC. The outcome is handled by the effect below.
     const handleConfirmCreatePR = useCallback(async () => {
-      if (!repoId || !attempt.id || creatingPR) return;
+      if (!repoId || !attempt.id || creatingPR || baseMissing) return;
       // Warn before opening a PR from a work branch that has never been pushed
       // to origin: creating the PR would push it for the first time.
       const proceed = await confirmUnpushedWorkBranchPush(
@@ -449,6 +454,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       prTitle,
       isDraft,
       creatingPR,
+      baseMissing,
       startCreate,
       hostId,
     ]);
@@ -533,6 +539,10 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
                 branch: result.error.branch,
               })
             );
+            setGhCliHelp(null);
+            return;
+          } else if (result.error.type === 'same_head_and_base_branch') {
+            setError(t('createPrDialog.errors.baseBranchRequired'));
             setGhCliHelp(null);
             return;
           }
@@ -819,6 +829,11 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
                       branchesLoading ? 'opacity-50 cursor-not-allowed' : ''
                     }
                   />
+                  {!branchesLoading && baseMissing && (
+                    <p className="text-sm text-destructive">
+                      {t('createPrDialog.errors.baseBranchRequired')}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center space-x-2">
                   <Checkbox
@@ -859,7 +874,9 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
               <Button
                 type="submit"
                 onClick={handleConfirmCreatePR}
-                disabled={creatingPR || generating || !prTitle.trim()}
+                disabled={
+                  creatingPR || generating || !prTitle.trim() || baseMissing
+                }
                 className="bg-blue-600 hover:bg-blue-700"
               >
                 {creatingPR ? (

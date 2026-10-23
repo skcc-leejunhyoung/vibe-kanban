@@ -449,6 +449,7 @@
       "gitCliNotLoggedIn": "Git is not authenticated. Run \"gh auth login\" (or configure Git credentials) and try again.",
       "gitCliNotInstalled": "Git CLI is not installed. Install Git to create a PR.",
       "targetBranchNotFound": "Target branch '{{branch}}' does not exist on remote. Please ensure the branch exists before creating a pull request.",
+      "baseBranchRequired": "Select a base branch different from the source branch.",
       "generateFailed": "Failed to generate PR title and description."
     }
   },

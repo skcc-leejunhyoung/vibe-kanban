@@ -289,7 +289,24 @@ pub enum PrError {
     GitCliNotLoggedIn,
     GitCliNotInstalled,
     TargetBranchNotFound { branch: String },
+    SameHeadAndBaseBranch { branch: String },
     UnsupportedProvider,
+}
+
+/// GitHub rejects a PR whose head and base are the same branch of the same
+/// repository. Catch it up front so the caller gets an actionable error instead
+/// of a generic 500 after a needless push.
+fn same_head_and_base_error(
+    head_branch: &str,
+    head_remote: &GitRemote,
+    base_branch: &str,
+    base_remote: &GitRemote,
+) -> Option<PrError> {
+    (head_branch == base_branch && head_remote.url == base_remote.url).then(|| {
+        PrError::SameHeadAndBaseBranch {
+            branch: head_branch.to_string(),
+        }
+    })
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -997,11 +1014,13 @@ pub async fn create_pr(
         .ok_or(RepoError::NotFound)?;
 
     let repo_path = repo.path.clone();
-    let target_branch = if let Some(branch) = request.target_branch {
-        branch
-    } else {
-        workspace_repo.target_branch.clone()
-    };
+    let target_branch = request
+        .target_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| workspace_repo.target_branch.clone());
 
     // The PR's head (source) branch. Defaults to the workspace's work branch,
     // but can be an intermediate "feature" branch the work branch was merged
@@ -1036,6 +1055,12 @@ pub async fn create_pr(
             }
             Err(_) => (push_remote.clone(), target_branch.clone()),
         };
+
+    if let Some(err) =
+        same_head_and_base_error(&head_branch, &push_remote, &base_branch, &target_remote)
+    {
+        return Ok(ResponseJson(ApiResponse::error_with_data(err)));
+    }
 
     match git.check_remote_branch_exists(&repo_path, &target_remote.url, &base_branch) {
         Ok(false) => {
@@ -1180,6 +1205,9 @@ pub async fn create_pr(
                 GitHostError::AuthFailed(_) => Ok(ResponseJson(ApiResponse::error_with_data(
                     PrError::CliNotLoggedIn { provider },
                 ))),
+                // The host's rejection reason (e.g. a PR for this head already
+                // exists) is what the user needs to act on.
+                GitHostError::PullRequest(msg) => Ok(ResponseJson(ApiResponse::error(msg))),
                 _ => Err(ApiError::GitHost(e)),
             }
         }
@@ -2119,8 +2147,30 @@ mod tests {
         PrDescriptionGenerationStatus, PrDraft, PrGenerationAdmissionError, PrGenerationScheduler,
         build_pr_generation_prompt, normalized_repo_key, parse_pr_description,
         pr_generation_agent_failure, pr_repo_key, prune_pr_description_generation_jobs,
-        save_pr_draft,
+        same_head_and_base_error, save_pr_draft,
     };
+
+    #[test]
+    fn same_head_and_base_branch_is_rejected_with_clear_error() {
+        let remote = |url: &str| git::GitRemote {
+            name: "origin".to_string(),
+            url: url.to_string(),
+        };
+        let origin = remote("https://github.com/acme/app.git");
+        let fork = remote("https://github.com/me/app.git");
+
+        // A feature-branch head whose base fell back to the same branch.
+        let err = same_head_and_base_error("2803-fix", &origin, "2803-fix", &origin)
+            .expect("same branch on same repo must be rejected");
+        assert_eq!(
+            serde_json::to_value(err).unwrap(),
+            serde_json::json!({ "type": "same_head_and_base_branch", "branch": "2803-fix" })
+        );
+
+        assert!(same_head_and_base_error("2803-fix", &origin, "dev", &origin).is_none());
+        // Cross-fork PR from the fork's `main` into upstream `main` is valid.
+        assert!(same_head_and_base_error("main", &fork, "main", &origin).is_none());
+    }
 
     #[test]
     fn pr_generation_failure_reports_rate_limit_reset() {
