@@ -52,7 +52,10 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             "/",
             get(core::get_workspaces).post(create::create_workspace),
         )
-        .route("/create", post(create::create_workspace_without_starting))
+        .route(
+            "/create",
+            post(create::create_workspace_without_starting).layer(from_fn(finish_after_disconnect)),
+        )
         .route(
             "/start",
             post(create::create_and_start_workspace).layer(from_fn(finish_after_disconnect)),

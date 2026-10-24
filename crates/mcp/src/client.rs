@@ -1012,6 +1012,8 @@ pub fn executor_name(explicit: Option<&str>, session: &Session) -> Result<String
 
 /// Tag that opts an issue into review mode (web-core's `REVIEW_TAG_NAME`).
 pub const REVIEW_TAG_NAME: &str = "review";
+/// Tag that turns a workspace start into the vibe coding → review → merge run.
+const VIBE_TAG_NAME: &str = "vibe";
 /// Appended below the review prompt, as web-core's `appendReviewInstruction`.
 pub const REVIEW_PROMPT_INSTRUCTION: &str = "Review the checked-out PR.";
 
@@ -1072,10 +1074,25 @@ pub struct ReviewWorkspaceOutcome {
     pub execution_process_id: Option<Uuid>,
 }
 
-pub fn has_review_tag<'a>(tag_names: impl IntoIterator<Item = &'a str>) -> bool {
-    tag_names
-        .into_iter()
-        .any(|name| name.trim().eq_ignore_ascii_case(REVIEW_TAG_NAME))
+/// The issue must carry `review` (matched like the UI) and not `vibe`: the
+/// server would start the vibe pipeline, which merges the branch it worked on.
+pub fn check_review_tags(issue: &str, tag_names: &[&str]) -> Result<(), VkError> {
+    let has = |wanted: &str| {
+        tag_names
+            .iter()
+            .any(|name| name.trim().eq_ignore_ascii_case(wanted))
+    };
+    if !has(REVIEW_TAG_NAME) {
+        return Err(VkError::message(format!(
+            "Issue {issue} has no '{REVIEW_TAG_NAME}' tag; review workspaces are only for review-tagged issues (use `vk ws start` for other work)"
+        )));
+    }
+    if has(VIBE_TAG_NAME) {
+        return Err(VkError::message(format!(
+            "Issue {issue} also has the '{VIBE_TAG_NAME}' tag, which would run the vibe pipeline (and its merge) on the PR branch; remove that tag to review the PR"
+        )));
+    }
+    Ok(())
 }
 
 fn same_pr_url(a: &str, b: &str) -> bool {
@@ -1260,6 +1277,42 @@ pub fn review_workspace_request(
 }
 
 impl VkClient {
+    /// An open review workspace for the issue and PR on another reachable host
+    /// (this machine included when a paired host is selected). Offline or
+    /// failing hosts are skipped: they cannot be asked.
+    async fn review_workspace_elsewhere(
+        &self,
+        issue_id: Uuid,
+        pr_url: &str,
+    ) -> Option<(VkClient, WorkspaceListItem)> {
+        let this_machine = self.self_host_id().await;
+        let selected = self.host_id.filter(|id| Some(*id) != this_machine);
+        let paired = self.list_hosts().await.unwrap_or_default();
+        let hosts = std::iter::once(None).chain(
+            paired
+                .iter()
+                .filter(|h| h.status.as_deref() != Some("offline"))
+                .map(|h| Some(h.host_id)),
+        );
+        for host in hosts.filter(|host| *host != selected) {
+            let client = self.host(host);
+            let Ok(workspaces) = client
+                .list_workspaces(&WorkspaceFilter {
+                    archived: Some(false),
+                    ..Default::default()
+                })
+                .await
+            else {
+                continue;
+            };
+            if let Some(found) = find_review_workspace(&workspaces, issue_id, pr_url) {
+                let found = found.clone();
+                return Some((client, found));
+            }
+        }
+        None
+    }
+
     /// Link like the UI does; 409 = the cloud already has this workspace's link
     /// (asking first is not possible: relayed hosts refuse `/api/remote/*`).
     async fn link_review_workspace(
@@ -1287,17 +1340,13 @@ impl VkClient {
         let tags: ListTagsResponse = self
             .get_local(&format!("/remote/tags?project_id={}", issue.project_id))
             .await?;
-        let tag_names = tags
+        let tag_names: Vec<&str> = tags
             .tags
             .iter()
             .filter(|tag| issue_tags.issue_tags.iter().any(|it| it.tag_id == tag.id))
-            .map(|tag| tag.name.as_str());
-        if !has_review_tag(tag_names) {
-            return Err(VkError::message(format!(
-                "Issue {} has no '{REVIEW_TAG_NAME}' tag; review workspaces are only for review-tagged issues (use `vk ws start` for other work)",
-                issue.simple_id
-            )));
-        }
+            .map(|tag| tag.name.as_str())
+            .collect();
+        check_review_tags(&issue.simple_id, &tag_names)?;
 
         let linked: ListPullRequestsResponse = self
             .get_local(&format!("/remote/pull-requests?issue_id={}", issue.id))
@@ -1325,34 +1374,47 @@ impl VkClient {
             let detail: ReviewPr = self
                 .get_with("/repos/pr-info", &[("url", url.to_string())])
                 .await
-                .map_err(|error| {
-                    VkError::message(format!(
+                .map_err(|error| match error {
+                    VkError::Api { .. } => VkError::message(format!(
                         "Could not read PR {url} on the host ({error}); check `gh auth status` there"
-                    ))
+                    )),
+                    other => other,
                 })?;
             details.push(detail);
         }
         let pr = pick_open_review_pr(details)?;
 
-        let repos: Vec<db::models::repo::Repo> = match input.repo_id {
-            Some(id) => vec![self.get(&format!("/repos/{id}")).await?],
-            None => self.get("/repos").await?,
-        };
-        let remotes = futures::future::try_join_all(repos.iter().map(|repo| async move {
-            self.get::<Vec<RepoRemote>>(&format!("/repos/{}/remotes", repo.id))
-                .await
-        }))
-        .await?;
-        let candidates: Vec<_> = repos.into_iter().zip(remotes).collect();
-        let (repo, remote) = match_review_repo(&pr.url, &candidates, input.repo_id.is_some())?;
-
+        // The open review of this issue and PR, on the selected host or, when
+        // that has none, on another reachable one: rerunning anywhere reuses it.
         let workspaces = self
             .list_workspaces(&WorkspaceFilter {
                 archived: Some(false),
                 ..Default::default()
             })
             .await?;
-        let existing = find_review_workspace(&workspaces, issue.id, &pr.url).cloned();
+        let (client, existing) = match find_review_workspace(&workspaces, issue.id, &pr.url) {
+            Some(found) => (self.clone(), Some(found.clone())),
+            None => match self.review_workspace_elsewhere(issue.id, &pr.url).await {
+                Some((client, found)) => (client, Some(found)),
+                None => (self.clone(), None),
+            },
+        };
+
+        let repos: Vec<db::models::repo::Repo> = match input.repo_id {
+            Some(id) => vec![client.get(&format!("/repos/{id}")).await?],
+            None => client.get("/repos").await?,
+        };
+        let remotes = futures::future::try_join_all(repos.iter().map(|repo| {
+            let client = &client;
+            async move {
+                client
+                    .get::<Vec<RepoRemote>>(&format!("/repos/{}/remotes", repo.id))
+                    .await
+            }
+        }))
+        .await?;
+        let candidates: Vec<_> = repos.into_iter().zip(remotes).collect();
+        let (repo, remote) = match_review_repo(&pr.url, &candidates, input.repo_id.is_some())?;
 
         let mut outcome = ReviewWorkspaceOutcome {
             action: if existing.is_some() {
@@ -1360,7 +1422,7 @@ impl VkClient {
             } else {
                 "would_create"
             },
-            host_id: self.host_id,
+            host_id: client.host_id,
             issue_id: issue.id,
             issue: issue.simple_id.clone(),
             issue_status: String::new(),
@@ -1391,7 +1453,7 @@ impl VkClient {
             Some(workspace) => {
                 outcome.action = "reused";
                 // Linking is the step after create; a run that lost it relinks here.
-                self.link_review_workspace(workspace.id, issue.id).await?;
+                client.link_review_workspace(workspace.id, issue.id).await?;
             }
             None => {
                 let request = review_workspace_request(
@@ -1412,7 +1474,7 @@ impl VkClient {
                         working_branch,
                         ..
                     } = request;
-                    let created: CreateWorkspaceWithoutStartingResponse = self
+                    let created: CreateWorkspaceWithoutStartingResponse = client
                         .post(
                             "/workspaces/create",
                             &CreateWorkspaceWithoutStartingRequest {
@@ -1428,7 +1490,7 @@ impl VkClient {
                     created.workspace
                 } else {
                     let started: CreateAndStartWorkspaceResponse =
-                        self.post("/workspaces/start", &request).await?;
+                        client.post("/workspaces/start", &request).await?;
                     outcome.session_id = started.session.as_ref().map(|s| s.id);
                     outcome.execution_process_id = Some(started.execution_process.id);
                     started.workspace
@@ -1441,7 +1503,7 @@ impl VkClient {
                     "pending"
                 });
                 outcome.branch = Some(workspace.branch);
-                if let Err(error) = self.link_review_workspace(workspace.id, issue.id).await {
+                if let Err(error) = client.link_review_workspace(workspace.id, issue.id).await {
                     return Err(VkError::message(format!(
                         "Review workspace {} was created, but linking it to issue {} failed: {error}. Rerun the same command: it reuses the workspace and retries the link.",
                         workspace.id, issue.simple_id
@@ -2609,9 +2671,16 @@ mod tests {
     }
 
     #[test]
-    fn review_tag_matches_like_the_ui() {
-        assert!(has_review_tag([" Review ", "vibe"]));
-        assert!(!has_review_tag(["vibe", "reviewed"]));
+    fn review_needs_the_review_tag_and_refuses_vibe() {
+        assert!(check_review_tags("T-1", &[" Review ", "vibe-done"]).is_ok());
+        let missing = check_review_tags("T-1", &["reviewed"])
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("no 'review' tag"), "{missing}");
+        let vibe = check_review_tags("T-1", &["review", "Vibe"])
+            .unwrap_err()
+            .to_string();
+        assert!(vibe.contains("'vibe' tag"), "{vibe}");
     }
 
     #[test]
@@ -2719,5 +2788,271 @@ mod tests {
             find_review_workspace(&[in_flight, linked.clone(), author], issue, url).map(|w| w.id),
             Some(linked.id)
         );
+    }
+
+    type Calls = std::sync::Arc<std::sync::Mutex<Vec<(String, String, Value)>>>;
+    type Routes = HashMap<(&'static str, String), (u16, Value)>;
+
+    /// A local stand-in for the Vibe server: `(METHOD, path)` → `(status, body)`;
+    /// every request is recorded with its JSON body.
+    async fn fake_vibe(routes: Routes) -> (String, Calls) {
+        use axum::{extract::State, http::Request};
+        let calls: Calls = Default::default();
+        let state = (std::sync::Arc::new(routes), calls.clone());
+        let app = axum::Router::new()
+            .fallback(
+                |State((routes, calls)): State<(std::sync::Arc<Routes>, Calls)>,
+                 request: Request<axum::body::Body>| async move {
+                    let method = request.method().to_string();
+                    let path = request.uri().path().to_string();
+                    let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                        .await
+                        .unwrap_or_default();
+                    let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                    calls
+                        .lock()
+                        .unwrap()
+                        .push((method.clone(), path.clone(), body));
+                    let (status, reply) = routes
+                        .iter()
+                        .find(|((m, p), _)| *m == method && *p == path)
+                        .map(|(_, reply)| reply.clone())
+                        .unwrap_or((404, json!({ "success": false, "message": "not found" })));
+                    (
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        axum::Json(reply),
+                    )
+                },
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, calls)
+    }
+
+    fn ok(data: Value) -> (u16, Value) {
+        (200, json!({ "success": true, "data": data }))
+    }
+
+    fn fail(status: u16, message: &str) -> (u16, Value) {
+        (status, json!({ "success": false, "message": message }))
+    }
+
+    /// A review-tagged issue with one linked open PR (#42, head `feature-x`,
+    /// base `main`) and one registered clone of its repository.
+    fn review_routes(
+        issue: &Issue,
+        tags: &[&str],
+        workspaces: Value,
+        summaries: Value,
+    ) -> (Routes, Uuid) {
+        let (repo, _) = repo_with("widgets", None, &[]);
+        let pr = review_pr(42, "open");
+        let tag_rows: Vec<Value> = tags
+            .iter()
+            .map(|name| json!({ "id": Uuid::new_v4(), "project_id": issue.project_id, "name": name, "color": "0 0% 0%" }))
+            .collect();
+        let issue_tags: Vec<Value> = tag_rows
+            .iter()
+            .map(|tag| json!({ "id": Uuid::new_v4(), "issue_id": issue.id, "tag_id": tag["id"], "project_id": issue.project_id }))
+            .collect();
+        let routes = HashMap::from([
+            (
+                ("GET", format!("/api/remote/issues/{}", issue.id)),
+                ok(json!(issue)),
+            ),
+            (
+                ("GET", "/api/remote/issue-tags".into()),
+                ok(json!({ "issue_tags": issue_tags })),
+            ),
+            (
+                ("GET", "/api/remote/tags".into()),
+                ok(json!({ "tags": tag_rows })),
+            ),
+            (
+                ("GET", "/api/remote/pull-requests".into()),
+                ok(json!({ "pull_requests": [linked_pr(42)] })),
+            ),
+            (("GET", "/api/repos/pr-info".into()), ok(json!(pr))),
+            (("GET", "/api/repos".into()), ok(json!([repo]))),
+            (
+                ("GET", format!("/api/repos/{}/remotes", repo.id)),
+                ok(json!([{ "name": "origin", "url": "git@github.com:acme/widgets.git" }])),
+            ),
+            (("GET", "/api/workspaces".into()), ok(workspaces)),
+            (
+                ("POST", "/api/workspaces/summaries".into()),
+                ok(json!({ "summaries": summaries })),
+            ),
+        ]);
+        (routes, repo.id)
+    }
+
+    fn review_input(issue_id: Uuid) -> ReviewWorkspaceInput {
+        ReviewWorkspaceInput {
+            issue_id,
+            pr: None,
+            repo_id: None,
+            name: None,
+            prompt: None,
+            executor_config: serde_json::from_value(json!({ "executor": "CODEX" })).unwrap(),
+            create_only: false,
+            dry_run: false,
+        }
+    }
+
+    fn posted(calls: &Calls, path_suffix: &str) -> Vec<Value> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, path, _)| method == "POST" && path.ends_with(path_suffix))
+            .map(|(_, _, body)| body.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn review_sends_the_ui_review_start_and_surfaces_checkout_failure() {
+        let issue = review_issue();
+        let (mut routes, repo_id) = review_routes(&issue, &["review"], json!([]), json!([]));
+        routes.insert(
+            ("POST", "/api/workspaces/start".into()),
+            fail(
+                400,
+                "Failed to check out PR #42 branch for review: gh auth required",
+            ),
+        );
+        let (url, calls) = fake_vibe(routes).await;
+
+        let error = VkClient::new(&url, "test/1")
+            .review_workspace(review_input(issue.id))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Failed to check out PR #42"), "{error}");
+
+        let starts = posted(&calls, "/workspaces/start");
+        assert_eq!(starts.len(), 1);
+        let body = &starts[0];
+        assert_eq!(body["pr_review"]["repo_id"], json!(repo_id));
+        assert_eq!(body["pr_review"]["pr_number"], 42);
+        assert_eq!(body["pr_review"]["head_branch"], "feature-x");
+        assert_eq!(body["pr_review"]["base_branch"], "main");
+        assert_eq!(body["pr_review"]["remote_name"], "origin");
+        assert_eq!(body["repos"][0]["target_branch"], "origin/main");
+        assert_eq!(body["linked_issue"]["issue_id"], json!(issue.id));
+        assert_eq!(body["executor_config"]["executor"], "CODEX");
+        assert_eq!(
+            body["prompt"],
+            "Fix login\n\nBody\n\nReview the checked-out PR."
+        );
+        // Nothing to link and no fallback create after a failed review start.
+        assert!(posted(&calls, "/links").is_empty());
+        assert!(posted(&calls, "/workspaces/create").is_empty());
+    }
+
+    #[tokio::test]
+    async fn review_rerun_reuses_the_workspace_without_a_second_turn() {
+        let issue = review_issue();
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let workspace = json!({
+            "id": workspace_id, "task_id": issue.id, "container_ref": null,
+            "branch": "feature-x", "setup_completed_at": null, "created_at": Utc::now(),
+            "updated_at": Utc::now(), "archived": false, "pinned": false, "name": "Fix login",
+            "worktree_deleted": false, "ephemeral": false, "in_place": false, "autopilot": false,
+            "cleanup_blocked_reason": null, "status_note": null, "status_updated_at": null,
+        });
+        let summary = json!({
+            "workspace_id": workspace_id, "latest_session_id": session_id,
+            "pr_status": "open", "pr_url": review_pr(42, "open").url,
+        });
+        let (mut routes, _) =
+            review_routes(&issue, &["review"], json!([workspace]), json!([summary]));
+        // The cloud already has the link (unique local workspace id).
+        routes.insert(
+            ("POST", format!("/api/workspaces/{workspace_id}/links")),
+            fail(409, "resource already exists"),
+        );
+        let (url, calls) = fake_vibe(routes).await;
+
+        let outcome = VkClient::new(&url, "test/1")
+            .review_workspace(review_input(issue.id))
+            .await
+            .unwrap();
+        assert_eq!(outcome.action, "reused");
+        assert_eq!(outcome.workspace_id, Some(workspace_id));
+        assert_eq!(outcome.session_id, Some(session_id));
+        assert_eq!(outcome.checkout, Some("ready"));
+        assert_eq!(outcome.target_branch, "origin/main");
+        assert!(posted(&calls, "/workspaces/start").is_empty());
+        assert!(posted(&calls, "/workspaces/create").is_empty());
+        assert_eq!(posted(&calls, "/links").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn review_refuses_a_vibe_tagged_issue_before_writing() {
+        let issue = review_issue();
+        let (routes, _) = review_routes(&issue, &["review", "vibe"], json!([]), json!([]));
+        let (url, calls) = fake_vibe(routes).await;
+
+        let error = VkClient::new(&url, "test/1")
+            .review_workspace(review_input(issue.id))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("'vibe' tag"), "{error}");
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(method, _, _)| method == "GET")
+        );
+    }
+
+    #[tokio::test]
+    async fn review_reuses_the_open_review_on_another_host() {
+        let issue = review_issue();
+        let host = Uuid::new_v4();
+        let workspace_id = Uuid::new_v4();
+        let workspace = json!({
+            "id": workspace_id, "task_id": issue.id, "container_ref": null,
+            "branch": "feature-x", "setup_completed_at": null, "created_at": Utc::now(),
+            "updated_at": Utc::now(), "archived": false, "pinned": false, "name": null,
+            "worktree_deleted": false, "ephemeral": false, "in_place": false, "autopilot": false,
+            "cleanup_blocked_reason": null, "status_note": null, "status_updated_at": null,
+        });
+        let summary = json!({ "workspace_id": workspace_id, "pr_url": review_pr(42, "open").url });
+        let (mut routes, _) = review_routes(&issue, &["review"], json!([]), json!([]));
+        let (on_host, _) = review_routes(&issue, &["review"], json!([workspace]), json!([summary]));
+        for ((method, path), reply) in on_host {
+            if !path.starts_with("/api/remote/") {
+                routes.insert((method, format!("/api/host/{host}{}", &path[4..])), reply);
+            }
+        }
+        routes.insert(
+            ("GET", "/api/relay-auth/client/reachable-hosts".into()),
+            ok(json!([{ "host_id": host, "host_name": "i9", "status": "online" }])),
+        );
+        routes.insert(
+            (
+                "POST",
+                format!("/api/host/{host}/workspaces/{workspace_id}/links"),
+            ),
+            fail(409, "resource already exists"),
+        );
+        let (url, calls) = fake_vibe(routes).await;
+
+        let outcome = VkClient::new(&url, "test/1")
+            .review_workspace(review_input(issue.id))
+            .await
+            .unwrap();
+        assert_eq!(outcome.action, "reused");
+        assert_eq!(outcome.host_id, Some(host));
+        assert_eq!(outcome.workspace_id, Some(workspace_id));
+        assert!(posted(&calls, "/workspaces/start").is_empty());
+        assert_eq!(posted(&calls, &format!("{workspace_id}/links")).len(), 1);
     }
 }

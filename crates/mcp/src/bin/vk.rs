@@ -390,7 +390,7 @@ const COMMANDS: &[Cmd] = &[
     ),
     special(
         &["ws", "review"],
-        "Create and start the PR review workspace of a review-tagged issue, as the UI does (PR head checked out, base as target, PR and issue linked, issue moved to In review). Reruns reuse the open review workspace instead of starting another turn",
+        "Create and start the PR review workspace of a review-tagged issue, as the UI does (PR head checked out, <remote>/<base> as target, PR and issue linked, issue moved to In review). Fails instead of falling back to a normal branch. Retry = rerun the same command: an open review workspace for the issue and PR (selected host first, then any reachable host) is returned as 'reused' without a second turn",
         "ws.review",
         &[
             req("issue", "Review-tagged issue id", Where::Local, Kind::Str),
@@ -424,7 +424,7 @@ const COMMANDS: &[Cmd] = &[
             ),
             opt(
                 "create-only",
-                "Create and check out only: no first turn and no In review move (the UI's create button)",
+                "Create and check out only (the UI's create button): no first turn, no In review move; start later with `vk session create <ws>` + `vk session send`",
                 Where::Local,
                 Kind::Flag,
             ),

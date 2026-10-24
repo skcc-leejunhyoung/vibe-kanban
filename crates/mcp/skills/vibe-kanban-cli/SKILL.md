@@ -59,13 +59,16 @@ PR." appended to the prompt (default prompt: the issue's title and description).
 
 - `--dry-run` resolves issue, PR, repo and an existing review workspace without writing;
   `--create-only` creates and checks out only (no turn, no "In review" move, like the UI's create).
+  A later rerun returns that workspace as `reused` and does not start it; start the review with
+  `vk session create <ws> --executor <...>` then `vk session send <session> -m "..."`.
 - It fails instead of falling back to a normal branch when the tag or the structural PR link is
-  missing, the PR is merged/closed, several PRs are open (pass `--pr <url>`), no registered repo
+  missing, the issue also has the `vibe` tag (that would run the vibe merge pipeline on the PR
+  branch), the PR is merged/closed, several PRs are open (pass `--pr <url>`), no registered repo
   or several repos clone the PR's repository (pass `--repo <id>`), or `gh` cannot read/check out
-  the PR on that host.
-- **Retry = rerun the same command.** An open review workspace for the same issue and PR is
-  returned as `action: "reused"` (no second workspace, no second turn; a missing issue link is
-  redone). `checkout: "pending"` means the first request is still checking out; rerun later.
+  the PR on that host (a failed checkout leaves no workspace behind).
+- **Retry = rerun the same command.** An open review workspace for the same issue and PR — on
+  the selected host, or else on any reachable host (`host_id` says which) — is returned as
+  `action: "reused"` (no second workspace, no second turn; a missing issue link is redone). `checkout: "pending"` means the first request is still checking out; rerun later.
 - Output: `action`, `host_id`, `workspace_id`, `branch`, `checkout`, `session_id`,
   `execution_process_id`, `pr`, `repo`, `remote`, `target_branch`, `issue_status` (after a start
   it should read "In review"; the move is best-effort on the server, as in the UI).
