@@ -610,6 +610,8 @@ pub struct WorkspaceFilter {
 pub struct WorkspaceRepoRef {
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
+    pub target_branch: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1152,12 +1154,13 @@ pub fn pick_open_review_pr(details: Vec<ReviewPr>) -> Result<ReviewPr, VkError> 
     }
 }
 
-/// The registered repo (and its remote) that clones the PR's repository.
-/// With `explicit`, `candidates` holds only that repo and a mismatch is an error.
+/// The registered repo (and its remote) that clones the PR's repository,
+/// from all repos of the host. With `explicit`, that repo must be one; every
+/// refusal says which repos would do, so the caller can rerun with them.
 pub fn match_review_repo<'a>(
     pr_url: &str,
     candidates: &'a [(db::models::repo::Repo, Vec<RepoRemote>)],
-    explicit: bool,
+    explicit: Option<Uuid>,
 ) -> Result<(&'a db::models::repo::Repo, &'a RepoRemote), VkError> {
     let key = utils::repo_url::pr_repo_key(pr_url).ok_or_else(|| {
         VkError::message(format!(
@@ -1169,7 +1172,7 @@ pub fn match_review_repo<'a>(
         .filter_map(|(repo, remotes)| {
             let mut hits = remotes
                 .iter()
-                .filter(|r| utils::repo_url::normalized_repo_key(&r.url) == key);
+                .filter(|r| utils::repo_url::pr_in_remote(pr_url, &r.url));
             let first = hits.next()?;
             let primary = std::iter::once(first)
                 .chain(hits)
@@ -1177,30 +1180,52 @@ pub fn match_review_repo<'a>(
             Some((repo, primary.unwrap_or(first)))
         })
         .collect();
-    match matches.as_slice() {
-        [single] => Ok(*single),
-        [] if explicit => {
-            let (repo, remotes) = &candidates[0];
-            Err(VkError::message(format!(
-                "Repository '{}' does not clone {key} (remotes: {}); the PR belongs to another repository",
+    let names = |repos: &mut dyn Iterator<Item = &db::models::repo::Repo>| {
+        repos
+            .map(|repo| format!("{} ({})", repo.name, repo.id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let elsewhere = format!(
+        "no repository registered on this host clones {key}; run on the host that has the clone (--host, see `vk hosts list`) or register it"
+    );
+    if let Some(id) = explicit {
+        if let Some(hit) = matches.iter().find(|(repo, _)| repo.id == id) {
+            return Ok(*hit);
+        }
+        let what = match candidates.iter().find(|(repo, _)| repo.id == id) {
+            Some((repo, remotes)) => format!(
+                "Repository '{}' does not clone {key} (remotes: {})",
                 repo.name,
                 remotes
                     .iter()
                     .map(|r| format!("{}={}", r.name, r.url))
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            None => format!("Repository {id} is not registered on this host"),
+        };
+        let fix = if matches.is_empty() {
+            elsewhere
+        } else {
+            format!(
+                "it is cloned by {}: pass that to --repo or omit --repo",
+                names(&mut matches.iter().map(|(repo, _)| *repo))
+            )
+        };
+        return Err(VkError::message(format!("{what}; {fix}")));
+    }
+    match matches.as_slice() {
+        [single] => Ok(*single),
+        [] => {
+            let registered = names(&mut candidates.iter().map(|(repo, _)| repo).take(10));
+            Err(VkError::message(format!(
+                "No match for PR {pr_url}: {elsewhere} (registered here: {registered})"
             )))
         }
-        [] => Err(VkError::message(format!(
-            "No repository registered on this host clones {key}; register the clone or run on the host that has it (--host)"
-        ))),
         _ => Err(VkError::message(format!(
             "Several registered repositories clone {key}: {}; pass --repo <id>",
-            matches
-                .iter()
-                .map(|(repo, _)| format!("{} ({})", repo.name, repo.id))
-                .collect::<Vec<_>>()
-                .join(", ")
+            names(&mut matches.iter().map(|(repo, _)| *repo))
         ))),
     }
 }
@@ -1400,21 +1425,42 @@ impl VkClient {
             },
         };
 
-        let repos: Vec<db::models::repo::Repo> = match input.repo_id {
-            Some(id) => vec![client.get(&format!("/repos/{id}")).await?],
-            None => client.get("/repos").await?,
-        };
-        let remotes = futures::future::try_join_all(repos.iter().map(|repo| {
-            let client = &client;
-            async move {
-                client
-                    .get::<Vec<RepoRemote>>(&format!("/repos/{}/remotes", repo.id))
-                    .await
+        let (repo_id, repo_name, target_branch) = match &existing {
+            // Report the reused workspace's own repo: `--repo` names a repo of
+            // the selected host, which need not be where that review lives.
+            Some(found) => {
+                let repo = client
+                    .workspace_repos(found.id)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| VkError::message("The review workspace has no repository"))?;
+                (repo.id, repo.name, repo.target_branch)
             }
-        }))
-        .await?;
-        let candidates: Vec<_> = repos.into_iter().zip(remotes).collect();
-        let (repo, remote) = match_review_repo(&pr.url, &candidates, input.repo_id.is_some())?;
+            None => {
+                let repos: Vec<db::models::repo::Repo> = client.get("/repos").await?;
+                let remotes = futures::future::try_join_all(repos.iter().map(|repo| {
+                    let client = &client;
+                    async move {
+                        client
+                            .get::<Vec<RepoRemote>>(&format!("/repos/{}/remotes", repo.id))
+                            .await
+                    }
+                }))
+                .await?;
+                let candidates: Vec<_> = repos.into_iter().zip(remotes).collect();
+                let (repo, remote) = match_review_repo(&pr.url, &candidates, input.repo_id)?;
+                (
+                    repo.id,
+                    repo.name.clone(),
+                    format!("{}/{}", remote.name, pr.base_branch),
+                )
+            }
+        };
+        let remote = target_branch
+            .split_once('/')
+            .map_or("", |(remote, _)| remote)
+            .to_string();
 
         let mut outcome = ReviewWorkspaceOutcome {
             action: if existing.is_some() {
@@ -1426,10 +1472,10 @@ impl VkClient {
             issue_id: issue.id,
             issue: issue.simple_id.clone(),
             issue_status: String::new(),
-            target_branch: format!("{}/{}", remote.name, pr.base_branch),
-            repo_id: repo.id,
-            repo: repo.name.clone(),
-            remote: remote.name.clone(),
+            target_branch,
+            repo_id,
+            repo: repo_name,
+            remote,
             workspace_id: existing.as_ref().map(|w| w.id),
             branch: existing.as_ref().map(|w| w.branch.clone()),
             checkout: existing.as_ref().map(|w| {
@@ -2736,29 +2782,54 @@ mod tests {
                 ],
             ),
         ];
-        let (repo, remote) = match_review_repo(pr_url, &candidates, false).unwrap();
+        let (repo, remote) = match_review_repo(pr_url, &candidates, None).unwrap();
         assert_eq!(
             (repo.name.as_str(), remote.name.as_str()),
             ("widgets", "upstream")
         );
+        let widgets = candidates[1].0.id;
+        assert_eq!(
+            match_review_repo(pr_url, &candidates, Some(widgets))
+                .unwrap()
+                .0
+                .id,
+            widgets
+        );
 
-        let mismatch = match_review_repo(pr_url, &candidates[..1], true)
+        // A wrong --repo names the clone to use instead.
+        let other = candidates[0].0.id;
+        let mismatch = match_review_repo(pr_url, &candidates, Some(other))
             .unwrap_err()
             .to_string();
-        assert!(mismatch.contains("does not clone"), "{mismatch}");
-        let none = match_review_repo(pr_url, &candidates[..1], false)
+        assert!(
+            mismatch.contains("'other' does not clone github.com/acme/widgets")
+                && mismatch.contains(&format!("cloned by widgets ({widgets})")),
+            "{mismatch}"
+        );
+        let unknown = match_review_repo(pr_url, &candidates, Some(Uuid::new_v4()))
             .unwrap_err()
             .to_string();
-        assert!(none.contains("No repository"), "{none}");
+        assert!(
+            unknown.contains("not registered on this host") && unknown.contains("widgets"),
+            "{unknown}"
+        );
+        // No clone on this host: points at --host and lists what is registered.
+        let none = match_review_repo(pr_url, &candidates[..1], None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            none.contains("--host") && none.contains("registered here: other"),
+            "{none}"
+        );
         let twice = vec![
             candidates[1].clone(),
             repo_with(
                 "widgets-2",
                 None,
-                &[("origin", "https://github.com/acme/widgets.git")],
+                &[("origin", "git@github-work:acme/widgets.git")],
             ),
         ];
-        let ambiguous = match_review_repo(pr_url, &twice, false)
+        let ambiguous = match_review_repo(pr_url, &twice, None)
             .unwrap_err()
             .to_string();
         assert!(ambiguous.contains("pass --repo"), "{ambiguous}");
@@ -2975,6 +3046,10 @@ mod tests {
             ("POST", format!("/api/workspaces/{workspace_id}/links")),
             fail(409, "resource already exists"),
         );
+        routes.insert(
+            ("GET", format!("/api/workspaces/{workspace_id}/repos")),
+            ok(json!([{ "id": Uuid::new_v4(), "name": "widgets", "target_branch": "origin/main" }])),
+        );
         let (url, calls) = fake_vibe(routes).await;
 
         let outcome = VkClient::new(&url, "test/1")
@@ -3043,15 +3118,35 @@ mod tests {
             ),
             fail(409, "resource already exists"),
         );
+        let host_repo = Uuid::new_v4();
+        routes.insert(
+            (
+                "GET",
+                format!("/api/host/{host}/workspaces/{workspace_id}/repos"),
+            ),
+            ok(json!([{ "id": host_repo, "name": "widgets", "target_branch": "upstream/main" }])),
+        );
         let (url, calls) = fake_vibe(routes).await;
 
+        // `--repo` names a repo of the selected host; the review lives elsewhere.
         let outcome = VkClient::new(&url, "test/1")
-            .review_workspace(review_input(issue.id))
+            .review_workspace(ReviewWorkspaceInput {
+                repo_id: Some(Uuid::new_v4()),
+                ..review_input(issue.id)
+            })
             .await
             .unwrap();
         assert_eq!(outcome.action, "reused");
         assert_eq!(outcome.host_id, Some(host));
         assert_eq!(outcome.workspace_id, Some(workspace_id));
+        assert_eq!(
+            (
+                outcome.repo_id,
+                outcome.remote.as_str(),
+                outcome.target_branch.as_str()
+            ),
+            (host_repo, "upstream", "upstream/main")
+        );
         assert!(posted(&calls, "/workspaces/start").is_empty());
         assert_eq!(posted(&calls, &format!("{workspace_id}/links")).len(), 1);
     }

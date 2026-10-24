@@ -7,7 +7,9 @@
 //! the handler shell so it can be exercised by `cargo test` without git/gh.
 
 use db::models::requests::{PrReviewInput, WorkspaceRepoInput};
+use git::GitRemote;
 use thiserror::Error;
+use utils::repo_url::{pr_in_remote, pr_repo_key};
 
 /// How a workspace's git branch should be set up.
 #[derive(Debug)]
@@ -32,6 +34,14 @@ pub enum ReviewModeError {
     MissingBaseBranch,
     #[error("review mode requires a positive PR number, got {0}")]
     InvalidPrNumber(i64),
+    #[error(
+        "PR {pr_url} is not in this repository (remotes: {remotes}); create the review in the repository that clones it"
+    )]
+    PrNotInRepository { pr_url: String, remotes: String },
+    #[error("remote '{0}' does not exist in this repository")]
+    UnknownRemote(String),
+    #[error("the repository has no remote to check the PR out from")]
+    NoRemote,
 }
 
 /// Decide how to set up the workspace branch from the create-request parts.
@@ -64,6 +74,43 @@ pub fn plan_branch_setup<'a>(
     }
 
     Ok(BranchSetup::ExistingPrBranch(pr))
+}
+
+/// The remote of the review repository that hosts the PR: the requested one
+/// (which must), else the default remote when it does, else any that does. A
+/// PR URL naming no comparable repository keeps the requested-else-default
+/// choice, so providers without a parsable PR URL are unaffected.
+pub fn pick_review_remote<'a>(
+    pr_url: &str,
+    remotes: &'a [GitRemote],
+    requested: Option<&str>,
+    default: Option<&str>,
+) -> Result<&'a GitRemote, ReviewModeError> {
+    let by_name = |name: &str| {
+        remotes
+            .iter()
+            .find(|r| r.name == name)
+            .ok_or_else(|| ReviewModeError::UnknownRemote(name.to_string()))
+    };
+    if pr_repo_key(pr_url).is_none() {
+        return by_name(requested.or(default).ok_or(ReviewModeError::NoRemote)?);
+    }
+    let hosts_pr = |r: &&GitRemote| pr_in_remote(pr_url, &r.url);
+    let picked = match requested {
+        Some(name) => Some(by_name(name)?).filter(hosts_pr),
+        None => default
+            .and_then(|name| by_name(name).ok())
+            .filter(hosts_pr)
+            .or_else(|| remotes.iter().find(hosts_pr)),
+    };
+    picked.ok_or_else(|| ReviewModeError::PrNotInRepository {
+        pr_url: pr_url.to_string(),
+        remotes: remotes
+            .iter()
+            .map(|r| format!("{}={}", r.name, r.url))
+            .collect::<Vec<_>>()
+            .join(", "),
+    })
 }
 
 /// Build the initial worktree ref for a review-mode workspace: `"{remote}/{base}"`.
@@ -176,6 +223,72 @@ mod tests {
             plan_branch_setup(&repos, Some(&pr)),
             Err(ReviewModeError::InvalidPrNumber(0))
         ));
+    }
+
+    fn remotes() -> Vec<GitRemote> {
+        [
+            ("origin", "git@github.com:me/widgets.git"),
+            ("upstream", "https://github.com/acme/widgets"),
+        ]
+        .into_iter()
+        .map(|(name, url)| GitRemote {
+            name: name.to_string(),
+            url: url.to_string(),
+        })
+        .collect()
+    }
+
+    #[test]
+    fn review_remote_is_the_one_hosting_the_pr() {
+        let remotes = remotes();
+        let pr = "https://github.com/acme/widgets/pull/42";
+        // Default remote is the fork: the upstream that hosts the PR wins.
+        let picked = pick_review_remote(pr, &remotes, None, Some("origin")).unwrap();
+        assert_eq!(picked.name, "upstream");
+        let picked = pick_review_remote(pr, &remotes, Some("upstream"), Some("origin")).unwrap();
+        assert_eq!(picked.name, "upstream");
+    }
+
+    #[test]
+    fn review_in_the_wrong_repository_is_rejected_before_checkout() {
+        let remotes = remotes();
+        let other = "https://github.com/acme/other/pull/42";
+        let error = pick_review_remote(other, &remotes, None, Some("origin")).unwrap_err();
+        assert!(matches!(error, ReviewModeError::PrNotInRepository { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("upstream=https://github.com/acme/widgets")
+        );
+        assert!(matches!(
+            pick_review_remote(
+                "https://github.com/acme/widgets/pull/1",
+                &remotes,
+                Some("origin"),
+                None
+            ),
+            Err(ReviewModeError::PrNotInRepository { .. })
+        ));
+        assert_eq!(
+            pick_review_remote(other, &remotes, Some("nope"), None).unwrap_err(),
+            ReviewModeError::UnknownRemote("nope".to_string())
+        );
+    }
+
+    #[test]
+    fn unparsable_pr_url_keeps_requested_or_default_remote() {
+        let remotes = remotes();
+        let url = "https://git.example.com/acme/widgets/merge_requests/1";
+        assert_eq!(
+            pick_review_remote(url, &remotes, None, Some("origin"))
+                .unwrap()
+                .name,
+            "origin"
+        );
+        assert_eq!(
+            pick_review_remote(url, &remotes, None, None).unwrap_err(),
+            ReviewModeError::NoRemote
+        );
     }
 
     #[test]

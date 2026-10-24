@@ -48,6 +48,17 @@ pub fn pr_repo_key(url: &str) -> Option<String> {
     })
 }
 
+/// Whether `remote_url` is a clone of the repository `pr_url` points into.
+/// Hosts are not compared: an SSH host alias (`git@github-work:org/repo`) still
+/// names `github.com/org/repo`.
+pub fn pr_in_remote(pr_url: &str, remote_url: &str) -> bool {
+    fn path(key: &str) -> Option<&str> {
+        key.split_once('/').map(|(_, path)| path)
+    }
+    let remote = normalized_repo_key(remote_url);
+    pr_repo_key(pr_url).is_some_and(|pr| path(&pr).is_some() && path(&pr) == path(&remote))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +91,17 @@ mod tests {
             pr_repo_key("https://github.com/acme/other/pull/42").as_deref(),
             Some(normalized_repo_key("https://github.com/acme/widgets").as_str())
         );
+    }
+
+    #[test]
+    fn pr_in_remote_ignores_ssh_host_aliases() {
+        let pr = "https://github.com/Acme/Widgets/pull/42";
+        assert!(pr_in_remote(pr, "git@github.com:acme/widgets.git"));
+        assert!(pr_in_remote(pr, "git@github-work:acme/widgets.git"));
+        assert!(!pr_in_remote(pr, "git@github.com:acme/other.git"));
+        assert!(!pr_in_remote(
+            "https://example.com/not-a-pr",
+            "git@github.com:acme/widgets.git"
+        ));
     }
 }

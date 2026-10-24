@@ -65,7 +65,9 @@ PR." appended to the prompt (default prompt: the issue's title and description).
   missing, the issue also has the `vibe` tag (that would run the vibe merge pipeline on the PR
   branch), the PR is merged/closed, several PRs are open (pass `--pr <url>`), no registered repo
   or several repos clone the PR's repository (pass `--repo <id>`), or `gh` cannot read/check out
-  the PR on that host (a failed checkout leaves no workspace behind).
+  the PR on that host (a failed checkout leaves no workspace behind). Refusals happen before
+  anything is written and name the fix (the `--repo <id>` that clones the PR, `--pr <url>`,
+  `--host`); rerun with it. Server errors (checkout, gh auth) come back verbatim.
 - **Retry = rerun the same command.** An open review workspace for the same issue and PR — on
   the selected host, or else on any reachable host (`host_id` says which) — is returned as
   `action: "reused"` (no second workspace, no second turn; a missing issue link is redone). `checkout: "pending"` means the first request is still checking out; rerun later.

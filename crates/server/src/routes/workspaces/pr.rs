@@ -49,17 +49,15 @@ use services::services::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
-use utils::{
-    log_msg::LogMsg,
-    repo_url::{normalized_repo_key, pr_repo_key},
-    response::ApiResponse,
-};
+use utils::{log_msg::LogMsg, repo_url::pr_in_remote, response::ApiResponse};
 use uuid::Uuid;
 use workspace_manager::WorkspaceManager;
 
 use crate::{
-    DeploymentImpl, error::ApiError, middleware::finish_after_disconnect,
-    routes::workspaces::review_mode::review_target_branch_ref,
+    DeploymentImpl,
+    error::ApiError,
+    middleware::finish_after_disconnect,
+    routes::workspaces::review_mode::{pick_review_remote, review_target_branch_ref},
 };
 
 #[derive(Debug, Deserialize, Serialize, TS)]
@@ -1357,12 +1355,7 @@ pub async fn attach_existing_pr(
                 .git()
                 .resolve_remote_for_branch(&repo.path, &workspace_repo.target_branch)?;
             match resolve_pr_by_url(url).await? {
-                Ok(pr)
-                    if pr_repo_key(&pr.url).as_deref()
-                        == Some(normalized_repo_key(&remote.url).as_str()) =>
-                {
-                    Some(pr)
-                }
+                Ok(pr) if pr_in_remote(&pr.url, &remote.url) => Some(pr),
                 Ok(_) => {
                     return Err(ApiError::BadRequest(
                         "Pull request does not belong to this repository".to_string(),
@@ -1742,13 +1735,18 @@ async fn create_pr_review_rows(
         .await?
         .ok_or(RepoError::NotFound)?;
 
-    let remote = match &pr.remote_name {
-        Some(name) => GitRemote {
-            url: deployment.git().get_remote_url(&repo.path, name)?,
-            name: name.clone(),
-        },
-        None => deployment.git().get_default_remote(&repo.path)?,
-    };
+    // The remote that hosts the PR, checked before anything is created: a
+    // review in the wrong repository would check out another PR #n or fail late.
+    let remotes = deployment.git().list_remotes(&repo.path)?;
+    let default = deployment.git().get_default_remote(&repo.path).ok();
+    let remote = pick_review_remote(
+        &pr.pr_url,
+        &remotes,
+        pr.remote_name.as_deref(),
+        default.as_ref().map(|r| r.name.as_str()),
+    )
+    .map_err(|e| ApiError::BadRequest(format!("Repository '{}': {e}", repo.name)))?
+    .clone();
 
     let target_branch_ref = review_target_branch_ref(&remote.name, &pr.base_branch);
 
