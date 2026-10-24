@@ -1439,15 +1439,18 @@ impl VkClient {
             }
             None => {
                 let repos: Vec<db::models::repo::Repo> = client.get("/repos").await?;
-                let remotes = futures::future::try_join_all(repos.iter().map(|repo| {
+                // A registered repo whose checkout is gone (its remotes fail)
+                // clones nothing; it must not block matching the others.
+                let remotes = futures::future::join_all(repos.iter().map(|repo| {
                     let client = &client;
                     async move {
                         client
                             .get::<Vec<RepoRemote>>(&format!("/repos/{}/remotes", repo.id))
                             .await
+                            .unwrap_or_default()
                     }
                 }))
-                .await?;
+                .await;
                 let candidates: Vec<_> = repos.into_iter().zip(remotes).collect();
                 let (repo, remote) = match_review_repo(&pr.url, &candidates, input.repo_id)?;
                 (
@@ -2911,7 +2914,8 @@ mod tests {
     }
 
     /// A review-tagged issue with one linked open PR (#42, head `feature-x`,
-    /// base `main`) and one registered clone of its repository.
+    /// base `main`), one registered clone of its repository and one repo whose
+    /// checkout is gone (its remotes request fails).
     fn review_routes(
         issue: &Issue,
         tags: &[&str],
@@ -2919,6 +2923,7 @@ mod tests {
         summaries: Value,
     ) -> (Routes, Uuid) {
         let (repo, _) = repo_with("widgets", None, &[]);
+        let (gone, _) = repo_with("gone", None, &[]);
         let pr = review_pr(42, "open");
         let tag_rows: Vec<Value> = tags
             .iter()
@@ -2946,7 +2951,7 @@ mod tests {
                 ok(json!({ "pull_requests": [linked_pr(42)] })),
             ),
             (("GET", "/api/repos/pr-info".into()), ok(json!(pr))),
-            (("GET", "/api/repos".into()), ok(json!([repo]))),
+            (("GET", "/api/repos".into()), ok(json!([gone, repo]))),
             (
                 ("GET", format!("/api/repos/{}/remotes", repo.id)),
                 ok(json!([{ "name": "origin", "url": "git@github.com:acme/widgets.git" }])),
