@@ -21,6 +21,11 @@ pub struct SendNotificationRequest {
     /// the user's cloud web-push devices.
     #[serde(default)]
     pub local_only: bool,
+    /// A Drawer note the notification opens (`vk drawer create --notify`);
+    /// such a notification is a report for the user and never wakes automation.
+    #[serde(default)]
+    #[ts(optional)]
+    pub drawer_note_id: Option<Uuid>,
 }
 
 async fn send_notification(
@@ -35,7 +40,11 @@ async fn send_notification(
         ));
     }
     let service = deployment.container().notification_service();
-    if request.local_only {
+    if let Some(note_id) = request.drawer_note_id {
+        service
+            .notify_drawer_note(title, message, request.workspace_id, note_id)
+            .await;
+    } else if request.local_only {
         service
             .notify_local_only(title, message, request.workspace_id)
             .await;

@@ -1846,6 +1846,7 @@ impl VkClient {
         message: &str,
         workspace_id: Option<Uuid>,
         local_only: bool,
+        drawer_note_id: Option<Uuid>,
     ) -> Result<(), VkError> {
         self.post_empty(
             "/notifications/send",
@@ -1854,6 +1855,7 @@ impl VkClient {
                 "message": message,
                 "workspace_id": workspace_id,
                 "local_only": local_only,
+                "drawer_note_id": drawer_note_id,
             }),
         )
         .await

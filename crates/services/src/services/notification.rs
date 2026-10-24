@@ -131,6 +131,44 @@ impl NotificationService {
         }
     }
 
+    /// A Drawer note's one notification (`vk drawer create --notify`): like
+    /// `notify`, but every click target opens the note, and the cloud copy is
+    /// tagged like the Autopilot's own alerts — it is a report *for* the user,
+    /// never automation input, whichever workspace sent it.
+    pub async fn notify_drawer_note(
+        &self,
+        title: &str,
+        message: &str,
+        workspace_id: Option<Uuid>,
+        note_id: Uuid,
+    ) {
+        let config = self.config.read().await.notifications.clone();
+
+        if config.sound_enabled {
+            Self::play_sound_notification(&config.sound_file).await;
+        }
+
+        if config.push_enabled {
+            self.forward_to_remote_web_push_for(title, message, workspace_id, Some(note_id));
+
+            let deeplink = local_web_push_base_url()
+                .await
+                .map(|base_url| format!("{base_url}{}", drawer_note_path(note_id)));
+            let web_push_active = self
+                .send_web_push_with_deeplink(title, message, deeplink)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(?error, "failed to send local web push notifications");
+                    false
+                });
+            if web_push_active {
+                return;
+            }
+
+            self.push_notifier.send(title, message, workspace_id).await;
+        }
+    }
+
     /// Deliver a push to this host's LOCAL subscriptions only (and the OS
     /// notifier fallback), without forwarding to the user's remote web push
     /// subscriptions.
@@ -165,6 +203,18 @@ impl NotificationService {
     /// Fire-and-forget forward of a notification to the authenticated user's
     /// remote web push subscriptions via the paired remote server.
     fn forward_to_remote_web_push(&self, title: &str, message: &str, workspace_id: Option<Uuid>) {
+        self.forward_to_remote_web_push_for(title, message, workspace_id, None);
+    }
+
+    /// `drawer_note_id` makes the cloud notification open that note and marks
+    /// it as a report for the user (tagged like the Autopilot's own).
+    fn forward_to_remote_web_push_for(
+        &self,
+        title: &str,
+        message: &str,
+        workspace_id: Option<Uuid>,
+        drawer_note_id: Option<Uuid>,
+    ) {
         let Some(client) = self.remote_client.clone() else {
             return;
         };
@@ -172,19 +222,20 @@ impl NotificationService {
         let message = message.to_string();
         let pool = self.pool.clone();
         tokio::spawn(async move {
-            let autopilot = match workspace_id {
-                Some(id) => match Workspace::find_by_id(&pool, id).await {
-                    Ok(Some(workspace)) => workspace.autopilot,
-                    Ok(None) => true,
-                    Err(error) => {
-                        tracing::warn!(?error, "failed to classify workspace notification");
-                        true
-                    }
-                },
-                None => false,
-            };
+            let autopilot = drawer_note_id.is_some()
+                || match workspace_id {
+                    Some(id) => match Workspace::find_by_id(&pool, id).await {
+                        Ok(Some(workspace)) => workspace.autopilot,
+                        Ok(None) => true,
+                        Err(error) => {
+                            tracing::warn!(?error, "failed to classify workspace notification");
+                            true
+                        }
+                    },
+                    None => false,
+                };
             if let Err(error) = client
-                .send_self_web_push(&title, &message, workspace_id, autopilot)
+                .send_self_web_push(&title, &message, workspace_id, autopilot, drawer_note_id)
                 .await
             {
                 // This is the only route by which a notification for a workspace
@@ -224,6 +275,17 @@ impl NotificationService {
         message: &str,
         workspace_id: Option<Uuid>,
     ) -> Result<bool, sqlx::Error> {
+        let deeplink = local_web_push_click_url(workspace_id).await;
+        self.send_web_push_with_deeplink(title, message, deeplink)
+            .await
+    }
+
+    async fn send_web_push_with_deeplink(
+        &self,
+        title: &str,
+        message: &str,
+        deeplink_path: Option<String>,
+    ) -> Result<bool, sqlx::Error> {
         if !WebPushSubscriptionModel::has_any(&self.pool).await? {
             return Ok(false);
         }
@@ -248,7 +310,7 @@ impl NotificationService {
         let payload = LocalPushPayload {
             title,
             body: message,
-            deeplink_path: local_web_push_click_url(workspace_id).await,
+            deeplink_path,
         };
 
         for subscription in subscriptions {
@@ -535,6 +597,12 @@ async fn local_web_push_click_url(workspace_id: Option<Uuid>) -> Option<String> 
     let workspace_id = workspace_id?;
     let base_url = local_web_push_base_url().await?;
     build_web_push_click_url(&base_url, workspace_id)
+}
+
+/// The Drawer tab on one note; `/notifications` exists in both web apps and
+/// keeps the search parameter the app shell reads.
+fn drawer_note_path(note_id: Uuid) -> String {
+    format!("/notifications?drawer={note_id}")
 }
 
 /// Locate the `terminal-notifier` binary (PATH first, then common Homebrew

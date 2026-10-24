@@ -412,6 +412,7 @@ impl RemoteClient {
         body: &str,
         workspace_id: Option<Uuid>,
         autopilot: bool,
+        drawer_note_id: Option<Uuid>,
     ) -> Result<(), RemoteClientError> {
         #[derive(Serialize)]
         struct Request<'a> {
@@ -420,6 +421,8 @@ impl RemoteClient {
             #[serde(skip_serializing_if = "Option::is_none")]
             workspace_id: Option<Uuid>,
             autopilot: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            drawer_note_id: Option<Uuid>,
         }
 
         self.send(
@@ -431,6 +434,7 @@ impl RemoteClient {
                 body,
                 workspace_id,
                 autopilot,
+                drawer_note_id,
             }),
         )
         .await?;

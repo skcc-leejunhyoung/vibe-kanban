@@ -197,6 +197,7 @@ impl McpServer {
                 message.trim(),
                 workspace_id,
                 local_only.unwrap_or(false),
+                None,
             )
             .await
         {

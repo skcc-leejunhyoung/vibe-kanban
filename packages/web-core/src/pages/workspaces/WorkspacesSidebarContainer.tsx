@@ -32,6 +32,7 @@ import {
   getHostWorkspaceKey,
   type SidebarWorkspace,
 } from '@/shared/hooks/useWorkspaces';
+import { useDrawerNotes } from '@/shared/hooks/useDrawer';
 import {
   groupWorkspacesByIssue,
   bucketIssueGroupsByStatus,
@@ -385,14 +386,21 @@ export function WorkspacesSidebarContainer({
     toSidebarRow,
   ]);
 
+  // The Autopilot row carries the Drawer's unread count (its reports live
+  // there); the shape is only opened while such a row exists.
+  const { unreadCount: drawerUnread } = useDrawerNotes({
+    enabled: sortedActiveWorkspaces.some((ws) => ws.isAutopilot),
+  });
+
   // Apply pagination (only when not searching)
-  const paginatedActiveWorkspaces = useMemo(
-    () =>
-      isSearching
-        ? sortedActiveWorkspaces
-        : sortedActiveWorkspaces.slice(0, displayLimit),
-    [sortedActiveWorkspaces, displayLimit, isSearching]
-  );
+  const paginatedActiveWorkspaces = useMemo(() => {
+    const page = isSearching
+      ? sortedActiveWorkspaces
+      : sortedActiveWorkspaces.slice(0, displayLimit);
+    return drawerUnread > 0
+      ? page.map((ws) => (ws.isAutopilot ? { ...ws, drawerUnread } : ws))
+      : page;
+  }, [sortedActiveWorkspaces, displayLimit, isSearching, drawerUnread]);
 
   const paginatedArchivedWorkspaces = useMemo(
     () =>

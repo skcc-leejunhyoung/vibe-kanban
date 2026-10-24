@@ -218,7 +218,8 @@ are tagged by the host and never enter this path, so they stay visible.
 
 The Drawer (notes the Autopilot writes for the user, `vk drawer ...`) feeds the
 same stream: a user comment on a note arrives as `drawer.comment` (its `data`
-carries the note and comment ids and a title/excerpt line), tagged
+carries the note and comment ids and a `vk drawer get <id> --json` hint, never
+the text), tagged
 `autopilot` when the Autopilot wrote it, so only the user's comments wake the
 Autopilot. Add `drawer.` to the connector's `kinds` (and to the routine's
 `immediate` list if replies should not wait for the coalesce window).

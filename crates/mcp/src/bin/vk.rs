@@ -3345,10 +3345,17 @@ impl Ctx {
     }
 
     /// Where a Drawer note's artifacts live: this host, the given/current/Autopilot
-    /// workspace, and the session and execution this shell runs in. Best effort —
-    /// a note written outside a turn simply has no artifact scope.
+    /// workspace, and the session and execution this shell runs in. The four go
+    /// together (a manifest belongs to one execution), so outside a turn — no
+    /// session/execution in the environment — nothing is sent and an updated
+    /// note keeps the scope of the turn that last wrote it.
     async fn drawer_scope(&self, ws: Option<&str>) -> Vec<(&'static str, Value)> {
         let mut scope = Vec::new();
+        let in_turn = std::env::var(utils::agent_cli::SESSION_ID_ENV).is_ok()
+            && std::env::var(utils::agent_cli::EXECUTION_ID_ENV).is_ok();
+        if !in_turn {
+            return scope;
+        }
         if let Some(host_id) = self.client.self_host_id().await {
             scope.push(("host_id", json!(host_id)));
         }
@@ -4196,7 +4203,10 @@ impl Ctx {
                     .await?;
                 let note = created.get("data").cloned().unwrap_or(created);
                 if arg_flag(m, "notify")
-                    && let Some(note_id) = note.get("id").and_then(Value::as_str)
+                    && let Some(note_id) = note
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .and_then(|id| id.parse::<Uuid>().ok())
                 {
                     let excerpt = body
                         .lines()
@@ -4206,19 +4216,19 @@ impl Ctx {
                         .chars()
                         .take(200)
                         .collect::<String>();
+                    // Through the host's own notification path: it tags the
+                    // cloud copy and fires the local sound/OS alert too.
+                    let workspace = note
+                        .get("workspace_id")
+                        .and_then(Value::as_str)
+                        .and_then(|id| id.parse::<Uuid>().ok());
                     self.client
-                        .exec(
-                            "POST",
-                            "/remote/cloud/web-push/self",
-                            true,
-                            &[],
-                            Some(&json!({
-                                "title": arg_str(m, "title").unwrap_or_default(),
-                                "body": excerpt,
-                                "autopilot": true,
-                                "drawer_note_id": note_id,
-                            })),
-                            Some(self.timeout),
+                        .notify(
+                            &arg_str(m, "title").unwrap_or_default(),
+                            &excerpt,
+                            workspace,
+                            false,
+                            Some(note_id),
                         )
                         .await?;
                 }
@@ -4310,6 +4320,7 @@ impl Ctx {
                         &arg_str(m, "message").unwrap_or_default(),
                         ws,
                         arg_flag(m, "local-only"),
+                        None,
                     )
                     .await?;
                 Ok(json!({ "success": true }))

@@ -1288,7 +1288,12 @@ workspace_id: string | null,
  * Deliver only to this host's own subscriptions and OS notifier, not to
  * the user's cloud web-push devices.
  */
-local_only: boolean, };
+local_only: boolean,
+/**
+ * A Drawer note the notification opens (`vk drawer create --notify`);
+ * such a notification is a report for the user and never wakes automation.
+ */
+drawer_note_id?: string, };
 
 export type NormalizedLogEntry = { index: number, timestamp: string | null, entry_type: NormalizedEntryType, content: string, };
 

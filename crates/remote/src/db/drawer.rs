@@ -424,10 +424,15 @@ mod tests {
             Value::String(user_comment.id.to_string())
         );
         assert_eq!(events[0].2["note_id"], Value::String(mine.id.to_string()));
+        // Ids only: the comment text stays out of the stream.
         assert_eq!(
             events[0].2["title"],
-            Value::String("PR 리뷰 진행 현황: 1072는 내일 해도 돼".to_string())
+            Value::String(format!(
+                "note {} · vk drawer get {} --json",
+                mine.id, mine.id
+            ))
         );
+        assert!(!serde_json::to_string(&events).unwrap().contains("내일"));
         assert!(events[1].1, "the Autopilot's reply is tagged");
         let comments = DrawerRepository::list_comments(&pool, owner, Some(mine.id))
             .await

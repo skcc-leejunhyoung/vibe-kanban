@@ -89,6 +89,8 @@ export interface WorkspaceSummaryProps {
   isInPlace?: boolean;
   /** The host's Autopilot — shows a robot tag before the name. */
   isAutopilot?: boolean;
+  /** Unread Drawer notes, shown as a count on the Autopilot tag. */
+  drawerUnread?: number;
   /**
    * Why automatic cleanup skipped this workspace (its uncommitted changes could
    * not be verified). Null when eligible. Shown as a warning tag so the user
@@ -179,6 +181,7 @@ const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
   isDraft = false,
   isInPlace = false,
   isAutopilot = false,
+  drawerUnread = 0,
   cleanupBlockedReason = null,
   onOpenWorkspaceActions,
   isFocused = false,
@@ -253,11 +256,20 @@ const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
         <div className="flex w-full items-center gap-base">
           {isAutopilot ? (
             <span
-              className="inline-flex h-4 shrink-0 items-center rounded-sm bg-brand/10 px-1 text-brand"
-              title="Autopilot — watches every host and acts on events"
+              className="inline-flex h-4 shrink-0 items-center gap-half rounded-sm bg-brand/10 px-1 text-brand"
+              title={
+                drawerUnread > 0
+                  ? `Autopilot — ${drawerUnread} unread Drawer ${drawerUnread === 1 ? 'note' : 'notes'}`
+                  : 'Autopilot — watches every host and acts on events'
+              }
               aria-label="Autopilot"
             >
               <RobotIcon className="size-icon-xs" weight="fill" />
+              {drawerUnread > 0 && (
+                <span className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-brand-secondary px-1 text-[9px] font-medium leading-none text-white">
+                  {drawerUnread > 99 ? '99+' : drawerUnread}
+                </span>
+              )}
             </span>
           ) : (
             isInPlace && (

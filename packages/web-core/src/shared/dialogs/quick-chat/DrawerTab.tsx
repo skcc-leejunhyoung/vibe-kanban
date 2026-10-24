@@ -46,12 +46,21 @@ export function DrawerTab({
   const [showDetailOnNarrow, setShowDetailOnNarrow] = useState(!!initialNoteId);
 
   const list = view === 'inbox' ? notes.inbox : notes.archived;
+  // Only a note the user picked (or was deep-linked to) is shown: an implicit
+  // "first note" would be marked read without anyone opening it, and a note
+  // the Autopilot moved to the other view drops out of the detail pane.
   const selected = useMemo(
-    () => notes.data.find((note) => note.id === selectedId) ?? list[0] ?? null,
-    [notes.data, selectedId, list]
+    () => list.find((note) => note.id === selectedId) ?? null,
+    [list, selectedId]
   );
 
-  // A deep-linked note may sit in the archive: open that view for it.
+  // A deep link (also one arriving while the tab is already open) selects its
+  // note and switches to the archive when the note lives there.
+  useEffect(() => {
+    if (!initialNoteId) return;
+    setSelectedId(initialNoteId);
+    setShowDetailOnNarrow(true);
+  }, [initialNoteId]);
   useEffect(() => {
     if (!initialNoteId || notes.isLoading) return;
     const target = notes.data.find((note) => note.id === initialNoteId);
@@ -59,14 +68,19 @@ export function DrawerTab({
   }, [initialNoteId, notes.data, notes.isLoading]);
 
   // Opening a note marks it read (once per change, so a later edit or comment
-  // makes it unread again).
+  // makes it unread again). `user_seen_at` rides along so the dot clears
+  // optimistically; the server sets its own timestamp.
   const seenRef = useRef<string | null>(null);
   useEffect(() => {
     if (!selected || !isDrawerNoteUnread(selected)) return;
     const key = `${selected.id}:${selected.updated_at}:${selected.last_comment_at ?? ''}`;
     if (seenRef.current === key) return;
     seenRef.current = key;
-    void notes.update(selected.id, { seen: true }).persisted.catch(() => {});
+    const changes: Partial<DrawerNote> & { seen: boolean } = {
+      seen: true,
+      user_seen_at: new Date().toISOString(),
+    };
+    void notes.update(selected.id, changes).persisted.catch(() => {});
   }, [selected, notes]);
 
   const selectedComments = useMemo(
@@ -85,12 +99,17 @@ export function DrawerTab({
 
   const archive = useCallback(
     (note: DrawerNote, archived: boolean) => {
-      const remaining = list.filter((item) => item.id !== note.id);
-      void notes.update(note.id, { archived }).persisted.catch(() => {});
-      setSelectedId(remaining[0]?.id ?? null);
+      // `archived_at` moves the note between lists at once; the server ignores
+      // it and stamps its own clock.
+      const changes: Partial<DrawerNote> & { archived: boolean } = {
+        archived,
+        archived_at: archived ? new Date().toISOString() : null,
+      };
+      void notes.update(note.id, changes).persisted.catch(() => {});
+      setSelectedId(null);
       setShowDetailOnNarrow(false);
     },
-    [list, notes]
+    [notes]
   );
 
   if (!notes.enabled) {

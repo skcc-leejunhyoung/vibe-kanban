@@ -39,6 +39,8 @@ SELECT electric_sync_table('public', 'drawer_comments');
 
 -- A comment wakes the Autopilot through the central stream. The Autopilot's
 -- own replies are tagged like its other events, so automation drops them.
+-- Like notifications, the event carries ids only: the text is read on demand
+-- (`vk drawer get <id> --json`), never copied into the stream.
 CREATE FUNCTION agent_events_from_drawer_comment() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -56,7 +58,7 @@ BEGIN
             'note_id', NEW.note_id,
             'comment_id', NEW.id,
             'author', NEW.author,
-            'title', left(note.title, 120) || ': ' || left(NEW.body, 500)
+            'title', 'note ' || NEW.note_id || ' · vk drawer get ' || NEW.note_id || ' --json'
         ),
         NEW.created_at
     );

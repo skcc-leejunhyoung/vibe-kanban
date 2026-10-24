@@ -37,6 +37,8 @@ export interface SidebarWorkspace {
   id: string;
   name: string;
   branch: string;
+  /** Unread Drawer notes; set by the sidebar container on the Autopilot row. */
+  drawerUnread?: number;
   /**
    * Checkout path. Carried on the list entry so actions fired from document
    * chrome can read the *targeted* pane's path without refetching it.

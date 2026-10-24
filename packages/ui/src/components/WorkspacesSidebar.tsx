@@ -73,6 +73,8 @@ export interface WorkspacesSidebarWorkspace {
   isInPlace?: boolean;
   /** The host's Autopilot — shown with a robot tag at the top of the list. */
   isAutopilot?: boolean;
+  /** Unread Drawer notes (Autopilot rows only) — a count badge on the tag. */
+  drawerUnread?: number;
   /** Non-null when automatic cleanup quarantined this workspace. */
   cleanupBlockedReason?: string | null;
   /**
@@ -280,6 +282,7 @@ function WorkspaceList({
           githubIssues={workspace.githubIssues}
           isInPlace={workspace.isInPlace}
           isAutopilot={workspace.isAutopilot}
+          drawerUnread={workspace.drawerUnread}
           cleanupBlockedReason={workspace.cleanupBlockedReason}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
           onClick={(event) =>
@@ -554,6 +557,7 @@ export function WorkspacesSidebar({
                   githubIssues={workspace.githubIssues}
                   isInPlace={workspace.isInPlace}
                   isAutopilot={workspace.isAutopilot}
+                  drawerUnread={workspace.drawerUnread}
                   cleanupBlockedReason={workspace.cleanupBlockedReason}
                   onOpenWorkspaceActions={handleOpenWorkspaceActions}
                   onClick={(event) =>
@@ -725,6 +729,7 @@ export function WorkspacesSidebar({
                 githubIssues={workspace.githubIssues}
                 isInPlace={workspace.isInPlace}
                 isAutopilot={workspace.isAutopilot}
+                drawerUnread={workspace.drawerUnread}
                 cleanupBlockedReason={workspace.cleanupBlockedReason}
                 onOpenWorkspaceActions={handleOpenWorkspaceActions}
                 onClick={(event) =>
