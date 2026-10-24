@@ -37,6 +37,7 @@ import { CommandBarDialog } from "@/shared/dialogs/command-bar/CommandBarDialog"
 import { QuickChatDialog } from "@/shared/dialogs/QuickChatDialog";
 import { useCommandBarShortcut } from "@/shared/hooks/useCommandBarShortcut";
 import { useMarkNotificationsReadOnView } from "@/shared/hooks/useMarkNotificationsReadOnView";
+import { useDrawerDeepLink } from "@/shared/hooks/useDrawerDeepLink";
 import { listOrganizationProjects } from "@remote/shared/lib/api";
 import { RemoteAppBarUserPopoverContainer } from "@remote/app/layout/RemoteAppBarUserPopoverContainer";
 import { RemoteNavbarContainer } from "@remote/app/layout/RemoteNavbarContainer";
@@ -121,6 +122,7 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   // mounted, including notifications and the remote home screen.
   useCommandBarShortcut(() => CommandBarDialog.show());
   useMarkNotificationsReadOnView();
+  useDrawerDeepLink();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isAppBarHovered, setIsAppBarHovered] = useState(false);
   const isLeftSidebarVisible = useUiPreferencesStore(

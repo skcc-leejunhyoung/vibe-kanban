@@ -52,6 +52,7 @@ import {
 import { OAuthDialog } from '@/shared/dialogs/global/OAuthDialog';
 import { CommandBarDialog } from '@/shared/dialogs/command-bar/CommandBarDialog';
 import { QuickChatDialog } from '@/shared/dialogs/QuickChatDialog';
+import { useDrawerDeepLink } from '@/shared/hooks/useDrawerDeepLink';
 import { useCommandBarShortcut } from '@/shared/hooks/useCommandBarShortcut';
 import { useMarkNotificationsReadOnView } from '@/shared/hooks/useMarkNotificationsReadOnView';
 import { useShape } from '@/shared/integrations/electric/hooks';
@@ -100,6 +101,7 @@ export function SharedAppLayout() {
   // Register CMD+K shortcut globally for all routes under SharedAppLayout
   useCommandBarShortcut(() => CommandBarDialog.show());
   useMarkNotificationsReadOnView();
+  useDrawerDeepLink();
 
   // AppBar state - organizations and projects
   const { data: orgsData } = useUserOrganizations();

@@ -46,6 +46,10 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("github/repositories", &["GET"]),
     ("organizations", &["GET", "PATCH"]),
     ("agent-memory/snapshots", &["GET"]),
+    // The Drawer (Autopilot notes) and the notification that can point at one.
+    ("drawer_notes", &["GET", "POST", "PATCH", "DELETE"]),
+    ("drawer_comments", &["GET", "POST", "DELETE"]),
+    ("web-push/self", &["POST"]),
 ];
 
 /// Members and invitations stay with the typed local routes (and their own

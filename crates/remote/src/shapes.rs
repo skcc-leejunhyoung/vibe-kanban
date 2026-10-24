@@ -1,9 +1,10 @@
 //! All shape constant instances for realtime streaming.
 
 use api_types::{
-    GithubIssueLink, Issue, IssueAssignee, IssueComment, IssueCommentReaction, IssueFollower,
-    IssueMilestone, IssueRelationship, IssueTag, Notification, OrganizationMember, Project,
-    ProjectMilestone, ProjectStatus, PullRequest, PullRequestIssue, Tag, Workspace,
+    DrawerComment, DrawerNote, GithubIssueLink, Issue, IssueAssignee, IssueComment,
+    IssueCommentReaction, IssueFollower, IssueMilestone, IssueRelationship, IssueTag, Notification,
+    OrganizationMember, Project, ProjectMilestone, ProjectStatus, PullRequest, PullRequestIssue,
+    Tag, Workspace,
 };
 
 use crate::shape_definition::ShapeDefinition;
@@ -25,6 +26,22 @@ pub const NOTIFICATIONS_SHAPE: ShapeDefinition<Notification> = crate::define_sha
     table: "notifications",
     where_clause: r#""user_id" = $1"#,
     url: "/shape/notifications",
+    params: ["user_id"],
+);
+
+pub const DRAWER_NOTES_SHAPE: ShapeDefinition<DrawerNote> = crate::define_shape!(
+    name: "DRAWER_NOTES_SHAPE",
+    table: "drawer_notes",
+    where_clause: r#""owner_user_id" = $1"#,
+    url: "/shape/drawer_notes",
+    params: ["user_id"],
+);
+
+pub const DRAWER_COMMENTS_SHAPE: ShapeDefinition<DrawerComment> = crate::define_shape!(
+    name: "DRAWER_COMMENTS_SHAPE",
+    table: "drawer_comments",
+    where_clause: r#""owner_user_id" = $1"#,
+    url: "/shape/drawer_comments",
     params: ["user_id"],
 );
 

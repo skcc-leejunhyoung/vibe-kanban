@@ -6,10 +6,15 @@ import type { NiceModalHocProps } from '@ebay/nice-modal-react';
 export type NoProps = Record<string, never>;
 
 // Map P for component props: void -> NoProps; otherwise P
-type ComponentProps<P> = [P] extends [void] ? NoProps : P;
+type ComponentProps<P> = [P] extends [void] ? NoProps : Exclude<P, undefined>;
 
-// Map P for .show() args: void -> []; otherwise [props: P]
-type ShowArgs<P> = [P] extends [void] ? [] : [props: P];
+// Map P for .show() args: void -> []; P that allows undefined -> [props?: P];
+// otherwise [props: P]
+type ShowArgs<P> = [P] extends [void]
+  ? []
+  : undefined extends P
+    ? [props?: Exclude<P, undefined>]
+    : [props: P];
 
 // Modalized component with static show/hide/remove methods
 export type Modalized<P, R> = React.ComponentType<ComponentProps<P>> & {

@@ -87,6 +87,74 @@ export type Project = { id: string, organization_id: string, name: string, color
 
 export type Notification = { id: string, organization_id: string, user_id: string, notification_type: NotificationType, payload: NotificationPayload, issue_id: string | null, comment_id: string | null, seen: boolean, dismissed_at: string | null, created_at: string, };
 
+export type DrawerNote = { id: string, owner_user_id: string,
+/**
+ * Host whose Autopilot wrote the note (artifacts in the body live there).
+ */
+host_id: string | null, workspace_id: string | null, session_id: string | null,
+/**
+ * Execution whose artifact manifest resolves `vibe-artifact` links in the body.
+ */
+execution_id: string | null, title: string,
+/**
+ * Markdown; `[Title](path "vibe-artifact")` lines render as artifact tiles.
+ */
+body: string,
+/**
+ * Optional status chip set by the Autopilot (e.g. "확인 필요").
+ */
+label: string | null, pinned: boolean, archived_at: string | null,
+/**
+ * When the user last opened the note; unread = older than the last change or comment.
+ */
+user_seen_at: string | null, last_comment_at: string | null, created_at: string, updated_at: string, };
+
+export type DrawerComment = { id: string, note_id: string, owner_user_id: string, author: DrawerCommentAuthor, body: string, created_at: string, };
+
+export type DrawerCommentAuthor = "user" | "autopilot";
+
+export type CreateDrawerNoteRequest = {
+/**
+ * Optional client-generated id for stable optimistic updates.
+ */
+id?: string, title: string, body: string, label?: string, pinned?: boolean, host_id?: string, workspace_id?: string, session_id?: string, execution_id?: string, };
+
+export type UpdateDrawerNoteRequest = { title: string | null, body: string | null,
+/**
+ * `null` clears the label.
+ */
+label?: string | null, pinned: boolean | null,
+/**
+ * Moves the note to (true) or back from (false) the archive.
+ */
+archived: boolean | null,
+/**
+ * `true` records that the user has read the note now.
+ */
+seen: boolean | null,
+/**
+ * Updating the body from a new turn moves the artifact scope along.
+ */
+host_id: string | null, workspace_id: string | null, session_id: string | null, execution_id: string | null, };
+
+export type CreateDrawerCommentRequest = { id?: string, note_id: string, body: string,
+/**
+ * Defaults to `user`; the Autopilot's CLI sends `autopilot`.
+ */
+author?: DrawerCommentAuthor, };
+
+export type ListDrawerNotesQuery = {
+/**
+ * `true` = archived only, `false` = inbox only, absent = both.
+ */
+archived?: boolean, };
+
+export type ListDrawerNotesResponse = { drawer_notes: Array<DrawerNote>, };
+
+export type ListDrawerCommentsQuery = { note_id?: string, };
+
+export type ListDrawerCommentsResponse = { drawer_comments: Array<DrawerComment>, };
+
 export type CreatePullRequestCommentNotificationRequest = { project_id: string, pull_request_url: string, pull_request_number: number, pull_request_title: string, actor_name: string, comment_preview: string | null, comment_url: string | null, };
 
 export type NotificationGroupKind = "single" | "issue_changes" | "status_changes" | "comments" | "reactions" | "issue_deleted" | "workspace_task";
@@ -96,7 +164,11 @@ export type NotificationPayload = { deeplink_path?: string | null, issue_id?: st
  * Whether the sending host's workspace is an Autopilot. Captured at send
  * time so notification filtering never depends on journal upload order.
  */
-autopilot?: boolean | null, host_id?: string | null, pull_request_url?: string | null, pull_request_number?: number | null, comment_url?: string | null, actor_name?: string | null, };
+autopilot?: boolean | null, host_id?: string | null,
+/**
+ * A Drawer note this notification points at (opens the Drawer tab).
+ */
+drawer_note_id?: string | null, pull_request_url?: string | null, pull_request_number?: number | null, comment_url?: string | null, actor_name?: string | null, };
 
 export type NotificationType = "issue_comment_added" | "issue_status_changed" | "issue_assignee_changed" | "issue_priority_changed" | "issue_unassigned" | "issue_comment_reaction" | "issue_deleted" | "issue_title_changed" | "issue_description_changed" | "issue_review_requested" | "workspace_task_completed" | "pull_request_comment_added";
 
@@ -395,6 +467,20 @@ export const NOTIFICATIONS_SHAPE = defineShape<Notification>(
   '/v1/fallback/notifications'
 );
 
+export const DRAWER_NOTES_SHAPE = defineShape<DrawerNote>(
+  'drawer_notes',
+  ['user_id'] as const,
+  '/v1/shape/drawer_notes',
+  '/v1/fallback/drawer_notes'
+);
+
+export const DRAWER_COMMENTS_SHAPE = defineShape<DrawerComment>(
+  'drawer_comments',
+  ['user_id'] as const,
+  '/v1/shape/drawer_comments',
+  '/v1/fallback/drawer_comments'
+);
+
 export const ORGANIZATION_MEMBERS_SHAPE = defineShape<OrganizationMember>(
   'organization_member_metadata',
   ['organization_id'] as const,
@@ -544,6 +630,16 @@ export const PROJECT_MUTATION = defineMutation<Project, CreateProjectRequest, Up
 export const NOTIFICATION_MUTATION = defineMutation<Notification, unknown, UpdateNotificationRequest>(
   'Notification',
   '/v1/notifications'
+);
+
+export const DRAWER_NOTE_MUTATION = defineMutation<DrawerNote, CreateDrawerNoteRequest, UpdateDrawerNoteRequest>(
+  'DrawerNote',
+  '/v1/drawer_notes'
+);
+
+export const DRAWER_COMMENT_MUTATION = defineMutation<DrawerComment, CreateDrawerCommentRequest, unknown>(
+  'DrawerComment',
+  '/v1/drawer_comments'
 );
 
 export const TAG_MUTATION = defineMutation<Tag, CreateTagRequest, UpdateTagRequest>(

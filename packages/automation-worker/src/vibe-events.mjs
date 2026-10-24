@@ -8,6 +8,7 @@ export const DEFAULT_KINDS = [
   'workspace.status_note',
   'vibe.phase',
   'cloud.notification',
+  'drawer.',
 ];
 
 export const COALESCE_DEFAULTS = {

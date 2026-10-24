@@ -14,6 +14,7 @@ use crate::{AppState, auth::require_session};
 mod agent_events;
 mod agent_memory;
 pub mod attachments;
+pub mod drawer;
 pub(crate) mod electric_proxy;
 pub(crate) mod error;
 mod export;
@@ -108,6 +109,7 @@ pub fn router(state: AppState) -> Router {
     let v1_protected = Router::<AppState>::new()
         .merge(agent_events::router())
         .merge(agent_memory::router())
+        .merge(drawer::router())
         .merge(identity::router())
         .merge(hosts::router())
         .merge(host_connections::router())
@@ -201,6 +203,8 @@ pub fn all_mutation_definitions() -> Vec<crate::mutation_definition::MutationDef
     vec![
         projects::mutation().definition(),
         notifications::mutation().definition(),
+        drawer::note_mutation().definition(),
+        drawer::comment_mutation().definition(),
         tags::mutation().definition(),
         milestones::milestone_mutation().definition(),
         milestones::issue_milestone_mutation().definition(),

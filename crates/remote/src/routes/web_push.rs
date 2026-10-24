@@ -62,6 +62,9 @@ struct SelfNotifyRequest {
     workspace_id: Option<Uuid>,
     #[serde(default)]
     autopilot: Option<bool>,
+    /// Points the notification at a Drawer note instead of a workspace.
+    #[serde(default)]
+    drawer_note_id: Option<Uuid>,
 }
 
 async fn public_key() -> Json<PublicKeyResponse> {
@@ -151,38 +154,43 @@ async fn notify_self(
         ));
     }
 
-    let notification_id =
-        match resolve_notification_target(&state, &ctx, payload.workspace_id).await? {
-            Some(target) => {
-                match NotificationRepository::create(
-                    state.pool(),
-                    target.organization_id,
-                    ctx.user.id,
-                    api_types::NotificationType::WorkspaceTaskCompleted,
-                    api_types::NotificationPayload {
-                        deeplink_path: Some(target.deeplink_path),
-                        title: Some(payload.title.clone()),
-                        body: Some(payload.body.clone()),
-                        workspace_id: payload.workspace_id,
-                        // Old hosts cannot identify their Autopilot. Deliver
-                        // the alert, but do not let an unknown source wake it.
-                        autopilot: Some(payload.autopilot.unwrap_or(true)),
-                        ..Default::default()
-                    },
-                    target.issue_id,
-                    None,
-                )
-                .await
-                {
-                    Ok(notification) => Some(notification.id),
-                    Err(error) => {
-                        tracing::warn!(?error, "failed to save workspace notification");
-                        None
-                    }
+    let target = match payload.drawer_note_id {
+        Some(note_id) => drawer_notification_target(&state, &ctx, note_id).await?,
+        None => resolve_notification_target(&state, &ctx, payload.workspace_id).await?,
+    };
+    let deeplink_path = target.as_ref().map(|target| target.deeplink_path.clone());
+    let notification_id = match target {
+        Some(target) => {
+            match NotificationRepository::create(
+                state.pool(),
+                target.organization_id,
+                ctx.user.id,
+                api_types::NotificationType::WorkspaceTaskCompleted,
+                api_types::NotificationPayload {
+                    deeplink_path: Some(target.deeplink_path),
+                    title: Some(payload.title.clone()),
+                    body: Some(payload.body.clone()),
+                    workspace_id: payload.workspace_id,
+                    drawer_note_id: payload.drawer_note_id,
+                    // Old hosts cannot identify their Autopilot. Deliver
+                    // the alert, but do not let an unknown source wake it.
+                    autopilot: Some(payload.autopilot.unwrap_or(true)),
+                    ..Default::default()
+                },
+                target.issue_id,
+                None,
+            )
+            .await
+            {
+                Ok(notification) => Some(notification.id),
+                Err(error) => {
+                    tracing::warn!(?error, "failed to save workspace notification");
+                    None
                 }
             }
-            None => None,
-        };
+        }
+        None => None,
+    };
 
     tokio::spawn(crate::web_push_notifications::send_custom_notification(
         state.pool().clone(),
@@ -191,9 +199,39 @@ async fn notify_self(
         payload.body,
         payload.workspace_id,
         notification_id,
+        payload.drawer_note_id.and(deeplink_path),
     ));
 
     Ok(StatusCode::ACCEPTED)
+}
+
+/// A notification about a Drawer note hangs off the personal org and opens
+/// the Drawer tab on that note (`?drawer=<id>` is read by the app shell).
+async fn drawer_notification_target(
+    state: &AppState,
+    ctx: &RequestContext,
+    note_id: Uuid,
+) -> Result<Option<NotificationTarget>, ErrorResponse> {
+    match crate::db::drawer::DrawerRepository::find_note(state.pool(), note_id).await {
+        Ok(Some(note)) if note.owner_user_id == ctx.user.id => {}
+        Ok(_) => {
+            return Err(ErrorResponse::new(
+                StatusCode::NOT_FOUND,
+                "drawer note not found",
+            ));
+        }
+        Err(error) => {
+            tracing::warn!(?error, %note_id, "failed to load drawer note");
+            return Ok(None);
+        }
+    }
+    Ok(personal_organization_id(state, ctx.user.id)
+        .await
+        .map(|organization_id| NotificationTarget {
+            organization_id,
+            issue_id: None,
+            deeplink_path: format!("/?drawer={note_id}"),
+        }))
 }
 
 /// Where an in-app notification row should hang: the org it belongs to, its

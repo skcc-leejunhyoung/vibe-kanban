@@ -216,6 +216,13 @@ the Autopilot was paused but were delivered after it resumed are archived on
 delivery. The Autopilot's own notifications (`vk notify send --ws autopilot`)
 are tagged by the host and never enter this path, so they stay visible.
 
+The Drawer (notes the Autopilot writes for the user, `vk drawer ...`) feeds the
+same stream: a user comment on a note arrives as `drawer.comment` (its `data`
+carries the note and comment ids and a title/excerpt line), tagged
+`autopilot` when the Autopilot wrote it, so only the user's comments wake the
+Autopilot. Add `drawer.` to the connector's `kinds` (and to the routine's
+`immediate` list if replies should not wait for the coalesce window).
+
 A routine with trigger `vk_event` (optional `kinds` prefixes and `hosts`
 filters by host id or name) and a `coalesce` block runs **once per burst**: the buffer flushes
 `windowSeconds` after the last matching event (but no later than

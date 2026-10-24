@@ -9,6 +9,7 @@ import {
   LightningIcon,
   RobotIcon,
   StarIcon,
+  TrayIcon,
 } from '@phosphor-icons/react';
 import {
   Dialog,
@@ -26,11 +27,7 @@ import type {
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { selectWorkspaceSession } from '@/shared/hooks/useWorkspaceSessions';
 import { seedOptimisticProcess } from '@/shared/providers/executionProcessScope';
-import {
-  defineModal,
-  getErrorMessage,
-  type NoProps,
-} from '@/shared/lib/modals';
+import { defineModal, getErrorMessage } from '@/shared/lib/modals';
 import { configApi, repoApi, workspacesApi } from '@/shared/lib/api';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
@@ -43,6 +40,8 @@ import { AgentIcon } from '@/shared/components/AgentIcon';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
+import { DrawerTab } from '@/shared/dialogs/quick-chat/DrawerTab';
+import { useDrawerNotes } from '@/shared/hooks/useDrawer';
 import { useFolderFavoritesStore } from '@/shared/stores/useFolderFavoritesStore';
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
@@ -70,7 +69,16 @@ import {
  * land in the repo's `.vibe-attachments/` (self-ignoring), the same place the
  * agent writes its own images.
  */
-const QuickChatDialogImpl = create<NoProps>(() => {
+export type QuickChatDialogMode = 'quick' | 'autopilot' | 'drawer';
+
+export interface QuickChatDialogProps {
+  /** Tab to open on; defaults to Quick chat. */
+  mode?: QuickChatDialogMode;
+  /** Drawer note to select (implies the Drawer tab). */
+  noteId?: string | null;
+}
+
+const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
   const modal = useModal();
   const appNavigation = useAppNavigation();
   const { config: routeConfig, profiles: routeProfiles } = useUserSystem();
@@ -125,8 +133,15 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   const stopRequestedRef = useRef(false);
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<'quick' | 'autopilot'>('quick');
+  const [mode, setMode] = useState<QuickChatDialogMode>(
+    props.noteId ? 'drawer' : (props.mode ?? 'quick')
+  );
   const isAutopilotMode = mode === 'autopilot';
+  const isDrawerMode = mode === 'drawer';
+  // Unread count for the tab badge (the shape is shared with the tab itself).
+  const { unreadCount: drawerUnread } = useDrawerNotes({
+    enabled: modal.visible,
+  });
   // The host's current Autopilot (null = none or paused). Only fetched while
   // the Autopilot tab is open; refetched after a pause so the form appears.
   const autopilotQuery = useQuery({
@@ -252,6 +267,13 @@ const QuickChatDialogImpl = create<NoProps>(() => {
       setMode('quick');
     }
   }, [modal.visible]);
+
+  // A later `.show({ noteId })` on the already-mounted dialog retargets it.
+  useEffect(() => {
+    if (!modal.visible) return;
+    if (props.noteId) setMode('drawer');
+    else if (props.mode) setMode(props.mode);
+  }, [modal.visible, props.noteId, props.mode]);
 
   const close = () => {
     modal.resolve(null);
@@ -484,17 +506,25 @@ const QuickChatDialogImpl = create<NoProps>(() => {
     >
       <DialogHeader>
         <DialogTitle className="flex items-center gap-base">
-          {isAutopilotMode ? (
+          {isDrawerMode ? (
+            <TrayIcon weight="fill" className="size-icon-sm text-brand" />
+          ) : isAutopilotMode ? (
             <RobotIcon weight="fill" className="size-icon-sm text-brand" />
           ) : (
             <LightningIcon weight="fill" className="size-icon-sm text-brand" />
           )}
-          {isAutopilotMode ? 'Autopilot' : 'Quick chat'}
+          {isDrawerMode
+            ? 'Drawer'
+            : isAutopilotMode
+              ? 'Autopilot'
+              : 'Quick chat'}
         </DialogTitle>
         <DialogDescription>
-          {isAutopilotMode
-            ? "An always-on agent for this host: pinned, one session, woken by automation when sessions finish, fail or wait for approval. Its standing rules live in the folder's AGENTS.md."
-            : 'Run an agent in an existing folder — no new branch, no isolation. Edits land directly in your working tree.'}
+          {isDrawerMode
+            ? 'Reports the Autopilot wrote, and the conversation on each. Only the Autopilot writes or edits notes; you read, comment and archive. A comment wakes it to reply on the same note.'
+            : isAutopilotMode
+              ? "An always-on agent for this host: pinned, one session, woken by automation when sessions finish, fail or wait for approval. Its standing rules live in the folder's AGENTS.md."
+              : 'Run an agent in an existing folder — no new branch, no isolation. Edits land directly in your working tree.'}
         </DialogDescription>
       </DialogHeader>
 
@@ -507,6 +537,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           [
             ['quick', 'Quick chat', LightningIcon],
             ['autopilot', 'Autopilot', RobotIcon],
+            ['drawer', 'Drawer', TrayIcon],
           ] as const
         ).map(([value, label, Icon]) => (
           <button
@@ -523,37 +554,51 @@ const QuickChatDialogImpl = create<NoProps>(() => {
           >
             <Icon weight="fill" className="size-icon-xs" />
             {label}
+            {value === 'drawer' && drawerUnread > 0 && (
+              <span className="ml-half inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-brand-secondary px-1 text-[10px] font-medium text-white">
+                {drawerUnread > 99 ? '99+' : drawerUnread}
+              </span>
+            )}
           </button>
         ))}
       </div>
 
-      <label className="flex items-center gap-base rounded-md border border-border bg-secondary px-base py-half">
-        {selectedHostId ? (
-          <ComputerTowerIcon className="size-icon-sm shrink-0 text-low" />
-        ) : (
-          <DesktopIcon className="size-icon-sm shrink-0 text-low" />
-        )}
-        <span className="text-sm text-low">Run on</span>
-        <select
-          value={selectedHostId ?? ''}
-          onChange={(event) => {
-            setSelectedHostId(event.target.value || null);
-            setRepo(null);
-            setError(null);
-            // Uploaded to the previous host's cache — those ids mean nothing here.
-            clearAttachments();
-          }}
-          className="min-w-0 flex-1 bg-transparent text-sm text-high outline-none"
-          aria-label="Quick chat host"
-        >
-          {runtime === 'local' && <option value="">This machine</option>}
-          {onlineHosts.map((host) => (
-            <option key={host.id} value={host.id}>
-              {host.name}
-            </option>
-          ))}
-        </select>
-      </label>
+      {isDrawerMode && (
+        <DrawerTab
+          initialNoteId={props.noteId ?? null}
+          onOpenAutopilot={() => setMode('autopilot')}
+        />
+      )}
+
+      {!isDrawerMode && (
+        <label className="flex items-center gap-base rounded-md border border-border bg-secondary px-base py-half">
+          {selectedHostId ? (
+            <ComputerTowerIcon className="size-icon-sm shrink-0 text-low" />
+          ) : (
+            <DesktopIcon className="size-icon-sm shrink-0 text-low" />
+          )}
+          <span className="text-sm text-low">Run on</span>
+          <select
+            value={selectedHostId ?? ''}
+            onChange={(event) => {
+              setSelectedHostId(event.target.value || null);
+              setRepo(null);
+              setError(null);
+              // Uploaded to the previous host's cache — those ids mean nothing here.
+              clearAttachments();
+            }}
+            className="min-w-0 flex-1 bg-transparent text-sm text-high outline-none"
+            aria-label="Quick chat host"
+          >
+            {runtime === 'local' && <option value="">This machine</option>}
+            {onlineHosts.map((host) => (
+              <option key={host.id} value={host.id}>
+                {host.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       {isAutopilotMode && autopilotQuery.isLoading && (
         <p className="text-sm text-low">Checking this host's Autopilot…</p>
@@ -790,6 +835,7 @@ const QuickChatDialogImpl = create<NoProps>(() => {
   );
 });
 
-export const QuickChatDialog = defineModal<void, string | null>(
-  QuickChatDialogImpl
-);
+export const QuickChatDialog = defineModal<
+  QuickChatDialogProps | undefined,
+  string | null
+>(QuickChatDialogImpl);

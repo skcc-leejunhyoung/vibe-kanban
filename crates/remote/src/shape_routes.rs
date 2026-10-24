@@ -100,6 +100,18 @@ pub fn all_shape_routes() -> Vec<ShapeRoute> {
             fallback_list_notifications,
         ),
         ShapeRoute::new(
+            &shapes::DRAWER_NOTES_SHAPE,
+            ShapeScope::User,
+            "/fallback/drawer_notes",
+            crate::routes::drawer::list_notes,
+        ),
+        ShapeRoute::new(
+            &shapes::DRAWER_COMMENTS_SHAPE,
+            ShapeScope::User,
+            "/fallback/drawer_comments",
+            crate::routes::drawer::list_comments,
+        ),
+        ShapeRoute::new(
             &shapes::ORGANIZATION_MEMBERS_SHAPE,
             ShapeScope::Org,
             "/fallback/organization_members",

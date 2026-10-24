@@ -132,6 +132,8 @@ pub async fn send_custom_notification(
     body: String,
     workspace_id: Option<Uuid>,
     notification_id: Option<Uuid>,
+    // An app-relative path that wins over the workspace link (Drawer notes).
+    deeplink_override: Option<String>,
 ) {
     let Some(config) = WebPushConfig::from_env().ok().flatten() else {
         return;
@@ -158,6 +160,9 @@ pub async fn send_custom_notification(
     };
 
     let deeplink_path = match (workspace_id, config.remote_base_url.as_deref()) {
+        _ if deeplink_override.is_some() => deeplink_override
+            .zip(config.remote_base_url.as_deref())
+            .map(|(path, base_url)| format!("{base_url}{path}")),
         (Some(workspace_id), Some(base_url)) => {
             // Direct link to the workspace on its host. This is the canonical
             // route (`/hosts/{host}/workspaces/{ws}`); the `/workspace/{ws}`

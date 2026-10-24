@@ -265,6 +265,10 @@ const GROUPS: &[(&str, &str)] = &[
         "User notifications: send one, list, mark seen, preferences",
     ),
     (
+        "drawer",
+        "The Drawer: notes the Autopilot writes for the user (create, update, archive, comment)",
+    ),
+    (
         "config",
         "Host settings, executor profiles, model discovery, MCP servers, host info",
     ),
@@ -2261,6 +2265,128 @@ const COMMANDS: &[Cmd] = &[
         "/remote/cloud/user-notification-preferences",
         &[req("body", "Preferences JSON", Where::Raw, Kind::Json)],
     )),
+    // ---- drawer -------------------------------------------------------------
+    special(
+        &["drawer", "list"],
+        "Drawer notes (inbox by default)",
+        "drawer.list",
+        &[
+            opt("archived", "Archived notes only", Where::Local, Kind::Flag),
+            opt("all", "Inbox and archive", Where::Local, Kind::Flag),
+        ],
+    ),
+    special(
+        &["drawer", "get"],
+        "One note with its comments",
+        "drawer.get",
+        &[pos("id", "Note id", Where::Local)],
+    ),
+    special(
+        &["drawer", "create"],
+        "Write a note (title + markdown body); artifacts: a `[Title](path \"vibe-artifact\")` line",
+        "drawer.create",
+        &[
+            short(req("title", "Title", Where::Local, Kind::Str), 't'),
+            short(
+                opt("message", "Markdown body", Where::Local, Kind::Str),
+                'm',
+            ),
+            short(
+                opt(
+                    "file",
+                    "Read the body from a file ('-' = stdin)",
+                    Where::Local,
+                    Kind::Str,
+                ),
+                'f',
+            ),
+            opt(
+                "label",
+                "Status chip, e.g. '확인 필요' / '진행 중'",
+                Where::Local,
+                Kind::Str,
+            ),
+            opt("pin", "Keep at the top", Where::Local, Kind::Flag),
+            opt(
+                "ws",
+                "Workspace the body's artifacts belong to (default: this shell's, else the Autopilot)",
+                Where::Local,
+                Kind::Str,
+            ),
+            opt(
+                "notify",
+                "Also send one notification that opens this note",
+                Where::Local,
+                Kind::Flag,
+            ),
+        ],
+    ),
+    special(
+        &["drawer", "update"],
+        "Change a note's title, body, label or pin",
+        "drawer.update",
+        &[
+            pos("id", "Note id", Where::Local),
+            short(opt("title", "New title", Where::Local, Kind::Str), 't'),
+            short(
+                opt("message", "New markdown body", Where::Local, Kind::Str),
+                'm',
+            ),
+            short(
+                opt(
+                    "file",
+                    "Read the new body from a file ('-' = stdin)",
+                    Where::Local,
+                    Kind::Str,
+                ),
+                'f',
+            ),
+            opt("label", "Status chip ('' clears)", Where::Local, Kind::Str),
+            opt("pin", "Keep at the top", Where::Local, Kind::Flag),
+            opt("unpin", "Stop keeping at the top", Where::Local, Kind::Flag),
+            opt(
+                "ws",
+                "Workspace the body's artifacts belong to",
+                Where::Local,
+                Kind::Str,
+            ),
+        ],
+    ),
+    special(
+        &["drawer", "archive"],
+        "Move a note to the archive (deleted 90 days later)",
+        "drawer.archive",
+        &[pos("id", "Note id", Where::Local)],
+    ),
+    special(
+        &["drawer", "unarchive"],
+        "Move a note back to the inbox",
+        "drawer.unarchive",
+        &[pos("id", "Note id", Where::Local)],
+    ),
+    local(cmd(
+        &["drawer", "delete"],
+        "Delete a note and its comments",
+        "DELETE",
+        "/remote/cloud/drawer_notes/{id}",
+        &[pos("id", "Note id", Where::Path)],
+    )),
+    special(
+        &["drawer", "comment"],
+        "Reply on a note (as the Autopilot)",
+        "drawer.comment",
+        &[
+            pos("id", "Note id", Where::Local),
+            short(req("message", "Comment text", Where::Local, Kind::Str), 'm'),
+        ],
+    ),
+    local(cmd(
+        &["drawer", "comments"],
+        "A note's comments, oldest first",
+        "GET",
+        "/remote/cloud/drawer_comments",
+        &[keyed(pos("id", "Note id", Where::Query), "note_id")],
+    )),
     // ---- config -------------------------------------------------------------
     special(
         &["config", "get"],
@@ -3097,6 +3223,23 @@ fn parse_uuid(raw: &str, what: &str) -> Result<Uuid, VkError> {
         .map_err(|_| VkError::message(format!("{what} must be a UUID, got '{raw}'")))
 }
 
+/// `-m` text, or `-f` file (`-` = stdin). `None` when neither was given.
+fn read_drawer_body(m: &ArgMatches) -> Result<Option<String>, VkError> {
+    if let Some(path) = arg_str(m, "file") {
+        let text = if path.trim() == "-" {
+            let mut buffer = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buffer)
+                .map_err(|e| VkError::message(format!("Could not read stdin: {e}")))?;
+            buffer
+        } else {
+            std::fs::read_to_string(&path)
+                .map_err(|e| VkError::message(format!("Could not read {path}: {e}")))?
+        };
+        return Ok(Some(text));
+    }
+    Ok(arg_str(m, "message"))
+}
+
 fn typed_value(spec: &ArgSpec, raw: &str) -> Result<Value, VkError> {
     Ok(match spec.kind {
         Kind::Str | Kind::Flag | Kind::Pairs => Value::String(raw.to_string()),
@@ -3199,6 +3342,48 @@ impl Ctx {
                 "No active workspace matches '{raw}' (archived ones need the id)"
             ))),
         }
+    }
+
+    /// Where a Drawer note's artifacts live: this host, the given/current/Autopilot
+    /// workspace, and the session and execution this shell runs in. Best effort —
+    /// a note written outside a turn simply has no artifact scope.
+    async fn drawer_scope(&self, ws: Option<&str>) -> Vec<(&'static str, Value)> {
+        let mut scope = Vec::new();
+        if let Some(host_id) = self.client.self_host_id().await {
+            scope.push(("host_id", json!(host_id)));
+        }
+        let workspace = match ws {
+            Some(raw) => self.workspace_id(raw).await.ok(),
+            None => match std::env::var("VK_WORKSPACE_ID")
+                .ok()
+                .and_then(|id| id.parse().ok())
+            {
+                Some(id) => Some(id),
+                None => self
+                    .client
+                    .autopilot()
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| a.workspace.id),
+            },
+        };
+        if let Some(id) = workspace {
+            scope.push(("workspace_id", json!(id)));
+        }
+        if let Some(id) = std::env::var(utils::agent_cli::SESSION_ID_ENV)
+            .ok()
+            .and_then(|id| id.parse::<Uuid>().ok())
+        {
+            scope.push(("session_id", json!(id)));
+        }
+        if let Some(id) = std::env::var(utils::agent_cli::EXECUTION_ID_ENV)
+            .ok()
+            .and_then(|id| id.parse::<Uuid>().ok())
+        {
+            scope.push(("execution_id", json!(id)));
+        }
+        scope
     }
 
     /// The host's active Autopilot, or a clear error when there is none.
@@ -3934,6 +4119,186 @@ impl Ctx {
                 Ok(serde_json::to_value(issue).unwrap_or_default())
             }
             "issue.priorities" => Ok(json!(["urgent", "high", "medium", "low"])),
+            "drawer.list" => {
+                let mut query = Vec::new();
+                if !arg_flag(m, "all") {
+                    query.push(("archived".to_string(), arg_flag(m, "archived").to_string()));
+                }
+                let page = self
+                    .client
+                    .exec(
+                        "GET",
+                        "/remote/cloud/drawer_notes",
+                        true,
+                        &query,
+                        None,
+                        Some(self.timeout),
+                    )
+                    .await?;
+                Ok(page.get("drawer_notes").cloned().unwrap_or(page))
+            }
+            "drawer.get" => {
+                let id = parse_uuid(&arg_str(m, "id").unwrap_or_default(), "note")?;
+                let note = self
+                    .client
+                    .exec(
+                        "GET",
+                        &format!("/remote/cloud/drawer_notes/{id}"),
+                        true,
+                        &[],
+                        None,
+                        Some(self.timeout),
+                    )
+                    .await?;
+                let comments = self
+                    .client
+                    .exec(
+                        "GET",
+                        "/remote/cloud/drawer_comments",
+                        true,
+                        &[("note_id".to_string(), id.to_string())],
+                        None,
+                        Some(self.timeout),
+                    )
+                    .await?;
+                Ok(json!({
+                    "note": note,
+                    "comments": comments.get("drawer_comments").cloned().unwrap_or(Value::Array(vec![])),
+                }))
+            }
+            "drawer.create" => {
+                let body = read_drawer_body(m)?.unwrap_or_default();
+                let mut request = Map::new();
+                request.insert(
+                    "title".into(),
+                    Value::String(arg_str(m, "title").unwrap_or_default()),
+                );
+                request.insert("body".into(), Value::String(body.clone()));
+                if let Some(label) = arg_str(m, "label").filter(|l| !l.trim().is_empty()) {
+                    request.insert("label".into(), Value::String(label));
+                }
+                if arg_flag(m, "pin") {
+                    request.insert("pinned".into(), Value::Bool(true));
+                }
+                for (key, value) in self.drawer_scope(arg_str(m, "ws").as_deref()).await {
+                    request.insert(key.into(), value);
+                }
+                let created = self
+                    .client
+                    .exec(
+                        "POST",
+                        "/remote/cloud/drawer_notes",
+                        true,
+                        &[],
+                        Some(&Value::Object(request)),
+                        Some(self.timeout),
+                    )
+                    .await?;
+                let note = created.get("data").cloned().unwrap_or(created);
+                if arg_flag(m, "notify")
+                    && let Some(note_id) = note.get("id").and_then(Value::as_str)
+                {
+                    let excerpt = body
+                        .lines()
+                        .map(str::trim)
+                        .find(|line| !line.is_empty() && !line.starts_with('#'))
+                        .unwrap_or("Drawer에 새 노트가 있습니다")
+                        .chars()
+                        .take(200)
+                        .collect::<String>();
+                    self.client
+                        .exec(
+                            "POST",
+                            "/remote/cloud/web-push/self",
+                            true,
+                            &[],
+                            Some(&json!({
+                                "title": arg_str(m, "title").unwrap_or_default(),
+                                "body": excerpt,
+                                "autopilot": true,
+                                "drawer_note_id": note_id,
+                            })),
+                            Some(self.timeout),
+                        )
+                        .await?;
+                }
+                Ok(note)
+            }
+            "drawer.update" => {
+                let id = parse_uuid(&arg_str(m, "id").unwrap_or_default(), "note")?;
+                let mut request = Map::new();
+                if let Some(title) = arg_str(m, "title") {
+                    request.insert("title".into(), Value::String(title));
+                }
+                if let Some(body) = read_drawer_body(m)? {
+                    request.insert("body".into(), Value::String(body));
+                    // A new body comes from this turn: its artifacts live here.
+                    for (key, value) in self.drawer_scope(arg_str(m, "ws").as_deref()).await {
+                        request.insert(key.into(), value);
+                    }
+                }
+                if let Some(label) = arg_str(m, "label") {
+                    let label = label.trim().to_string();
+                    request.insert(
+                        "label".into(),
+                        if label.is_empty() {
+                            Value::Null
+                        } else {
+                            Value::String(label)
+                        },
+                    );
+                }
+                if arg_flag(m, "pin") {
+                    request.insert("pinned".into(), Value::Bool(true));
+                } else if arg_flag(m, "unpin") {
+                    request.insert("pinned".into(), Value::Bool(false));
+                }
+                if request.is_empty() {
+                    return Err(VkError::message(
+                        "Nothing to change: pass -t, -m/-f, --label, --pin or --unpin",
+                    ));
+                }
+                self.client
+                    .exec(
+                        "PATCH",
+                        &format!("/remote/cloud/drawer_notes/{id}"),
+                        true,
+                        &[],
+                        Some(&Value::Object(request)),
+                        Some(self.timeout),
+                    )
+                    .await
+            }
+            "drawer.archive" | "drawer.unarchive" => {
+                let id = parse_uuid(&arg_str(m, "id").unwrap_or_default(), "note")?;
+                self.client
+                    .exec(
+                        "PATCH",
+                        &format!("/remote/cloud/drawer_notes/{id}"),
+                        true,
+                        &[],
+                        Some(&json!({ "archived": key == "drawer.archive" })),
+                        Some(self.timeout),
+                    )
+                    .await
+            }
+            "drawer.comment" => {
+                let id = parse_uuid(&arg_str(m, "id").unwrap_or_default(), "note")?;
+                self.client
+                    .exec(
+                        "POST",
+                        "/remote/cloud/drawer_comments",
+                        true,
+                        &[],
+                        Some(&json!({
+                            "note_id": id,
+                            "body": arg_str(m, "message").unwrap_or_default(),
+                            "author": "autopilot",
+                        })),
+                        Some(self.timeout),
+                    )
+                    .await
+            }
             "notify.send" => {
                 let ws = match arg_str(m, "ws") {
                     Some(ws) => Some(self.workspace_id(&ws).await?),
@@ -4647,6 +5012,7 @@ mod tests {
             "pr",
             "issue",
             "notify",
+            "drawer",
             "config",
             "repo",
             "automation",
@@ -4705,6 +5071,15 @@ mod tests {
             "notify send",
             "notify get",
             "notify prefs set",
+            "drawer list",
+            "drawer get",
+            "drawer create",
+            "drawer update",
+            "drawer archive",
+            "drawer unarchive",
+            "drawer delete",
+            "drawer comment",
+            "drawer comments",
             "config set",
             "config models",
             "config web-settings set",
