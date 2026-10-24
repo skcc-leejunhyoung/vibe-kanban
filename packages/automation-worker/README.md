@@ -203,6 +203,19 @@ Delivering the prompt still goes through the host that runs the Autopilot:
 `send_prompt` needs that host in the Vibe connector's `hostBridges` (keyed by
 the `hostId` of its `GET /api/automation-actions/status`).
 
+A notification the Autopilot is woken for leaves the user's inbox: when a
+`cloud.notification` event matches a routine with `target: "autopilot"` and
+that host's Autopilot is active (`GET /api/workspaces/autopilot`, checked at
+most once a minute), the worker marks the notification seen and archived on
+the remote server right away (it moves to the Archive tab), so the user reads
+the Autopilot's summary instead of the raw notification. A paused Autopilot
+leaves the inbox as it was. If the batch is then skipped (Autopilot paused
+before the flush) or its delivery is given up after retries, the claimed
+notifications return to the inbox unseen; notifications that arrived while
+the Autopilot was paused but were delivered after it resumed are archived on
+delivery. The Autopilot's own notifications (`vk notify send --ws autopilot`)
+are tagged by the host and never enter this path, so they stay visible.
+
 A routine with trigger `vk_event` (optional `kinds` prefixes and `hosts`
 filters by host id or name) and a `coalesce` block runs **once per burst**: the buffer flushes
 `windowSeconds` after the last matching event (but no later than

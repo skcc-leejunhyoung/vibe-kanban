@@ -260,3 +260,29 @@ export function createCoalescer({
 
   return { add, flush, pending, restore };
 }
+
+// A routine that wakes the host's Autopilot (resolved at run time, no session id).
+export function deliversToAutopilot(routine) {
+  const action = routine?.action || {};
+  return (
+    action.type === 'send_prompt' &&
+    !action.input?.sessionId &&
+    action.input?.target === 'autopilot'
+  );
+}
+
+// Ids of the user's notifications inside an event (a batch or a single event),
+// optionally narrowed by a predicate on the event (e.g. only claimed ones).
+export function notificationIdsOf(event, predicate = () => true) {
+  const events = Array.isArray(event?.events) ? event.events : event ? [event] : [];
+  return [
+    ...new Set(
+      events
+        .filter(
+          (item) =>
+            item?.kind === 'cloud.notification' && item.notificationId && predicate(item)
+        )
+        .map((item) => item.notificationId)
+    ),
+  ];
+}

@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   COALESCE_DEFAULTS,
   createCoalescer,
+  deliversToAutopilot,
   journalEventToWorkerEvent,
   kindMatches,
+  notificationIdsOf,
   renderPromptTemplate,
   sanitizeNotificationEvent,
 } from './vibe-events.mjs';
@@ -201,4 +203,27 @@ test('persisted snapshots restore into a fresh coalescer and still flush', async
   assert.equal(flushes[0].id, 'batch:agent-event:1..agent-event:1');
   assert.equal(snapshots.r.events.length, 0, 'flushed buffer is persisted empty');
   assert.equal(snapshots.r.lastFlushAt, clock.now());
+});
+
+test('routines that wake the Autopilot are recognised', () => {
+  const wake = { action: { type: 'send_prompt', input: { target: 'autopilot', queue: true } } };
+  assert.equal(deliversToAutopilot(wake), true);
+  assert.equal(deliversToAutopilot({ action: { type: 'send_prompt', input: { sessionId: 's-1', target: 'autopilot' } } }), false);
+  assert.equal(deliversToAutopilot({ action: { type: 'start_workspace', input: { target: 'autopilot' } } }), false);
+  assert.equal(deliversToAutopilot({}), false);
+});
+
+test('notification ids come out of single events and batches, deduped and filterable', () => {
+  const id = '0b2c6d3e-1111-4aaa-8bbb-0123456789ab';
+  const other = '0b2c6d3e-2222-4aaa-8bbb-0123456789ab';
+  const single = journalEventToWorkerEvent(journal('cloud', 7, 'cloud.notification', { data: { id, type: 'workspace_task_completed' } }));
+  assert.deepEqual(notificationIdsOf(single), [id]);
+  const claimed = { ...journalEventToWorkerEvent(journal('cloud', 8, 'cloud.notification', { data: { id: other, type: 'pull_request_comment_added' } })), autopilotClaimed: true };
+  const batch = { type: 'vk_event_batch', events: [single, claimed, single, journalEventToWorkerEvent(journal('host-a', 9, 'process.failed'))] };
+  assert.deepEqual(notificationIdsOf(batch), [id, other]);
+  assert.deepEqual(notificationIdsOf(batch, (event) => event.autopilotClaimed), [other]);
+  assert.deepEqual(notificationIdsOf(batch, (event) => !event.autopilotClaimed), [id]);
+  assert.deepEqual(notificationIdsOf(undefined), []);
+  // A notification without a usable id is nothing to archive.
+  assert.deepEqual(notificationIdsOf(journalEventToWorkerEvent(journal('cloud', 10, 'cloud.notification', { data: { id: 'junk' } }))), []);
 });

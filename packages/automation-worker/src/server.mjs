@@ -69,7 +69,9 @@ import { fetchWithRetry } from './fetch-retry.mjs';
 import {
   DEFAULT_KINDS,
   createCoalescer,
+  deliversToAutopilot,
   journalEventToWorkerEvent,
+  notificationIdsOf,
   renderPromptTemplate,
   sanitizeNotificationEvent,
 } from './vibe-events.mjs';
@@ -301,6 +303,8 @@ const routineCoalescer = createCoalescer({
   onError: (error) =>
     log('error', 'coalesced routine run failed', { error: errorMessage(error) }),
 });
+// Whether a host's Autopilot was active at the last look (see autopilotActive).
+const autopilotPresence = new Map();
 const eventInFlight = new Map();
 const githubIssueLinkInFlight = new Map();
 // ponytail: keep comment snapshots in memory; use an indexed persistent store
@@ -903,6 +907,7 @@ async function dispatchRoutineEvent(event) {
       });
       continue;
     }
+    await claimNotificationForAutopilot(routine, event);
     if (routine.coalesce && event.type !== 'vk_event_batch') {
       await routineCoalescer.add(routine, event);
       continue;
@@ -910,6 +915,95 @@ async function dispatchRoutineEvent(event) {
     const key = routineEventKey(routine.id, event);
     const result = await runRoutine(routine, event, key);
     if (result.status === 'busy') await queueRoutineEvent(routine.id, event, key);
+  }
+}
+
+// The routine's Autopilot host: the Vibe connector plus that host's bridge.
+function autopilotTarget(routine) {
+  const action = routine.action || {};
+  const connector = findConnector(String(action.connectorId || 'vibe-default'));
+  const bridge = connector.config?.hostBridges?.[action.targetHostId];
+  return { connector, bridge, hostId: action.targetHostId };
+}
+
+// Is the routine's host running an Autopilot? Cached a minute per host; the
+// delivery path refreshes it with what it actually found.
+async function autopilotActive(routine) {
+  const { connector, bridge, hostId } = autopilotTarget(routine);
+  if (!connector.enabled || !bridge?.baseUrl) return false;
+  const cached = autopilotPresence.get(hostId);
+  if (cached && Date.now() - cached.checkedAt < 60000) return cached.active;
+  const autopilot = await vibeApi(
+    connector,
+    'GET',
+    '/api/workspaces/autopilot',
+    undefined,
+    bridge.baseUrl
+  ).catch((error) => {
+    if (error?.status === 404) return null;
+    throw error;
+  });
+  const active = Boolean(autopilot?.data?.session?.id);
+  autopilotPresence.set(hostId, { active, checkedAt: Date.now() });
+  return active;
+}
+
+// The user's inbox lives on the remote server; the Vibe connector holds its
+// credentials. `archived` is the inbox's dismissed_at, so an archived
+// notification only moves to the Archive tab. A deleted one is skipped.
+async function setNotificationsArchived(routine, ids, archived) {
+  if (!ids.length) return;
+  const { connector } = autopilotTarget(routine);
+  await Promise.all(
+    ids.map((id) =>
+      vibeApi(connector, 'PATCH', `/v1/notifications/${encodeURIComponent(id)}`, {
+        seen: archived,
+        archived,
+      }).catch((error) => {
+        if (error?.status !== 404) throw error;
+      })
+    )
+  );
+}
+
+// A notification an active Autopilot will be woken for leaves the user's inbox
+// right away (not after the coalesce window): the user gets the Autopilot's
+// summary instead of the raw notification first. A paused Autopilot leaves the
+// inbox untouched, and a failure here never blocks the event.
+async function claimNotificationForAutopilot(routine, event) {
+  if (event.autopilotClaimed || Array.isArray(event.events) || !deliversToAutopilot(routine))
+    return;
+  const ids = notificationIdsOf(event);
+  if (!ids.length) return;
+  try {
+    if (!(await autopilotActive(routine))) return;
+    await setNotificationsArchived(routine, ids, true);
+    event.autopilotClaimed = true;
+  } catch (error) {
+    await log('warn', 'could not archive notification for autopilot', {
+      routineId: routine.id,
+      notificationId: event.notificationId,
+      error: errorMessage(error),
+    });
+  }
+}
+
+// The Autopilot never got these (paused, or delivery gave up): put the claimed
+// notifications back in the inbox, unseen.
+async function releaseClaimedNotifications(routine, event) {
+  const ids = notificationIdsOf(event, (item) => item.autopilotClaimed);
+  if (!ids.length) return;
+  try {
+    await setNotificationsArchived(routine, ids, false);
+    await log('info', 'notifications returned to inbox (autopilot did not take them)', {
+      routineId: routine.id,
+      count: ids.length,
+    });
+  } catch (error) {
+    await log('warn', 'could not return notifications to inbox', {
+      routineId: routine.id,
+      error: errorMessage(error),
+    });
   }
 }
 
@@ -1106,11 +1200,16 @@ async function executeRoutineAction(routine, event) {
         if (error?.status === 404) return null;
         throw error;
       });
+      autopilotPresence.set(action.targetHostId, {
+        active: Boolean(autopilot?.data?.session?.id),
+        checkedAt: Date.now(),
+      });
       if (!autopilot?.data?.session?.id) {
         await log('info', 'send_prompt skipped: no active autopilot', {
           routineId: routine.id,
           targetHostId: action.targetHostId,
         });
+        await releaseClaimedNotifications(routine, event);
         return { skipped: 'no active autopilot' };
       }
       sessionId = autopilot.data.session.id;
@@ -1137,6 +1236,21 @@ async function executeRoutineAction(routine, event) {
           meta
         );
     await rememberRoutineOrigin(result?.data?.id, meta);
+    // Delivered: notifications that were not claimed on arrival (Autopilot was
+    // paused or unreachable then) leave the inbox now. Never fail the run over
+    // this — the prompt is already queued, a retry would send it twice.
+    if (!explicitSessionId) {
+      await setNotificationsArchived(
+        routine,
+        notificationIdsOf(event, (item) => !item.autopilotClaimed),
+        true
+      ).catch((error) =>
+        log('warn', 'could not archive notifications after autopilot delivery', {
+          routineId: routine.id,
+          error: errorMessage(error),
+        })
+      );
+    }
     return result;
   }
   if (action.type === 'notification')
@@ -3834,6 +3948,8 @@ async function processRetryQueue({
             if (state.routineClaims[item.event.routineIdempotencyKey])
               state.routineClaims[item.event.routineIdempotencyKey].status = 'exhausted';
           }
+          if (deliversToAutopilot(routine))
+            await releaseClaimedNotifications(routine, item.event);
         }
         await log('error', 'retry exhausted', {
           retryId: item.id,

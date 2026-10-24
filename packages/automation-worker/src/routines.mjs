@@ -315,6 +315,7 @@ export function routineRunTrigger(event) {
     'count',
     'notificationId',
     'notificationType',
+    'autopilotClaimed',
   ];
   const trigger = Object.fromEntries(
     keys
