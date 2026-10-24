@@ -17,8 +17,8 @@ use std::{
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use db::models::requests::AutopilotWorkspaceResponse;
 use mcp::client::{
-    CreateIssueInput, SendPromptOptions, StartWorkspaceInput, UpdateIssueInput, VkClient, VkError,
-    WorkspaceFilter, discover_base_url,
+    CreateIssueInput, ReviewWorkspaceInput, SendPromptOptions, StartWorkspaceInput,
+    UpdateIssueInput, VkClient, VkError, WorkspaceFilter, discover_base_url,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -386,6 +386,58 @@ const COMMANDS: &[Cmd] = &[
                 Where::Local,
                 Kind::Str,
             ),
+        ],
+    ),
+    special(
+        &["ws", "review"],
+        "Create and start the PR review workspace of a review-tagged issue, as the UI does (PR head checked out, base as target, PR and issue linked, issue moved to In review). Reruns reuse the open review workspace instead of starting another turn",
+        "ws.review",
+        &[
+            req("issue", "Review-tagged issue id", Where::Local, Kind::Str),
+            opt(
+                "pr",
+                "URL or number of the linked PR to review (needed when several are open)",
+                Where::Local,
+                Kind::Str,
+            ),
+            opt(
+                "repo",
+                "Repository id (default: the registered repo whose remote hosts the PR)",
+                Where::Local,
+                Kind::Str,
+            ),
+            EXECUTOR,
+            short(
+                opt(
+                    "message",
+                    "Prompt (default: the issue's title and description); 'Review the checked-out PR.' is appended",
+                    Where::Local,
+                    Kind::Str,
+                ),
+                'm',
+            ),
+            opt(
+                "name",
+                "Workspace name (default: the issue title)",
+                Where::Local,
+                Kind::Str,
+            ),
+            opt(
+                "create-only",
+                "Create and check out only: no first turn and no In review move (the UI's create button)",
+                Where::Local,
+                Kind::Flag,
+            ),
+            opt(
+                "dry-run",
+                "Resolve issue, PR, repo and any existing review workspace without writing",
+                Where::Local,
+                Kind::Flag,
+            ),
+            MODEL_OPTS[0],
+            MODEL_OPTS[1],
+            MODEL_OPTS[2],
+            MODEL_OPTS[3],
         ],
     ),
     special(
@@ -3491,6 +3543,30 @@ impl Ctx {
                 }
                 Ok(created)
             }
+            "ws.review" => {
+                let executor = arg_str(m, "executor").unwrap_or_else(|| "CLAUDE_CODE".to_string());
+                let executor_config = serde_json::from_value(Self::executor_config(
+                    m,
+                    &executor.replace('-', "_").to_ascii_uppercase(),
+                ))
+                .map_err(|error| VkError::message(format!("Invalid executor options: {error}")))?;
+                let outcome = self
+                    .client
+                    .review_workspace(ReviewWorkspaceInput {
+                        issue_id: parse_uuid(&arg_str(m, "issue").unwrap_or_default(), "--issue")?,
+                        pr: arg_str(m, "pr"),
+                        repo_id: arg_str(m, "repo")
+                            .map(|r| parse_uuid(&r, "--repo"))
+                            .transpose()?,
+                        name: arg_str(m, "name"),
+                        prompt: arg_str(m, "message"),
+                        executor_config,
+                        create_only: arg_flag(m, "create-only"),
+                        dry_run: arg_flag(m, "dry-run"),
+                    })
+                    .await?;
+                Ok(serde_json::to_value(outcome).unwrap_or_default())
+            }
             "ws.quick-chat" => {
                 let repo_raw = arg_str(m, "repo").unwrap_or_default();
                 let repo_id = match repo_raw.parse::<Uuid>() {
@@ -4640,6 +4716,7 @@ mod tests {
             "skill install",
             "ws project",
             "ws first-message",
+            "ws review",
             "session queue steer",
             "pr comments-url",
             "pr resolve-url",

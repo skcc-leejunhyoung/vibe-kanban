@@ -17,15 +17,18 @@ use std::{
 };
 
 use api_types::{
-    CreateIssueRequest, Issue, IssuePriority, ListProjectStatusesResponse, MutationResponse,
-    ProjectStatus, UpdateIssueRequest,
+    CreateIssueRequest, Issue, IssuePriority, ListIssueTagsResponse, ListProjectStatusesResponse,
+    ListPullRequestsResponse, ListTagsResponse, MutationResponse, ProjectStatus,
+    UpdateIssueRequest,
 };
 use chrono::{DateTime, Utc};
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessRunReason},
     requests::{
         AutopilotWorkspaceResponse, ContainerQuery, CreateAndStartWorkspaceRequest,
-        CreateAndStartWorkspaceResponse, LinkedIssueInfo, WorkingBranchInput, WorkspaceRepoInput,
+        CreateAndStartWorkspaceResponse, CreateWorkspaceWithoutStartingRequest,
+        CreateWorkspaceWithoutStartingResponse, LinkedIssueInfo, PrReviewInput, WorkingBranchInput,
+        WorkspaceRepoInput,
     },
     session::Session,
     tag::Tag,
@@ -587,6 +590,8 @@ pub struct WorkspaceListItem {
     pub has_unseen_turns: bool,
     pub pr_status: Option<String>,
     pub pr_url: Option<String>,
+    #[schemars(description = "Cloud issue the workspace was created for")]
+    pub task_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -724,6 +729,7 @@ impl VkClient {
                     has_unseen_turns: summary.has_unseen_turns,
                     pr_status: summary.pr_status,
                     pr_url: summary.pr_url,
+                    task_id: workspace.task_id,
                     created_at: workspace.created_at,
                     updated_at: workspace.updated_at,
                 }
@@ -997,6 +1003,455 @@ pub fn executor_name(explicit: Option<&str>, session: &Session) -> Result<String
     match name {
         Some(name) => parse_executor_agent(name).map(|agent| agent.to_string()),
         None => Ok("CODEX".to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Review workspaces (PR review mode)
+// ---------------------------------------------------------------------------
+
+/// Tag that opts an issue into review mode (web-core's `REVIEW_TAG_NAME`).
+pub const REVIEW_TAG_NAME: &str = "review";
+/// Appended below the review prompt, as web-core's `appendReviewInstruction`.
+pub const REVIEW_PROMPT_INSTRUCTION: &str = "Review the checked-out PR.";
+
+pub struct ReviewWorkspaceInput {
+    pub issue_id: Uuid,
+    /// URL or number of one of the issue's linked PRs; required when several are open.
+    pub pr: Option<String>,
+    /// Defaults to the one registered repo whose remote hosts the PR.
+    pub repo_id: Option<Uuid>,
+    pub name: Option<String>,
+    /// Defaults to the issue's title and description.
+    pub prompt: Option<String>,
+    pub executor_config: ExecutorConfig,
+    /// Create and check out only, like the UI's "create": no first turn, no "In review" move.
+    pub create_only: bool,
+    /// Resolve everything and report the plan without writing.
+    pub dry_run: bool,
+}
+
+/// The PR fields review mode needs, read live from the host (`/repos/pr-info`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewPr {
+    pub number: i64,
+    pub url: String,
+    /// `open`, `merged`, `closed` or `unknown`.
+    pub status: String,
+    pub title: String,
+    pub head_branch: String,
+    pub base_branch: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepoRemote {
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewWorkspaceOutcome {
+    /// `created`, `reused` (an open review workspace for this issue and PR
+    /// exists; no new turn), `would_create` or `would_reuse` (dry run).
+    pub action: &'static str,
+    pub host_id: Option<Uuid>,
+    pub issue_id: Uuid,
+    pub issue: String,
+    pub issue_status: String,
+    pub pr: ReviewPr,
+    pub repo_id: Uuid,
+    pub repo: String,
+    pub remote: String,
+    /// What the review diffs against: `<remote>/<PR base>`.
+    pub target_branch: String,
+    pub workspace_id: Option<Uuid>,
+    pub branch: Option<String>,
+    /// `ready` once the PR head is checked out, `pending` while that still runs.
+    pub checkout: Option<&'static str>,
+    pub session_id: Option<Uuid>,
+    pub execution_process_id: Option<Uuid>,
+}
+
+pub fn has_review_tag<'a>(tag_names: impl IntoIterator<Item = &'a str>) -> bool {
+    tag_names
+        .into_iter()
+        .any(|name| name.trim().eq_ignore_ascii_case(REVIEW_TAG_NAME))
+}
+
+fn same_pr_url(a: &str, b: &str) -> bool {
+    a.trim()
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case(b.trim().trim_end_matches('/'))
+}
+
+fn describe_prs(prs: &[ReviewPr]) -> String {
+    prs.iter()
+        .map(|pr| format!("#{} {} ({})", pr.number, pr.status, pr.url))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The linked PR `requested` names, by URL or number (`12` / `#12`).
+pub fn requested_review_pr<'a>(
+    linked: &'a [api_types::PullRequest],
+    requested: &str,
+) -> Result<&'a api_types::PullRequest, VkError> {
+    let number = requested.trim().trim_start_matches('#').parse::<i32>().ok();
+    let matches: Vec<_> = linked
+        .iter()
+        .filter(|pr| same_pr_url(&pr.url, requested) || Some(pr.number) == number)
+        .collect();
+    match matches.as_slice() {
+        [pr] => Ok(pr),
+        [] => Err(VkError::message(format!(
+            "PR '{requested}' is not linked to the issue. Linked: {}",
+            linked
+                .iter()
+                .map(|pr| format!("#{} ({})", pr.number, pr.url))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+        _ => Err(VkError::message(format!(
+            "PR '{requested}' matches several linked PRs; pass its URL"
+        ))),
+    }
+}
+
+/// The single open PR among the candidates' live states; closed, merged or
+/// several open PRs are errors, never a fallback to a normal branch.
+pub fn pick_open_review_pr(details: Vec<ReviewPr>) -> Result<ReviewPr, VkError> {
+    let (open, other): (Vec<_>, Vec<_>) = details.into_iter().partition(|pr| pr.status == "open");
+    match <[ReviewPr; 1]>::try_from(open) {
+        Ok([pr]) => Ok(pr),
+        Err(open) if open.is_empty() => Err(VkError::message(format!(
+            "No open PR to review: {}. Review mode needs an open PR.",
+            describe_prs(&other)
+        ))),
+        Err(open) => Err(VkError::message(format!(
+            "{} open PRs are linked to the issue: {}; pass --pr <url>",
+            open.len(),
+            describe_prs(&open)
+        ))),
+    }
+}
+
+/// The registered repo (and its remote) that clones the PR's repository.
+/// With `explicit`, `candidates` holds only that repo and a mismatch is an error.
+pub fn match_review_repo<'a>(
+    pr_url: &str,
+    candidates: &'a [(db::models::repo::Repo, Vec<RepoRemote>)],
+    explicit: bool,
+) -> Result<(&'a db::models::repo::Repo, &'a RepoRemote), VkError> {
+    let key = utils::repo_url::pr_repo_key(pr_url).ok_or_else(|| {
+        VkError::message(format!(
+            "Cannot tell which repository PR {pr_url} belongs to"
+        ))
+    })?;
+    let matches: Vec<_> = candidates
+        .iter()
+        .filter_map(|(repo, remotes)| {
+            let mut hits = remotes
+                .iter()
+                .filter(|r| utils::repo_url::normalized_repo_key(&r.url) == key);
+            let first = hits.next()?;
+            let primary = std::iter::once(first)
+                .chain(hits)
+                .find(|r| repo.primary_remote.as_deref() == Some(r.name.as_str()));
+            Some((repo, primary.unwrap_or(first)))
+        })
+        .collect();
+    match matches.as_slice() {
+        [single] => Ok(*single),
+        [] if explicit => {
+            let (repo, remotes) = &candidates[0];
+            Err(VkError::message(format!(
+                "Repository '{}' does not clone {key} (remotes: {}); the PR belongs to another repository",
+                repo.name,
+                remotes
+                    .iter()
+                    .map(|r| format!("{}={}", r.name, r.url))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )))
+        }
+        [] => Err(VkError::message(format!(
+            "No repository registered on this host clones {key}; register the clone or run on the host that has it (--host)"
+        ))),
+        _ => Err(VkError::message(format!(
+            "Several registered repositories clone {key}: {}; pass --repo <id>",
+            matches
+                .iter()
+                .map(|(repo, _)| format!("{} ({})", repo.name, repo.id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// An open review workspace for this issue and PR: carries the PR link and is
+/// linked to the issue, or not yet (its checkout still runs on the request).
+pub fn find_review_workspace<'a>(
+    workspaces: &'a [WorkspaceListItem],
+    issue_id: Uuid,
+    pr_url: &str,
+) -> Option<&'a WorkspaceListItem> {
+    workspaces
+        .iter()
+        .filter(|w| {
+            !w.archived
+                && !w.in_place
+                && w.pr_url
+                    .as_deref()
+                    .is_some_and(|url| same_pr_url(url, pr_url))
+                && w.task_id.is_none_or(|task| task == issue_id)
+        })
+        .max_by_key(|w| w.task_id.is_some())
+}
+
+/// The create-and-start body the UI sends in review mode: one repo on
+/// `<remote>/<base>`, the PR head checked out, the issue linked, and the
+/// review instruction below the prompt.
+pub fn review_workspace_request(
+    issue: &Issue,
+    pr: &ReviewPr,
+    repo_id: Uuid,
+    remote: &str,
+    name: Option<String>,
+    prompt: Option<String>,
+    executor_config: ExecutorConfig,
+) -> CreateAndStartWorkspaceRequest {
+    let prompt = prompt
+        .and_then(non_empty)
+        .or_else(|| workspace_prompt_from_issue(issue))
+        .unwrap_or_default();
+    let prompt = if prompt.is_empty() {
+        REVIEW_PROMPT_INSTRUCTION.to_string()
+    } else {
+        format!("{prompt}\n\n{REVIEW_PROMPT_INSTRUCTION}")
+    };
+    CreateAndStartWorkspaceRequest {
+        name: name
+            .and_then(non_empty)
+            .or_else(|| non_empty(issue.title.clone())),
+        repos: vec![WorkspaceRepoInput {
+            repo_id,
+            target_branch: format!("{remote}/{}", pr.base_branch),
+            create_target_branch: false,
+            github_linked_branch: None,
+        }],
+        linked_issue: Some(LinkedIssueInfo {
+            remote_project_id: issue.project_id,
+            issue_id: issue.id,
+        }),
+        executor_config,
+        prompt,
+        attachment_ids: None,
+        pr_review: Some(PrReviewInput {
+            repo_id,
+            pr_number: pr.number,
+            pr_title: pr.title.clone(),
+            pr_url: pr.url.clone(),
+            head_branch: pr.head_branch.clone(),
+            base_branch: pr.base_branch.clone(),
+            remote_name: Some(remote.to_string()),
+        }),
+        working_branch: WorkingBranchInput::Auto,
+    }
+}
+
+impl VkClient {
+    /// Link like the UI does; 409 = the cloud already has this workspace's link
+    /// (asking first is not possible: relayed hosts refuse `/api/remote/*`).
+    async fn link_review_workspace(
+        &self,
+        workspace_id: Uuid,
+        issue_id: Uuid,
+    ) -> Result<(), VkError> {
+        match self.link_workspace_to_issue(workspace_id, issue_id).await {
+            Err(error) if error.status() == Some(409) => Ok(()),
+            result => result,
+        }
+    }
+
+    /// Create (and by default start) the PR review workspace of a
+    /// `review`-tagged issue on the selected host, the way the UI does it, or
+    /// return the one that already exists. Safe to rerun after a lost answer.
+    pub async fn review_workspace(
+        &self,
+        input: ReviewWorkspaceInput,
+    ) -> Result<ReviewWorkspaceOutcome, VkError> {
+        let issue = self.issue(input.issue_id).await?;
+        let issue_tags: ListIssueTagsResponse = self
+            .get_local(&format!("/remote/issue-tags?issue_id={}", issue.id))
+            .await?;
+        let tags: ListTagsResponse = self
+            .get_local(&format!("/remote/tags?project_id={}", issue.project_id))
+            .await?;
+        let tag_names = tags
+            .tags
+            .iter()
+            .filter(|tag| issue_tags.issue_tags.iter().any(|it| it.tag_id == tag.id))
+            .map(|tag| tag.name.as_str());
+        if !has_review_tag(tag_names) {
+            return Err(VkError::message(format!(
+                "Issue {} has no '{REVIEW_TAG_NAME}' tag; review workspaces are only for review-tagged issues (use `vk ws start` for other work)",
+                issue.simple_id
+            )));
+        }
+
+        let linked: ListPullRequestsResponse = self
+            .get_local(&format!("/remote/pull-requests?issue_id={}", issue.id))
+            .await?;
+        if linked.pull_requests.is_empty() {
+            return Err(VkError::message(format!(
+                "Issue {} has no linked PR; link the PR to the issue first (a PR URL in the description does not count)",
+                issue.simple_id
+            )));
+        }
+        let urls: Vec<&str> = match input.pr.as_deref() {
+            Some(requested) => vec![
+                requested_review_pr(&linked.pull_requests, requested)?
+                    .url
+                    .as_str(),
+            ],
+            None => linked
+                .pull_requests
+                .iter()
+                .map(|pr| pr.url.as_str())
+                .collect(),
+        };
+        let mut details = Vec::new();
+        for url in urls {
+            let detail: ReviewPr = self
+                .get_with("/repos/pr-info", &[("url", url.to_string())])
+                .await
+                .map_err(|error| {
+                    VkError::message(format!(
+                        "Could not read PR {url} on the host ({error}); check `gh auth status` there"
+                    ))
+                })?;
+            details.push(detail);
+        }
+        let pr = pick_open_review_pr(details)?;
+
+        let repos: Vec<db::models::repo::Repo> = match input.repo_id {
+            Some(id) => vec![self.get(&format!("/repos/{id}")).await?],
+            None => self.get("/repos").await?,
+        };
+        let remotes = futures::future::try_join_all(repos.iter().map(|repo| async move {
+            self.get::<Vec<RepoRemote>>(&format!("/repos/{}/remotes", repo.id))
+                .await
+        }))
+        .await?;
+        let candidates: Vec<_> = repos.into_iter().zip(remotes).collect();
+        let (repo, remote) = match_review_repo(&pr.url, &candidates, input.repo_id.is_some())?;
+
+        let workspaces = self
+            .list_workspaces(&WorkspaceFilter {
+                archived: Some(false),
+                ..Default::default()
+            })
+            .await?;
+        let existing = find_review_workspace(&workspaces, issue.id, &pr.url).cloned();
+
+        let mut outcome = ReviewWorkspaceOutcome {
+            action: if existing.is_some() {
+                "would_reuse"
+            } else {
+                "would_create"
+            },
+            host_id: self.host_id,
+            issue_id: issue.id,
+            issue: issue.simple_id.clone(),
+            issue_status: String::new(),
+            target_branch: format!("{}/{}", remote.name, pr.base_branch),
+            repo_id: repo.id,
+            repo: repo.name.clone(),
+            remote: remote.name.clone(),
+            workspace_id: existing.as_ref().map(|w| w.id),
+            branch: existing.as_ref().map(|w| w.branch.clone()),
+            checkout: existing.as_ref().map(|w| {
+                if w.branch == pr.head_branch {
+                    "ready"
+                } else {
+                    "pending"
+                }
+            }),
+            session_id: existing.as_ref().and_then(|w| w.latest_session_id),
+            execution_process_id: None,
+            pr,
+        };
+
+        if input.dry_run {
+            outcome.issue_status = self.status_name(issue.project_id, issue.status_id).await;
+            return Ok(outcome);
+        }
+
+        match existing {
+            Some(workspace) => {
+                outcome.action = "reused";
+                // Linking is the step after create; a run that lost it relinks here.
+                self.link_review_workspace(workspace.id, issue.id).await?;
+            }
+            None => {
+                let request = review_workspace_request(
+                    &issue,
+                    &outcome.pr,
+                    outcome.repo_id,
+                    &outcome.remote,
+                    input.name,
+                    input.prompt,
+                    input.executor_config,
+                );
+                let workspace = if input.create_only {
+                    let CreateAndStartWorkspaceRequest {
+                        name,
+                        repos,
+                        linked_issue,
+                        pr_review,
+                        working_branch,
+                        ..
+                    } = request;
+                    let created: CreateWorkspaceWithoutStartingResponse = self
+                        .post(
+                            "/workspaces/create",
+                            &CreateWorkspaceWithoutStartingRequest {
+                                name,
+                                repos,
+                                linked_issue,
+                                attachment_ids: None,
+                                pr_review,
+                                working_branch,
+                            },
+                        )
+                        .await?;
+                    created.workspace
+                } else {
+                    let started: CreateAndStartWorkspaceResponse =
+                        self.post("/workspaces/start", &request).await?;
+                    outcome.session_id = started.session.as_ref().map(|s| s.id);
+                    outcome.execution_process_id = Some(started.execution_process.id);
+                    started.workspace
+                };
+                outcome.action = "created";
+                outcome.workspace_id = Some(workspace.id);
+                outcome.checkout = Some(if workspace.branch == outcome.pr.head_branch {
+                    "ready"
+                } else {
+                    "pending"
+                });
+                outcome.branch = Some(workspace.branch);
+                if let Err(error) = self.link_review_workspace(workspace.id, issue.id).await {
+                    return Err(VkError::message(format!(
+                        "Review workspace {} was created, but linking it to issue {} failed: {error}. Rerun the same command: it reuses the workspace and retries the link.",
+                        workspace.id, issue.simple_id
+                    )));
+                }
+            }
+        }
+        let issue = self.issue(issue.id).await?;
+        outcome.issue_status = self.status_name(issue.project_id, issue.status_id).await;
+        Ok(outcome)
     }
 }
 
@@ -2032,6 +2487,237 @@ mod tests {
         assert_eq!(
             workspace_prompt_from_issue(&issue).as_deref(),
             Some("Title\n\nBody")
+        );
+    }
+
+    fn review_issue() -> Issue {
+        serde_json::from_value(json!({
+            "id": Uuid::new_v4(), "project_id": Uuid::new_v4(), "issue_number": 7,
+            "simple_id": "T-7", "status_id": Uuid::new_v4(), "title": "Fix login",
+            "description": "Body", "priority": null, "start_date": null, "target_date": null,
+            "completed_at": null, "sort_order": 0.0, "parent_issue_id": null,
+            "parent_issue_sort_order": null, "extension_metadata": {}, "creator_user_id": null,
+            "created_at": Utc::now(), "updated_at": Utc::now(),
+        }))
+        .unwrap()
+    }
+
+    fn review_pr(number: i64, status: &str) -> ReviewPr {
+        ReviewPr {
+            number,
+            url: format!("https://github.com/acme/widgets/pull/{number}"),
+            status: status.to_string(),
+            title: format!("PR {number}"),
+            head_branch: "feature-x".to_string(),
+            base_branch: "main".to_string(),
+        }
+    }
+
+    fn linked_pr(number: i32) -> api_types::PullRequest {
+        serde_json::from_value(json!({
+            "id": Uuid::new_v4(), "url": format!("https://github.com/acme/widgets/pull/{number}"),
+            "number": number, "status": "open", "merged_at": null, "merge_commit_sha": null,
+            "target_branch_name": "main", "project_id": Uuid::new_v4(), "issue_id": Uuid::new_v4(),
+            "workspace_id": null, "created_at": Utc::now(), "updated_at": Utc::now(),
+        }))
+        .unwrap()
+    }
+
+    fn repo_with(
+        name: &str,
+        primary: Option<&str>,
+        remotes: &[(&str, &str)],
+    ) -> (db::models::repo::Repo, Vec<RepoRemote>) {
+        let repo = serde_json::from_value(json!({
+            "id": Uuid::new_v4(), "path": format!("/src/{name}"), "name": name,
+            "display_name": name, "setup_script": null, "cleanup_script": null,
+            "archive_script": null, "copy_files": null, "parallel_setup_script": false,
+            "dev_server_script": null, "default_target_branch": null,
+            "default_working_dir": null, "primary_remote": primary,
+            "created_at": Utc::now(), "updated_at": Utc::now(),
+        }))
+        .unwrap();
+        let remotes = remotes
+            .iter()
+            .map(|(name, url)| RepoRemote {
+                name: name.to_string(),
+                url: url.to_string(),
+            })
+            .collect();
+        (repo, remotes)
+    }
+
+    fn listed(pr_url: Option<&str>, task_id: Option<Uuid>, archived: bool) -> WorkspaceListItem {
+        serde_json::from_value(json!({
+            "id": Uuid::new_v4(), "host_id": null, "name": null, "branch": "feature-x",
+            "archived": archived, "pinned": false, "in_place": false, "autopilot": false,
+            "status_note": null, "status_updated_at": null, "is_running": false,
+            "latest_process_status": null, "latest_process_started_at": null,
+            "latest_process_completed_at": null, "latest_session_id": null,
+            "has_pending_approval": false, "is_waiting_on_blockers": false,
+            "has_running_dev_server": false, "has_unseen_turns": false, "pr_status": "open",
+            "pr_url": pr_url, "task_id": task_id,
+            "created_at": Utc::now(), "updated_at": Utc::now(),
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn review_request_matches_the_ui_review_payload() {
+        let issue = review_issue();
+        let pr = review_pr(42, "open");
+        let repo_id = Uuid::new_v4();
+        let config: ExecutorConfig =
+            serde_json::from_value(json!({ "executor": "CLAUDE_CODE" })).unwrap();
+
+        let request =
+            review_workspace_request(&issue, &pr, repo_id, "upstream", None, None, config.clone());
+        assert_eq!(request.name.as_deref(), Some("Fix login"));
+        assert_eq!(
+            request.prompt,
+            "Fix login\n\nBody\n\nReview the checked-out PR."
+        );
+        assert_eq!(request.repos.len(), 1);
+        assert_eq!(request.repos[0].repo_id, repo_id);
+        assert_eq!(request.repos[0].target_branch, "upstream/main");
+        let linked = request.linked_issue.as_ref().unwrap();
+        assert_eq!(
+            (linked.issue_id, linked.remote_project_id),
+            (issue.id, issue.project_id)
+        );
+        let review = request.pr_review.as_ref().unwrap();
+        assert_eq!(review.repo_id, repo_id);
+        assert_eq!(review.pr_number, 42);
+        assert_eq!(review.pr_url, pr.url);
+        assert_eq!(review.pr_title, "PR 42");
+        assert_eq!(review.head_branch, "feature-x");
+        assert_eq!(review.base_branch, "main");
+        assert_eq!(review.remote_name.as_deref(), Some("upstream"));
+        assert!(matches!(request.working_branch, WorkingBranchInput::Auto));
+
+        let custom = review_workspace_request(
+            &issue,
+            &pr,
+            repo_id,
+            "origin",
+            Some("Review #42".to_string()),
+            Some("Focus on auth ".to_string()),
+            config,
+        );
+        assert_eq!(custom.name.as_deref(), Some("Review #42"));
+        assert_eq!(custom.prompt, "Focus on auth\n\nReview the checked-out PR.");
+    }
+
+    #[test]
+    fn review_tag_matches_like_the_ui() {
+        assert!(has_review_tag([" Review ", "vibe"]));
+        assert!(!has_review_tag(["vibe", "reviewed"]));
+    }
+
+    #[test]
+    fn only_a_single_open_pr_is_reviewed() {
+        assert_eq!(
+            pick_open_review_pr(vec![review_pr(1, "merged"), review_pr(2, "open")])
+                .unwrap()
+                .number,
+            2
+        );
+        let closed = pick_open_review_pr(vec![review_pr(1, "merged"), review_pr(2, "closed")])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            closed.contains("#1 merged") && closed.contains("#2 closed"),
+            "{closed}"
+        );
+        let several = pick_open_review_pr(vec![review_pr(1, "open"), review_pr(2, "open")])
+            .unwrap_err()
+            .to_string();
+        assert!(several.contains("pass --pr"), "{several}");
+    }
+
+    #[test]
+    fn requested_pr_must_be_linked_to_the_issue() {
+        let linked = vec![linked_pr(12), linked_pr(13)];
+        assert_eq!(
+            requested_review_pr(&linked, "https://github.com/Acme/widgets/pull/13/")
+                .unwrap()
+                .number,
+            13
+        );
+        assert_eq!(requested_review_pr(&linked, "#12").unwrap().number, 12);
+        let missing = requested_review_pr(&linked, "99").unwrap_err().to_string();
+        assert!(missing.contains("not linked"), "{missing}");
+    }
+
+    #[test]
+    fn review_repo_is_the_clone_of_the_pr_repository() {
+        let pr_url = "https://github.com/acme/widgets/pull/42";
+        let candidates = vec![
+            repo_with(
+                "other",
+                None,
+                &[("origin", "git@github.com:acme/other.git")],
+            ),
+            repo_with(
+                "widgets",
+                Some("upstream"),
+                &[
+                    ("origin", "https://github.com/acme/widgets"),
+                    ("upstream", "git@github.com:Acme/Widgets.git"),
+                ],
+            ),
+        ];
+        let (repo, remote) = match_review_repo(pr_url, &candidates, false).unwrap();
+        assert_eq!(
+            (repo.name.as_str(), remote.name.as_str()),
+            ("widgets", "upstream")
+        );
+
+        let mismatch = match_review_repo(pr_url, &candidates[..1], true)
+            .unwrap_err()
+            .to_string();
+        assert!(mismatch.contains("does not clone"), "{mismatch}");
+        let none = match_review_repo(pr_url, &candidates[..1], false)
+            .unwrap_err()
+            .to_string();
+        assert!(none.contains("No repository"), "{none}");
+        let twice = vec![
+            candidates[1].clone(),
+            repo_with(
+                "widgets-2",
+                None,
+                &[("origin", "https://github.com/acme/widgets.git")],
+            ),
+        ];
+        let ambiguous = match_review_repo(pr_url, &twice, false)
+            .unwrap_err()
+            .to_string();
+        assert!(ambiguous.contains("pass --repo"), "{ambiguous}");
+    }
+
+    #[test]
+    fn existing_review_workspace_is_found_for_reuse() {
+        let issue = Uuid::new_v4();
+        let url = "https://github.com/acme/widgets/pull/42";
+        let author = listed(Some(url), Some(Uuid::new_v4()), false);
+        let archived = listed(Some(url), Some(issue), true);
+        let other_pr = listed(
+            Some("https://github.com/acme/widgets/pull/9"),
+            Some(issue),
+            false,
+        );
+        assert!(find_review_workspace(&[author.clone(), archived, other_pr], issue, url).is_none());
+
+        // Checkout still running on the create request: not linked to the issue yet.
+        let in_flight = listed(Some(url), None, false);
+        let linked = listed(Some(url), Some(issue), false);
+        assert_eq!(
+            find_review_workspace(&[author.clone(), in_flight.clone()], issue, url).map(|w| w.id),
+            Some(in_flight.id)
+        );
+        assert_eq!(
+            find_review_workspace(&[in_flight, linked.clone(), author], issue, url).map(|w| w.id),
+            Some(linked.id)
         );
     }
 }

@@ -49,7 +49,11 @@ use services::services::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
-use utils::{log_msg::LogMsg, response::ApiResponse};
+use utils::{
+    log_msg::LogMsg,
+    repo_url::{normalized_repo_key, pr_repo_key},
+    response::ApiResponse,
+};
 use uuid::Uuid;
 use workspace_manager::WorkspaceManager;
 
@@ -1334,51 +1338,6 @@ async fn resolve_pr_by_url(url: &str) -> Result<Result<PullRequestDetail, PrErro
     }
 }
 
-fn normalized_repo_key(url: &str) -> String {
-    let mut normalized = if let Ok(url) = url::Url::parse(url.trim()) {
-        format!(
-            "{}/{}",
-            url.host_str().unwrap_or_default().to_ascii_lowercase(),
-            url.path().trim_matches('/')
-        )
-    } else if let Some((host, path)) = url.trim().split_once(':') {
-        format!(
-            "{}/{}",
-            host.rsplit('@').next().unwrap_or(host).to_ascii_lowercase(),
-            path.trim_matches('/')
-        )
-    } else {
-        url.trim_matches('/').to_string()
-    };
-    if let Some(path) = normalized.strip_prefix("ssh.dev.azure.com/v3/") {
-        let mut parts = path.split('/');
-        if let (Some(org), Some(project), Some(repo)) = (parts.next(), parts.next(), parts.next()) {
-            normalized = format!("dev.azure.com/{org}/{project}/_git/{repo}");
-        }
-    } else if let Some(path) = normalized.strip_prefix("vs-ssh.visualstudio.com/v3/") {
-        let mut parts = path.split('/');
-        if let (Some(org), Some(project), Some(repo)) = (parts.next(), parts.next(), parts.next()) {
-            normalized = format!("dev.azure.com/{org}/{project}/_git/{repo}");
-        }
-    }
-    if let Some((org, path)) = normalized.split_once(".visualstudio.com/") {
-        normalized = format!("dev.azure.com/{org}/{path}");
-    }
-    normalized
-        .strip_suffix(".git")
-        .unwrap_or(&normalized)
-        .to_ascii_lowercase()
-}
-
-fn pr_repo_key(url: &str) -> Option<String> {
-    let normalized = normalized_repo_key(url);
-    ["/pull/", "/pullrequest/"].into_iter().find_map(|marker| {
-        normalized
-            .rsplit_once(marker)
-            .map(|(repo, _)| repo.to_string())
-    })
-}
-
 pub async fn attach_existing_pr(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
@@ -2145,9 +2104,8 @@ mod tests {
     use super::{
         PR_GENERATE_FINISHED_JOB_TTL, PR_GENERATE_RUNNING_JOB_TTL, PrDescriptionGenerationJob,
         PrDescriptionGenerationStatus, PrDraft, PrGenerationAdmissionError, PrGenerationScheduler,
-        build_pr_generation_prompt, normalized_repo_key, parse_pr_description,
-        pr_generation_agent_failure, pr_repo_key, prune_pr_description_generation_jobs,
-        same_head_and_base_error, save_pr_draft,
+        build_pr_generation_prompt, parse_pr_description, pr_generation_agent_failure,
+        prune_pr_description_generation_jobs, same_head_and_base_error, save_pr_draft,
     };
 
     #[test]
@@ -2192,36 +2150,6 @@ mod tests {
         assert_eq!(
             pr_generation_agent_failure(Some(msgs)).to_string(),
             format!("Bad gateway: The agent's usage limit was reached. Try again after {reset}.")
-        );
-    }
-
-    #[test]
-    fn pr_urls_match_https_and_ssh_repository_remotes() {
-        assert_eq!(
-            pr_repo_key("https://github.com/Acme/Widgets/pull/42").as_deref(),
-            Some(normalized_repo_key("git@github.com:acme/widgets.git").as_str())
-        );
-        assert_eq!(
-            pr_repo_key("https://dev.azure.com/acme/project/_git/widgets/pullrequest/42")
-                .as_deref(),
-            Some(normalized_repo_key("git@ssh.dev.azure.com:v3/acme/project/widgets").as_str())
-        );
-        assert_eq!(
-            pr_repo_key("https://dev.azure.com/acme/project/_git/widgets/pullrequest/42")
-                .as_deref(),
-            Some(
-                normalized_repo_key("acme@vs-ssh.visualstudio.com:v3/acme/project/widgets")
-                    .as_str()
-            )
-        );
-        assert_eq!(
-            pr_repo_key("https://acme.visualstudio.com/project/_git/widgets/pullrequest/42")
-                .as_deref(),
-            Some(normalized_repo_key("https://dev.azure.com/acme/project/_git/widgets").as_str())
-        );
-        assert_ne!(
-            pr_repo_key("https://github.com/acme/other/pull/42").as_deref(),
-            Some(normalized_repo_key("https://github.com/acme/widgets").as_str())
         );
     }
 

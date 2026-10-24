@@ -14373,6 +14373,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ts-rs 11.0.1",
+ "url",
  "uuid",
  "which",
  "windows-sys 0.61.2",
