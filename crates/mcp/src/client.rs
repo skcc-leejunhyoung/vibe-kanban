@@ -3055,4 +3055,46 @@ mod tests {
         assert!(posted(&calls, "/workspaces/start").is_empty());
         assert_eq!(posted(&calls, &format!("{workspace_id}/links")).len(), 1);
     }
+
+    #[tokio::test]
+    async fn review_create_only_checks_out_and_links_without_a_turn() {
+        let issue = review_issue();
+        let workspace_id = Uuid::new_v4();
+        let created = json!({
+            "id": workspace_id, "task_id": issue.id, "container_ref": "/wt/x",
+            "branch": "feature-x", "setup_completed_at": null, "created_at": Utc::now(),
+            "updated_at": Utc::now(), "archived": false, "pinned": false, "name": "Fix login",
+            "worktree_deleted": false, "ephemeral": false, "in_place": false, "autopilot": false,
+            "cleanup_blocked_reason": null, "status_note": null, "status_updated_at": null,
+        });
+        let (mut routes, _) = review_routes(&issue, &["review"], json!([]), json!([]));
+        routes.insert(
+            ("POST", "/api/workspaces/create".into()),
+            ok(json!({ "workspace": created })),
+        );
+        routes.insert(
+            ("POST", format!("/api/workspaces/{workspace_id}/links")),
+            ok(Value::Null),
+        );
+        let (url, calls) = fake_vibe(routes).await;
+
+        let outcome = VkClient::new(&url, "test/1")
+            .review_workspace(ReviewWorkspaceInput {
+                create_only: true,
+                ..review_input(issue.id)
+            })
+            .await
+            .unwrap();
+        assert_eq!(outcome.action, "created");
+        assert_eq!(outcome.workspace_id, Some(workspace_id));
+        assert_eq!(outcome.checkout, Some("ready"));
+        assert_eq!(outcome.session_id, None);
+        let creates = posted(&calls, "/workspaces/create");
+        assert_eq!(creates.len(), 1);
+        assert_eq!(creates[0]["pr_review"]["head_branch"], "feature-x");
+        assert_eq!(creates[0]["repos"][0]["target_branch"], "origin/main");
+        assert_eq!(creates[0]["linked_issue"]["issue_id"], json!(issue.id));
+        assert!(posted(&calls, "/workspaces/start").is_empty());
+        assert_eq!(posted(&calls, "/links").len(), 1);
+    }
 }
