@@ -260,7 +260,7 @@ const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
               title={
                 drawerUnread > 0
                   ? `Autopilot — ${drawerUnread} unread Drawer ${drawerUnread === 1 ? 'note' : 'notes'}`
-                  : 'Autopilot — watches every host and acts on events'
+                  : 'Autopilot'
               }
               aria-label="Autopilot"
             >

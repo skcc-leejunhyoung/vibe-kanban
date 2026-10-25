@@ -521,10 +521,10 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
         </DialogTitle>
         <DialogDescription>
           {isDrawerMode
-            ? 'Reports the Autopilot wrote, and the conversation on each. Only the Autopilot writes or edits notes; you read, comment and archive. A comment wakes it to reply on the same note.'
+            ? 'Reports from the Autopilot.'
             : isAutopilotMode
-              ? "An always-on agent for this host: pinned, one session, woken by automation when sessions finish, fail or wait for approval. Its standing rules live in the folder's AGENTS.md."
-              : 'Run an agent in an existing folder — no new branch, no isolation. Edits land directly in your working tree.'}
+              ? 'Always-on agent for this host.'
+              : 'Run an agent in an existing folder.'}
         </DialogDescription>
       </DialogHeader>
 
@@ -545,6 +545,13 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
             type="button"
             role="tab"
             aria-selected={mode === value}
+            title={
+              value === 'drawer'
+                ? 'Notes the Autopilot writes for you; comment to get a reply'
+                : value === 'autopilot'
+                  ? 'One per host; woken by automation; rules in its AGENTS.md'
+                  : 'No branch, no isolation: edits land in the folder'
+            }
             onClick={() => setMode(value)}
             className={`inline-flex items-center gap-half rounded px-base py-half ${
               mode === value
@@ -563,12 +570,7 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
         ))}
       </div>
 
-      {isDrawerMode && (
-        <DrawerTab
-          initialNoteId={props.noteId ?? null}
-          onOpenAutopilot={() => setMode('autopilot')}
-        />
-      )}
+      {isDrawerMode && <DrawerTab initialNoteId={props.noteId ?? null} />}
 
       {!isDrawerMode && (
         <label className="flex items-center gap-base rounded-md border border-border bg-secondary px-base py-half">
@@ -601,7 +603,7 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
       )}
 
       {isAutopilotMode && autopilotQuery.isLoading && (
-        <p className="text-sm text-low">Checking this host's Autopilot…</p>
+        <p className="text-sm text-low">Checking…</p>
       )}
       {isAutopilotMode && autopilotQuery.isError && (
         <p className="text-sm text-error">
@@ -641,8 +643,7 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
               </span>
             )}
             {existingAutopilot.workspace.status_updated_at && (
-              <span>
-                Last summary{' '}
+              <span title="Last summary">
                 {formatRelativeTime(
                   existingAutopilot.workspace.status_updated_at
                 )}
@@ -666,6 +667,7 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
               type="button"
               onClick={pauseAutopilot}
               disabled={pausing}
+              title="Archives it; the conversation stays. One Autopilot per host."
               className="rounded-md border border-border px-base py-half text-sm text-normal hover:text-high disabled:opacity-50"
             >
               {pausing ? 'Pausing…' : 'Pause'}
@@ -674,15 +676,11 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
               type="button"
               onClick={recreateAutopilot}
               disabled={pausing}
-              title="Pause this Autopilot and start a new one on the same folder with a different prompt or model"
+              title="Pause, then start again on this folder with a new prompt or model"
               className="rounded-md border border-border px-base py-half text-sm text-normal hover:text-high disabled:opacity-50"
             >
               Recreate…
             </button>
-            <span className="text-sm text-low">
-              One per host. Pausing archives it (the conversation stays in the
-              archive).
-            </span>
           </div>
           {error && <p className="text-sm text-error">{error}</p>}
         </div>
@@ -690,14 +688,6 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
 
       {showForm && (
         <>
-          {isAutopilotMode && (
-            <p className="text-sm text-low">
-              Writes a starter AGENTS.md (its standing rules) into the folder if
-              there is none, and makes CLAUDE.md include it. One Autopilot per
-              host; pause it to change the folder or model later.
-            </p>
-          )}
-
           <div className="flex flex-wrap items-center gap-base">
             <button
               type="button"
@@ -757,7 +747,7 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
                 <WYSIWYGEditor
                   placeholder={
                     isAutopilotMode
-                      ? 'First instructions for the Autopilot (its standing rules live in AGENTS.md)…'
+                      ? 'First instructions… (a starter AGENTS.md is written to the folder)'
                       : 'What can the agent help with?'
                   }
                   value={value}
