@@ -4180,7 +4180,36 @@ impl Ctx {
                         Some(self.timeout),
                     )
                     .await?;
-                Ok(page.get("drawer_notes").cloned().unwrap_or(page))
+                let notes = page.get("drawer_notes").cloned().unwrap_or(page);
+                if self.json {
+                    return Ok(notes);
+                }
+                // The table shows what a reader scans for; ids of the turn that
+                // wrote the note stay in --json.
+                Ok(Value::Array(
+                    notes
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|note| {
+                            let mut row = Map::new();
+                            for key in [
+                                "id",
+                                "title",
+                                "label",
+                                "pinned",
+                                "updated_at",
+                                "last_comment_at",
+                                "archived_at",
+                            ] {
+                                if let Some(value) = note.get(key) {
+                                    row.insert(key.into(), value.clone());
+                                }
+                            }
+                            Value::Object(row)
+                        })
+                        .collect(),
+                ))
             }
             "drawer.get" => {
                 let id = parse_uuid(&arg_str(m, "id").unwrap_or_default(), "note")?;
