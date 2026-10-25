@@ -235,9 +235,11 @@ pub async fn register(
         outcome.files.extend(direct.files);
         outcome.missing.extend(direct.missing);
     }
-    observer.tick(true).await?;
+    observer.flush_pending(true).await?;
     outcome.files.sort();
     outcome.files.dedup();
+    outcome.missing.sort();
+    outcome.missing.dedup();
     Ok(Some(outcome))
 }
 
@@ -1583,6 +1585,14 @@ impl ArtifactObserver {
                 }
             }
         }
+        self.flush_pending(complete).await
+    }
+
+    /// Snapshot what is pending, bundle what is stale, seal when `complete`.
+    /// A reopened (sealed) manifest calls this directly so only the files
+    /// just registered are read — never the sealed outputs, whose current
+    /// workspace content may no longer be what that execution produced.
+    async fn flush_pending(&mut self, complete: bool) -> Result<()> {
         for path in std::mem::take(&mut self.pending) {
             let relative = path
                 .strip_prefix(&self.root)?

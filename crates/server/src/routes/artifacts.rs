@@ -184,11 +184,6 @@ pub async fn register(
             .ok_or_else(|| ApiError::BadRequest("Workspace has no checkout".into()))?,
     );
     let working = root.join(session.agent_working_dir.as_deref().unwrap_or(""));
-    // Queued first, so a request landing while the execution closes is never
-    // lost: the observer drains it on its final tick, or the next read does.
-    artifacts::queue_registration(session.id, process.id, &request.text)
-        .await
-        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
     let live = matches!(process.status, ExecutionProcessStatus::Running)
         && deployment
             .container()
@@ -196,6 +191,12 @@ pub async fn register(
             .await
             .is_some();
     if live {
+        // The observer owns an open manifest: queue, and it registers on its
+        // next tick. A request landing as the execution closes is drained by
+        // its final tick, or by the next read of the sealed manifest.
+        artifacts::queue_registration(session.id, process.id, &request.text)
+            .await
+            .map_err(|error| ApiError::BadRequest(error.to_string()))?;
         // Resolve the lines now so the caller learns about typos at once.
         let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
         let canonical_working = std::fs::canonicalize(&working).unwrap_or(working.clone());
@@ -218,20 +219,43 @@ pub async fn register(
             missing,
         })));
     }
-    // Finished: make sure the manifest exists and is sealed, then register.
+    // Finished: make sure the manifest exists and is sealed, then register the
+    // text straight into it (the outcome reports this text's own lines).
     scoped_manifest(&deployment, &process, &query).await?;
     let _guard = artifacts::RECOVERY.lock().await;
-    let outcome = artifacts::register(
-        root,
-        working,
+    let bad = |error: anyhow::Error| ApiError::BadRequest(error.to_string());
+    let mut outcome = artifacts::register(
+        root.clone(),
+        working.clone(),
         workspace.id,
         session.id,
         process.id,
         deployment.file().clone(),
-        None,
+        Some(&request.text),
     )
     .await
-    .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    .map_err(bad)?;
+    if outcome.is_none()
+        && let Some(mut manifest) = artifacts::load(session.id, process.id).await.map_err(bad)?
+        && !manifest.list.complete
+    {
+        // The row still says Running but nothing is streaming (a stale status
+        // after a restart): seal what was preserved, then register.
+        artifacts::seal_interrupted(&mut manifest)
+            .await
+            .map_err(bad)?;
+        outcome = artifacts::register(
+            root,
+            working,
+            workspace.id,
+            session.id,
+            process.id,
+            deployment.file().clone(),
+            Some(&request.text),
+        )
+        .await
+        .map_err(bad)?;
+    }
     let outcome = outcome.ok_or_else(|| {
         ApiError::BadRequest("Execution is still closing; retry in a moment".into())
     })?;

@@ -278,8 +278,15 @@ async fn registered_text_joins_live_and_finished_manifests() {
     assert!(review.source_entry.is_none());
     assert!(!live.list.artifacts.iter().any(|a| a.name.contains("nope")));
 
-    // A finished manifest is reopened for a late registration.
+    // A finished manifest is reopened for a late registration. The workspace
+    // file changes in between: the sealed snapshot must survive the reopen.
     observer.tick(true).await.unwrap();
+    let sealed_hash = review.content_hash.clone().expect("snapshotted");
+    std::fs::write(
+        root.join("review.html"),
+        "<html><body>edited later</body></html>",
+    )
+    .unwrap();
     assert!(
         artifacts::register(
             root.clone(),
@@ -322,12 +329,15 @@ async fn registered_text_joins_live_and_finished_manifests() {
         executors::logs::artifacts::ArtifactStatus::Ready
     );
     assert!(later.content_hash.is_some());
-    // The earlier live registration survived the reopen.
-    assert!(
-        finished
-            .list
-            .artifacts
-            .iter()
-            .any(|a| a.path.as_deref() == Some("review.html"))
+    // The earlier live registration survived the reopen with its sealed bytes.
+    let review_after = finished
+        .list
+        .artifacts
+        .iter()
+        .find(|a| a.path.as_deref() == Some("review.html"))
+        .unwrap();
+    assert_eq!(
+        review_after.content_hash.as_deref(),
+        Some(sealed_hash.as_str())
     );
 }

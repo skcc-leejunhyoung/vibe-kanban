@@ -14,7 +14,7 @@ import { cn } from '@vibe/ui/lib/cn';
 import { useDrawerComments, useDrawerNotes } from '@/shared/hooks/useDrawer';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
 import { isDrawerNoteUnread } from '@/shared/lib/drawer';
-import { formatRelativeTime } from '@/shared/lib/date';
+import { formatDateTimeFull, formatRelativeTime } from '@/shared/lib/date';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import { HostIdContext } from '@/shared/providers/HostIdProvider';
 import {
@@ -356,7 +356,7 @@ function NoteDetail({
               aria-label="Autopilot"
             />
             <span
-              title={`${edited ? 'Updated' : 'Written'} ${new Date(note.updated_at).toLocaleString()}`}
+              title={`${edited ? 'Updated' : 'Written'} ${formatDateTimeFull(note.updated_at)}`}
             >
               {formatRelativeTime(note.updated_at)}
             </span>
