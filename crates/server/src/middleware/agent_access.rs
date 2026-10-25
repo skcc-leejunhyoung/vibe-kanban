@@ -204,6 +204,8 @@ fn toggle_for(method: &Method, path: &str) -> Option<Toggle> {
         ["repos", _, "fetch"] | ["repos", _, "branches", ..] => Toggle::GitWrite,
         ["repos", "pr-comments", ..] => Toggle::GitWrite,
         ["workspaces", _, "seen"] | ["notifications", ..] | ["attachments", ..] => return None,
+        // The agent's own turn attaching its own files (Drawer notes).
+        ["execution-processes", _, "artifacts", "register"] => return None,
         ["workspaces", _, "attachments", ..] | ["workspaces", _, "images", ..] => return None,
         ["config", ..] | ["profiles", ..] | ["mcp-config", ..] | ["agents", ..] => {
             Toggle::UpdateConfig

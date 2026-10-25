@@ -20,7 +20,8 @@ use executors::{
         ToolStatus,
         artifacts::{
             ArtifactBundle, ArtifactCandidate, ArtifactList, ArtifactReference, ArtifactResource,
-            ArtifactStatus, decode_file_reference, entry_candidates, static_references,
+            ArtifactStatus, decode_file_reference, entry_candidates, markdown_candidates,
+            static_references,
         },
     },
 };
@@ -150,6 +151,94 @@ pub async fn load(session_id: Uuid, execution_id: Uuid) -> Result<Option<Artifac
         bail!("Invalid artifact manifest scope or version");
     }
     Ok(Some(manifest))
+}
+
+/// Attachment lines handed in from outside the transcript (a Drawer note the
+/// agent wrote through `vk drawer`) wait here until the execution's observer
+/// drains them on its next tick, or until a finished execution is reopened.
+pub fn requests_directory(session_id: Uuid, execution_id: Uuid) -> PathBuf {
+    directory(session_id, execution_id).join("requests")
+}
+
+/// Queue markdown whose `vibe-artifact` lines should join the execution's
+/// manifest. Returns at once; see [`ArtifactObserver::register_text`].
+pub async fn queue_registration(session_id: Uuid, execution_id: Uuid, text: &str) -> Result<()> {
+    let dir = requests_directory(session_id, execution_id);
+    tokio::fs::create_dir_all(&dir).await?;
+    atomic_write(&dir.join(format!("{}.md", Uuid::new_v4())), text.as_bytes()).await
+}
+
+pub async fn has_pending_registrations(session_id: Uuid, execution_id: Uuid) -> bool {
+    let Ok(mut entries) = tokio::fs::read_dir(requests_directory(session_id, execution_id)).await
+    else {
+        return false;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry.path().extension().is_some_and(|ext| ext == "md") {
+            return true;
+        }
+    }
+    false
+}
+
+/// What a registration did: workspace-relative paths now in the manifest and
+/// attachment lines whose file could not be found under the workspace.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Registration {
+    pub files: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+/// Register queued attachment lines (and `text`, if given) into a finished
+/// execution's manifest. A live execution must not be touched here: its
+/// observer owns the manifest and drains the queue itself, so this returns
+/// `None` when the manifest is still open.
+#[allow(clippy::too_many_arguments)]
+pub async fn register(
+    root: PathBuf,
+    working_dir: PathBuf,
+    workspace_id: Uuid,
+    session_id: Uuid,
+    execution_id: Uuid,
+    file_service: FileService,
+    text: Option<&str>,
+) -> Result<Option<Registration>> {
+    let root = dunce::canonicalize(&root).unwrap_or(root);
+    let working_dir = dunce::canonicalize(&working_dir).unwrap_or(working_dir);
+    let manifest = match load(session_id, execution_id).await? {
+        Some(manifest) if manifest.workspace_id != workspace_id => {
+            bail!("Cannot register into another workspace's execution")
+        }
+        Some(manifest) if !manifest.list.complete => return Ok(None),
+        Some(manifest) => manifest,
+        // No observer ever ran for this execution (not a coding turn): start a
+        // closed manifest so the note's attachments still have a home.
+        None => ArtifactManifest {
+            version: 1,
+            workspace_id,
+            session_id,
+            execution_id,
+            list: ArtifactList {
+                artifacts: Vec::new(),
+                complete: true,
+                warnings: Vec::new(),
+            },
+            bundles: BTreeMap::new(),
+            transcripts: BTreeMap::new(),
+        },
+    };
+    let mut observer =
+        ArtifactObserver::attach(root, working_dir, manifest, file_service, false).await?;
+    let mut outcome = observer.drain_requests().await;
+    if let Some(text) = text {
+        let direct = observer.register_text(text);
+        outcome.files.extend(direct.files);
+        outcome.missing.extend(direct.missing);
+    }
+    observer.tick(true).await?;
+    outcome.files.sort();
+    outcome.files.dedup();
+    Ok(Some(outcome))
 }
 
 /// After a restart, retain only bytes that were actually persisted. A missing
@@ -794,7 +883,13 @@ impl ArtifactObserver {
         Ok(observer)
     }
 
-    fn add_file(&mut self, path: PathBuf, source_entry: Option<u32>, scope: Option<&str>) {
+    fn add_file(
+        &mut self,
+        path: PathBuf,
+        source_entry: Option<u32>,
+        scope: Option<&str>,
+        source: &str,
+    ) {
         let Ok(relative) = path.strip_prefix(&self.root) else {
             return;
         };
@@ -813,7 +908,7 @@ impl ArtifactObserver {
             {
                 existing.source_entry = source_entry;
                 existing.source_scope = scope.map(str::to_string);
-                existing.source = "assistant_attachment".into();
+                existing.source = source.into();
                 self.dirty = true;
             }
         } else if self.manifest.list.artifacts.len() < MAX_ARTIFACTS {
@@ -826,7 +921,7 @@ impl ArtifactObserver {
                 url: None,
                 source_entry,
                 source_scope: scope.map(str::to_string),
-                source: "assistant_attachment".into(),
+                source: source.into(),
                 content_hash: None,
                 size_bytes: 0,
                 status: ArtifactStatus::Preparing,
@@ -838,6 +933,56 @@ impl ArtifactObserver {
             return;
         }
         self.pending.insert(path);
+    }
+
+    /// Register the `vibe-artifact` lines of markdown written outside the
+    /// transcript (a Drawer note). Files join the manifest unbound to any
+    /// entry; the next tick snapshots them like an assistant attachment.
+    pub fn register_text(&mut self, text: &str) -> Registration {
+        let mut outcome = Registration::default();
+        for candidate in markdown_candidates(text) {
+            let ArtifactCandidate::File(raw) = candidate else {
+                continue;
+            };
+            match resolve_reference(&self.root, &self.working_dir, &raw) {
+                Ok(path) if path.is_file() => {
+                    if let Ok(relative) = path.strip_prefix(&self.root) {
+                        outcome
+                            .files
+                            .push(relative.to_string_lossy().replace('\\', "/"));
+                    }
+                    self.add_file(path, None, None, "registered");
+                }
+                _ => outcome.missing.push(raw),
+            }
+        }
+        outcome
+    }
+
+    /// Consume the queued registrations (see [`queue_registration`]).
+    pub async fn drain_requests(&mut self) -> Registration {
+        let dir = requests_directory(self.manifest.session_id, self.manifest.execution_id);
+        let mut outcome = Registration::default();
+        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+            return outcome;
+        };
+        let mut files = Vec::new();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "md") {
+                files.push(path);
+            }
+        }
+        files.sort();
+        for path in files {
+            if let Ok(text) = tokio::fs::read_to_string(&path).await {
+                let registered = self.register_text(&text);
+                outcome.files.extend(registered.files);
+                outcome.missing.extend(registered.missing);
+            }
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+        outcome
     }
 
     fn warn(&mut self, message: &str) {
@@ -1005,7 +1150,12 @@ impl ArtifactObserver {
                 }
                 ArtifactCandidate::File(path) => {
                     if let Ok(path) = resolve_reference(&self.root, &self.working_dir, &path) {
-                        self.add_file(path, u32::try_from(index).ok(), scope);
+                        self.add_file(
+                            path,
+                            u32::try_from(index).ok(),
+                            scope,
+                            "assistant_attachment",
+                        );
                     }
                 }
                 ArtifactCandidate::Inline { name, content } => {
@@ -1378,6 +1528,8 @@ impl ArtifactObserver {
     }
 
     pub async fn tick(&mut self, complete: bool) -> Result<()> {
+        // Attachment lines handed in from outside the transcript (`vk drawer`).
+        self.drain_requests().await;
         self.collect_subagents(complete).await;
         let mut changed = HashSet::new();
         // Rescans, pathless events, watcher errors, dropped bursts and changes

@@ -225,3 +225,109 @@ async fn slow_artifact_storage_must_not_drop_raw_logs() {
         "artifact storage must not stall the sole raw-log persistence consumer"
     );
 }
+
+// A Drawer note's attachment lines come from outside the transcript: queued
+// while the execution runs (its observer drains them), or registered straight
+// into a finished manifest.
+#[tokio::test]
+async fn registered_text_joins_live_and_finished_manifests() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(temp.path()).unwrap();
+    std::fs::write(root.join("review.html"), "<html><body>review</body></html>").unwrap();
+    std::fs::write(root.join("later.md"), "# later").unwrap();
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+    let files = FileService::new(pool).unwrap();
+    let (workspace, session, execution) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let mut observer = ArtifactObserver::start(
+        root.clone(),
+        root.clone(),
+        workspace,
+        session,
+        execution,
+        files.clone(),
+    )
+    .await
+    .unwrap();
+
+    // Live: a queued note is picked up by the next tick; a missing file is
+    // reported, not registered.
+    artifacts::queue_registration(
+        session,
+        execution,
+        "본문\n\n[리뷰](review.html \"vibe-artifact\")\n[없음](nope.html \"vibe-artifact\")\n",
+    )
+    .await
+    .unwrap();
+    assert!(artifacts::has_pending_registrations(session, execution).await);
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    observer.tick(false).await.unwrap();
+    assert!(!artifacts::has_pending_registrations(session, execution).await);
+    let live = artifacts::load(session, execution).await.unwrap().unwrap();
+    let review = live
+        .list
+        .artifacts
+        .iter()
+        .find(|a| a.path.as_deref() == Some("review.html"))
+        .expect("queued attachment registered");
+    assert_eq!(review.source, "registered");
+    assert!(review.source_entry.is_none());
+    assert!(!live.list.artifacts.iter().any(|a| a.name.contains("nope")));
+
+    // A finished manifest is reopened for a late registration.
+    observer.tick(true).await.unwrap();
+    assert!(
+        artifacts::register(
+            root.clone(),
+            root.clone(),
+            workspace,
+            session,
+            Uuid::new_v4(),
+            files.clone(),
+            Some("[x](later.md \"vibe-artifact\")"),
+        )
+        .await
+        .unwrap()
+        .is_some(),
+        "an execution without a manifest gets a closed one"
+    );
+    let outcome = artifacts::register(
+        root.clone(),
+        root.clone(),
+        workspace,
+        session,
+        execution,
+        files,
+        Some("[later](later.md \"vibe-artifact\")\n[gone](missing.txt \"vibe-artifact\")"),
+    )
+    .await
+    .unwrap()
+    .expect("finished manifest accepts registrations");
+    assert_eq!(outcome.files, vec!["later.md".to_string()]);
+    assert_eq!(outcome.missing, vec!["missing.txt".to_string()]);
+    let finished = artifacts::load(session, execution).await.unwrap().unwrap();
+    assert!(finished.list.complete);
+    let later = finished
+        .list
+        .artifacts
+        .iter()
+        .find(|a| a.path.as_deref() == Some("later.md"))
+        .unwrap();
+    assert_eq!(
+        later.status,
+        executors::logs::artifacts::ArtifactStatus::Ready
+    );
+    assert!(later.content_hash.is_some());
+    // The earlier live registration survived the reopen.
+    assert!(
+        finished
+            .list
+            .artifacts
+            .iter()
+            .any(|a| a.path.as_deref() == Some("review.html"))
+    );
+}

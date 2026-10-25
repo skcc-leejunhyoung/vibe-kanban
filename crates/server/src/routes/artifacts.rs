@@ -91,6 +91,31 @@ pub(super) async fn scoped_manifest(
     {
         return Err(ApiError::BadRequest("Invalid artifact scope".into()));
     }
+    // Attachment lines queued after the execution closed (a Drawer note written
+    // in its last seconds) are registered on the next read.
+    if let Some(saved) = manifest.as_ref()
+        && saved.list.complete
+        && artifacts::has_pending_registrations(session.id, process.id).await
+        && let Some(root) = workspace.container_ref.as_ref()
+    {
+        let _guard = artifacts::RECOVERY.lock().await;
+        let root = std::path::PathBuf::from(root);
+        let working = root.join(session.agent_working_dir.as_deref().unwrap_or(""));
+        artifacts::register(
+            root,
+            working,
+            workspace.id,
+            session.id,
+            process.id,
+            deployment.file().clone(),
+            None,
+        )
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+        manifest = artifacts::load(session.id, process.id)
+            .await
+            .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    }
     if let Some(manifest) = manifest.as_mut()
         && !manifest.list.complete
         && !matches!(process.status, ExecutionProcessStatus::Running)
@@ -116,6 +141,105 @@ pub(super) async fn scoped_manifest(
             .map_err(|error| ApiError::BadRequest(error.to_string()))?;
     }
     Ok(manifest)
+}
+
+#[derive(Deserialize)]
+pub struct RegisterArtifactsRequest {
+    /// Markdown whose standalone `[Title](path "vibe-artifact")` lines name
+    /// the files to register, relative to the session's working directory.
+    pub text: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct RegisterArtifactsResponse {
+    /// True while the execution runs: its observer registers the files on
+    /// its next tick (within a second). False once they are in the manifest.
+    pub queued: bool,
+    pub files: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+/// Register attachment lines written outside the transcript — a Drawer note
+/// the agent wrote through `vk drawer` — into this execution's manifest, so
+/// the note's `vibe-artifact` links render like the chat's.
+pub async fn register(
+    Extension(process): Extension<ExecutionProcess>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<ArtifactQuery>,
+    Json(request): Json<RegisterArtifactsRequest>,
+) -> Result<Json<ApiResponse<RegisterArtifactsResponse>>, ApiError> {
+    let (workspace, session) = process
+        .parent_workspace_and_session(&deployment.db().pool)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Execution scope not found".into()))?;
+    if workspace.id != query.workspace_id || session.id != query.session_id {
+        return Err(ApiError::BadRequest(
+            "Execution does not belong to this workspace/session".into(),
+        ));
+    }
+    let root = std::path::PathBuf::from(
+        workspace
+            .container_ref
+            .as_ref()
+            .ok_or_else(|| ApiError::BadRequest("Workspace has no checkout".into()))?,
+    );
+    let working = root.join(session.agent_working_dir.as_deref().unwrap_or(""));
+    // Queued first, so a request landing while the execution closes is never
+    // lost: the observer drains it on its final tick, or the next read does.
+    artifacts::queue_registration(session.id, process.id, &request.text)
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    let live = matches!(process.status, ExecutionProcessStatus::Running)
+        && deployment
+            .container()
+            .get_msg_store_by_id(&process.id)
+            .await
+            .is_some();
+    if live {
+        // Resolve the lines now so the caller learns about typos at once.
+        let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
+        let canonical_working = std::fs::canonicalize(&working).unwrap_or(working.clone());
+        let (mut files, mut missing) = (Vec::new(), Vec::new());
+        for candidate in executors::logs::artifacts::markdown_candidates(&request.text) {
+            if let executors::logs::artifacts::ArtifactCandidate::File(raw) = candidate {
+                match artifacts::resolve_reference(&canonical_root, &canonical_working, &raw) {
+                    Ok(path) if path.is_file() => files.push(
+                        path.strip_prefix(&canonical_root)
+                            .map(|p| p.to_string_lossy().replace('\\', "/"))
+                            .unwrap_or(raw),
+                    ),
+                    _ => missing.push(raw),
+                }
+            }
+        }
+        return Ok(Json(ApiResponse::success(RegisterArtifactsResponse {
+            queued: true,
+            files,
+            missing,
+        })));
+    }
+    // Finished: make sure the manifest exists and is sealed, then register.
+    scoped_manifest(&deployment, &process, &query).await?;
+    let _guard = artifacts::RECOVERY.lock().await;
+    let outcome = artifacts::register(
+        root,
+        working,
+        workspace.id,
+        session.id,
+        process.id,
+        deployment.file().clone(),
+        None,
+    )
+    .await
+    .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    let outcome = outcome.ok_or_else(|| {
+        ApiError::BadRequest("Execution is still closing; retry in a moment".into())
+    })?;
+    Ok(Json(ApiResponse::success(RegisterArtifactsResponse {
+        queued: false,
+        files: outcome.files,
+        missing: outcome.missing,
+    })))
 }
 
 pub async fn list(

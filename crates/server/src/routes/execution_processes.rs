@@ -1020,6 +1020,7 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/subagent/stop", post(subagent_stop))
         .route("/repo-states", get(get_execution_process_repo_states))
         .route("/artifacts", get(super::artifacts::list))
+        .route("/artifacts/register", post(super::artifacts::register))
         .route("/artifacts/bundle", get(super::artifacts::bundle))
         .route("/artifacts/content", get(super::artifacts::content))
         .route("/raw-logs/ws", get(stream_raw_logs_ws))

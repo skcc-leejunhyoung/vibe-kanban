@@ -3393,6 +3393,44 @@ impl Ctx {
         scope
     }
 
+    /// Register the body's `vibe-artifact` lines into the execution the note
+    /// belongs to, so they render as tiles. Only when the note has a full
+    /// scope (written inside a turn) and the body has an attachment line;
+    /// returns the server's `{queued, files, missing}`.
+    async fn register_drawer_artifacts(&self, note: &Value, body: &str) -> Option<Value> {
+        if !body.contains("\"vibe-artifact\"") {
+            return None;
+        }
+        let field = |key: &str| {
+            note.get(key)
+                .and_then(Value::as_str)
+                .and_then(|id| id.parse::<Uuid>().ok())
+        };
+        let (workspace, session, execution) = (
+            field("workspace_id")?,
+            field("session_id")?,
+            field("execution_id")?,
+        );
+        match self
+            .client
+            .exec(
+                "POST",
+                &format!("/execution-processes/{execution}/artifacts/register"),
+                false,
+                &[
+                    ("workspace_id".to_string(), workspace.to_string()),
+                    ("session_id".to_string(), session.to_string()),
+                ],
+                Some(&json!({ "text": body })),
+                Some(self.timeout),
+            )
+            .await
+        {
+            Ok(result) => Some(result.get("data").cloned().unwrap_or(result)),
+            Err(error) => Some(json!({ "error": error.to_string() })),
+        }
+    }
+
     /// The host's active Autopilot, or a clear error when there is none.
     async fn autopilot(&self) -> Result<AutopilotWorkspaceResponse, VkError> {
         self.client.autopilot().await?.ok_or_else(|| {
@@ -4201,7 +4239,12 @@ impl Ctx {
                         Some(self.timeout),
                     )
                     .await?;
-                let note = created.get("data").cloned().unwrap_or(created);
+                let mut note = created.get("data").cloned().unwrap_or(created);
+                if let Some(result) = self.register_drawer_artifacts(&note, &body).await
+                    && let Value::Object(map) = &mut note
+                {
+                    map.insert("artifacts".into(), result);
+                }
                 if arg_flag(m, "notify")
                     && let Some(note_id) = note
                         .get("id")
@@ -4268,7 +4311,12 @@ impl Ctx {
                         "Nothing to change: pass -t, -m/-f, --label, --pin or --unpin",
                     ));
                 }
-                self.client
+                let body = request
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let updated = self
+                    .client
                     .exec(
                         "PATCH",
                         &format!("/remote/cloud/drawer_notes/{id}"),
@@ -4277,7 +4325,15 @@ impl Ctx {
                         Some(&Value::Object(request)),
                         Some(self.timeout),
                     )
-                    .await
+                    .await?;
+                let mut note = updated.get("data").cloned().unwrap_or(updated);
+                if let Some(body) = body
+                    && let Some(result) = self.register_drawer_artifacts(&note, &body).await
+                    && let Value::Object(map) = &mut note
+                {
+                    map.insert("artifacts".into(), result);
+                }
+                Ok(note)
             }
             "drawer.archive" | "drawer.unarchive" => {
                 let id = parse_uuid(&arg_str(m, "id").unwrap_or_default(), "note")?;
