@@ -66,6 +66,7 @@ import {
   MagnifyingGlassIcon,
   StackIcon,
   BellIcon,
+  TrayIcon,
   ArrowSquareOutIcon,
   ArrowsOutIcon,
   SparkleIcon,
@@ -1555,6 +1556,16 @@ export const Actions = {
     requiresTarget: ActionTargetType.NONE,
     isEnabled: (ctx) => ctx.isSignedIn,
     execute: (ctx) => ctx.appNavigation.goToNotifications(),
+  } satisfies GlobalActionDefinition,
+
+  GotoDrawer: {
+    id: 'goto-drawer',
+    label: 'Goto: Drawer',
+    icon: TrayIcon,
+    keywords: ['drawer', 'autopilot', 'notes', 'reports', 'go to', 'navigate'],
+    requiresTarget: ActionTargetType.NONE,
+    isEnabled: (ctx) => ctx.isSignedIn,
+    execute: (ctx) => ctx.appNavigation.goToDrawer(),
   } satisfies GlobalActionDefinition,
 
   OpenNotificationInNewTab: {

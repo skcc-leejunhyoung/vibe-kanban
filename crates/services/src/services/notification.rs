@@ -599,10 +599,9 @@ async fn local_web_push_click_url(workspace_id: Option<Uuid>) -> Option<String> 
     build_web_push_click_url(&base_url, workspace_id)
 }
 
-/// The Drawer tab on one note; `/notifications` exists in both web apps and
-/// keeps the search parameter the app shell reads.
+/// The Drawer page opened on one note (both web apps route `/drawer`).
 fn drawer_note_path(note_id: Uuid) -> String {
-    format!("/notifications?drawer={note_id}")
+    format!("/drawer?note={note_id}")
 }
 
 /// Locate the `terminal-notifier` binary (PATH first, then common Homebrew

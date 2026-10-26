@@ -91,6 +91,8 @@ export interface WorkspaceSummaryProps {
   isAutopilot?: boolean;
   /** Unread Drawer notes, shown as a count on the Autopilot tag. */
   drawerUnread?: number;
+  /** The count is a button when given: opens the Drawer without opening the row. */
+  onDrawerBadgeClick?: () => void;
   /**
    * Why automatic cleanup skipped this workspace (its uncommitted changes could
    * not be verified). Null when eligible. Shown as a warning tag so the user
@@ -182,6 +184,7 @@ const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
   isInPlace = false,
   isAutopilot = false,
   drawerUnread = 0,
+  onDrawerBadgeClick,
   cleanupBlockedReason = null,
   onOpenWorkspaceActions,
   isFocused = false,
@@ -266,7 +269,22 @@ const MemoizedWorkspaceSummary = memo(function WorkspaceSummaryContent({
             >
               <RobotIcon className="size-icon-xs" weight="fill" />
               {drawerUnread > 0 && (
-                <span className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-brand-secondary px-1 text-[9px] font-medium leading-none text-white">
+                <span
+                  role={onDrawerBadgeClick ? 'button' : undefined}
+                  tabIndex={onDrawerBadgeClick ? 0 : undefined}
+                  title="Open the Drawer"
+                  onClick={(event) => {
+                    if (!onDrawerBadgeClick) return;
+                    event.stopPropagation();
+                    onDrawerBadgeClick();
+                  }}
+                  onKeyDown={(event) => {
+                    if (!onDrawerBadgeClick || event.key !== 'Enter') return;
+                    event.stopPropagation();
+                    onDrawerBadgeClick();
+                  }}
+                  className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-brand-secondary px-1 text-[9px] font-medium leading-none text-white"
+                >
                   {drawerUnread > 99 ? '99+' : drawerUnread}
                 </span>
               )}

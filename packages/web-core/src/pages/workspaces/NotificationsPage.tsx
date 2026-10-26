@@ -9,7 +9,6 @@ import {
 } from '@phosphor-icons/react';
 import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
-import { QuickChatDialog } from '@/shared/dialogs/QuickChatDialog';
 import { Switch } from '@vibe/ui/components/Switch';
 import { UserAvatar } from '@vibe/ui/components/UserAvatar';
 import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
@@ -352,10 +351,10 @@ export function NotificationsPage() {
   const handleClick = useCallback(
     (group: GroupedNotification) => {
       markGroupSeen(group);
-      // A Drawer note opens in the Quick chat dialog's Drawer tab.
+      // A Drawer note opens on the Drawer page (in this pane when possible).
       const drawerNoteId = getPayload(group.latest).drawer_note_id;
       if (drawerNoteId) {
-        void QuickChatDialog.show({ noteId: drawerNoteId });
+        appNavigation.goToDrawer(drawerNoteId);
         return;
       }
       const path = group.deeplinkPath;

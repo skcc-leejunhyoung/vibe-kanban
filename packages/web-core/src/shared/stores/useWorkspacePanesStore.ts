@@ -22,6 +22,7 @@ export type WorkspacePaneDestination = Extract<
       | 'project-workspace-create'
       | 'pull-requests'
       | 'notifications'
+      | 'drawer'
       | 'terminal';
   }
 >;
@@ -38,6 +39,7 @@ export function isPaneRenderableDestination(
     case 'project-workspace-create':
     case 'pull-requests':
     case 'notifications':
+    case 'drawer':
     case 'terminal':
       return true;
     default:
@@ -98,6 +100,8 @@ export function paneDestinationKey(
       return 'pull-requests';
     case 'notifications':
       return 'notifications';
+    case 'drawer':
+      return 'drawer';
     case 'terminal':
       return 'terminal';
   }
@@ -150,6 +154,8 @@ export function sameDestination(
       );
     case 'pull-requests':
       return b.kind === 'pull-requests' && a.prUrl === b.prUrl;
+    case 'drawer':
+      return b.kind === 'drawer' && a.noteId === b.noteId;
     case 'notifications':
     case 'terminal':
       return true;

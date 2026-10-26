@@ -3,6 +3,7 @@ import {
   ArchiveIcon,
   ArrowCounterClockwiseIcon,
   ArrowLeftIcon,
+  ArrowSquareOutIcon,
   ChatCircleIcon,
   PaperPlaneRightIcon,
   PushPinIcon,
@@ -39,9 +40,16 @@ import {
  */
 export function DrawerTab({
   initialNoteId,
+  variant = 'dialog',
+  onOpenPage,
 }: {
   initialNoteId?: string | null;
+  /** `page` fills its container (the /drawer page and split panes). */
+  variant?: 'dialog' | 'page';
+  /** Dialog only: hand the board over to the full page. */
+  onOpenPage?: () => void;
 }) {
+  const isPage = variant === 'page';
   const notes = useDrawerNotes();
   const comments = useDrawerComments();
   const [view, setView] = useState<'inbox' | 'archive'>('inbox');
@@ -134,7 +142,7 @@ export function DrawerTab({
   }
 
   return (
-    <div className="flex min-h-0 flex-col gap-base">
+    <div className={cn('flex min-h-0 flex-col gap-base', isPage && 'h-full')}>
       <div
         role="tablist"
         aria-label="Drawer view"
@@ -174,11 +182,30 @@ export function DrawerTab({
           </button>
         ))}
       </div>
+      {onOpenPage && (
+        <button
+          type="button"
+          onClick={onOpenPage}
+          title="Open as a page"
+          aria-label="Open as a page"
+          className="-mt-base ml-auto inline-flex items-center gap-half self-start rounded-md border border-border px-base py-half text-sm text-low hover:text-high"
+        >
+          <ArrowSquareOutIcon className="size-icon-xs" />
+        </button>
+      )}
 
-      <div className="grid min-h-[320px] grid-cols-1 gap-base sm:grid-cols-[260px_minmax(0,1fr)]">
+      <div
+        className={cn(
+          'grid grid-cols-1 gap-base',
+          isPage
+            ? 'min-h-0 flex-1 sm:grid-cols-[320px_minmax(0,1fr)]'
+            : 'min-h-[320px] sm:grid-cols-[260px_minmax(0,1fr)]'
+        )}
+      >
         <div
           className={cn(
-            'flex max-h-[60vh] flex-col overflow-y-auto rounded-md border border-border bg-secondary',
+            'flex flex-col overflow-y-auto rounded-md border border-border bg-secondary',
+            isPage ? 'min-h-0' : 'max-h-[60vh]',
             showDetailOnNarrow && 'hidden sm:flex'
           )}
         >

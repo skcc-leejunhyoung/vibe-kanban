@@ -43,6 +43,24 @@ describe("remote pull request navigation", () => {
     expect(getMatchedRoutes).toHaveBeenCalledWith(pathname);
   });
 
+  it("resolves and opens the Drawer page on a note", () => {
+    getMatchedRoutes.mockReturnValue({
+      foundRoute: { id: "/drawer" },
+      routeParams: {},
+    });
+    expect(resolveRemoteDestinationFromPath("/drawer?note=n1")).toEqual({
+      kind: "drawer",
+      noteId: "n1",
+    });
+
+    remoteAppNavigation.goToDrawer("n1");
+    expect(navigate).toHaveBeenCalledWith({
+      to: "/drawer",
+      search: { note: "n1" },
+    });
+    expect(selectWorkspaceHost).not.toHaveBeenCalled();
+  });
+
   it("ignores workspace host selection", () => {
     remoteAppNavigation.goToPullRequests("https://example.com/pr/1", {
       hostId: "host-1",

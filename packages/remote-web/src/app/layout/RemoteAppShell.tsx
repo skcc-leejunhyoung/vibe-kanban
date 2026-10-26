@@ -32,6 +32,7 @@ import { useUserOrganizations } from "@/shared/hooks/useUserOrganizations";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useOrganizationStore } from "@/shared/stores/useOrganizationStore";
 import { AppBarNotificationBellContainer } from "@/pages/workspaces/AppBarNotificationBellContainer";
+import { AppBarDrawerContainer } from "@/pages/workspaces/AppBarDrawerContainer";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
 import { CommandBarDialog } from "@/shared/dialogs/command-bar/CommandBarDialog";
 import { QuickChatDialog } from "@/shared/dialogs/QuickChatDialog";
@@ -373,7 +374,12 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
             onHoverStart={() => setIsAppBarHovered(true)}
             onHoverEnd={() => setIsAppBarHovered(false)}
             notificationBell={
-              isSignedIn ? <AppBarNotificationBellContainer /> : undefined
+              isSignedIn ? (
+                <>
+                  <AppBarDrawerContainer />
+                  <AppBarNotificationBellContainer />
+                </>
+              ) : undefined
             }
             userPopover={
               <RemoteAppBarUserPopoverContainer

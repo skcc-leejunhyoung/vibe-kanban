@@ -16,6 +16,7 @@ export const Pages: Record<StaticPageId, CommandBarPage> = {
           { type: 'action', action: Actions.GotoProjects },
           { type: 'action', action: Actions.GotoNotifications },
           { type: 'action', action: Actions.OpenNotificationInNewTab },
+          { type: 'action', action: Actions.GotoDrawer },
           { type: 'action', action: Actions.GotoPullRequests },
           { type: 'action', action: Actions.GotoTerminal },
           { type: 'action', action: Actions.SearchWorkspaceList },

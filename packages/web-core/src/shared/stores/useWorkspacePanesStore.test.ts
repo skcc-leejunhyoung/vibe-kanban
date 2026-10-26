@@ -57,6 +57,7 @@ describe('destinationNeedsWorkspaceStreams', () => {
     expect(destinationNeedsWorkspaceStreams({ kind: 'notifications' })).toBe(
       false
     );
+    expect(destinationNeedsWorkspaceStreams({ kind: 'drawer' })).toBe(false);
   });
 
   it('keeps pull requests host independent while workspace panes use streams', () => {
@@ -747,6 +748,24 @@ describe('helpers', () => {
 
     store.getState().openPaneForDestination({ kind: 'notifications' });
     expect(getActivePaneWorkspace(store.getState())).toBeNull();
+  });
+
+  it('a drawer pane is one pane; a note id retargets it', () => {
+    store.getState().ensurePane();
+    store.getState().openPaneForDestination({ kind: 'drawer' });
+    store.getState().openPaneForDestination({ kind: 'drawer', noteId: 'n1' });
+    const drawerPanes = store
+      .getState()
+      .panes.filter((pane) => pane.destination?.kind === 'drawer');
+    expect(drawerPanes).toHaveLength(1);
+    expect(getActivePaneWorkspace(store.getState())).toBeNull();
+    expect(
+      sameDestination(
+        { kind: 'drawer', noteId: 'n1' },
+        { kind: 'drawer', noteId: 'n2' }
+      )
+    ).toBe(false);
+    expect(sameDestination({ kind: 'drawer' }, { kind: 'drawer' })).toBe(true);
   });
 
   it('sameDestination folds hostId null/undefined', () => {

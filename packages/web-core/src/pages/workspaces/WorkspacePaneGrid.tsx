@@ -35,6 +35,7 @@ import { useIssueShortcuts } from '@/shared/keyboard/useIssueShortcuts';
 import { useWorkspaceShortcuts } from '@/shared/keyboard/useWorkspaceShortcuts';
 import { HomeTerminalPanel } from '@/shared/components/TerminalPanelContainer';
 import { NotificationsPage } from './NotificationsPage';
+import { DrawerPage } from '@/pages/drawer/DrawerPage';
 import { WorkspaceDetail } from './WorkspaceDetail';
 import { WorkspacesSidebarContainer } from './WorkspacesSidebarContainer';
 import { GithubIssueBadge, PrBadge } from '@vibe/ui/components/PrBadge';
@@ -352,6 +353,8 @@ function PaneOutlet({
       return <PullRequestsPage initialPrUrl={destination.prUrl} />;
     case 'notifications':
       return <NotificationsPage />;
+    case 'drawer':
+      return <DrawerPage initialNoteId={destination.noteId} />;
     case 'terminal':
       return <HomeTerminalPanel paneId={paneId} />;
   }
@@ -384,6 +387,8 @@ function paneTitle(
       return t('workspacePanes.notificationsPane', {
         defaultValue: 'Notifications',
       });
+    case 'drawer':
+      return t('workspacePanes.drawerPane', { defaultValue: 'Drawer' });
     case 'terminal':
       return t('workspacePanes.terminalPane', { defaultValue: 'Terminal' });
   }

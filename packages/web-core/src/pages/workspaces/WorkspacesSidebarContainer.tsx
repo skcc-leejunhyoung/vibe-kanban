@@ -33,6 +33,7 @@ import {
   type SidebarWorkspace,
 } from '@/shared/hooks/useWorkspaces';
 import { useDrawerNotes } from '@/shared/hooks/useDrawer';
+import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import {
   groupWorkspacesByIssue,
   bucketIssueGroupsByStatus,
@@ -391,6 +392,7 @@ export function WorkspacesSidebarContainer({
   const { unreadCount: drawerUnread } = useDrawerNotes({
     enabled: sortedActiveWorkspaces.some((ws) => ws.isAutopilot),
   });
+  const appNavigation = useAppNavigation();
 
   // Apply pagination (only when not searching)
   const paginatedActiveWorkspaces = useMemo(() => {
@@ -955,6 +957,7 @@ export function WorkspacesSidebarContainer({
       selectedWorkspaceId={effectiveSelectedWorkspaceId ?? null}
       selectedWorkspaceOwnerHostId={effectiveSelectedHostId}
       onSelectWorkspace={handleSelectWorkspace}
+      onOpenDrawer={() => appNavigation.goToDrawer()}
       searchQuery={searchQuery}
       onSearchChange={setSearchQuery}
       searchInputRef={searchInputRef}

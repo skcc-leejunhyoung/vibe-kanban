@@ -63,6 +63,7 @@ import {
   type Project as RemoteProject,
 } from 'shared/remote-types';
 import { AppBarNotificationBellContainer } from '@/pages/workspaces/AppBarNotificationBellContainer';
+import { AppBarDrawerContainer } from '@/pages/workspaces/AppBarDrawerContainer';
 import { WorkspacePanesScreen } from '@/pages/workspaces/WorkspacePanesScreen';
 import { isPaneGridDestination } from '@/shared/stores/useWorkspacePanesStore';
 import { WorkspaceSidebarHoverPreview } from './WorkspaceSidebarHoverPreview';
@@ -397,7 +398,12 @@ export function SharedAppLayout() {
                 onHoverStart={() => setIsAppBarHovered(true)}
                 onHoverEnd={() => setIsAppBarHovered(false)}
                 notificationBell={
-                  isSignedIn ? <AppBarNotificationBellContainer /> : undefined
+                  isSignedIn ? (
+                    <>
+                      <AppBarDrawerContainer />
+                      <AppBarNotificationBellContainer />
+                    </>
+                  ) : undefined
                 }
                 userPopover={
                   <AppBarUserPopoverContainer

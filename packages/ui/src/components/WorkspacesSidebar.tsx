@@ -165,6 +165,8 @@ export interface WorkspacesSidebarProps {
   }>;
   selectedWorkspaceHostId?: string;
   onSelectWorkspaceHost?: (hostId: string) => void;
+  /** Opens the Drawer from the Autopilot row's unread badge. */
+  onOpenDrawer?: () => void;
   onOpenRemoteHostSettings?: () => void;
   /** Enlarge the header action buttons (group / issue / add) for touch. */
   isMobile?: boolean;
@@ -221,6 +223,7 @@ function WorkspaceList({
   selectedWorkspaceOwnerHostId,
   onSelectWorkspace,
   onOpenWorkspaceActions,
+  onOpenDrawer,
   focusedWorkspaceId,
   registerWorkspaceRef,
 }: {
@@ -233,6 +236,7 @@ function WorkspaceList({
     event?: MouseEvent<HTMLButtonElement>
   ) => void;
   onOpenWorkspaceActions: (workspaceId: string) => void;
+  onOpenDrawer?: () => void;
   focusedWorkspaceId?: string | null;
   registerWorkspaceRef?: (id: string, node: HTMLDivElement | null) => void;
 }) {
@@ -283,6 +287,7 @@ function WorkspaceList({
           isInPlace={workspace.isInPlace}
           isAutopilot={workspace.isAutopilot}
           drawerUnread={workspace.drawerUnread}
+          onDrawerBadgeClick={onOpenDrawer}
           cleanupBlockedReason={workspace.cleanupBlockedReason}
           onOpenWorkspaceActions={onOpenWorkspaceActions}
           onClick={(event) =>
@@ -302,6 +307,7 @@ export function WorkspacesSidebar({
   isLoading = false,
   selectedWorkspaceId,
   selectedWorkspaceOwnerHostId,
+  onOpenDrawer,
   onSelectWorkspace,
   onAddWorkspace,
   searchQuery,
@@ -558,6 +564,7 @@ export function WorkspacesSidebar({
                   isInPlace={workspace.isInPlace}
                   isAutopilot={workspace.isAutopilot}
                   drawerUnread={workspace.drawerUnread}
+                  onDrawerBadgeClick={onOpenDrawer}
                   cleanupBlockedReason={workspace.cleanupBlockedReason}
                   onOpenWorkspaceActions={handleOpenWorkspaceActions}
                   onClick={(event) =>
@@ -606,6 +613,7 @@ export function WorkspacesSidebar({
                   </span>
                 ) : (
                   <WorkspaceList
+                    onOpenDrawer={onOpenDrawer}
                     workspaces={raisedHandWorkspaces}
                     selectedWorkspaceId={selectedWorkspaceId}
                     selectedWorkspaceOwnerHostId={selectedWorkspaceOwnerHostId}
@@ -631,6 +639,7 @@ export function WorkspacesSidebar({
                   </span>
                 ) : (
                   <WorkspaceList
+                    onOpenDrawer={onOpenDrawer}
                     workspaces={runningWorkspaces}
                     selectedWorkspaceId={selectedWorkspaceId}
                     selectedWorkspaceOwnerHostId={selectedWorkspaceOwnerHostId}
@@ -656,6 +665,7 @@ export function WorkspacesSidebar({
                   </span>
                 ) : (
                   <WorkspaceList
+                    onOpenDrawer={onOpenDrawer}
                     workspaces={idleWorkspaces}
                     selectedWorkspaceId={selectedWorkspaceId}
                     selectedWorkspaceOwnerHostId={selectedWorkspaceOwnerHostId}
@@ -730,6 +740,7 @@ export function WorkspacesSidebar({
                 isInPlace={workspace.isInPlace}
                 isAutopilot={workspace.isAutopilot}
                 drawerUnread={workspace.drawerUnread}
+                onDrawerBadgeClick={onOpenDrawer}
                 cleanupBlockedReason={workspace.cleanupBlockedReason}
                 onOpenWorkspaceActions={handleOpenWorkspaceActions}
                 onClick={(event) =>

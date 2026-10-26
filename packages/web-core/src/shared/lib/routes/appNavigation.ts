@@ -8,6 +8,8 @@ export type AppDestination =
   | { kind: 'workspace-vscode'; workspaceId: string; hostId?: string | null }
   | { kind: 'export' }
   | { kind: 'notifications' }
+  /** The Drawer (the Autopilot's notes); `noteId` opens one note. */
+  | { kind: 'drawer'; noteId?: string }
   /** Standalone shell rooted at the user's home directory — no workspace. */
   | { kind: 'terminal' }
   | { kind: 'pull-requests'; prUrl?: string }
@@ -90,6 +92,7 @@ export interface AppNavigation {
   ): void;
   goToExport(transition?: NavigationTransition): void;
   goToNotifications(transition?: NavigationTransition): void;
+  goToDrawer(noteId?: string, transition?: NavigationTransition): void;
   goToTerminal(transition?: NavigationTransition): void;
   goToPullRequests(prUrl?: string, transition?: NavigationTransition): void;
   goToProject(projectId: string, transition?: NavigationTransition): void;

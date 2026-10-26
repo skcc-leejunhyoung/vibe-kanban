@@ -73,6 +73,9 @@ export function navigateDocumentTo(
     case 'notifications':
       appNavigation.goToNotifications(transition);
       return;
+    case 'drawer':
+      appNavigation.goToDrawer(destination.noteId, transition);
+      return;
     case 'terminal':
       appNavigation.goToTerminal(transition);
       return;
@@ -180,6 +183,10 @@ export function createPaneAppNavigation(
     goToNotifications: (transition) =>
       navigateTo({ kind: 'notifications' }, transition, () =>
         base.goToNotifications(transition)
+      ),
+    goToDrawer: (noteId, transition) =>
+      navigateTo({ kind: 'drawer', noteId }, transition, () =>
+        base.goToDrawer(noteId, transition)
       ),
     goToTerminal: (transition) =>
       navigateTo({ kind: 'terminal' }, transition, () =>

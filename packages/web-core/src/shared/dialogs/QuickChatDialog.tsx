@@ -571,7 +571,16 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
         ))}
       </div>
 
-      {isDrawerMode && <DrawerTab initialNoteId={props.noteId ?? null} />}
+      {isDrawerMode && (
+        <DrawerTab
+          initialNoteId={props.noteId ?? null}
+          onOpenPage={() => {
+            modal.resolve(null);
+            modal.hide();
+            appNavigation.goToDrawer(props.noteId ?? undefined);
+          }}
+        />
+      )}
 
       {!isDrawerMode && (
         <label className="flex items-center gap-base rounded-md border border-border bg-secondary px-base py-half">

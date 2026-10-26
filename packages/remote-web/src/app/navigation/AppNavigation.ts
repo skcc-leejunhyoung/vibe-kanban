@@ -36,6 +36,11 @@ export function resolveRemoteDestinationFromPath(
       return { kind: "export" };
     case "/notifications":
       return { kind: "notifications" };
+    case "/drawer":
+      return {
+        kind: "drawer",
+        noteId: url.searchParams.get("note") ?? undefined,
+      };
     case "/pull-requests":
     case "/hosts/$hostId/pull-requests":
       return {
@@ -177,6 +182,11 @@ function destinationToRemoteTarget(
       return { to: "/export" } as const;
     case "notifications":
       return { to: "/notifications" } as const;
+    case "drawer":
+      return {
+        to: "/drawer",
+        search: { note: destination.noteId },
+      } as const;
     case "terminal":
       throw new Error("The terminal runs on a host, not in the cloud app");
     case "pull-requests":
@@ -265,6 +275,8 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
+    goToDrawer: (noteId, transition) =>
+      navigateTo({ kind: "drawer", noteId }, transition),
     goToTerminal: (transition) => navigateTo({ kind: "terminal" }, transition),
     goToPullRequests: (prUrl, transition) =>
       navigateTo({ kind: "pull-requests", prUrl }, transition),
@@ -367,6 +379,8 @@ function createRemoteAppNavigation(): AppNavigation {
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToNotifications: (transition) =>
       navigateTo({ kind: "notifications" }, transition),
+    goToDrawer: (noteId, transition) =>
+      navigateTo({ kind: "drawer", noteId }, transition),
     goToTerminal: (transition) => navigateTo({ kind: "terminal" }, transition),
     goToPullRequests: (prUrl, transition) =>
       navigateTo({ kind: "pull-requests", prUrl }, transition),

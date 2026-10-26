@@ -209,9 +209,7 @@ async fn notify_self(
 }
 
 /// A notification about a Drawer note hangs off the personal org and opens
-/// the Drawer tab on that note: `?drawer=<id>` is read by the app shell. It
-/// rides on `/notifications` because that route exists in both web apps and
-/// keeps unknown search params, where `/` redirects and drops them.
+/// the Drawer page on that note (`/drawer?note=<id>` in both web apps).
 async fn drawer_notification_target(
     state: &AppState,
     ctx: &RequestContext,
@@ -235,7 +233,7 @@ async fn drawer_notification_target(
         .map(|organization_id| NotificationTarget {
             organization_id,
             issue_id: None,
-            deeplink_path: format!("/notifications?drawer={note_id}"),
+            deeplink_path: format!("/drawer?note={note_id}"),
         }))
 }
 

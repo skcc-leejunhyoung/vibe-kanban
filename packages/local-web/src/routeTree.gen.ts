@@ -18,6 +18,7 @@ import { Route as AppTerminalRouteImport } from './routes/_app.terminal'
 import { Route as AppPullRequestsRouteImport } from './routes/_app.pull-requests'
 import { Route as AppNotificationsRouteImport } from './routes/_app.notifications'
 import { Route as AppExportRouteImport } from './routes/_app.export'
+import { Route as AppDrawerRouteImport } from './routes/_app.drawer'
 import { Route as WorkspacesWorkspaceIdVscodeRouteImport } from './routes/workspaces.$workspaceId.vscode'
 import { Route as AppWorkspacesElectricTestRouteImport } from './routes/_app.workspaces_.electric-test'
 import { Route as AppWorkspacesCreateRouteImport } from './routes/_app.workspaces_.create'
@@ -78,6 +79,11 @@ const AppNotificationsRoute = AppNotificationsRouteImport.update({
 const AppExportRoute = AppExportRouteImport.update({
   id: '/export',
   path: '/export',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDrawerRoute = AppDrawerRouteImport.update({
+  id: '/drawer',
+  path: '/drawer',
   getParentRoute: () => AppRoute,
 } as any)
 const WorkspacesWorkspaceIdVscodeRoute =
@@ -187,6 +193,7 @@ const AppProjectsProjectIdIssuesIssueIdHostsHostIdWorkspacesCreateDraftIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/drawer': typeof AppDrawerRoute
   '/export': typeof AppExportRoute
   '/notifications': typeof AppNotificationsRoute
   '/pull-requests': typeof AppPullRequestsRoute
@@ -214,6 +221,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/drawer': typeof AppDrawerRoute
   '/export': typeof AppExportRoute
   '/notifications': typeof AppNotificationsRoute
   '/pull-requests': typeof AppPullRequestsRoute
@@ -243,6 +251,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_app': typeof AppRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/_app/drawer': typeof AppDrawerRoute
   '/_app/export': typeof AppExportRoute
   '/_app/notifications': typeof AppNotificationsRoute
   '/_app/pull-requests': typeof AppPullRequestsRoute
@@ -272,6 +281,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/onboarding'
+    | '/drawer'
     | '/export'
     | '/notifications'
     | '/pull-requests'
@@ -299,6 +309,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/onboarding'
+    | '/drawer'
     | '/export'
     | '/notifications'
     | '/pull-requests'
@@ -327,6 +338,7 @@ export interface FileRouteTypes {
     | '/'
     | '/_app'
     | '/onboarding'
+    | '/_app/drawer'
     | '/_app/export'
     | '/_app/notifications'
     | '/_app/pull-requests'
@@ -424,6 +436,13 @@ declare module '@tanstack/react-router' {
       path: '/export'
       fullPath: '/export'
       preLoaderRoute: typeof AppExportRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/drawer': {
+      id: '/_app/drawer'
+      path: '/drawer'
+      fullPath: '/drawer'
+      preLoaderRoute: typeof AppDrawerRouteImport
       parentRoute: typeof AppRoute
     }
     '/workspaces/$workspaceId/vscode': {
@@ -549,6 +568,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppDrawerRoute: typeof AppDrawerRoute
   AppExportRoute: typeof AppExportRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
   AppPullRequestsRoute: typeof AppPullRequestsRoute
@@ -572,6 +592,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppDrawerRoute: AppDrawerRoute,
   AppExportRoute: AppExportRoute,
   AppNotificationsRoute: AppNotificationsRoute,
   AppPullRequestsRoute: AppPullRequestsRoute,

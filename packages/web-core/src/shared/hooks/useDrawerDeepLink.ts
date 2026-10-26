@@ -1,26 +1,20 @@
 import { useEffect } from 'react';
-import { useLocation, useNavigate } from '@tanstack/react-router';
-import { QuickChatDialog } from '@/shared/dialogs/QuickChatDialog';
+import { useLocation } from '@tanstack/react-router';
+import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 
 /**
- * `?drawer=<note id>` (the deep link in a Drawer notification and its push)
- * opens the Quick chat dialog on that note, then drops the parameter so a
- * reload or back-navigation does not reopen it.
+ * `?drawer=<note id>` on any route (the deep link older Drawer notifications
+ * and pushes carry) opens that note on the Drawer page, replacing the entry so
+ * back-navigation does not reopen it. New links point at `/drawer?note=`.
  */
 export function useDrawerDeepLink() {
   const location = useLocation();
-  const navigate = useNavigate();
+  const appNavigation = useAppNavigation();
   const search = location.search as Record<string, unknown>;
   const noteId = typeof search.drawer === 'string' ? search.drawer : null;
   useEffect(() => {
     if (!noteId) return;
-    void QuickChatDialog.show({ noteId });
-    const { drawer: _drawer, ...rest } = search;
-    void navigate({
-      to: location.pathname as '/',
-      search: rest as never,
-      replace: true,
-    });
+    appNavigation.goToDrawer(noteId, { replace: true });
     // `search` is a fresh object every render; the note id is the real key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteId]);
