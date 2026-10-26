@@ -43,6 +43,7 @@ struct CommentRow {
     author: String,
     body: String,
     created_at: DateTime<Utc>,
+    resolved_at: Option<DateTime<Utc>>,
 }
 
 impl From<CommentRow> for DrawerComment {
@@ -54,9 +55,12 @@ impl From<CommentRow> for DrawerComment {
             author: DrawerCommentAuthor::parse(&row.author),
             body: row.body,
             created_at: row.created_at,
+            resolved_at: row.resolved_at,
         }
     }
 }
+
+const COMMENT_COLUMNS: &str = "id, note_id, owner_user_id, author, body, created_at, resolved_at";
 
 const NOTE_COLUMNS: &str = "id, owner_user_id, host_id, workspace_id, session_id, execution_id, \
      title, body, label, pinned, archived_at, user_seen_at, last_comment_at, created_at, updated_at";
@@ -196,12 +200,11 @@ impl DrawerRepository {
         owner_user_id: Uuid,
         note_id: Option<Uuid>,
     ) -> Result<Vec<DrawerComment>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, CommentRow>(
-            "SELECT id, note_id, owner_user_id, author, body, created_at
-             FROM drawer_comments
+        let rows = sqlx::query_as::<_, CommentRow>(&format!(
+            "SELECT {COMMENT_COLUMNS} FROM drawer_comments
              WHERE owner_user_id = $1 AND ($2::uuid IS NULL OR note_id = $2)
-             ORDER BY created_at",
-        )
+             ORDER BY created_at"
+        ))
         .bind(owner_user_id)
         .bind(note_id)
         .fetch_all(pool)
@@ -213,10 +216,9 @@ impl DrawerRepository {
         pool: &PgPool,
         id: Uuid,
     ) -> Result<Option<DrawerComment>, sqlx::Error> {
-        Ok(sqlx::query_as::<_, CommentRow>(
-            "SELECT id, note_id, owner_user_id, author, body, created_at
-             FROM drawer_comments WHERE id = $1",
-        )
+        Ok(sqlx::query_as::<_, CommentRow>(&format!(
+            "SELECT {COMMENT_COLUMNS} FROM drawer_comments WHERE id = $1"
+        ))
         .bind(id)
         .fetch_optional(pool)
         .await?
@@ -234,11 +236,11 @@ impl DrawerRepository {
     ) -> Result<MutationResponse<DrawerComment>, sqlx::Error> {
         let author = request.author.unwrap_or(DrawerCommentAuthor::User);
         let mut tx = super::begin_tx(pool).await?;
-        let row = sqlx::query_as::<_, CommentRow>(
+        let row = sqlx::query_as::<_, CommentRow>(&format!(
             "INSERT INTO drawer_comments (id, note_id, owner_user_id, author, body)
              VALUES ($1, $2, $3, $4, $5)
-             RETURNING id, note_id, owner_user_id, author, body, created_at",
-        )
+             RETURNING {COMMENT_COLUMNS}"
+        ))
         .bind(request.id.unwrap_or_else(Uuid::new_v4))
         .bind(request.note_id)
         .bind(owner_user_id)
@@ -256,6 +258,32 @@ impl DrawerRepository {
         .bind(row.created_at)
         .bind(author == DrawerCommentAuthor::User)
         .execute(&mut *tx)
+        .await?;
+        let txid = get_txid(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(MutationResponse {
+            data: row.into(),
+            txid,
+        })
+    }
+
+    /// `true` folds the comment into the thread's resolved group (the first
+    /// resolve time is kept), `false` reopens it.
+    pub async fn set_comment_resolved(
+        pool: &PgPool,
+        id: Uuid,
+        resolved: bool,
+    ) -> Result<MutationResponse<DrawerComment>, sqlx::Error> {
+        let mut tx = super::begin_tx(pool).await?;
+        let row = sqlx::query_as::<_, CommentRow>(&format!(
+            "UPDATE drawer_comments
+             SET resolved_at = CASE WHEN $2 THEN COALESCE(resolved_at, NOW()) ELSE NULL END
+             WHERE id = $1
+             RETURNING {COMMENT_COLUMNS}"
+        ))
+        .bind(id)
+        .bind(resolved)
+        .fetch_one(&mut *tx)
         .await?;
         let txid = get_txid(&mut *tx).await?;
         tx.commit().await?;
@@ -310,6 +338,59 @@ mod tests {
             session_id: None,
             execution_id: None,
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DRAWER_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+    async fn resolving_a_comment_stamps_once_and_reopening_clears() {
+        let url = std::env::var("DRAWER_TEST_DATABASE_URL")
+            .expect("provide a migrated disposable PostgreSQL database");
+        let pool = PgPool::connect(&url).await.unwrap();
+        let owner = user(&pool).await;
+        let note = DrawerRepository::create_note(&pool, owner, note("resolve"))
+            .await
+            .unwrap()
+            .data;
+        let comment = DrawerRepository::create_comment(
+            &pool,
+            owner,
+            CreateDrawerCommentRequest {
+                id: None,
+                note_id: note.id,
+                body: "질문".to_string(),
+                author: None,
+            },
+        )
+        .await
+        .unwrap()
+        .data;
+        assert!(comment.resolved_at.is_none());
+
+        let resolved = DrawerRepository::set_comment_resolved(&pool, comment.id, true)
+            .await
+            .unwrap();
+        assert!(resolved.txid > 0);
+        let first = resolved.data.resolved_at.expect("stamped");
+        let again = DrawerRepository::set_comment_resolved(&pool, comment.id, true)
+            .await
+            .unwrap()
+            .data;
+        assert_eq!(
+            again.resolved_at,
+            Some(first),
+            "re-resolving keeps the first time"
+        );
+
+        let reopened = DrawerRepository::set_comment_resolved(&pool, comment.id, false)
+            .await
+            .unwrap()
+            .data;
+        assert!(reopened.resolved_at.is_none());
+        let listed = DrawerRepository::list_comments(&pool, owner, Some(note.id))
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].resolved_at.is_none());
     }
 
     #[tokio::test]

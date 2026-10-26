@@ -2371,6 +2371,24 @@ const COMMANDS: &[Cmd] = &[
             short(req("message", "Comment text", Where::Local, Kind::Str), 'm'),
         ],
     ),
+    special(
+        &["drawer", "resolve"],
+        "Fold handled comments into one line (a user's comment and your reply)",
+        "drawer.resolve",
+        &[ArgSpec {
+            kind: Kind::List,
+            ..pos("ids", "Comment ids, comma-separated", Where::Local)
+        }],
+    ),
+    special(
+        &["drawer", "unresolve"],
+        "Reopen folded comments",
+        "drawer.unresolve",
+        &[ArgSpec {
+            kind: Kind::List,
+            ..pos("ids", "Comment ids, comma-separated", Where::Local)
+        }],
+    ),
     local(cmd(
         &["drawer", "comments"],
         "A note's comments, oldest first",
@@ -4361,6 +4379,35 @@ impl Ctx {
                     )
                     .await
             }
+            "drawer.resolve" | "drawer.unresolve" => {
+                let resolved = key == "drawer.resolve";
+                let raw = arg_str(m, "ids").unwrap_or_default();
+                let ids = raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| parse_uuid(s, "comment"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if ids.is_empty() {
+                    return Err(VkError::message("give at least one comment id"));
+                }
+                let mut comments = Vec::with_capacity(ids.len());
+                for id in ids {
+                    comments.push(
+                        self.client
+                            .exec(
+                                "PATCH",
+                                &format!("/remote/cloud/drawer_comments/{id}"),
+                                true,
+                                &[],
+                                Some(&json!({ "resolved": resolved })),
+                                Some(self.timeout),
+                            )
+                            .await?,
+                    );
+                }
+                Ok(json!({ "drawer_comments": comments }))
+            }
             "notify.send" => {
                 let ws = match arg_str(m, "ws") {
                     Some(ws) => Some(self.workspace_id(&ws).await?),
@@ -5142,6 +5189,8 @@ mod tests {
             "drawer unarchive",
             "drawer delete",
             "drawer comment",
+            "drawer resolve",
+            "drawer unresolve",
             "drawer comments",
             "config set",
             "config models",

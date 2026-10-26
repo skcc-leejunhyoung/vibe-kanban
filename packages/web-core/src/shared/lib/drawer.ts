@@ -1,4 +1,28 @@
-import type { DrawerNote } from 'shared/remote-types';
+import type { DrawerComment, DrawerNote } from 'shared/remote-types';
+
+export type DrawerThreadItem =
+  | { kind: 'comment'; comment: DrawerComment }
+  | { kind: 'resolved'; comments: DrawerComment[] };
+
+/**
+ * The thread as shown: open comments in place, each run of consecutive
+ * resolved comments folded into one item (`comments` keeps their order).
+ */
+export function foldResolvedComments(
+  comments: DrawerComment[]
+): DrawerThreadItem[] {
+  const items: DrawerThreadItem[] = [];
+  for (const comment of comments) {
+    if (!comment.resolved_at) {
+      items.push({ kind: 'comment', comment });
+      continue;
+    }
+    const last = items[items.length - 1];
+    if (last?.kind === 'resolved') last.comments.push(comment);
+    else items.push({ kind: 'resolved', comments: [comment] });
+  }
+  return items;
+}
 
 /** The moment the note last changed for the reader: an edit or a comment. */
 export function drawerNoteActivityAt(note: DrawerNote): number {

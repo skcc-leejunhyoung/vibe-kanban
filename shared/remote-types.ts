@@ -109,7 +109,12 @@ label: string | null, pinned: boolean, archived_at: string | null,
  */
 user_seen_at: string | null, last_comment_at: string | null, created_at: string, updated_at: string, };
 
-export type DrawerComment = { id: string, note_id: string, owner_user_id: string, author: DrawerCommentAuthor, body: string, created_at: string, };
+export type DrawerComment = { id: string, note_id: string, owner_user_id: string, author: DrawerCommentAuthor, body: string, created_at: string,
+/**
+ * Set once handled (by either side); consecutive resolved comments fold
+ * into one line in the thread. `null` = open.
+ */
+resolved_at: string | null, };
 
 export type DrawerCommentAuthor = "user" | "autopilot";
 
@@ -136,6 +141,13 @@ seen?: boolean,
  * Updating the body from a new turn moves the artifact scope along.
  */
 host_id?: string, workspace_id?: string, session_id?: string, execution_id?: string, };
+
+export type UpdateDrawerCommentRequest = {
+/**
+ * `true` folds the comment into the resolved group (the first resolve
+ * time is kept), `false` reopens it.
+ */
+resolved: boolean | null, };
 
 export type CreateDrawerCommentRequest = { id?: string, note_id: string, body: string,
 /**
@@ -637,7 +649,7 @@ export const DRAWER_NOTE_MUTATION = defineMutation<DrawerNote, CreateDrawerNoteR
   '/v1/drawer_notes'
 );
 
-export const DRAWER_COMMENT_MUTATION = defineMutation<DrawerComment, CreateDrawerCommentRequest, unknown>(
+export const DRAWER_COMMENT_MUTATION = defineMutation<DrawerComment, CreateDrawerCommentRequest, UpdateDrawerCommentRequest>(
   'DrawerComment',
   '/v1/drawer_comments'
 );

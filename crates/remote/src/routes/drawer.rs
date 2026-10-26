@@ -6,7 +6,7 @@
 use api_types::{
     CreateDrawerCommentRequest, CreateDrawerNoteRequest, DeleteResponse, DrawerComment, DrawerNote,
     ListDrawerCommentsQuery, ListDrawerCommentsResponse, ListDrawerNotesQuery,
-    ListDrawerNotesResponse, MutationResponse, UpdateDrawerNoteRequest,
+    ListDrawerNotesResponse, MutationResponse, UpdateDrawerCommentRequest, UpdateDrawerNoteRequest,
 };
 use axum::{
     Json, Router,
@@ -21,7 +21,7 @@ use crate::{
     AppState,
     auth::RequestContext,
     db::{drawer::DrawerRepository, hosts::HostRepository},
-    mutation_definition::{MutationBuilder, NoUpdate},
+    mutation_definition::MutationBuilder,
 };
 
 pub fn note_mutation()
@@ -34,11 +34,13 @@ pub fn note_mutation()
         .delete(delete_note)
 }
 
-pub fn comment_mutation() -> MutationBuilder<DrawerComment, CreateDrawerCommentRequest, NoUpdate> {
+pub fn comment_mutation()
+-> MutationBuilder<DrawerComment, CreateDrawerCommentRequest, UpdateDrawerCommentRequest> {
     MutationBuilder::new("drawer_comments")
         .list(list_comments)
         .get(get_comment)
         .create(create_comment)
+        .update(update_comment)
         .delete(delete_comment)
 }
 
@@ -271,6 +273,27 @@ async fn create_comment(
     let response = DrawerRepository::create_comment(&pool, ctx.user.id, payload)
         .await
         .map_err(|error| write_error(error, "failed to create drawer comment"))?;
+    Ok(Json(response))
+}
+
+/// The only edit a comment takes: resolve (fold) or reopen it.
+async fn update_comment(
+    State(pool): State<PgPool>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdateDrawerCommentRequest>,
+) -> Result<Json<MutationResponse<DrawerComment>>, ErrorResponse> {
+    owned_comment(&pool, &ctx, id).await?;
+    let Some(resolved) = payload.resolved else {
+        return Err(bad_request("drawer comment update needs `resolved`"));
+    };
+    let response = DrawerRepository::set_comment_resolved(&pool, id, resolved)
+        .await
+        .map_err(|error| match error {
+            // Deleted between the ownership check and the update.
+            sqlx::Error::RowNotFound => not_found("drawer comment not found"),
+            error => internal(error, "failed to update drawer comment"),
+        })?;
     Ok(Json(response))
 }
 

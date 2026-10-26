@@ -127,6 +127,7 @@ fn export_shapes() -> String {
         api_types::DrawerCommentAuthor::decl(),
         api_types::CreateDrawerNoteRequest::decl(),
         api_types::UpdateDrawerNoteRequest::decl(),
+        api_types::UpdateDrawerCommentRequest::decl(),
         api_types::CreateDrawerCommentRequest::decl(),
         api_types::ListDrawerNotesQuery::decl(),
         api_types::ListDrawerNotesResponse::decl(),

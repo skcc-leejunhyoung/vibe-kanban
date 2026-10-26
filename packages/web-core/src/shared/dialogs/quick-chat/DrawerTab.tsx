@@ -4,7 +4,9 @@ import {
   ArrowCounterClockwiseIcon,
   ArrowLeftIcon,
   ArrowSquareOutIcon,
+  CaretDownIcon,
   ChatCircleIcon,
+  CheckIcon,
   PaperPlaneRightIcon,
   PushPinIcon,
   RobotIcon,
@@ -21,7 +23,7 @@ import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWid
 import { useDrawerComments, useDrawerNotes } from '@/shared/hooks/useDrawer';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
-import { isDrawerNoteUnread } from '@/shared/lib/drawer';
+import { foldResolvedComments, isDrawerNoteUnread } from '@/shared/lib/drawer';
 import { formatDateTimeFull, formatRelativeTime } from '@/shared/lib/date';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import { HostIdContext } from '@/shared/providers/HostIdProvider';
@@ -373,6 +375,15 @@ export function DrawerTab({
               };
               return comments.insert(comment).persisted;
             }}
+            onResolve={(comment, resolved) => {
+              // `resolved_at` only dates the optimistic row; the server stamps
+              // (or clears) its own.
+              const changes: Partial<DrawerComment> & { resolved: boolean } = {
+                resolved,
+                resolved_at: resolved ? new Date().toISOString() : null,
+              };
+              return comments.update(comment.id, changes).persisted;
+            }}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center p-double text-sm text-low">
@@ -401,6 +412,7 @@ function NoteDetail({
   onArchive,
   onRestore,
   onComment,
+  onResolve,
 }: {
   note: DrawerNote;
   comments: DrawerComment[];
@@ -411,6 +423,8 @@ function NoteDetail({
   onArchive: () => void;
   onRestore: () => void;
   onComment: (body: string) => Promise<unknown>;
+  /** Fold (true) or reopen (false) one comment. */
+  onResolve: (comment: DrawerComment, resolved: boolean) => Promise<unknown>;
 }) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -511,36 +525,23 @@ function NoteDetail({
           <NoteBody note={note} />
         </div>
         <div className="flex flex-col gap-base border-t border-border p-base">
-          {comments.map((comment) => (
-            <div
-              key={comment.id}
-              className="grid grid-cols-[22px_minmax(0,1fr)] gap-base"
-            >
-              <span
-                className={cn(
-                  'flex size-[22px] items-center justify-center rounded-full',
-                  comment.author === 'autopilot'
-                    ? 'bg-brand/20 text-brand'
-                    : 'bg-panel text-high'
-                )}
-                title={comment.author === 'autopilot' ? 'Autopilot' : 'You'}
-              >
-                {comment.author === 'autopilot' ? (
-                  <RobotIcon weight="fill" className="size-icon-xs" />
-                ) : (
-                  <UserIcon weight="fill" className="size-icon-xs" />
-                )}
-              </span>
-              <div className="min-w-0">
-                <div className="text-sm text-low">
-                  {formatRelativeTime(comment.created_at)}
-                </div>
-                <div className="whitespace-pre-wrap text-normal">
-                  {comment.body}
-                </div>
-              </div>
-            </div>
-          ))}
+          {foldResolvedComments(comments).map((item) =>
+            item.kind === 'resolved' ? (
+              <ResolvedGroup
+                key={item.comments[0].id}
+                comments={item.comments}
+                onReopen={(comment) => void onResolve(comment, false)}
+              />
+            ) : (
+              <CommentRow
+                key={item.comment.id}
+                comment={item.comment}
+                actionTitle="Resolve"
+                actionIcon={CheckIcon}
+                onAction={() => void onResolve(item.comment, true)}
+              />
+            )
+          )}
           <div ref={endRef} />
           <div className="flex items-end gap-half rounded-md border border-border bg-secondary px-base py-half">
             <textarea
@@ -571,6 +572,101 @@ function NoteDetail({
         </div>
       </div>
     </>
+  );
+}
+
+/** One comment; its action (resolve / reopen) shows on hover or focus. */
+function CommentRow({
+  comment,
+  dimmed,
+  actionTitle,
+  actionIcon: ActionIcon,
+  onAction,
+}: {
+  comment: DrawerComment;
+  dimmed?: boolean;
+  actionTitle: string;
+  actionIcon: typeof CheckIcon;
+  onAction: () => void;
+}) {
+  const autopilot = comment.author === 'autopilot';
+  return (
+    <div
+      className={cn(
+        'group grid grid-cols-[22px_minmax(0,1fr)_auto] gap-base',
+        dimmed && 'opacity-60'
+      )}
+    >
+      <span
+        className={cn(
+          'flex size-[22px] items-center justify-center rounded-full',
+          autopilot ? 'bg-brand/20 text-brand' : 'bg-panel text-high'
+        )}
+        title={autopilot ? 'Autopilot' : 'You'}
+      >
+        {autopilot ? (
+          <RobotIcon weight="fill" className="size-icon-xs" />
+        ) : (
+          <UserIcon weight="fill" className="size-icon-xs" />
+        )}
+      </span>
+      <div className="min-w-0">
+        <div className="text-sm text-low">
+          {formatRelativeTime(comment.created_at)}
+        </div>
+        <div className="whitespace-pre-wrap text-normal">{comment.body}</div>
+      </div>
+      <button
+        type="button"
+        onClick={onAction}
+        title={actionTitle}
+        aria-label={actionTitle}
+        className="self-start rounded p-half text-low opacity-0 hover:text-high focus-visible:opacity-100 group-hover:opacity-100"
+      >
+        <ActionIcon className="size-icon-xs" />
+      </button>
+    </div>
+  );
+}
+
+/** A run of resolved comments: one line, opened on demand, each reopenable. */
+function ResolvedGroup({
+  comments,
+  onReopen,
+}: {
+  comments: DrawerComment[];
+  onReopen: (comment: DrawerComment) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex flex-col gap-base">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="inline-flex items-center gap-half self-start text-sm text-low hover:text-normal"
+      >
+        <CheckIcon className="size-icon-xs" />
+        {comments.length} resolved
+        <CaretDownIcon
+          className={cn(
+            'size-icon-xs transition-transform',
+            open && 'rotate-180'
+          )}
+        />
+      </button>
+      {open &&
+        comments.map((comment) => (
+          <CommentRow
+            key={comment.id}
+            comment={comment}
+            dimmed
+            actionTitle="Reopen"
+            actionIcon={ArrowCounterClockwiseIcon}
+            onAction={() => onReopen(comment)}
+          />
+        ))}
+    </div>
   );
 }
 

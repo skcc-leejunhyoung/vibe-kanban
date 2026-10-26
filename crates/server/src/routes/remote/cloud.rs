@@ -49,7 +49,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
     // The Drawer (Autopilot notes). Its notification goes through the local
     // `/notifications/send` route, which tags it itself.
     ("drawer_notes", &["GET", "POST", "PATCH", "DELETE"]),
-    ("drawer_comments", &["GET", "POST", "DELETE"]),
+    ("drawer_comments", &["GET", "POST", "PATCH", "DELETE"]),
 ];
 
 /// Members and invitations stay with the typed local routes (and their own

@@ -66,6 +66,9 @@ pub struct DrawerComment {
     pub author: DrawerCommentAuthor,
     pub body: String,
     pub created_at: DateTime<Utc>,
+    /// Set once handled (by either side); consecutive resolved comments fold
+    /// into one line in the thread. `null` = open.
+    pub resolved_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -138,6 +141,14 @@ pub struct CreateDrawerCommentRequest {
     /// Defaults to `user`; the Autopilot's CLI sends `autopilot`.
     #[ts(optional)]
     pub author: Option<DrawerCommentAuthor>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+pub struct UpdateDrawerCommentRequest {
+    /// `true` folds the comment into the resolved group (the first resolve
+    /// time is kept), `false` reopens it.
+    #[serde(default, deserialize_with = "some_if_present")]
+    pub resolved: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]
