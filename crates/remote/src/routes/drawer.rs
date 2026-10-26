@@ -372,6 +372,25 @@ mod tests {
         .0
         .data;
         assert_eq!(ok.host_id, Some(my_host));
+        // A normal Autopilot edit (new turn's scope included) still goes through.
+        let edited = update(
+            ok.id,
+            UpdateDrawerNoteRequest {
+                title: Some("PR 리뷰 진행 현황".to_string()),
+                body: Some("새 본문".to_string()),
+                label: Some(Some("확인 필요".to_string())),
+                host_id: Some(my_host),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .0
+        .data;
+        assert_eq!(
+            (edited.body.as_str(), edited.label.as_deref()),
+            ("새 본문", Some("확인 필요"))
+        );
         for request in [
             CreateDrawerNoteRequest {
                 title: "가".repeat(MAX_TITLE_CHARS + 1),
