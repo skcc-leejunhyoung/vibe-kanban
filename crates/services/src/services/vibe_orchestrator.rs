@@ -30,11 +30,11 @@ use std::time::Duration;
 use db::models::execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus};
 use utils::log_msg::LogMsg;
 
-/// The four cloud tags this workflow keys off of. `vibe` is applied by the
-/// external orchestrator to opt an issue into the workflow; the other three are
-/// applied by the backend to mirror [`VibePhase`] for human visibility.
+/// The cloud tags this workflow applies. `vibe` opts an issue into the
+/// workflow; the backend adds `vibe-approve` when the review approves and
+/// `vibe-block` when the run stops for a human. Both are best-effort markers;
+/// the phase itself lives in `vibe_runs`.
 pub const TAG_VIBE: &str = "vibe";
-pub const TAG_DONE: &str = "vibe-done";
 pub const TAG_BLOCK: &str = "vibe-block";
 pub const TAG_APPROVE: &str = "vibe-approve";
 
@@ -303,8 +303,8 @@ pub enum VibeAction {
     /// Rule 3: more coding work remains — send a "continue" follow-up. `turn`
     /// is the new value the `coding_turns` counter should be set to.
     ContinueCoding { turn: u32 },
-    /// Rule 4: coding is done — tag `vibe-done`, open a fresh review session,
-    /// and send the review prompt.
+    /// Rule 4: coding is done — open a fresh review session and send the
+    /// review prompt.
     StartReview,
     /// Rule 4: the review session finished a turn without approving — send the
     /// "fix-or-approve" follow-up. `turn` is the new `review_turns` value.

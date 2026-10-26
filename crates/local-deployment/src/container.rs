@@ -2866,8 +2866,6 @@ impl LocalContainerService {
             }
 
             VibeAction::StartReview => {
-                self.vibe_tag(client, task_id, vibe_orchestrator::TAG_DONE)
-                    .await;
                 let prompt =
                     vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_A);
                 self.vibe_start_review_session(&ctx.workspace, &ctx.session, &prompt, None)
@@ -4544,8 +4542,8 @@ impl ContainerService for LocalContainerService {
     /// Manually drive a workspace into the automated `vibe` review phase, as if
     /// its coding agent had just emitted `VIBE_RESULT: done`. Used by the "review"
     /// button next to send: it materializes the run row (so the review verdict →
-    /// merge half of the workflow takes over), mirrors the `vibe`/`vibe-done`
-    /// issue tags, and spawns the dedicated review session.
+    /// merge half of the workflow takes over), attaches the `vibe` issue tag,
+    /// and spawns the dedicated review session.
     async fn vibe_manual_start_review(
         &self,
         workspace: &Workspace,
@@ -4570,17 +4568,14 @@ impl ContainerService for LocalContainerService {
             .await
             .map_err(|e| ContainerError::Other(anyhow!("vibe get_or_create failed: {e}")))?;
 
-        // Best-effort issue tags mirroring the organic coding→review transition:
-        // `vibe` opts the issue into the workflow, `vibe-done` marks coding done.
-        // Two cloud round trips the review session doesn't depend on, so they
-        // run off the request path.
+        // Best-effort `vibe` tag opting the issue into the workflow. A cloud
+        // round trip the review session doesn't depend on, so it runs off the
+        // request path.
         {
             let this = self.clone();
             let client = client.clone();
             tokio::spawn(async move {
                 this.vibe_tag(&client, task_id, vibe_orchestrator::TAG_VIBE)
-                    .await;
-                this.vibe_tag(&client, task_id, vibe_orchestrator::TAG_DONE)
                     .await;
             });
         }

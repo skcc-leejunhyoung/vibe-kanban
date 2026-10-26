@@ -115,9 +115,9 @@ mod tests {
 
     #[test]
     fn finds_tag_by_exact_name() {
-        let tags = vec![tag("vibe"), tag("vibe-done"), tag("bug")];
+        let tags = vec![tag("vibe"), tag("vibe-block"), tag("bug")];
         let want = tags[1].id;
-        assert_eq!(find_tag_id_by_name(&tags, "vibe-done"), Some(want));
+        assert_eq!(find_tag_id_by_name(&tags, "vibe-block"), Some(want));
     }
 
     #[test]
@@ -168,7 +168,7 @@ mod tests {
             oauth_credentials::{Credentials, OAuthCredentials},
         };
 
-        let winner = tag("vibe-done");
+        let winner = tag("vibe-block");
         let winner_id = winner.id;
         let created = Arc::new(AtomicBool::new(false));
         let list_created = created.clone();
@@ -205,7 +205,7 @@ mod tests {
         .unwrap();
         let client = RemoteClient::new(&format!("http://{address}"), auth, "test".into()).unwrap();
 
-        let id = ensure_tag_id(&client, Uuid::nil(), "vibe-done")
+        let id = ensure_tag_id(&client, Uuid::nil(), "vibe-block")
             .await
             .unwrap();
         assert_eq!(id, winner_id);
