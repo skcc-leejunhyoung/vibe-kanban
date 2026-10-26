@@ -574,10 +574,10 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
       {isDrawerMode && (
         <DrawerTab
           initialNoteId={props.noteId ?? null}
-          onOpenPage={() => {
+          onOpenPage={(noteId) => {
             modal.resolve(null);
             modal.hide();
-            appNavigation.goToDrawer(props.noteId ?? undefined);
+            appNavigation.goToDrawer(noteId ?? undefined);
           }}
         />
       )}

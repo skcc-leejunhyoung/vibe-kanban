@@ -39,6 +39,7 @@ export function AppBarDrawerContainer() {
         className={cn(
           'relative flex items-center justify-center w-10 h-10 rounded-lg',
           'text-sm font-medium transition-colors cursor-pointer',
+          'focus:outline-none focus-visible:ring-2 focus-visible:ring-brand',
           'bg-panel text-normal hover:opacity-80'
         )}
         aria-label="Drawer"

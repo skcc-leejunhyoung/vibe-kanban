@@ -285,6 +285,14 @@ describe('buildNotificationTabUrl', () => {
     expect(buildNotificationTabUrl(group)).toBe('/projects/p1/issues/i1');
   });
 
+  it('opens the Drawer page on the note for a Drawer notification', () => {
+    const group = createGroup(
+      createNotification({ payload: { drawer_note_id: 'note-1' } }),
+      '/notifications?drawer=note-1'
+    );
+    expect(buildNotificationTabUrl(group)).toBe('/drawer?note=note-1');
+  });
+
   it('builds an account-scoped pull-requests URL from a legacy host payload', () => {
     const group = createGroup(
       createNotification({

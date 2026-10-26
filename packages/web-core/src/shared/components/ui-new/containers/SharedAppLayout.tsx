@@ -16,6 +16,7 @@ import {
   BellIcon,
   LightningIcon,
   GitPullRequestIcon,
+  TrayIcon,
 } from '@phosphor-icons/react';
 import { SyncErrorProvider } from '@/shared/providers/SyncErrorProvider';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
@@ -514,6 +515,21 @@ export function SharedAppLayout() {
               <GitPullRequestIcon className="h-4 w-4" />
               Pull Requests
             </button>
+
+            {/* Drawer link (the app bar icon is not on phones) */}
+            {isSignedIn && (
+              <button
+                type="button"
+                onClick={() => {
+                  appNavigation.goToDrawer();
+                  setIsDrawerOpen(false);
+                }}
+                className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+              >
+                <TrayIcon className="h-4 w-4" />
+                Drawer
+              </button>
+            )}
 
             {/* Notifications link */}
             {isSignedIn && (

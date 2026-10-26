@@ -18,6 +18,7 @@ import {
   LightningIcon,
   StackIcon,
   GitPullRequestIcon,
+  TrayIcon,
 } from "@phosphor-icons/react";
 import { MobileDrawer } from "@vibe/ui/components/MobileDrawer";
 import type { Project } from "shared/remote-types";
@@ -448,6 +449,21 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
               <GitPullRequestIcon className="h-4 w-4" />
               Pull requests
             </button>
+
+            {/* Drawer link (the app bar icon is not on phones) */}
+            {isSignedIn && (
+              <button
+                type="button"
+                onClick={() => {
+                  appNavigation.goToDrawer();
+                  setIsDrawerOpen(false);
+                }}
+                className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+              >
+                <TrayIcon className="h-4 w-4" />
+                Drawer
+              </button>
+            )}
 
             {/* Notifications link */}
             {isSignedIn && (

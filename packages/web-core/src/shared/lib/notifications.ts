@@ -53,6 +53,12 @@ export function getPullRequestDetailsNavigationTarget(
 export function buildNotificationTabUrl(
   group: GroupedNotification
 ): string | null {
+  // A Drawer note's notification opens the note; its stored deep link may be
+  // the older one through the notifications page.
+  const drawerNoteId = getPayload(group.latest).drawer_note_id;
+  if (drawerNoteId) {
+    return `/drawer?note=${encodeURIComponent(drawerNoteId)}`;
+  }
   const prDetails = getPullRequestDetailsNavigationTarget(group.latest);
   if (prDetails) {
     const query = `?prUrl=${encodeURIComponent(prDetails.prUrl)}`;

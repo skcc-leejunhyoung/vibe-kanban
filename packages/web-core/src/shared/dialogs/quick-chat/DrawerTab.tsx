@@ -16,6 +16,7 @@ import type {
   DrawerNote,
 } from 'shared/remote-types';
 import { cn } from '@vibe/ui/lib/cn';
+import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useDrawerComments, useDrawerNotes } from '@/shared/hooks/useDrawer';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
 import { isDrawerNoteUnread } from '@/shared/lib/drawer';
@@ -42,14 +43,22 @@ export function DrawerTab({
   initialNoteId,
   variant = 'dialog',
   onOpenPage,
+  onSelectNote,
 }: {
   initialNoteId?: string | null;
   /** `page` fills its container (the /drawer page and split panes). */
   variant?: 'dialog' | 'page';
-  /** Dialog only: hand the board over to the full page. */
-  onOpenPage?: () => void;
+  /** Dialog only: hand the board over to the full page, on the open note. */
+  onOpenPage?: (noteId: string | null) => void;
+  /** Page only: the note the user opened (null for none), mirrored into the URL. */
+  onSelectNote?: (noteId: string | null) => void;
 }) {
   const isPage = variant === 'page';
+  // The page lays out by its pane's width (the viewport outside a pane): two
+  // columns, a narrower list in a compact pane, one column in a narrow one.
+  // The dialog follows the viewport through the `sm:` classes instead.
+  const narrow = usePaneNarrowerThan(640) && isPage;
+  const compact = usePaneNarrowerThan(960);
   const notes = useDrawerNotes();
   const comments = useDrawerComments();
   const [view, setView] = useState<'inbox' | 'archive'>('inbox');
@@ -122,6 +131,17 @@ export function DrawerTab({
     [comments.data, selected]
   );
 
+  // What the user opened (or closed): the selection, the one-column view and,
+  // on the page, the URL.
+  const select = useCallback(
+    (noteId: string | null) => {
+      setSelectedId(noteId);
+      setShowDetailOnNarrow(noteId !== null);
+      onSelectNote?.(noteId);
+    },
+    [onSelectNote]
+  );
+
   const archive = useCallback(
     (note: DrawerNote, archived: boolean) => {
       // `archived_at` moves the note between lists at once; the server ignores
@@ -131,10 +151,9 @@ export function DrawerTab({
         archived_at: archived ? new Date().toISOString() : null,
       };
       void notes.update(note.id, changes).persisted.catch(() => {});
-      setSelectedId(null);
-      setShowDetailOnNarrow(false);
+      select(null);
     },
-    [notes]
+    [notes, select]
   );
 
   if (!notes.enabled) {
@@ -167,8 +186,7 @@ export function DrawerTab({
             title={hint}
             onClick={() => {
               setView(value);
-              setSelectedId(null);
-              setShowDetailOnNarrow(false);
+              select(null);
             }}
             className={cn(
               'inline-flex items-center gap-half rounded px-base py-half',
@@ -185,7 +203,7 @@ export function DrawerTab({
       {onOpenPage && (
         <button
           type="button"
-          onClick={onOpenPage}
+          onClick={() => onOpenPage(selectedId)}
           title="Open as a page"
           aria-label="Open as a page"
           className="-mt-base ml-auto inline-flex items-center gap-half self-start rounded-md border border-border px-base py-half text-sm text-low hover:text-high"
@@ -196,17 +214,26 @@ export function DrawerTab({
 
       <div
         className={cn(
-          'grid grid-cols-1 gap-base',
+          'grid gap-base',
           isPage
-            ? 'min-h-0 flex-1 sm:grid-cols-[320px_minmax(0,1fr)]'
-            : 'min-h-[320px] sm:grid-cols-[260px_minmax(0,1fr)]'
+            ? cn(
+                'min-h-0 flex-1',
+                narrow
+                  ? 'grid-cols-1'
+                  : compact
+                    ? 'grid-cols-[260px_minmax(0,1fr)]'
+                    : 'grid-cols-[320px_minmax(0,1fr)]'
+              )
+            : 'min-h-[320px] grid-cols-1 sm:grid-cols-[260px_minmax(0,1fr)]'
         )}
       >
         <div
           className={cn(
             'flex flex-col overflow-y-auto rounded-md border border-border bg-secondary',
             isPage ? 'min-h-0' : 'max-h-[60vh]',
-            showDetailOnNarrow && 'hidden sm:flex'
+            isPage
+              ? showDetailOnNarrow && narrow && 'hidden'
+              : showDetailOnNarrow && 'hidden sm:flex'
           )}
         >
           {list.length === 0 && (
@@ -226,10 +253,7 @@ export function DrawerTab({
               <button
                 key={note.id}
                 type="button"
-                onClick={() => {
-                  setSelectedId(note.id);
-                  setShowDetailOnNarrow(true);
-                }}
+                onClick={() => select(note.id)}
                 className={cn(
                   'grid w-full grid-cols-[12px_minmax(0,1fr)] gap-half border-b border-border px-base py-plusfifty text-left last:border-b-0 hover:bg-panel/60',
                   active && 'bg-panel'
@@ -281,7 +305,9 @@ export function DrawerTab({
         <div
           className={cn(
             'flex min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary',
-            !showDetailOnNarrow && 'hidden sm:flex'
+            isPage
+              ? !showDetailOnNarrow && narrow && 'hidden'
+              : !showDetailOnNarrow && 'hidden sm:flex'
           )}
         >
           {selected ? (
@@ -289,6 +315,7 @@ export function DrawerTab({
               note={selected}
               comments={selectedComments}
               view={view}
+              narrow={isPage ? narrow : undefined}
               onBack={() => setShowDetailOnNarrow(false)}
               onArchive={() => archive(selected, true)}
               onRestore={() => archive(selected, false)}
@@ -328,6 +355,7 @@ function NoteDetail({
   note,
   comments,
   view,
+  narrow,
   onBack,
   onArchive,
   onRestore,
@@ -336,6 +364,8 @@ function NoteDetail({
   note: DrawerNote;
   comments: DrawerComment[];
   view: 'inbox' | 'archive';
+  /** Page: one-column layout (back returns to the list); dialog: undefined, the `sm:` classes decide. */
+  narrow?: boolean;
   onBack: () => void;
   onArchive: () => void;
   onRestore: () => void;
@@ -376,7 +406,10 @@ function NoteDetail({
           onClick={onBack}
           title="Back"
           aria-label="Back"
-          className="mt-half shrink-0 text-low hover:text-high sm:hidden"
+          className={cn(
+            'mt-half shrink-0 text-low hover:text-high',
+            narrow === undefined ? 'sm:hidden' : !narrow && 'hidden'
+          )}
         >
           <ArrowLeftIcon className="size-icon-sm" />
         </button>

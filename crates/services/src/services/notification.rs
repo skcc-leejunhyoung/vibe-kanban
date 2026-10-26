@@ -26,6 +26,13 @@ use crate::services::{
 #[async_trait]
 pub trait PushNotifier: Send + Sync + 'static {
     async fn send(&self, title: &str, message: &str, workspace_id: Option<Uuid>);
+
+    /// Like `send`, but a click opens `click_url` (a Drawer note rather than a
+    /// workspace). Notifiers without click targets just show the banner.
+    async fn send_to_url(&self, title: &str, message: &str, click_url: Option<&str>) {
+        let _ = click_url;
+        self.send(title, message, None).await;
+    }
 }
 
 /// Global push notifier set before server startup (e.g., by the Tauri app).
@@ -64,6 +71,14 @@ impl PushNotifier for DefaultPushNotifier {
             send_linux_notification(title, message).await;
         } else if cfg!(target_os = "windows") || (cfg!(target_os = "linux") && utils::is_wsl2()) {
             send_windows_notification(title, message).await;
+        }
+    }
+
+    async fn send_to_url(&self, title: &str, message: &str, click_url: Option<&str>) {
+        if cfg!(target_os = "macos") {
+            send_macos_notification(title, message, click_url).await;
+        } else {
+            self.send(title, message, None).await;
         }
     }
 }
@@ -151,11 +166,11 @@ impl NotificationService {
         if config.push_enabled {
             self.forward_to_remote_web_push_for(title, message, workspace_id, Some(note_id));
 
-            let deeplink = local_web_push_base_url()
+            let note_url = local_web_push_base_url()
                 .await
                 .map(|base_url| format!("{base_url}{}", drawer_note_path(note_id)));
             let web_push_active = self
-                .send_web_push_with_deeplink(title, message, deeplink)
+                .send_web_push_with_deeplink(title, message, note_url.clone())
                 .await
                 .unwrap_or_else(|error| {
                     tracing::warn!(?error, "failed to send local web push notifications");
@@ -165,7 +180,15 @@ impl NotificationService {
                 return;
             }
 
-            self.push_notifier.send(title, message, workspace_id).await;
+            // The OS banner opens the note too (the app root when the local
+            // URL is unknown), not the workspace that sent it.
+            let click_url = match note_url {
+                Some(url) => Some(url),
+                None => notification_click_url().await,
+            };
+            self.push_notifier
+                .send_to_url(title, message, click_url.as_deref())
+                .await;
         }
     }
 
