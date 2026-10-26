@@ -237,7 +237,7 @@ async function runVk(args: string[]): Promise<void> {
   });
 }
 
-/// The server links the `vk` next to its own binary onto every agent's PATH;
+/// The server copies the `vk` next to its own binary onto every agent's PATH;
 /// extract it before the server starts.
 async function ensureVkExtracted(): Promise<void> {
   try {

@@ -94,8 +94,17 @@ mod tests {
         std::fs::write(exe_dir.path().join(vk_binary_name()), b"vk").unwrap();
         std::fs::write(exe_dir.path().join("vibe-kanban"), b"server").unwrap();
         let bin = exe_dir.path().join("agent-bin");
+        // Hosts upgrading from the old layout have `agent-bin/vk` as a symlink.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(&bin).unwrap();
+            let source = exe_dir.path().join(vk_binary_name());
+            std::os::unix::fs::symlink(source, bin.join(vk_binary_name())).unwrap();
+        }
 
         let dir = copy_vk(exe_dir.path(), &bin).unwrap();
+        let meta = std::fs::symlink_metadata(dir.join(vk_binary_name())).unwrap();
+        assert!(meta.file_type().is_file());
         // `build:npx` recreating the server's directory leaves agents' `vk`.
         std::fs::remove_file(exe_dir.path().join(vk_binary_name())).unwrap();
         assert_eq!(std::fs::read(dir.join(vk_binary_name())).unwrap(), b"vk");
