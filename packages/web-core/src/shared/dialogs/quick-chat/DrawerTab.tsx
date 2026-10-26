@@ -58,16 +58,16 @@ export function DrawerTab({
   onSelectNote?: (noteId: string | null) => void;
 }) {
   const isPage = variant === 'page';
-  // The page lays out by its pane's width (the viewport outside a pane): two
-  // columns, a narrower list in a compact pane, one column in a narrow one.
-  // The dialog follows the viewport through the `sm:` classes instead.
-  const narrow = usePaneNarrowerThan(640) && isPage;
+  // Lays out by the width of its container — a pane, the dialog (which
+  // provides its own width) or the viewport: two columns, a narrower list
+  // when compact, one column when narrow.
+  const narrow = usePaneNarrowerThan(640);
   const compact = usePaneNarrowerThan(960);
-  // The page folds the list to a rail (remembered across reloads); the
-  // one-column layout and the dialog always show it.
+  // The list folds to a rail (remembered across reloads); the one-column
+  // layout always shows it.
   const listVisible = useUiPreferencesStore((s) => s.isDrawerListVisible);
   const toggleList = useUiPreferencesStore((s) => s.toggleDrawerList);
-  const collapsed = isPage && !narrow && !listVisible;
+  const collapsed = !narrow && !listVisible;
   const notes = useDrawerNotes();
   const comments = useDrawerComments();
   const [view, setView] = useState<'inbox' | 'archive'>('inbox');
@@ -126,8 +126,11 @@ export function DrawerTab({
 
   const commentCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const comment of comments.data)
+    // Open comments only — resolved ones are folded away in the thread too.
+    for (const comment of comments.data) {
+      if (comment.resolved_at) continue;
       counts.set(comment.note_id, (counts.get(comment.note_id) ?? 0) + 1);
+    }
     return counts;
   }, [comments.data]);
 
@@ -178,28 +181,22 @@ export function DrawerTab({
     <div
       className={cn(
         'grid gap-base',
-        isPage
-          ? cn(
-              'h-full min-h-0',
-              narrow
-                ? 'grid-cols-1'
-                : collapsed
-                  ? 'grid-cols-[40px_minmax(0,1fr)]'
-                  : compact
-                    ? 'grid-cols-[260px_minmax(0,1fr)]'
-                    : 'grid-cols-[320px_minmax(0,1fr)]'
-            )
-          : 'min-h-[320px] grid-cols-1 sm:grid-cols-[260px_minmax(0,1fr)]'
+        isPage ? 'h-full min-h-0' : 'min-h-[320px]',
+        narrow
+          ? 'grid-cols-1'
+          : collapsed
+            ? 'grid-cols-[40px_minmax(0,1fr)]'
+            : compact
+              ? 'grid-cols-[260px_minmax(0,1fr)]'
+              : 'grid-cols-[320px_minmax(0,1fr)]'
       )}
     >
-      {/* List column: view tabs in its header, folded to a rail on the page. */}
+      {/* List column: view tabs in its header, foldable to a rail. */}
       <div
         className={cn(
           'flex flex-col overflow-hidden rounded-md border border-border bg-secondary',
           isPage ? 'min-h-0' : 'max-h-[60vh]',
-          isPage
-            ? showDetail && narrow && 'hidden'
-            : showDetail && 'hidden sm:flex'
+          showDetail && narrow && 'hidden'
         )}
       >
         {collapsed ? (
@@ -268,7 +265,7 @@ export function DrawerTab({
                   <ArrowSquareOutIcon className="size-icon-sm" />
                 </button>
               )}
-              {isPage && !narrow && (
+              {!narrow && (
                 <button
                   type="button"
                   onClick={toggleList}
@@ -354,9 +351,7 @@ export function DrawerTab({
       <div
         className={cn(
           'flex min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary',
-          isPage
-            ? !showDetail && narrow && 'hidden'
-            : !showDetail && 'hidden sm:flex'
+          !showDetail && narrow && 'hidden'
         )}
       >
         {selected ? (
@@ -364,7 +359,7 @@ export function DrawerTab({
             note={selected}
             comments={selectedComments}
             view={view}
-            narrow={isPage ? narrow : undefined}
+            narrow={narrow}
             onBack={() => select(null)}
             onArchive={() => archive(selected, true)}
             onRestore={() => archive(selected, false)}
@@ -424,8 +419,8 @@ function NoteDetail({
   note: DrawerNote;
   comments: DrawerComment[];
   view: 'inbox' | 'archive';
-  /** Page: one-column layout (back returns to the list); dialog: undefined, the `sm:` classes decide. */
-  narrow?: boolean;
+  /** One-column layout: Back returns to the list. */
+  narrow: boolean;
   onBack: () => void;
   onArchive: () => void;
   onRestore: () => void;
@@ -478,7 +473,7 @@ function NoteDetail({
           aria-label="Back"
           className={cn(
             'mt-half shrink-0 text-low hover:text-high',
-            narrow === undefined ? 'sm:hidden' : !narrow && 'hidden'
+            !narrow && 'hidden'
           )}
         >
           <ArrowLeftIcon className="size-icon-sm" />

@@ -38,6 +38,7 @@ import { formatRelativeTime } from '@/shared/lib/date';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
+import { PaneWidthProvider } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
 import { DrawerTab } from '@/shared/dialogs/quick-chat/DrawerTab';
@@ -499,7 +500,9 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
         keepPaneFocusRef.current = false;
         event.preventDefault();
       }}
-      size="xl"
+      // 56rem (≈1.5× the default xl): room for the Drawer's list + note, and
+      // the editor is not cramped either.
+      size="4xl"
       // KeyboardDialog stacks dialogs at the top (items-start). Quick chat is
       // short, so center it vertically. Inline style overrides the base `my-8`
       // (cn is clsx-only, so a `my-auto` class wouldn't win).
@@ -572,14 +575,18 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
       </div>
 
       {isDrawerMode && (
-        <DrawerTab
-          initialNoteId={props.noteId ?? null}
-          onOpenPage={(noteId) => {
-            modal.resolve(null);
-            modal.hide();
-            appNavigation.goToDrawer(noteId ?? undefined);
-          }}
-        />
+        // The board lays out by its container's width: measure the dialog's
+        // content box the way a split pane is measured.
+        <PaneWidthProvider>
+          <DrawerTab
+            initialNoteId={props.noteId ?? null}
+            onOpenPage={(noteId) => {
+              modal.resolve(null);
+              modal.hide();
+              appNavigation.goToDrawer(noteId ?? undefined);
+            }}
+          />
+        </PaneWidthProvider>
       )}
 
       {!isDrawerMode && (
