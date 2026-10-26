@@ -153,6 +153,9 @@ async fn main() -> Result<(), VibeKanbanError> {
         });
     }
     utils::agent_cli::set_backend_url(format!("http://{agent_addr}"));
+    // Copy `vk` for agents now, while the binary next to this one still
+    // exists; a later `build:npx` removes it.
+    utils::agent_cli::vk_binary_dir();
 
     tracing::info!(
         "Main server on :{}, Preview proxy on :{}",
