@@ -221,8 +221,11 @@ same stream: a user comment on a note arrives as `drawer.comment` (its `data`
 carries the note and comment ids and a `vk drawer get <id> --json` hint, never
 the text), tagged
 `autopilot` when the Autopilot wrote it, so only the user's comments wake the
-Autopilot. Add `drawer.` to the connector's `kinds` (and to the routine's
-`immediate` list if replies should not wait for the coalesce window).
+Autopilot. Add `drawer.` to the connector's `kinds`, and give Drawer events a
+routine of their own (trigger `kinds: ["drawer."]`, a short window, a high
+`maxPerHour`, `immediate: ["drawer.comment"]`) while the main routine's trigger
+lists every other kind: `immediate` cannot beat the main routine's hourly cap,
+so a reply would otherwise wait for its next free flush slot.
 
 A routine with trigger `vk_event` (optional `kinds` prefixes and `hosts`
 filters by host id or name) and a `coalesce` block runs **once per burst**: the buffer flushes
