@@ -168,6 +168,16 @@ export function DrawerTab({
     [comments.data, selected]
   );
 
+  // One column in the dialog: the clicked note button is hidden with the list,
+  // which drops focus to the body where Escape closes the whole dialog; the
+  // detail takes it so Escape returns to the list first.
+  const detailRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isPage || !narrow || !showDetail) return;
+    if (detailRef.current?.contains(document.activeElement)) return;
+    detailRef.current?.focus({ preventScroll: true });
+  }, [isPage, narrow, showDetail]);
+
   // What the user opened (or closed): the selection, the one-column view and,
   // on the page, the URL.
   const select = useCallback(
@@ -424,6 +434,7 @@ export function DrawerTab({
       <div
         // Focusable so Escape from the comment box lands here, where the next
         // Escape returns to the list instead of leaving the board.
+        ref={detailRef}
         tabIndex={-1}
         data-drawer-detail
         className={cn(
@@ -643,7 +654,11 @@ function NoteDetail({
                 // Escape leaves the box (keeping the draft); the next one
                 // returns to the list. On the page the app-wide Escape has
                 // already blurred it.
-                if (event.key === 'Escape' && !event.defaultPrevented) {
+                if (
+                  event.key === 'Escape' &&
+                  !event.defaultPrevented &&
+                  !event.nativeEvent.isComposing
+                ) {
                   event.preventDefault();
                   event.currentTarget
                     .closest<HTMLElement>('[data-drawer-detail]')
