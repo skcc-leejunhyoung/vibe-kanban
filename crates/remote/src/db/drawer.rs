@@ -82,6 +82,13 @@ impl DrawerRepository {
         .await
     }
 
+    pub async fn count_notes(pool: &PgPool, owner_user_id: Uuid) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM drawer_notes WHERE owner_user_id = $1")
+            .bind(owner_user_id)
+            .fetch_one(pool)
+            .await
+    }
+
     pub async fn find_note(pool: &PgPool, id: Uuid) -> Result<Option<DrawerNote>, sqlx::Error> {
         sqlx::query_as::<_, DrawerNote>(&format!(
             "SELECT {NOTE_COLUMNS} FROM drawer_notes WHERE id = $1"

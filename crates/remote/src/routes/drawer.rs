@@ -85,6 +85,8 @@ const MAX_TITLE_CHARS: usize = 200;
 const MAX_LABEL_CHARS: usize = 40;
 const MAX_NOTE_BODY_BYTES: usize = 64 * 1024;
 const MAX_COMMENT_BODY_BYTES: usize = 16 * 1024;
+/// Archived notes count too: the list and the shape send them as well.
+const MAX_NOTES_PER_OWNER: i64 = 500;
 
 fn check_note_fields(
     title: Option<&str>,
@@ -186,6 +188,16 @@ async fn create_note(
         payload.label.as_deref(),
     )?;
     check_host(&pool, &ctx, payload.host_id).await?;
+    // ponytail: count-then-insert, concurrent creates can overshoot by a few;
+    // a per-owner advisory lock if the cap ever has to be exact.
+    let notes = DrawerRepository::count_notes(&pool, ctx.user.id)
+        .await
+        .map_err(|error| internal(error, "failed to count drawer notes"))?;
+    if notes >= MAX_NOTES_PER_OWNER {
+        return Err(bad_request(format!(
+            "drawer holds at most {MAX_NOTES_PER_OWNER} notes; delete old ones first"
+        )));
+    }
     let response = DrawerRepository::create_note(&pool, ctx.user.id, payload)
         .await
         .map_err(|error| write_error(error, "failed to create drawer note"))?;
@@ -497,6 +509,30 @@ mod tests {
             .unwrap();
         assert_eq!(after.last_comment_at, Some(later));
         assert_eq!(after.user_seen_at, Some(later));
+
+        // A full Drawer refuses new notes, archived ones included.
+        sqlx::query(
+            "INSERT INTO drawer_notes (id, owner_user_id, title)
+             SELECT gen_random_uuid(), $1, 'filler'
+             FROM generate_series(1, $2 - (SELECT COUNT(*) FROM drawer_notes WHERE owner_user_id = $1))",
+        )
+        .bind(ctx.user.id)
+        .bind(MAX_NOTES_PER_OWNER)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE drawer_notes SET archived_at = NOW() WHERE owner_user_id = $1 AND title = 'filler'")
+            .bind(ctx.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status(create(note(None)).await), StatusCode::BAD_REQUEST);
+        sqlx::query("DELETE FROM drawer_notes WHERE id = $1")
+            .bind(ok.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status(create(note(None)).await), StatusCode::OK);
 
         sqlx::query("DELETE FROM users WHERE id = ANY($1)")
             .bind(vec![ctx.user.id, stranger.user.id])
