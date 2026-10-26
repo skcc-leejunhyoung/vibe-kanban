@@ -49,8 +49,7 @@ import { PaneWidthProvider } from '@/shared/components/workspace-panes/PaneWidth
 import {
   NEXT_SPLIT_PANE_BINDING_ID,
   PREVIOUS_SPLIT_PANE_BINDING_ID,
-  buildCombo,
-  mapCodeToLogicalKey,
+  matchesCombo,
   resolveModifier,
 } from '@/shared/keyboard/registry';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
@@ -177,12 +176,11 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
     if (!modal.visible) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      const combo = buildCombo(
-        event,
-        mapCodeToLogicalKey(event.code, event.key)
-      );
-      const step =
-        combo && combo === nextTabKeys ? 1 : combo === prevTabKeys ? -1 : 0;
+      const step = matchesCombo(event, nextTabKeys)
+        ? 1
+        : matchesCombo(event, prevTabKeys)
+          ? -1
+          : 0;
       if (step === 0) return;
       const dialog = dialogRef.current;
       const active = document.activeElement;
@@ -203,8 +201,8 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
     return () => document.removeEventListener('keydown', onKeyDown, true);
   }, [modal.visible, nextTabKeys, prevTabKeys]);
   // Escape with a Drawer note open returns to the list; only then does the
-  // dialog's own Escape close it (a programmatic open leaves focus outside
-  // the board, so the board's own key handling cannot be relied on).
+  // dialog's own Escape close it. Bubble phase, so a control inside the board
+  // that handles Escape itself (the comment box) goes first.
   const drawerEscapeRef = useRef<(() => boolean) | null>(null);
   const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Escape' || event.defaultPrevented) return;
@@ -572,7 +570,7 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
         event.preventDefault();
       }}
       ref={dialogRef}
-      onKeyDownCapture={handleDialogKeyDown}
+      onKeyDown={handleDialogKeyDown}
       // 56rem (≈1.5× the default xl): room for the Drawer's list + note, and
       // the editor is not cramped either.
       size="4xl"

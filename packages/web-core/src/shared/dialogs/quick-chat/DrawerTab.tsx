@@ -4,7 +4,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
   type MutableRefObject,
 } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
@@ -198,9 +197,7 @@ export function DrawerTab({
   // one, as bound) archives (inbox) or restores (archive) the open note. On
   // the page the workspace shortcut handler asks this store first while the
   // pane is active; in the dialog the same binding is listened to in the
-  // dialog scope. The root also catches Escape itself, so it works wherever
-  // focus sits inside the board (and, in the dialog, before the dialog's own
-  // Escape closes it).
+  // dialog scope, and the dialog asks `escapeRef` on Escape.
   const isActivePane = useIsActivePane();
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
   const keysActive = !!selected && (!isPage || isActivePane);
@@ -237,11 +234,6 @@ export function DrawerTab({
     { enabled: !isPage && keysActive, scopes: ['dialog'] },
     [selected, view, archive]
   );
-  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Escape' || event.defaultPrevented || !selected) return;
-    event.preventDefault();
-    select(null);
-  };
   useEffect(() => {
     if (!escapeRef) return;
     escapeRef.current = () => {
@@ -260,7 +252,6 @@ export function DrawerTab({
 
   return (
     <div
-      onKeyDown={handleKeyDown}
       className={cn(
         'grid gap-base',
         isPage ? 'h-full min-h-0' : 'min-h-[320px]',
@@ -650,8 +641,9 @@ function NoteDetail({
                   return;
                 }
                 // Escape leaves the box (keeping the draft); the next one
-                // returns to the list.
-                if (event.key === 'Escape') {
+                // returns to the list. On the page the app-wide Escape has
+                // already blurred it.
+                if (event.key === 'Escape' && !event.defaultPrevented) {
                   event.preventDefault();
                   event.currentTarget
                     .closest<HTMLElement>('[data-drawer-detail]')

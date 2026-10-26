@@ -1,10 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 
 // Pin the platform so glyph mapping and buildCombo's mod/ctrl assignment are
-// deterministic (macOS: metaKey -> 'mod', getModifierKey -> '⌘').
+// deterministic (macOS: metaKey -> 'mod', getModifierKey -> '⌘'); a test may
+// flip `platform.mac` for the other platforms.
+const platform = vi.hoisted(() => ({ mac: true }));
 vi.mock('@/shared/lib/platform', () => ({
-  isMac: () => true,
-  getModifierKey: () => '⌘',
+  isMac: () => platform.mac,
+  getModifierKey: () => (platform.mac ? '⌘' : 'Ctrl'),
 }));
 
 import {
@@ -17,6 +19,7 @@ import {
   displayKeyParts,
   effectiveActionShortcut,
   buildCombo,
+  matchesCombo,
   reservedBindings,
   COMMAND_BAR_BINDING_ID,
   NEXT_SPLIT_PANE_BINDING_ID,
@@ -238,6 +241,43 @@ describe('buildCombo', () => {
     expect(buildCombo(evt({ metaKey: true }), 'escape')).toBe('mod+escape');
     // on mac, ctrlKey is a distinct 'ctrl' modifier (not 'mod')
     expect(buildCombo(evt({ ctrlKey: true }), 'a')).toBe('ctrl+a');
+  });
+});
+
+describe('matchesCombo', () => {
+  const tab = (mods: Partial<KeyboardEvent>) =>
+    evt({ code: 'Tab', key: 'Tab', ...mods });
+
+  it('matches the default pane-cycling keys on every platform', () => {
+    for (const mac of [true, false]) {
+      platform.mac = mac;
+      try {
+        expect(matchesCombo(tab({ ctrlKey: true }), 'ctrl+tab')).toBe(true);
+        expect(
+          matchesCombo(tab({ ctrlKey: true, shiftKey: true }), 'ctrl+shift+tab')
+        ).toBe(true);
+        expect(matchesCombo(tab({ ctrlKey: true }), 'ctrl+shift+tab')).toBe(
+          false
+        );
+      } finally {
+        platform.mac = true;
+      }
+    }
+  });
+
+  it("maps 'mod' per platform and never matches a cleared binding", () => {
+    const cmdK = evt({ code: 'KeyK', key: 'k', metaKey: true });
+    expect(matchesCombo(cmdK, 'mod+k')).toBe(true);
+    expect(matchesCombo(cmdK, '')).toBe(false);
+    platform.mac = false;
+    try {
+      expect(matchesCombo(cmdK, 'mod+k')).toBe(false);
+      expect(
+        matchesCombo(evt({ code: 'KeyK', key: 'k', ctrlKey: true }), 'mod+k')
+      ).toBe(true);
+    } finally {
+      platform.mac = true;
+    }
   });
 });
 

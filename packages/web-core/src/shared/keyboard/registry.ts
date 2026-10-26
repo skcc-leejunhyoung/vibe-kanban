@@ -868,6 +868,34 @@ export function buildCombo(e: KeyboardEvent, key: string): string | null {
   return parts.join('+');
 }
 
+/**
+ * Match a KeyboardEvent against a combo string like 'mod+k'.
+ * 'mod' maps to Cmd on macOS and Ctrl elsewhere. All other modifiers must
+ * match exactly so e.g. 'mod+k' does not also fire on Cmd+Shift+K. The key is
+ * compared via the physical event.code (mapCodeToLogicalKey) so a rebound combo
+ * round-trips with the recorder and react-hotkeys-hook, which are also
+ * code-based — Shift+digit and non-QWERTY layouts then match correctly.
+ */
+export function matchesCombo(event: KeyboardEvent, combo: string): boolean {
+  const parts = combo.toLowerCase().split('+');
+  const key = parts.pop();
+  if (!key) return false;
+  const mac = isMac();
+  const wantMod = parts.includes('mod');
+  const wantMeta = parts.includes('meta') || (wantMod && mac);
+  const wantCtrl = parts.includes('ctrl') || (wantMod && !mac);
+  const wantShift = parts.includes('shift');
+  const wantAlt = parts.includes('alt');
+
+  return (
+    mapCodeToLogicalKey(event.code, event.key) === key &&
+    event.metaKey === wantMeta &&
+    event.ctrlKey === wantCtrl &&
+    event.shiftKey === wantShift &&
+    event.altKey === wantAlt
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Reserved (non-rebindable) shortcuts
 //
