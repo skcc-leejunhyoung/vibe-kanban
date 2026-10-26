@@ -92,11 +92,13 @@ export function useReviewMode(
     return resolveReviewMode({
       tags,
       openPrs: linkedPrs,
-      issuePrUrls,
+      // Each detail was fetched from one of the issue's PR urls, and gh reports
+      // a renamed or transferred repository's PR under its current url.
+      issuePrUrls: linkedPrs.map((pr) => pr.url),
       repoId: repoId!,
       remoteName: null,
     });
-  }, [canResolve, tags, linkedPrs, issuePrUrls, repoId]);
+  }, [canResolve, tags, linkedPrs, repoId]);
 
   return {
     reviewTagPresent,

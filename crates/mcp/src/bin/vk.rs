@@ -417,7 +417,7 @@ const COMMANDS: &[Cmd] = &[
             short(
                 opt(
                     "message",
-                    "Prompt (default: the issue's title and description); 'Review the checked-out PR.' is appended",
+                    "Prompt, sent as instructions (default: the issue's title and description, fenced as untrusted PR data); 'Review the checked-out PR.' is appended",
                     Where::Local,
                     Kind::Str,
                 ),

@@ -1046,7 +1046,8 @@ pub struct ReviewWorkspaceInput {
     /// Defaults to the one registered repo whose remote hosts the PR.
     pub repo_id: Option<Uuid>,
     pub name: Option<String>,
-    /// Defaults to the issue's title and description.
+    /// Sent as instructions. Defaults to the issue's title and description,
+    /// fenced as data (see [`review_prompt`]).
     pub prompt: Option<String>,
     pub executor_config: ExecutorConfig,
     /// Create and check out only, like the UI's "create": no first turn, no "In review" move.
@@ -2927,6 +2928,11 @@ mod tests {
                  request: Request<axum::body::Body>| async move {
                     let method = request.method().to_string();
                     let path = request.uri().path().to_string();
+                    // A route keyed with its query wins over the bare path.
+                    let full = request
+                        .uri()
+                        .path_and_query()
+                        .map_or_else(|| path.clone(), |pq| pq.as_str().to_string());
                     let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
                         .await
                         .unwrap_or_default();
@@ -2935,10 +2941,14 @@ mod tests {
                         .lock()
                         .unwrap()
                         .push((method.clone(), path.clone(), body));
-                    let (status, reply) = routes
-                        .iter()
-                        .find(|((m, p), _)| *m == method && *p == path)
-                        .map(|(_, reply)| reply.clone())
+                    let route = |wanted: &str| {
+                        routes
+                            .iter()
+                            .find(|((m, p), _)| *m == method && p == wanted)
+                            .map(|(_, reply)| reply.clone())
+                    };
+                    let (status, reply) = route(&full)
+                        .or_else(|| route(&path))
                         .unwrap_or((404, json!({ "success": false, "message": "not found" })));
                     (
                         axum::http::StatusCode::from_u16(status).unwrap(),
@@ -3071,6 +3081,33 @@ mod tests {
         // Nothing to link and no fallback create after a failed review start.
         assert!(posted(&calls, "/links").is_empty());
         assert!(posted(&calls, "/workspaces/create").is_empty());
+    }
+
+    #[tokio::test]
+    async fn review_matches_a_clone_made_before_a_rename_by_its_current_name() {
+        let issue = review_issue();
+        let (mut routes, repo_id) = review_routes(&issue, &["review"], json!([]), json!([]));
+        let remotes = format!("/api/repos/{repo_id}/remotes");
+        routes.insert(
+            ("GET", remotes.clone()),
+            ok(json!([{ "name": "origin", "url": "git@github.com:acme/old-widgets.git" }])),
+        );
+        routes.insert(
+            ("GET", format!("{remotes}?canonical=true")),
+            ok(json!([{ "name": "origin", "url": "https://github.com/acme/widgets" }])),
+        );
+        let (url, _) = fake_vibe(routes).await;
+
+        let outcome = VkClient::new(&url, "test/1")
+            .review_workspace(ReviewWorkspaceInput {
+                dry_run: true,
+                ..review_input(issue.id)
+            })
+            .await
+            .unwrap();
+        assert_eq!(outcome.action, "would_create");
+        assert_eq!(outcome.repo_id, repo_id);
+        assert_eq!(outcome.target_branch, "origin/main");
     }
 
     #[tokio::test]
