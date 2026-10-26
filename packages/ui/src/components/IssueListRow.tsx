@@ -131,9 +131,10 @@ export function IssueListRow({
           tabIndex={0}
           onClick={onClick}
           // Override the drag handle's keydown so keyboard DnD (space to lift)
-          // doesn't shadow the board-level arrow navigation. Enter opens.
+          // doesn't shadow the board-level arrow navigation. Enter opens;
+          // Enter on an inner control (GitHub badge link, "…") stays with it.
           onKeyDown={(e) => {
-            if (e.key === 'Enter') {
+            if (e.key === 'Enter' && e.target === e.currentTarget) {
               e.preventDefault();
               onClick(e as unknown as MouseEvent);
             }
@@ -208,15 +209,8 @@ export function IssueListRow({
                   ))}
                 </div>
               )}
-              {/* Pointer starts are swallowed so clicking a badge (opens
-                  GitHub) never begins a row drag. */}
               {githubIssues.length > 0 && (
-                <div
-                  className="hidden @3xl:flex items-center gap-half"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onTouchStart={(e) => e.stopPropagation()}
-                >
+                <div className="hidden @3xl:flex items-center gap-half">
                   {githubIssues.slice(0, 2).map((githubIssue) => (
                     <GithubIssueBadge key={githubIssue.id} {...githubIssue} />
                   ))}
