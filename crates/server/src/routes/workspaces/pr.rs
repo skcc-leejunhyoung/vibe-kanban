@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     panic::AssertUnwindSafe,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
@@ -57,7 +57,9 @@ use crate::{
     DeploymentImpl,
     error::ApiError,
     middleware::finish_after_disconnect,
-    routes::workspaces::review_mode::{pick_review_remote, review_target_branch_ref},
+    routes::workspaces::review_mode::{
+        ReviewModeError, pick_review_remote, review_target_branch_ref,
+    },
 };
 
 #[derive(Debug, Deserialize, Serialize, TS)]
@@ -1355,7 +1357,16 @@ pub async fn attach_existing_pr(
                 .git()
                 .resolve_remote_for_branch(&repo.path, &workspace_repo.target_branch)?;
             match resolve_pr_by_url(url).await? {
-                Ok(pr) if pr_in_remote(&pr.url, &remote.url) => Some(pr),
+                Ok(pr)
+                    if pr_in_remote(&pr.url, &remote.url)
+                        // The clone may predate a rename or transfer.
+                        || canonical_remotes(std::slice::from_ref(&remote), &repo.path)
+                            .await
+                            .iter()
+                            .any(|current| pr_in_remote(&pr.url, &current.url)) =>
+                {
+                    Some(pr)
+                }
                 Ok(_) => {
                     return Err(ApiError::BadRequest(
                         "Pull request does not belong to this repository".to_string(),
@@ -1720,6 +1731,26 @@ async fn cleanup_failed_pr_workspace(pool: &sqlx::SqlitePool, workspace: &Worksp
     }
 }
 
+/// `remotes` with each GitHub URL replaced by the repository's current URL
+/// from `gh`: a clone made before the repository was renamed or transferred
+/// keeps the old name, which GitHub still serves but a PR URL no longer
+/// matches. A remote `gh` cannot resolve keeps its URL.
+pub(crate) async fn canonical_remotes(remotes: &[GitRemote], repo_path: &Path) -> Vec<GitRemote> {
+    futures_util::future::join_all(remotes.iter().map(|remote| async {
+        let url = match GitHostService::from_url(&remote.url) {
+            Ok(GitHostService::GitHub(github)) => {
+                github.canonical_url(&remote.url, repo_path).await.ok()
+            }
+            _ => None,
+        };
+        GitRemote {
+            name: remote.name.clone(),
+            url: url.unwrap_or_else(|| remote.url.clone()),
+        }
+    }))
+    .await
+}
+
 /// Rows of a review workspace on an existing PR branch: the workspace and its
 /// single repo on the PR base ref (`gh pr checkout` switches the worktree to the
 /// head branch; keeping the repo `target_branch` at the base ref means later
@@ -1739,12 +1770,27 @@ async fn create_pr_review_rows(
     // review in the wrong repository would check out another PR #n or fail late.
     let remotes = deployment.git().list_remotes(&repo.path)?;
     let default = deployment.git().get_default_remote(&repo.path).ok();
-    let remote = pick_review_remote(
-        &pr.pr_url,
-        &remotes,
-        pr.remote_name.as_deref(),
-        default.as_ref().map(|r| r.name.as_str()),
-    )
+    let requested = pr.remote_name.as_deref();
+    let default = default.as_ref().map(|r| r.name.as_str());
+    let remote = match pick_review_remote(&pr.pr_url, &remotes, requested, default) {
+        // A clone made under the repository's old name still hosts the PR.
+        Err(error @ ReviewModeError::PrNotInRepository { .. }) => {
+            let current = canonical_remotes(&remotes, &repo.path).await;
+            let found = pick_review_remote(&pr.pr_url, &current, requested, default).ok();
+            if let Some(found) = found {
+                tracing::warn!(
+                    "Repository '{}': remote '{}' still uses the repository's old URL; it is now {}",
+                    repo.name,
+                    found.name,
+                    found.url
+                );
+            }
+            found
+                .and_then(|found| remotes.iter().find(|r| r.name == found.name))
+                .ok_or(error)
+        }
+        picked => picked,
+    }
     .map_err(|e| ApiError::BadRequest(format!("Repository '{}': {e}", repo.name)))?
     .clone();
 

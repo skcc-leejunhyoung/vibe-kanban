@@ -12,7 +12,7 @@ import { useCreateWorkspace } from '@/shared/hooks/useCreateWorkspace';
 import { workspacesApi } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useReviewMode } from '@/shared/hooks/useReviewMode';
-import { appendReviewInstruction } from '@/shared/lib/reviewMode';
+import { buildReviewPrompt } from '@/shared/lib/reviewMode';
 import { useCreateAttachments } from '@/shared/hooks/useCreateAttachments';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { getSortedExecutorVariantKeys } from '@/shared/lib/executor';
@@ -443,12 +443,10 @@ export function CreateChatBoxContainer({
     const data = {
       executor_config: executorConfig,
       name: getWorkspaceName(),
-      // In review mode, append "Review the checked-out PR." below the user's prompt
-      // so the agent reviews the resolved PR. Gated on the same payload that
-      // sends `pr_review`, so it is omitted when no PR is being reviewed.
-      prompt: reviewMode.prReviewPayload
-        ? appendReviewInstruction(message)
-        : message,
+      // In review mode the prompt (seeded from the review issue, i.e. the PR's
+      // own text) goes in fenced as data, with "Review the checked-out PR."
+      // below. Gated on the same payload that sends `pr_review`.
+      prompt: reviewMode.prReviewPayload ? buildReviewPrompt(message) : message,
       repos: workspaceRepos,
       linked_issue: getLinkedIssuePayload(),
       attachment_ids: getAttachmentIds(),

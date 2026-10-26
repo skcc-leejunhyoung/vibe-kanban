@@ -49,14 +49,31 @@ pub fn pr_repo_key(url: &str) -> Option<String> {
 }
 
 /// Whether `remote_url` is a clone of the repository `pr_url` points into.
-/// Hosts are not compared: an SSH host alias (`git@github-work:org/repo`) still
-/// names `github.com/org/repo`.
+/// Paths must match; hosts only when both are DNS names (a dot and a letters-only
+/// last label), since an SSH host alias (`git@github-work:org/repo`,
+/// `git@github.com-work:org/repo`) still names `github.com/org/repo`. A subdomain
+/// counts as its parent (`ssh.github.com` is GitHub's SSH-over-443 host).
 pub fn pr_in_remote(pr_url: &str, remote_url: &str) -> bool {
-    fn path(key: &str) -> Option<&str> {
-        key.split_once('/').map(|(_, path)| path)
+    fn is_dns_name(host: &str) -> bool {
+        host.rsplit_once('.')
+            .is_some_and(|(_, tld)| !tld.is_empty() && tld.bytes().all(|b| b.is_ascii_alphabetic()))
+    }
+    fn same_host(a: &str, b: &str) -> bool {
+        a == b || a.ends_with(&format!(".{b}")) || b.ends_with(&format!(".{a}"))
     }
     let remote = normalized_repo_key(remote_url);
-    pr_repo_key(pr_url).is_some_and(|pr| path(&pr).is_some() && path(&pr) == path(&remote))
+    let Some(pr) = pr_repo_key(pr_url) else {
+        return false;
+    };
+    match (pr.split_once('/'), remote.split_once('/')) {
+        (Some((pr_host, pr_path)), Some((remote_host, remote_path))) => {
+            pr_path == remote_path
+                && (!is_dns_name(pr_host)
+                    || !is_dns_name(remote_host)
+                    || same_host(pr_host, remote_host))
+        }
+        _ => false,
+    }
 }
 
 /// `url` without its userinfo, for messages: an HTTPS remote can embed a token
@@ -127,10 +144,30 @@ mod tests {
         let pr = "https://github.com/Acme/Widgets/pull/42";
         assert!(pr_in_remote(pr, "git@github.com:acme/widgets.git"));
         assert!(pr_in_remote(pr, "git@github-work:acme/widgets.git"));
+        assert!(pr_in_remote(pr, "git@github.com-work:acme/widgets.git"));
+        assert!(pr_in_remote(
+            pr,
+            "ssh://git@ssh.github.com:443/acme/widgets.git"
+        ));
         assert!(!pr_in_remote(pr, "git@github.com:acme/other.git"));
         assert!(!pr_in_remote(
             "https://example.com/not-a-pr",
             "git@github.com:acme/widgets.git"
+        ));
+    }
+
+    #[test]
+    fn pr_in_remote_compares_real_hosts() {
+        let pr = "https://github.com/acme/widgets/pull/42";
+        assert!(!pr_in_remote(pr, "git@ghe.example.com:acme/widgets.git"));
+        assert!(!pr_in_remote(pr, "https://ghe.example.com/acme/widgets"));
+        assert!(!pr_in_remote(
+            "https://ghe.example.com/acme/widgets/pull/42",
+            "git@github.com:acme/widgets.git"
+        ));
+        assert!(pr_in_remote(
+            "https://ghe.example.com/acme/widgets/pull/42",
+            "ssh://git@ghe.example.com:2222/acme/widgets.git"
         ));
     }
 }

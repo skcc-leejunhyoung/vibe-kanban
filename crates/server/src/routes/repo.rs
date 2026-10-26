@@ -24,7 +24,7 @@ use crate::{
     DeploymentImpl,
     error::ApiError,
     pull_request_cache::{Cached, PullRequestCache, RefreshClaim, SwrCache},
-    routes::workspaces::pr::{GetPrCommentsError, PrCommentsResponse},
+    routes::workspaces::pr::{GetPrCommentsError, PrCommentsResponse, canonical_remotes},
 };
 
 /// Cache TTL for PR list/detail lookups, overridable via
@@ -182,9 +182,18 @@ pub async fn create_local_branch_from_remote(
     Ok(ResponseJson(ApiResponse::success(local_branch)))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RepoRemotesQuery {
+    /// GitHub remotes by the repository's current URL (`gh`), not the
+    /// configured one: `vk ws review` matches a renamed repository's PR this way.
+    #[serde(default)]
+    pub canonical: bool,
+}
+
 pub async fn get_repo_remotes(
     State(deployment): State<DeploymentImpl>,
     Path(repo_id): Path<Uuid>,
+    Query(query): Query<RepoRemotesQuery>,
 ) -> Result<ResponseJson<ApiResponse<Vec<GitRemote>>>, ApiError> {
     let repo = deployment
         .repo()
@@ -192,6 +201,11 @@ pub async fn get_repo_remotes(
         .await?;
 
     let remotes = deployment.git().list_remotes(&repo.path)?;
+    if query.canonical {
+        return Ok(ResponseJson(ApiResponse::success(
+            canonical_remotes(&remotes, &repo.path).await,
+        )));
+    }
     Ok(ResponseJson(ApiResponse::success(remotes)))
 }
 

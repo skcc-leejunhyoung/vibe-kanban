@@ -83,6 +83,22 @@ impl GitHubProvider {
             .search_repo_spec())
     }
 
+    /// The repository's current `https://<host>/<owner>/<repo>`, as GitHub
+    /// resolves `remote_url`: follows the renames and transfers a clone's
+    /// remote URL predates.
+    pub async fn canonical_url(
+        &self,
+        remote_url: &str,
+        repo_path: &Path,
+    ) -> Result<String, GitHostError> {
+        let info = self.get_repo_info(remote_url, repo_path).await?;
+        Ok(format!(
+            "https://{}/{}",
+            info.hostname.as_deref().unwrap_or("github.com"),
+            info.search_repo_spec()
+        ))
+    }
+
     /// Branch names linked to a GitHub issue's Development section, by node id.
     pub async fn list_issue_linked_branches(
         &self,
