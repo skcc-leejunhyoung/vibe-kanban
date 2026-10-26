@@ -377,6 +377,20 @@ pub fn blocked_config_fields(changed: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Why an agent request is refused under `access`, or `None` to let it through.
+fn denial(decision: Decision, access: &AgentAccessConfig) -> Option<String> {
+    match decision {
+        Decision::Allow => None,
+        Decision::Forbidden => Some("this operation is not available to agents".to_string()),
+        Decision::Gated(toggle) => (!toggle.enabled(access)).then(|| {
+            format!(
+                "agent_access.{} is off; enable it under Settings → Automation → Agent access",
+                toggle.key()
+            )
+        }),
+    }
+}
+
 pub async fn guard_agent_access(
     State(deployment): State<DeploymentImpl>,
     request: Request,
@@ -406,19 +420,8 @@ pub async fn guard_agent_access(
     // The query string is the argument summary; bodies are not read here.
     let query = request.uri().query().unwrap_or("").to_owned();
     let decision = classify(&method, &path, &query, session.parse().ok());
-    let denial = match decision {
-        Decision::Allow => None,
-        Decision::Forbidden => Some("this operation is not available to agents".to_string()),
-        Decision::Gated(toggle) => {
-            let access = deployment.config().read().await.agent_access.clone();
-            (!toggle.enabled(&access)).then(|| {
-                format!(
-                    "agent_access.{} is off; enable it under Settings → Automation → Agent access",
-                    toggle.key()
-                )
-            })
-        }
-    };
+    let access = deployment.config().read().await.agent_access.clone();
+    let denial = denial(decision, &access);
     let is_write = !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
     match denial {
         Some(reason) => {
@@ -554,6 +557,16 @@ mod tests {
                 "{query} {agent:?}"
             );
         }
+        // With `control_sessions` off, another session's execution is refused
+        // and the agent's own still goes through.
+        let off = AgentAccessConfig {
+            control_sessions: false,
+            ..AgentAccessConfig::default()
+        };
+        let theirs = register(local, &format!("session_id={other}"), Some(own));
+        assert!(denial(theirs, &off).is_some_and(|reason| reason.contains("control_sessions")));
+        assert_eq!(denial(theirs, &AgentAccessConfig::default()), None);
+        assert_eq!(denial(register(local, &mine, Some(own)), &off), None);
     }
 
     #[test]
