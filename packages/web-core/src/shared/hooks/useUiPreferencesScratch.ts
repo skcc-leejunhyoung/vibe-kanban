@@ -55,6 +55,7 @@ export function storeToScratchData(state: {
   collapsedPaths: Record<string, string[]>;
   fileSearchRepoId: string | null;
   isLeftSidebarVisible: boolean;
+  isDrawerListVisible: boolean;
   rightSidebarSectionOrder: RightSidebarSectionId[];
   workspacePanelStates: Record<string, WorkspacePanelState>;
   workspaceFilters: WorkspaceFilterState;
@@ -93,6 +94,7 @@ export function storeToScratchData(state: {
     collapsed_paths: state.collapsedPaths,
     file_search_repo_id: state.fileSearchRepoId,
     is_left_sidebar_visible: state.isLeftSidebarVisible,
+    is_drawer_list_visible: state.isDrawerListVisible,
     // Not persisted: the global right-sidebar flag is only the collapsed
     // default for panes without an override. Restoring a stored value would
     // resurrect the pre-per-pane global toggle. Per-workspace overrides still
@@ -151,6 +153,7 @@ export function scratchDataToStore(data: UiPreferencesData): {
   collapsedPaths: Record<string, string[]>;
   fileSearchRepoId: string | null;
   isLeftSidebarVisible: boolean;
+  isDrawerListVisible: boolean;
   rightSidebarSectionOrder: RightSidebarSectionId[];
   workspacePanelStates: Record<string, WorkspacePanelState>;
   workspaceFilters: WorkspaceFilterState;
@@ -231,6 +234,7 @@ export function scratchDataToStore(data: UiPreferencesData): {
     collapsedPaths: (data.collapsed_paths ?? {}) as Record<string, string[]>,
     fileSearchRepoId: data.file_search_repo_id ?? legacyFileSearchRepoId,
     isLeftSidebarVisible: data.is_left_sidebar_visible ?? true,
+    isDrawerListVisible: data.is_drawer_list_visible ?? true,
     rightSidebarSectionOrder: normalizeRightSidebarSectionOrder(
       data.right_sidebar_section_order
     ),
@@ -299,6 +303,7 @@ export function useUiPreferencesScratch() {
     collapsedPaths: state.collapsedPaths,
     fileSearchRepoId: state.fileSearchRepoId,
     isLeftSidebarVisible: state.isLeftSidebarVisible,
+    isDrawerListVisible: state.isDrawerListVisible,
     rightSidebarSectionOrder: state.rightSidebarSectionOrder,
     workspacePanelStates: state.workspacePanelStates,
     workspaceFilters: state.workspaceFilters,
@@ -335,6 +340,7 @@ export function useUiPreferencesScratch() {
       collapsedPaths: currentState.collapsedPaths,
       fileSearchRepoId: currentState.fileSearchRepoId,
       isLeftSidebarVisible: currentState.isLeftSidebarVisible,
+      isDrawerListVisible: currentState.isDrawerListVisible,
       rightSidebarSectionOrder: currentState.rightSidebarSectionOrder,
       workspacePanelStates: currentState.workspacePanelStates,
       workspaceFilters: currentState.workspaceFilters,
@@ -387,6 +393,7 @@ export function useUiPreferencesScratch() {
         collapsedPaths: serverState.collapsedPaths,
         fileSearchRepoId: serverState.fileSearchRepoId,
         isLeftSidebarVisible: serverState.isLeftSidebarVisible,
+        isDrawerListVisible: serverState.isDrawerListVisible,
         rightSidebarSectionOrder: serverState.rightSidebarSectionOrder,
         workspacePanelStates: serverState.workspacePanelStates,
         workspaceFilters: serverState.workspaceFilters,

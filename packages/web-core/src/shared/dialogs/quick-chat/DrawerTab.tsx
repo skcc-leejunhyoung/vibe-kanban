@@ -8,6 +8,7 @@ import {
   PaperPlaneRightIcon,
   PushPinIcon,
   RobotIcon,
+  SidebarSimpleIcon,
   UserIcon,
 } from '@phosphor-icons/react';
 import type {
@@ -19,6 +20,7 @@ import { cn } from '@vibe/ui/lib/cn';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useDrawerComments, useDrawerNotes } from '@/shared/hooks/useDrawer';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
+import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { isDrawerNoteUnread } from '@/shared/lib/drawer';
 import { formatDateTimeFull, formatRelativeTime } from '@/shared/lib/date';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
@@ -59,6 +61,11 @@ export function DrawerTab({
   // The dialog follows the viewport through the `sm:` classes instead.
   const narrow = usePaneNarrowerThan(640) && isPage;
   const compact = usePaneNarrowerThan(960);
+  // The page folds the list to a rail (remembered across reloads); the
+  // one-column layout and the dialog always show it.
+  const listVisible = useUiPreferencesStore((s) => s.isDrawerListVisible);
+  const toggleList = useUiPreferencesStore((s) => s.toggleDrawerList);
+  const collapsed = isPage && !narrow && !listVisible;
   const notes = useDrawerNotes();
   const comments = useDrawerComments();
   const [view, setView] = useState<'inbox' | 'archive'>('inbox');
@@ -161,183 +168,217 @@ export function DrawerTab({
   }
 
   return (
-    <div className={cn('flex min-h-0 flex-col gap-base', isPage && 'h-full')}>
-      <div
-        role="tablist"
-        aria-label="Drawer view"
-        className="inline-flex self-start rounded-md border border-border bg-secondary p-half text-sm"
-      >
-        {(
-          [
-            ['inbox', 'Inbox', notes.inbox.length, undefined],
-            [
-              'archive',
-              'Archive',
-              notes.archived.length,
-              'Deleted after 90 days',
-            ],
-          ] as const
-        ).map(([value, label, count, hint]) => (
-          <button
-            key={value}
-            type="button"
-            role="tab"
-            aria-selected={view === value}
-            title={hint}
-            onClick={() => {
-              setView(value);
-              select(null);
-            }}
-            className={cn(
-              'inline-flex items-center gap-half rounded px-base py-half',
-              view === value
-                ? 'bg-panel text-high'
-                : 'text-low hover:text-normal'
-            )}
-          >
-            {label}
-            {count > 0 && <span className="text-low">{count}</span>}
-          </button>
-        ))}
-      </div>
-      {onOpenPage && (
-        <button
-          type="button"
-          onClick={() => onOpenPage(selectedId)}
-          title="Open as a page"
-          aria-label="Open as a page"
-          className="-mt-base ml-auto inline-flex items-center gap-half self-start rounded-md border border-border px-base py-half text-sm text-low hover:text-high"
-        >
-          <ArrowSquareOutIcon className="size-icon-xs" />
-        </button>
-      )}
-
-      <div
-        className={cn(
-          'grid gap-base',
-          isPage
-            ? cn(
-                'min-h-0 flex-1',
-                narrow
-                  ? 'grid-cols-1'
+    <div
+      className={cn(
+        'grid gap-base',
+        isPage
+          ? cn(
+              'h-full min-h-0',
+              narrow
+                ? 'grid-cols-1'
+                : collapsed
+                  ? 'grid-cols-[40px_minmax(0,1fr)]'
                   : compact
                     ? 'grid-cols-[260px_minmax(0,1fr)]'
                     : 'grid-cols-[320px_minmax(0,1fr)]'
-              )
-            : 'min-h-[320px] grid-cols-1 sm:grid-cols-[260px_minmax(0,1fr)]'
+            )
+          : 'min-h-[320px] grid-cols-1 sm:grid-cols-[260px_minmax(0,1fr)]'
+      )}
+    >
+      {/* List column: view tabs in its header, folded to a rail on the page. */}
+      <div
+        className={cn(
+          'flex flex-col overflow-hidden rounded-md border border-border bg-secondary',
+          isPage ? 'min-h-0' : 'max-h-[60vh]',
+          isPage
+            ? showDetailOnNarrow && narrow && 'hidden'
+            : showDetailOnNarrow && 'hidden sm:flex'
         )}
       >
-        <div
-          className={cn(
-            'flex flex-col overflow-y-auto rounded-md border border-border bg-secondary',
-            isPage ? 'min-h-0' : 'max-h-[60vh]',
-            isPage
-              ? showDetailOnNarrow && narrow && 'hidden'
-              : showDetailOnNarrow && 'hidden sm:flex'
-          )}
-        >
-          {list.length === 0 && (
-            <p className="p-double text-center text-sm text-low">
-              {notes.isLoading
-                ? 'Loading…'
-                : view === 'inbox'
-                  ? 'No notes'
-                  : 'Nothing archived'}
-            </p>
-          )}
-          {list.map((note) => {
-            const unread = isDrawerNoteUnread(note);
-            const active = selected?.id === note.id;
-            const count = commentCounts.get(note.id) ?? 0;
-            return (
-              <button
-                key={note.id}
-                type="button"
-                onClick={() => select(note.id)}
-                className={cn(
-                  'grid w-full grid-cols-[12px_minmax(0,1fr)] gap-half border-b border-border px-base py-plusfifty text-left last:border-b-0 hover:bg-panel/60',
-                  active && 'bg-panel'
-                )}
+        {collapsed ? (
+          <button
+            type="button"
+            onClick={toggleList}
+            title="Show list"
+            aria-label="Show list"
+            aria-expanded={false}
+            className="flex flex-col items-center gap-half py-base text-low hover:text-high"
+          >
+            <SidebarSimpleIcon className="size-icon-sm" />
+            {notes.unreadCount > 0 && (
+              <span className="size-[7px] rounded-full bg-brand" />
+            )}
+          </button>
+        ) : (
+          <>
+            <div className="flex shrink-0 items-center gap-half border-b border-border px-base">
+              <div
+                role="tablist"
+                aria-label="Drawer view"
+                className="flex min-w-0 flex-1 items-center gap-base text-sm"
               >
-                <span
-                  className={cn(
-                    'mt-1 size-[7px] rounded-full',
-                    unread ? 'bg-brand' : 'bg-transparent'
-                  )}
-                />
-                <span className="min-w-0">
-                  <span
+                {(
+                  [
+                    ['inbox', 'Inbox', notes.inbox.length, undefined],
+                    [
+                      'archive',
+                      'Archive',
+                      notes.archived.length,
+                      'Deleted after 90 days',
+                    ],
+                  ] as const
+                ).map(([value, label, count, hint]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    role="tab"
+                    aria-selected={view === value}
+                    title={hint}
+                    onClick={() => {
+                      setView(value);
+                      select(null);
+                    }}
                     className={cn(
-                      'line-clamp-2 leading-snug',
-                      unread ? 'font-medium text-high' : 'text-normal'
+                      '-mb-px inline-flex items-center gap-half border-b-2 px-half py-base',
+                      view === value
+                        ? 'border-brand text-high'
+                        : 'border-transparent text-low hover:text-normal'
                     )}
                   >
-                    {note.pinned && (
-                      <PushPinIcon
-                        weight="fill"
-                        className="mr-1 inline size-icon-xs text-low"
-                      />
-                    )}
-                    {note.title}
-                  </span>
-                  <span className="mt-half flex items-center gap-base text-sm text-low">
-                    {note.label && (
-                      <span className="rounded-sm border border-brand/60 px-1 text-brand">
-                        {note.label}
-                      </span>
-                    )}
-                    <span>
-                      {formatRelativeTime(noteActivityAt(note, view))}
-                    </span>
-                    {count > 0 && (
-                      <span className="inline-flex items-center gap-[2px]">
-                        <ChatCircleIcon className="size-icon-xs" />
-                        {count}
-                      </span>
-                    )}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div
-          className={cn(
-            'flex min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary',
-            isPage
-              ? !showDetailOnNarrow && narrow && 'hidden'
-              : !showDetailOnNarrow && 'hidden sm:flex'
-          )}
-        >
-          {selected ? (
-            <NoteDetail
-              note={selected}
-              comments={selectedComments}
-              view={view}
-              narrow={isPage ? narrow : undefined}
-              onBack={() => setShowDetailOnNarrow(false)}
-              onArchive={() => archive(selected, true)}
-              onRestore={() => archive(selected, false)}
-              onComment={(body) => {
-                // `created_at` only dates the optimistic row until the server's
-                // arrives; the server ignores it.
-                const comment: CreateDrawerCommentRequest &
-                  Pick<DrawerComment, 'created_at'> = {
-                  note_id: selected.id,
-                  body,
-                  author: 'user',
-                  created_at: new Date().toISOString(),
-                };
-                return comments.insert(comment).persisted;
-              }}
-            />
-          ) : (
-            <div className="flex flex-1 items-center justify-center p-double text-sm text-low">
-              Select a note
+                    {label}
+                    {count > 0 && <span className="text-low">{count}</span>}
+                  </button>
+                ))}
+              </div>
+              {onOpenPage && (
+                <button
+                  type="button"
+                  onClick={() => onOpenPage(selectedId)}
+                  title="Open as a page"
+                  aria-label="Open as a page"
+                  className="rounded p-half text-low hover:text-high"
+                >
+                  <ArrowSquareOutIcon className="size-icon-sm" />
+                </button>
+              )}
+              {isPage && !narrow && (
+                <button
+                  type="button"
+                  onClick={toggleList}
+                  title="Hide list"
+                  aria-label="Hide list"
+                  aria-expanded
+                  className="rounded p-half text-low hover:text-high"
+                >
+                  <SidebarSimpleIcon className="size-icon-sm" />
+                </button>
+              )}
             </div>
-          )}
-        </div>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {list.length === 0 && (
+                <p className="p-double text-center text-sm text-low">
+                  {notes.isLoading
+                    ? 'Loading…'
+                    : view === 'inbox'
+                      ? 'No notes'
+                      : 'Nothing archived'}
+                </p>
+              )}
+              {list.map((note) => {
+                const unread = isDrawerNoteUnread(note);
+                const active = selected?.id === note.id;
+                const count = commentCounts.get(note.id) ?? 0;
+                return (
+                  <button
+                    key={note.id}
+                    type="button"
+                    onClick={() => select(note.id)}
+                    className={cn(
+                      'grid w-full grid-cols-[12px_minmax(0,1fr)] gap-half border-b border-border px-base py-plusfifty text-left last:border-b-0 hover:bg-panel/60',
+                      active && 'bg-panel'
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'mt-1 size-[7px] rounded-full',
+                        unread ? 'bg-brand' : 'bg-transparent'
+                      )}
+                    />
+                    <span className="min-w-0">
+                      <span
+                        className={cn(
+                          'line-clamp-2 leading-snug',
+                          unread ? 'font-medium text-high' : 'text-normal'
+                        )}
+                      >
+                        {note.pinned && (
+                          <PushPinIcon
+                            weight="fill"
+                            className="mr-1 inline size-icon-xs text-low"
+                          />
+                        )}
+                        {note.title}
+                      </span>
+                      <span className="mt-half flex items-center gap-base text-sm text-low">
+                        {note.label && (
+                          <span className="rounded-sm border border-brand/60 px-1 text-brand">
+                            {note.label}
+                          </span>
+                        )}
+                        <span>
+                          {formatRelativeTime(noteActivityAt(note, view))}
+                        </span>
+                        {count > 0 && (
+                          <span className="inline-flex items-center gap-[2px]">
+                            <ChatCircleIcon className="size-icon-xs" />
+                            {count}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div
+        className={cn(
+          'flex min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary',
+          isPage
+            ? !showDetailOnNarrow && narrow && 'hidden'
+            : !showDetailOnNarrow && 'hidden sm:flex'
+        )}
+      >
+        {selected ? (
+          <NoteDetail
+            note={selected}
+            comments={selectedComments}
+            view={view}
+            narrow={isPage ? narrow : undefined}
+            onBack={() => setShowDetailOnNarrow(false)}
+            onArchive={() => archive(selected, true)}
+            onRestore={() => archive(selected, false)}
+            onComment={(body) => {
+              // `created_at` only dates the optimistic row until the server's
+              // arrives; the server ignores it.
+              const comment: CreateDrawerCommentRequest &
+                Pick<DrawerComment, 'created_at'> = {
+                note_id: selected.id,
+                body,
+                author: 'user',
+                created_at: new Date().toISOString(),
+              };
+              return comments.insert(comment).persisted;
+            }}
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center p-double text-sm text-low">
+            Select a note
+          </div>
+        )}
       </div>
     </div>
   );

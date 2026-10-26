@@ -163,6 +163,9 @@ pub struct UiPreferencesData {
     /// Global left sidebar visibility
     #[serde(default)]
     pub is_left_sidebar_visible: Option<bool>,
+    /// Drawer page: note list column shown (false = folded to a rail)
+    #[serde(default)]
+    pub is_drawer_list_visible: Option<bool>,
     /// Global right sidebar visibility
     #[serde(default)]
     pub is_right_sidebar_visible: Option<bool>,

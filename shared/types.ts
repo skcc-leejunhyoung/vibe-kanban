@@ -151,6 +151,10 @@ file_search_repo_id: string | null,
  */
 is_left_sidebar_visible: boolean | null,
 /**
+ * Drawer page: note list column shown (false = folded to a rail)
+ */
+is_drawer_list_visible: boolean | null,
+/**
  * Global right sidebar visibility
  */
 is_right_sidebar_visible: boolean | null,

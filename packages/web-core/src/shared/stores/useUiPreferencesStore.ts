@@ -495,6 +495,8 @@ type State = {
   // Global layout state (applies across all workspaces)
   layoutMode: LayoutMode;
   isLeftSidebarVisible: boolean;
+  /** Drawer page: the note list column, folded to a rail when false. */
+  isDrawerListVisible: boolean;
   /**
    * Default right-sidebar visibility for panes with no per-workspace override.
    * Both local and remote web start collapsed so the chat gets the width.
@@ -577,6 +579,7 @@ type State = {
   setLayoutMode: (mode: LayoutMode) => void;
   toggleLayoutMode: () => void;
   toggleLeftSidebar: () => void;
+  toggleDrawerList: () => void;
   toggleLeftMainPanel: (workspaceId?: string) => void;
   toggleRightSidebar: (workspaceId?: string) => void;
   setRightSidebarSectionOrder: (order: RightSidebarSectionId[]) => void;
@@ -670,6 +673,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Global layout state
   layoutMode: 'workspaces' as LayoutMode,
   isLeftSidebarVisible: true,
+  isDrawerListVisible: true,
   isRightSidebarVisible: false,
   rightSidebarSectionOrder: DEFAULT_RIGHT_SIDEBAR_SECTION_ORDER,
   previewRefreshKeys: {},
@@ -736,6 +740,8 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
     })),
   toggleLeftSidebar: () =>
     set((s) => ({ isLeftSidebarVisible: !s.isLeftSidebarVisible })),
+  toggleDrawerList: () =>
+    set((s) => ({ isDrawerListVisible: !s.isDrawerListVisible })),
 
   toggleLeftMainPanel: (workspaceId) => {
     if (!workspaceId) return;

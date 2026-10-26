@@ -54,3 +54,22 @@ describe('context bar visibility round-trip', () => {
     expect(scratchDataToStore(data).isContextBarVisible).toBe(false);
   });
 });
+
+describe('drawer list visibility round-trip', () => {
+  it('defaults to visible when the server payload predates the flag', () => {
+    const data = storeToScratchData(useUiPreferencesStore.getState());
+    delete (data as { is_drawer_list_visible?: boolean | null })
+      .is_drawer_list_visible;
+
+    expect(scratchDataToStore(data).isDrawerListVisible).toBe(true);
+  });
+
+  it('preserves a folded list', () => {
+    const data = storeToScratchData({
+      ...useUiPreferencesStore.getState(),
+      isDrawerListVisible: false,
+    });
+
+    expect(scratchDataToStore(data).isDrawerListVisible).toBe(false);
+  });
+});
