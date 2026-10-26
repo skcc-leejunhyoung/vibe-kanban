@@ -680,6 +680,17 @@ impl VkClient {
         &self,
         filter: &WorkspaceFilter,
     ) -> Result<Vec<WorkspaceListItem>, VkError> {
+        self.list_workspaces_with(filter, false).await
+    }
+
+    /// `require_summaries`: fail when the summaries call fails instead of
+    /// listing without status. A review lookup needs it (rows without PR state
+    /// match nothing); listing and name lookup work without.
+    async fn list_workspaces_with(
+        &self,
+        filter: &WorkspaceFilter,
+        require_summaries: bool,
+    ) -> Result<Vec<WorkspaceListItem>, VkError> {
         let mut query = Vec::new();
         if let Some(archived) = filter.archived {
             query.push(("archived", archived.to_string()));
@@ -698,12 +709,12 @@ impl VkClient {
                 .map(|row| (row.workspace_id, row))
                 .collect(),
             // Older hosts have no summaries; the list still works without status.
-            Err(error) if matches!(error.status(), Some(404 | 405)) => {
+            // Any other failure is not "no summaries": every row would lose its
+            // PR and run state, so a review lookup stops there.
+            Err(error) if !require_summaries || matches!(error.status(), Some(404 | 405)) => {
                 tracing::debug!(%error, "workspace summaries unavailable");
                 HashMap::new()
             }
-            // A failed answer is not "no summaries": every row would lose its
-            // PR and run state (a review lookup would find nothing).
             Err(error) => return Err(error),
         };
         let mut items: Vec<WorkspaceListItem> = workspaces
@@ -1374,9 +1385,9 @@ impl VkClient {
         for (host, name) in hosts.filter(|(host, _)| *host != selected) {
             let client = self.host(host);
             // Retried once: a relayed answer can come back cut off.
-            let workspaces = match client.list_workspaces(&filter).await {
+            let workspaces = match client.list_workspaces_with(&filter, true).await {
                 Ok(workspaces) => workspaces,
-                Err(_) => client.list_workspaces(&filter).await.map_err(|error| {
+                Err(_) => client.list_workspaces_with(&filter, true).await.map_err(|error| {
                     VkError::message(format!(
                         "Could not check host {name} for an existing review workspace ({error}); nothing was created. Rerun when that host responds."
                     ))
@@ -1464,10 +1475,13 @@ impl VkClient {
         // The open review of this issue and PR, on the selected host or, when
         // that has none, on another reachable one: rerunning anywhere reuses it.
         let workspaces = self
-            .list_workspaces(&WorkspaceFilter {
-                archived: Some(false),
-                ..Default::default()
-            })
+            .list_workspaces_with(
+                &WorkspaceFilter {
+                    archived: Some(false),
+                    ..Default::default()
+                },
+                true,
+            )
             .await?;
         let (client, existing) = match find_review_workspace(&workspaces, issue.id, &pr.url) {
             Some(found) => (self.clone(), Some(found.clone())),
@@ -3190,6 +3204,32 @@ mod tests {
                 .iter()
                 .all(|(method, _, _)| method == "GET")
         );
+    }
+
+    #[tokio::test]
+    async fn listing_survives_a_failed_summaries_call_but_review_lookup_does_not() {
+        let workspace = json!({
+            "id": Uuid::new_v4(), "task_id": null, "container_ref": null,
+            "branch": "feature-x", "setup_completed_at": null, "created_at": Utc::now(),
+            "updated_at": Utc::now(), "archived": false, "pinned": false, "name": "ws",
+            "worktree_deleted": false, "ephemeral": false, "in_place": false, "autopilot": false,
+            "cleanup_blocked_reason": null, "status_note": null, "status_updated_at": null,
+        });
+        let routes = HashMap::from([
+            (("GET", "/api/workspaces".into()), ok(json!([workspace]))),
+            (
+                ("POST", "/api/workspaces/summaries".into()),
+                (200, json!("cut off")),
+            ),
+        ]);
+        let (url, _) = fake_vibe(routes).await;
+        let client = VkClient::new(&url, "test/1");
+        let filter = WorkspaceFilter::default();
+
+        let listed = client.list_workspaces(&filter).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name.as_deref(), Some("ws"));
+        assert!(client.list_workspaces_with(&filter, true).await.is_err());
     }
 
     #[tokio::test]
