@@ -485,7 +485,8 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
   ]);
 
   const showForm =
-    !isAutopilotMode || (!existingAutopilot && !autopilotQuery.isLoading);
+    !isDrawerMode &&
+    (!isAutopilotMode || (!existingAutopilot && !autopilotQuery.isLoading));
 
   return (
     <Dialog

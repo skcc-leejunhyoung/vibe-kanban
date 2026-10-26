@@ -2308,12 +2308,6 @@ const COMMANDS: &[Cmd] = &[
             ),
             opt("pin", "Keep at the top", Where::Local, Kind::Flag),
             opt(
-                "ws",
-                "Workspace the body's artifacts belong to (default: this shell's, else the Autopilot)",
-                Where::Local,
-                Kind::Str,
-            ),
-            opt(
                 "notify",
                 "Also send one notification that opens this note",
                 Where::Local,
@@ -2344,12 +2338,6 @@ const COMMANDS: &[Cmd] = &[
             opt("label", "Status chip ('' clears)", Where::Local, Kind::Str),
             opt("pin", "Keep at the top", Where::Local, Kind::Flag),
             opt("unpin", "Stop keeping at the top", Where::Local, Kind::Flag),
-            opt(
-                "ws",
-                "Workspace the body's artifacts belong to",
-                Where::Local,
-                Kind::Str,
-            ),
         ],
     ),
     special(
@@ -3344,51 +3332,26 @@ impl Ctx {
         }
     }
 
-    /// Where a Drawer note's artifacts live: this host, the given/current/Autopilot
-    /// workspace, and the session and execution this shell runs in. The four go
-    /// together (a manifest belongs to one execution), so outside a turn — no
-    /// session/execution in the environment — nothing is sent and an updated
-    /// note keeps the scope of the turn that last wrote it.
-    async fn drawer_scope(&self, ws: Option<&str>) -> Vec<(&'static str, Value)> {
-        let mut scope = Vec::new();
-        let in_turn = std::env::var(utils::agent_cli::SESSION_ID_ENV).is_ok()
-            && std::env::var(utils::agent_cli::EXECUTION_ID_ENV).is_ok();
-        if !in_turn {
-            return scope;
-        }
+    /// Where a Drawer note's artifacts live: this host plus the workspace,
+    /// session and execution this shell's turn runs in. They go together (a
+    /// manifest belongs to one execution), so outside a turn nothing is sent
+    /// and an updated note keeps the scope of the turn that last wrote it.
+    async fn drawer_scope(&self) -> Vec<(&'static str, Value)> {
+        let env_id = |name: &str| std::env::var(name).ok()?.parse::<Uuid>().ok();
+        let (Some(workspace), Some(session), Some(execution)) = (
+            env_id("VK_WORKSPACE_ID"),
+            env_id(utils::agent_cli::SESSION_ID_ENV),
+            env_id(utils::agent_cli::EXECUTION_ID_ENV),
+        ) else {
+            return Vec::new();
+        };
+        let mut scope = vec![
+            ("workspace_id", json!(workspace)),
+            ("session_id", json!(session)),
+            ("execution_id", json!(execution)),
+        ];
         if let Some(host_id) = self.client.self_host_id().await {
             scope.push(("host_id", json!(host_id)));
-        }
-        let workspace = match ws {
-            Some(raw) => self.workspace_id(raw).await.ok(),
-            None => match std::env::var("VK_WORKSPACE_ID")
-                .ok()
-                .and_then(|id| id.parse().ok())
-            {
-                Some(id) => Some(id),
-                None => self
-                    .client
-                    .autopilot()
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|a| a.workspace.id),
-            },
-        };
-        if let Some(id) = workspace {
-            scope.push(("workspace_id", json!(id)));
-        }
-        if let Some(id) = std::env::var(utils::agent_cli::SESSION_ID_ENV)
-            .ok()
-            .and_then(|id| id.parse::<Uuid>().ok())
-        {
-            scope.push(("session_id", json!(id)));
-        }
-        if let Some(id) = std::env::var(utils::agent_cli::EXECUTION_ID_ENV)
-            .ok()
-            .and_then(|id| id.parse::<Uuid>().ok())
-        {
-            scope.push(("execution_id", json!(id)));
         }
         scope
     }
@@ -4254,7 +4217,7 @@ impl Ctx {
                 if arg_flag(m, "pin") {
                     request.insert("pinned".into(), Value::Bool(true));
                 }
-                for (key, value) in self.drawer_scope(arg_str(m, "ws").as_deref()).await {
+                for (key, value) in self.drawer_scope().await {
                     request.insert(key.into(), value);
                 }
                 let created = self
@@ -4315,7 +4278,7 @@ impl Ctx {
                 if let Some(body) = read_drawer_body(m)? {
                     request.insert("body".into(), Value::String(body));
                     // A new body comes from this turn: its artifacts live here.
-                    for (key, value) in self.drawer_scope(arg_str(m, "ws").as_deref()).await {
+                    for (key, value) in self.drawer_scope().await {
                         request.insert(key.into(), value);
                     }
                 }

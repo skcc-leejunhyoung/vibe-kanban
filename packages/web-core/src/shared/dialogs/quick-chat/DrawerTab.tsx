@@ -9,7 +9,11 @@ import {
   RobotIcon,
   UserIcon,
 } from '@phosphor-icons/react';
-import type { DrawerComment, DrawerNote } from 'shared/remote-types';
+import type {
+  CreateDrawerCommentRequest,
+  DrawerComment,
+  DrawerNote,
+} from 'shared/remote-types';
 import { cn } from '@vibe/ui/lib/cn';
 import { useDrawerComments, useDrawerNotes } from '@/shared/hooks/useDrawer';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
@@ -257,13 +261,18 @@ export function DrawerTab({
               onBack={() => setShowDetailOnNarrow(false)}
               onArchive={() => archive(selected, true)}
               onRestore={() => archive(selected, false)}
-              onComment={(body) =>
-                comments.insert({
+              onComment={(body) => {
+                // `created_at` only dates the optimistic row until the server's
+                // arrives; the server ignores it.
+                const comment: CreateDrawerCommentRequest &
+                  Pick<DrawerComment, 'created_at'> = {
                   note_id: selected.id,
                   body,
                   author: 'user',
-                }).persisted
-              }
+                  created_at: new Date().toISOString(),
+                };
+                return comments.insert(comment).persisted;
+              }}
             />
           ) : (
             <div className="flex flex-1 items-center justify-center p-double text-sm text-low">
