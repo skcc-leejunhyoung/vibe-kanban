@@ -1587,6 +1587,9 @@ export function KanbanContainer() {
         return;
       }
       if (!cursorIssueId || cursorIssueId === selectedKanbanIssueId) return;
+      // Enter on a link/button inside a card or row (GitHub badge, "…") keeps
+      // its own action; preventing it here would cancel the native click.
+      if (e.target instanceof Element && e.target.closest('a, button')) return;
       e.preventDefault();
       handleCardClick(cursorIssueId);
     },
