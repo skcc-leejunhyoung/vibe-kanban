@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import { flushSync } from 'react-dom';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { useDropzone } from 'react-dropzone';
@@ -39,6 +46,14 @@ import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import { PaneWidthProvider } from '@/shared/components/workspace-panes/PaneWidthContext';
+import {
+  NEXT_SPLIT_PANE_BINDING_ID,
+  PREVIOUS_SPLIT_PANE_BINDING_ID,
+  buildCombo,
+  mapCodeToLogicalKey,
+  resolveModifier,
+} from '@/shared/keyboard/registry';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
 import { DrawerTab } from '@/shared/dialogs/quick-chat/DrawerTab';
@@ -71,6 +86,12 @@ import {
  * agent writes its own images.
  */
 export type QuickChatDialogMode = 'quick' | 'autopilot' | 'drawer';
+/** Tab order, also the order the pane-cycling keys move through. */
+const QUICK_CHAT_MODES: readonly QuickChatDialogMode[] = [
+  'quick',
+  'autopilot',
+  'drawer',
+];
 
 export interface QuickChatDialogProps {
   /** Tab to open on; defaults to Quick chat. */
@@ -139,6 +160,56 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
   );
   const isAutopilotMode = mode === 'autopilot';
   const isDrawerMode = mode === 'drawer';
+  // The pane-cycling keys (ctrl+tab / ctrl+shift+tab by default) cycle the
+  // dialog's tabs while it is open — the pane shortcuts are off behind a
+  // modal anyway. A document capture listener: ahead of the focus trap's Tab
+  // handling and of the editor (which claims Tab), and still there when a
+  // tab switch has dropped focus to the body. Focus in another layer (a
+  // dialog stacked on top) is left alone.
+  const overrides = useKeyboardShortcutsStore((s) => s.overrides);
+  const nextTabKeys = resolveModifier(NEXT_SPLIT_PANE_BINDING_ID, overrides);
+  const prevTabKeys = resolveModifier(
+    PREVIOUS_SPLIT_PANE_BINDING_ID,
+    overrides
+  );
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!modal.visible) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const combo = buildCombo(
+        event,
+        mapCodeToLogicalKey(event.code, event.key)
+      );
+      const step =
+        combo && combo === nextTabKeys ? 1 : combo === prevTabKeys ? -1 : 0;
+      if (step === 0) return;
+      const dialog = dialogRef.current;
+      const active = document.activeElement;
+      if (active && active !== document.body && !dialog?.contains(active)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setMode((current) => {
+        const count = QUICK_CHAT_MODES.length;
+        const index = QUICK_CHAT_MODES.indexOf(current);
+        return QUICK_CHAT_MODES[(index + step + count) % count];
+      });
+      // The switched-out tab takes the focused control with it.
+      dialog?.focus();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [modal.visible, nextTabKeys, prevTabKeys]);
+  // Escape with a Drawer note open returns to the list; only then does the
+  // dialog's own Escape close it (a programmatic open leaves focus outside
+  // the board, so the board's own key handling cannot be relied on).
+  const drawerEscapeRef = useRef<(() => boolean) | null>(null);
+  const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    if (isDrawerMode && drawerEscapeRef.current?.()) event.preventDefault();
+  };
   // Unread count for the tab badge (the shape is shared with the tab itself).
   const { unreadCount: drawerUnread } = useDrawerNotes({
     enabled: modal.visible,
@@ -500,6 +571,8 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
         keepPaneFocusRef.current = false;
         event.preventDefault();
       }}
+      ref={dialogRef}
+      onKeyDownCapture={handleDialogKeyDown}
       // 56rem (≈1.5× the default xl): room for the Drawer's list + note, and
       // the editor is not cramped either.
       size="4xl"
@@ -580,6 +653,7 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
         <PaneWidthProvider>
           <DrawerTab
             initialNoteId={props.noteId ?? null}
+            escapeRef={drawerEscapeRef}
             onOpenPage={(noteId) => {
               modal.resolve(null);
               modal.hide();

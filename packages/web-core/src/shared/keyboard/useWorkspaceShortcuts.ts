@@ -9,6 +9,7 @@ import {
   ActionTargetType,
 } from '@/shared/types/actions';
 import { Scope, resolveSequence } from '@/shared/keyboard/registry';
+import { useDrawerKeyboardStore } from '@/shared/stores/useDrawerKeyboardStore';
 import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { isProjectDestination } from '@/shared/lib/routes/appNavigation';
@@ -121,7 +122,12 @@ export function useWorkspaceShortcuts(options?: UseWorkspaceShortcutsOptions) {
   );
   useReboundHotkey(
     seq('seq-workspace-archive'),
-    () => execute(Actions.ArchiveWorkspace),
+    () => {
+      // A Drawer note open in the active pane takes the archive key.
+      const archiveNote = useDrawerKeyboardStore.getState().archiveOpenNote;
+      if (archiveNote) archiveNote();
+      else execute(Actions.ArchiveWorkspace);
+    },
     hotkeyOptions,
     [overrides]
   );

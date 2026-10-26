@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MutableRefObject,
+} from 'react';
+import { useHotkeys } from 'react-hotkeys-hook';
 import {
   ArchiveIcon,
   ArrowCounterClockwiseIcon,
@@ -20,8 +29,13 @@ import type {
 } from 'shared/remote-types';
 import { cn } from '@vibe/ui/lib/cn';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
+import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import { useDrawerComments, useDrawerNotes } from '@/shared/hooks/useDrawer';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
+import { resolveSequence } from '@/shared/keyboard/registry';
+import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
+import { useDrawerKeyboardStore } from '@/shared/stores/useDrawerKeyboardStore';
+import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { foldResolvedComments, isDrawerNoteUnread } from '@/shared/lib/drawer';
 import { formatDateTimeFull, formatRelativeTime } from '@/shared/lib/date';
@@ -48,6 +62,7 @@ export function DrawerTab({
   variant = 'dialog',
   onOpenPage,
   onSelectNote,
+  escapeRef,
 }: {
   initialNoteId?: string | null;
   /** `page` fills its container (the /drawer page and split panes). */
@@ -56,6 +71,12 @@ export function DrawerTab({
   onOpenPage?: (noteId: string | null) => void;
   /** Page only: the note the user opened (null for none), mirrored into the URL. */
   onSelectNote?: (noteId: string | null) => void;
+  /**
+   * Dialog only: filled with a function that closes the open note and returns
+   * true, or returns false when nothing is open — the dialog calls it on
+   * Escape before closing itself.
+   */
+  escapeRef?: MutableRefObject<(() => boolean) | null>;
 }) {
   const isPage = variant === 'page';
   // Lays out by the width of its container — a pane, the dialog (which
@@ -173,12 +194,73 @@ export function DrawerTab({
     [notes, select]
   );
 
+  // Keyboard: Escape returns to the list; the archive shortcut (the workspace
+  // one, as bound) archives (inbox) or restores (archive) the open note. On
+  // the page the workspace shortcut handler asks this store first while the
+  // pane is active; in the dialog the same binding is listened to in the
+  // dialog scope. The root also catches Escape itself, so it works wherever
+  // focus sits inside the board (and, in the dialog, before the dialog's own
+  // Escape closes it).
+  const isActivePane = useIsActivePane();
+  const overrides = useKeyboardShortcutsStore((s) => s.overrides);
+  const keysActive = !!selected && (!isPage || isActivePane);
+  useHotkeys(
+    'escape',
+    (event) => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      select(null);
+    },
+    { enabled: isPage && keysActive, scopes: ['global'] },
+    [select]
+  );
+  const setArchiveOpenNote = useDrawerKeyboardStore(
+    (s) => s.setArchiveOpenNote
+  );
+  useEffect(() => {
+    if (!isPage || !keysActive || !selected) return;
+    const handler = () => archive(selected, view === 'inbox');
+    setArchiveOpenNote(handler);
+    return () => {
+      if (useDrawerKeyboardStore.getState().archiveOpenNote === handler) {
+        setArchiveOpenNote(null);
+      }
+    };
+  }, [isPage, keysActive, selected, view, archive, setArchiveOpenNote]);
+  useReboundHotkey(
+    resolveSequence('seq-workspace-archive', overrides),
+    (event) => {
+      if (!selected) return;
+      event.preventDefault();
+      archive(selected, view === 'inbox');
+    },
+    { enabled: !isPage && keysActive, scopes: ['dialog'] },
+    [selected, view, archive]
+  );
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Escape' || event.defaultPrevented || !selected) return;
+    event.preventDefault();
+    select(null);
+  };
+  useEffect(() => {
+    if (!escapeRef) return;
+    escapeRef.current = () => {
+      if (!selected) return false;
+      select(null);
+      return true;
+    };
+    return () => {
+      escapeRef.current = null;
+    };
+  }, [escapeRef, selected, select]);
+
   if (!notes.enabled) {
     return <p className="text-sm text-low">Sign in to see the Drawer.</p>;
   }
 
   return (
     <div
+      onKeyDown={handleKeyDown}
       className={cn(
         'grid gap-base',
         isPage ? 'h-full min-h-0' : 'min-h-[320px]',
@@ -349,8 +431,12 @@ export function DrawerTab({
       </div>
 
       <div
+        // Focusable so Escape from the comment box lands here, where the next
+        // Escape returns to the list instead of leaving the board.
+        tabIndex={-1}
+        data-drawer-detail
         className={cn(
-          'flex min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary',
+          'flex min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary outline-none',
           !showDetail && narrow && 'hidden'
         )}
       >
@@ -561,6 +647,15 @@ function NoteDetail({
                 if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                   event.preventDefault();
                   void send();
+                  return;
+                }
+                // Escape leaves the box (keeping the draft); the next one
+                // returns to the list.
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  event.currentTarget
+                    .closest<HTMLElement>('[data-drawer-detail]')
+                    ?.focus();
                 }
               }}
               placeholder="Comment…"
