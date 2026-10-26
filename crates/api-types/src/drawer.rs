@@ -148,6 +148,7 @@ pub struct UpdateDrawerCommentRequest {
     /// `true` folds the comment into the resolved group (the first resolve
     /// time is kept), `false` reopens it.
     #[serde(default, deserialize_with = "some_if_present")]
+    #[ts(optional)]
     pub resolved: Option<bool>,
 }
 

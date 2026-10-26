@@ -563,4 +563,63 @@ mod tests {
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    #[ignore = "requires DRAWER_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+    async fn resolving_a_comment_is_owner_only() {
+        let url = std::env::var("DRAWER_TEST_DATABASE_URL")
+            .expect("provide a migrated disposable PostgreSQL database");
+        let pool = PgPool::connect(&url).await.unwrap();
+        let ctx = user(&pool).await;
+        let stranger = user(&pool).await;
+        let owned = create_note(
+            State(pool.clone()),
+            Extension(ctx.clone()),
+            Json(note(None)),
+        )
+        .await
+        .unwrap()
+        .0
+        .data;
+        let posted = create_comment(
+            State(pool.clone()),
+            Extension(ctx.clone()),
+            Json(comment(owned.id, "질문")),
+        )
+        .await
+        .unwrap()
+        .0
+        .data;
+        let patch = |who: &RequestContext, id, resolved| {
+            update_comment(
+                State(pool.clone()),
+                Extension(who.clone()),
+                Path(id),
+                Json(UpdateDrawerCommentRequest { resolved }),
+            )
+        };
+
+        assert_eq!(
+            status(patch(&stranger, posted.id, Some(true)).await),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status(patch(&ctx, Uuid::new_v4(), Some(true)).await),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status(patch(&ctx, posted.id, None).await),
+            StatusCode::BAD_REQUEST
+        );
+        let resolved = patch(&ctx, posted.id, Some(true)).await.unwrap().0.data;
+        assert!(resolved.resolved_at.is_some());
+        let reopened = patch(&ctx, posted.id, Some(false)).await.unwrap().0.data;
+        assert!(reopened.resolved_at.is_none());
+
+        sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+            .bind(vec![ctx.user.id, stranger.user.id])
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
 }

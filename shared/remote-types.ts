@@ -147,7 +147,7 @@ export type UpdateDrawerCommentRequest = {
  * `true` folds the comment into the resolved group (the first resolve
  * time is kept), `false` reopens it.
  */
-resolved: boolean | null, };
+resolved?: boolean, };
 
 export type CreateDrawerCommentRequest = { id?: string, note_id: string, body: string,
 /**

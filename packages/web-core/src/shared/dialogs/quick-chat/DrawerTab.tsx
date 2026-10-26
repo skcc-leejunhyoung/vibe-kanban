@@ -378,7 +378,9 @@ export function DrawerTab({
             onResolve={(comment, resolved) => {
               // `resolved_at` only dates the optimistic row; the server stamps
               // (or clears) its own.
-              const changes: Partial<DrawerComment> & { resolved: boolean } = {
+              const changes: Pick<DrawerComment, 'resolved_at'> & {
+                resolved: boolean;
+              } = {
                 resolved,
                 resolved_at: resolved ? new Date().toISOString() : null,
               };
@@ -451,6 +453,14 @@ function NoteDetail({
       setSending(false);
     }
   }, [draft, sending, onComment]);
+
+  // A failed resolve rolls the row back; say why instead of snapping silently.
+  const resolve = (comment: DrawerComment, resolved: boolean) => {
+    setError(null);
+    onResolve(comment, resolved).catch((e) =>
+      setError(e instanceof Error ? e.message : 'Could not update.')
+    );
+  };
 
   const edited = note.updated_at !== note.created_at;
   return (
@@ -530,7 +540,7 @@ function NoteDetail({
               <ResolvedGroup
                 key={item.comments[0].id}
                 comments={item.comments}
-                onReopen={(comment) => void onResolve(comment, false)}
+                onReopen={(comment) => resolve(comment, false)}
               />
             ) : (
               <CommentRow
@@ -538,7 +548,7 @@ function NoteDetail({
                 comment={item.comment}
                 actionTitle="Resolve"
                 actionIcon={CheckIcon}
-                onAction={() => void onResolve(item.comment, true)}
+                onAction={() => resolve(item.comment, true)}
               />
             )
           )}
@@ -621,7 +631,7 @@ function CommentRow({
         onClick={onAction}
         title={actionTitle}
         aria-label={actionTitle}
-        className="self-start rounded p-half text-low opacity-0 hover:text-high focus-visible:opacity-100 group-hover:opacity-100"
+        className="self-start rounded p-half text-low hover:text-high focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
       >
         <ActionIcon className="size-icon-xs" />
       </button>
