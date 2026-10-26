@@ -309,12 +309,17 @@ async fn registered_text_joins_live_and_finished_manifests() {
         session,
         execution,
         files,
-        Some("[later](later.md \"vibe-artifact\")\n[gone](missing.txt \"vibe-artifact\")"),
+        Some(
+            "[later](later.md \"vibe-artifact\")\n[gone](missing.txt \"vibe-artifact\")\n[again](review.html \"vibe-artifact\")",
+        ),
     )
     .await
     .unwrap()
     .expect("finished manifest accepts registrations");
-    assert_eq!(outcome.files, vec!["later.md".to_string()]);
+    assert_eq!(
+        outcome.files,
+        vec!["later.md".to_string(), "review.html".to_string()]
+    );
     assert_eq!(outcome.missing, vec!["missing.txt".to_string()]);
     let finished = artifacts::load(session, execution).await.unwrap().unwrap();
     assert!(finished.list.complete);
@@ -329,7 +334,7 @@ async fn registered_text_joins_live_and_finished_manifests() {
         executors::logs::artifacts::ArtifactStatus::Ready
     );
     assert!(later.content_hash.is_some());
-    // The earlier live registration survived the reopen with its sealed bytes.
+    // Registering it again kept the sealed bytes, not the edited file.
     let review_after = finished
         .list
         .artifacts

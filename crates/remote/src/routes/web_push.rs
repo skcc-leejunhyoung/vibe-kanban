@@ -174,7 +174,10 @@ async fn notify_self(
                     drawer_note_id: payload.drawer_note_id,
                     // Old hosts cannot identify their Autopilot. Deliver
                     // the alert, but do not let an unknown source wake it.
-                    autopilot: Some(payload.autopilot.unwrap_or(true)),
+                    // A Drawer note is the Autopilot's own report, always.
+                    autopilot: Some(
+                        payload.drawer_note_id.is_some() || payload.autopilot.unwrap_or(true),
+                    ),
                     ..Default::default()
                 },
                 target.issue_id,

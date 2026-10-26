@@ -9,7 +9,7 @@
 use db::models::requests::{PrReviewInput, WorkspaceRepoInput};
 use git::GitRemote;
 use thiserror::Error;
-use utils::repo_url::{pr_in_remote, pr_repo_key};
+use utils::repo_url::{pr_in_remote, pr_repo_key, without_credentials};
 
 /// How a workspace's git branch should be set up.
 #[derive(Debug)]
@@ -107,7 +107,7 @@ pub fn pick_review_remote<'a>(
         pr_url: pr_url.to_string(),
         remotes: remotes
             .iter()
-            .map(|r| format!("{}={}", r.name, r.url))
+            .map(|r| format!("{}={}", r.name, without_credentials(&r.url)))
             .collect::<Vec<_>>()
             .join(", "),
     })

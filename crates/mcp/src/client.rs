@@ -1199,7 +1199,11 @@ pub fn match_review_repo<'a>(
                 repo.name,
                 remotes
                     .iter()
-                    .map(|r| format!("{}={}", r.name, r.url))
+                    .map(|r| format!(
+                        "{}={}",
+                        r.name,
+                        utils::repo_url::without_credentials(&r.url)
+                    ))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -1231,23 +1235,22 @@ pub fn match_review_repo<'a>(
 }
 
 /// An open review workspace for this issue and PR: carries the PR link and is
-/// linked to the issue, or not yet (its checkout still runs on the request).
+/// linked to the issue (the create request links it before returning).
 pub fn find_review_workspace<'a>(
     workspaces: &'a [WorkspaceListItem],
     issue_id: Uuid,
     pr_url: &str,
 ) -> Option<&'a WorkspaceListItem> {
-    workspaces
-        .iter()
-        .filter(|w| {
-            !w.archived
+    workspaces.iter().find(|w| {
+        !w.archived
                 && !w.in_place
                 && w.pr_url
                     .as_deref()
                     .is_some_and(|url| same_pr_url(url, pr_url))
-                && w.task_id.is_none_or(|task| task == issue_id)
-        })
-        .max_by_key(|w| w.task_id.is_some())
+                // Not "no issue yet": the PR's author workspace (made without
+                // an issue) carries the same PR URL.
+                && w.task_id == Some(issue_id)
+    })
 }
 
 /// The create-and-start body the UI sends in review mode: one repo on
@@ -2853,15 +2856,16 @@ mod tests {
         );
         assert!(find_review_workspace(&[author.clone(), archived, other_pr], issue, url).is_none());
 
-        // Checkout still running on the create request: not linked to the issue yet.
-        let in_flight = listed(Some(url), None, false);
+        // The PR's author workspace, made without an issue, is not a review.
+        let issueless_author = listed(Some(url), None, false);
         let linked = listed(Some(url), Some(issue), false);
-        assert_eq!(
-            find_review_workspace(&[author.clone(), in_flight.clone()], issue, url).map(|w| w.id),
-            Some(in_flight.id)
+        assert!(
+            find_review_workspace(&[author.clone(), issueless_author.clone()], issue, url)
+                .is_none()
         );
         assert_eq!(
-            find_review_workspace(&[in_flight, linked.clone(), author], issue, url).map(|w| w.id),
+            find_review_workspace(&[issueless_author, linked.clone(), author], issue, url)
+                .map(|w| w.id),
             Some(linked.id)
         );
     }

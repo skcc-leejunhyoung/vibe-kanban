@@ -61,17 +61,21 @@ export function DrawerTab({
   );
 
   // A deep link (also one arriving while the tab is already open) selects its
-  // note and switches to the archive when the note lives there.
+  // note and switches to the view the note lives in — once per link, so a
+  // later archive or view change by the user is not undone by the next sync.
+  const linkedViewRef = useRef<string | null>(null);
   useEffect(() => {
     if (!initialNoteId) return;
     setSelectedId(initialNoteId);
     setShowDetailOnNarrow(true);
   }, [initialNoteId]);
   useEffect(() => {
-    if (!initialNoteId || notes.isLoading) return;
+    if (!initialNoteId || linkedViewRef.current === initialNoteId) return;
     const target = notes.data.find((note) => note.id === initialNoteId);
-    if (target?.archived_at) setView('archive');
-  }, [initialNoteId, notes.data, notes.isLoading]);
+    if (!target) return;
+    linkedViewRef.current = initialNoteId;
+    setView(target.archived_at ? 'archive' : 'inbox');
+  }, [initialNoteId, notes.data]);
 
   // Opening a note marks it read (once per change, so a later edit or comment
   // makes it unread again). `user_seen_at` rides along so the dot clears

@@ -901,7 +901,9 @@ impl ArtifactObserver {
             Sha256::digest(format!("{}:file:{relative}", self.manifest.execution_id))
         );
         if let Some(existing) = self.manifest.list.artifacts.iter_mut().find(|a| a.id == id) {
-            if self.recovery {
+            // A sealed (reopened) manifest keeps what its execution produced:
+            // the workspace file may have changed since.
+            if self.recovery || self.manifest.list.complete && existing.content_hash.is_some() {
                 return;
             }
             if source_entry.is_some()

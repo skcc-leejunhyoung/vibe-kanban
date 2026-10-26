@@ -109,6 +109,11 @@ async fn proxy(
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/json");
+    let body = if method == Method::POST && tail == "drawer_comments" {
+        as_autopilot_comment(&body).map_err(ApiError::BadRequest)?
+    } else {
+        body
+    };
     let body = (!body.is_empty()).then_some(body);
     let (status, bytes) = client
         .proxy_raw(method, &path, body, Some(content_type))
@@ -118,6 +123,19 @@ async fn proxy(
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(bytes))
         .map_err(|error| ApiError::BadGateway(error.to_string()))
+}
+
+/// A Drawer comment through this proxy is an agent's. The Autopilot reads a
+/// user comment as the user's instruction, and only the browser (the user's
+/// own session, through Electric) may speak as the user.
+fn as_autopilot_comment(body: &[u8]) -> Result<Bytes, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|error| format!("invalid comment body: {error}"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or("comment body must be an object")?;
+    object.insert("author".into(), "autopilot".into());
+    Ok(Bytes::from(value.to_string()))
 }
 
 pub(super) fn router() -> Router<DeploymentImpl> {
@@ -156,5 +174,19 @@ mod tests {
             assert!(!is_allowed(&Method::DELETE, tail), "{tail}");
         }
         assert!(is_allowed(&Method::GET, "attachments/abc/file.png"));
+    }
+
+    #[test]
+    fn drawer_comments_from_the_proxy_are_autopilot_comments() {
+        for body in [
+            r#"{"note_id":"n","body":"hi"}"#,
+            r#"{"note_id":"n","body":"hi","author":"user"}"#,
+        ] {
+            let value: serde_json::Value =
+                serde_json::from_slice(&as_autopilot_comment(body.as_bytes()).unwrap()).unwrap();
+            assert_eq!(value["author"], "autopilot");
+            assert_eq!(value["body"], "hi");
+        }
+        assert!(as_autopilot_comment(b"[]").is_err());
     }
 }

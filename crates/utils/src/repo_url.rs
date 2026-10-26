@@ -59,9 +59,38 @@ pub fn pr_in_remote(pr_url: &str, remote_url: &str) -> bool {
     pr_repo_key(pr_url).is_some_and(|pr| path(&pr).is_some() && path(&pr) == path(&remote))
 }
 
+/// `url` without its userinfo, for messages: an HTTPS remote can embed a token
+/// (`https://x-access-token:<token>@github.com/...`).
+pub fn without_credentials(url: &str) -> String {
+    match url::Url::parse(url.trim()) {
+        Ok(mut parsed) if !parsed.username().is_empty() || parsed.password().is_some() => {
+            let _ = parsed.set_username("");
+            let _ = parsed.set_password(None);
+            parsed.to_string()
+        }
+        _ => url.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_are_dropped_from_displayed_urls() {
+        assert_eq!(
+            without_credentials("https://x-access-token:ghp_secret@github.com/acme/widgets.git"),
+            "https://github.com/acme/widgets.git"
+        );
+        assert_eq!(
+            without_credentials("https://ghp_secret@github.com/acme/widgets"),
+            "https://github.com/acme/widgets"
+        );
+        assert_eq!(
+            without_credentials("git@github.com:acme/widgets.git"),
+            "git@github.com:acme/widgets.git"
+        );
+    }
 
     #[test]
     fn pr_urls_match_https_and_ssh_repository_remotes() {

@@ -941,6 +941,9 @@ async function autopilotActive(routine) {
     bridge.baseUrl
   ).catch((error) => {
     if (error?.status === 404) return null;
+    // An unreachable host is asked again in a minute, not on every event:
+    // this runs inside the event loop.
+    autopilotPresence.set(hostId, { active: false, checkedAt: Date.now() });
     throw error;
   });
   const active = Boolean(autopilot?.data?.session?.id);
@@ -1021,7 +1024,11 @@ function restoreRoutineBuffers() {
 // (first..last event), so busy targets queue it like any other event.
 async function flushCoalescedRoutine(routineId, batch) {
   const routine = state.routines.find((item) => item.id === routineId);
-  if (!routine?.enabled) return;
+  if (!routine?.enabled) {
+    // Turned off while coalescing: what it claimed goes back to the inbox.
+    if (routine) await releaseClaimedNotifications(routine, batch);
+    return;
+  }
   const key = routineEventKey(routine.id, batch);
   const result = await runRoutine(routine, batch, key);
   if (result.status === 'busy') await queueRoutineEvent(routine.id, batch, key);
