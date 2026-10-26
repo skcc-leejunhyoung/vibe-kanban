@@ -15,6 +15,7 @@ use axum::{
 };
 use deployment::Deployment;
 use services::services::config::{AgentAccessConfig, Config};
+use url::form_urlencoded;
 use uuid::Uuid;
 
 use crate::{DeploymentImpl, error::ApiError};
@@ -176,10 +177,23 @@ fn is_forbidden(method: &Method, path: &str) -> bool {
     }
 }
 
+/// Whether the query's one `session_id` is the agent's own session.
+fn is_own_session(query: &str, agent_session: Option<Uuid>) -> bool {
+    let mut ids = form_urlencoded::parse(query.as_bytes())
+        .filter(|(key, _)| key == "session_id")
+        .map(|(_, value)| value.parse::<Uuid>().ok());
+    agent_session.is_some() && ids.next() == Some(agent_session) && ids.next().is_none()
+}
+
 /// Which toggle a write needs. `None` means the write is harmless (marking a
 /// workspace seen, uploading an attachment, sending a notification) or is a
 /// read sent as POST.
-fn toggle_for(method: &Method, path: &str) -> Option<Toggle> {
+fn toggle_for(
+    method: &Method,
+    path: &str,
+    query: &str,
+    agent_session: Option<Uuid>,
+) -> Option<Toggle> {
     let parts = segments(path);
     Some(match parts.as_slice() {
         ["workspaces", "summaries"]
@@ -204,8 +218,14 @@ fn toggle_for(method: &Method, path: &str) -> Option<Toggle> {
         ["repos", _, "fetch"] | ["repos", _, "branches", ..] => Toggle::GitWrite,
         ["repos", "pr-comments", ..] => Toggle::GitWrite,
         ["workspaces", _, "seen"] | ["notifications", ..] | ["attachments", ..] => return None,
-        // The agent's own turn attaching its own files (Drawer notes).
-        ["execution-processes", _, "artifacts", "register"] => return None,
+        // The agent's own turn attaching its own files (Drawer notes); the
+        // route checks the execution belongs to the query's session. Another
+        // session's execution falls through to `ControlSessions`.
+        ["execution-processes", _, "artifacts", "register"]
+            if is_own_session(query, agent_session) =>
+        {
+            return None;
+        }
         ["workspaces", _, "attachments", ..] | ["workspaces", _, "images", ..] => return None,
         ["config", ..] | ["profiles", ..] | ["mcp-config", ..] | ["agents", ..] => {
             Toggle::UpdateConfig
@@ -219,9 +239,10 @@ fn toggle_for(method: &Method, path: &str) -> Option<Toggle> {
     })
 }
 
-/// Judge one request by method and full path (`/api/...`). Non-API paths are
+/// Judge one request by method and full path (`/api/...`), plus its query and
+/// the agent's session for writes scoped to that session. Non-API paths are
 /// never gated.
-pub fn classify(method: &Method, path: &str) -> Decision {
+pub fn classify(method: &Method, path: &str, query: &str, agent_session: Option<Uuid>) -> Decision {
     let Some(path) = path.strip_prefix("/api") else {
         return Decision::Allow;
     };
@@ -250,7 +271,7 @@ pub fn classify(method: &Method, path: &str) -> Decision {
     if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         return Decision::Allow;
     }
-    match toggle_for(method, path) {
+    match toggle_for(method, path, query, agent_session) {
         Some(toggle) => Decision::Gated(toggle),
         None => Decision::Allow,
     }
@@ -384,7 +405,7 @@ pub async fn guard_agent_access(
     let path = request.uri().path().to_owned();
     // The query string is the argument summary; bodies are not read here.
     let query = request.uri().query().unwrap_or("").to_owned();
-    let decision = classify(&method, &path);
+    let decision = classify(&method, &path, &query, session.parse().ok());
     let denial = match decision {
         Decision::Allow => None,
         Decision::Forbidden => Some("this operation is not available to agents".to_string()),
@@ -432,7 +453,7 @@ mod tests {
     use super::*;
 
     fn gated(method: Method, path: &str) -> Decision {
-        classify(&method, path)
+        classify(&method, path, "", None)
     }
 
     #[test]
@@ -502,6 +523,35 @@ mod tests {
                 gated(Method::POST, path),
                 Decision::Gated(Toggle::GitMerge),
                 "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn registering_artifacts_is_free_only_in_the_agents_own_session() {
+        let own = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let host = Uuid::new_v4();
+        let register = |path: &str, query: &str, agent: Option<Uuid>| {
+            classify(&Method::POST, path, query, agent)
+        };
+        let local = "/api/execution-processes/abc/artifacts/register";
+        let paired = format!("/api/host/{host}/execution-processes/abc/artifacts/register");
+        let mine = format!("workspace_id={other}&session_id={own}");
+        for path in [local, paired.as_str()] {
+            assert_eq!(register(path, &mine, Some(own)), Decision::Allow, "{path}");
+        }
+        for (query, agent) in [
+            (format!("workspace_id={own}&session_id={other}"), Some(own)),
+            (mine.clone(), None),
+            (format!("workspace_id={own}"), Some(own)),
+            (format!("session_id={own}&session_id={other}"), Some(own)),
+            (format!("session_id={own}&session_id={own}"), Some(own)),
+        ] {
+            assert_eq!(
+                register(local, &query, agent),
+                Decision::Gated(Toggle::ControlSessions),
+                "{query} {agent:?}"
             );
         }
     }
