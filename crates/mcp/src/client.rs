@@ -698,10 +698,13 @@ impl VkClient {
                 .map(|row| (row.workspace_id, row))
                 .collect(),
             // Older hosts have no summaries; the list still works without status.
-            Err(error) => {
+            Err(error) if matches!(error.status(), Some(404 | 405)) => {
                 tracing::debug!(%error, "workspace summaries unavailable");
                 HashMap::new()
             }
+            // A failed answer is not "no summaries": every row would lose its
+            // PR and run state (a review lookup would find nothing).
+            Err(error) => return Err(error),
         };
         let mut items: Vec<WorkspaceListItem> = workspaces
             .into_iter()
@@ -1344,39 +1347,47 @@ impl VkClient {
     }
 
     /// An open review workspace for the issue and PR on another reachable host
-    /// (this machine included when a paired host is selected). Offline or
-    /// failing hosts are skipped: they cannot be asked.
+    /// (this machine included when a paired host is selected). Offline hosts
+    /// are skipped; one that fails twice is an error, since taking it for "no
+    /// review there" would start a second review.
     async fn review_workspace_elsewhere(
         &self,
         issue_id: Uuid,
         pr_url: &str,
-    ) -> Option<(VkClient, WorkspaceListItem)> {
+    ) -> Result<Option<(VkClient, WorkspaceListItem)>, VkError> {
         let this_machine = self.self_host_id().await;
         let selected = self.host_id.filter(|id| Some(*id) != this_machine);
         let paired = self.list_hosts().await.unwrap_or_default();
-        let hosts = std::iter::once(None).chain(
+        let hosts = std::iter::once((None, "this machine".to_string())).chain(
             paired
                 .iter()
                 .filter(|h| h.status.as_deref() != Some("offline"))
-                .map(|h| Some(h.host_id)),
+                .map(|h| {
+                    let name = h.host_name.clone().unwrap_or_else(|| h.host_id.to_string());
+                    (Some(h.host_id), name)
+                }),
         );
-        for host in hosts.filter(|host| *host != selected) {
+        let filter = WorkspaceFilter {
+            archived: Some(false),
+            ..Default::default()
+        };
+        for (host, name) in hosts.filter(|(host, _)| *host != selected) {
             let client = self.host(host);
-            let Ok(workspaces) = client
-                .list_workspaces(&WorkspaceFilter {
-                    archived: Some(false),
-                    ..Default::default()
-                })
-                .await
-            else {
-                continue;
+            // Retried once: a relayed answer can come back cut off.
+            let workspaces = match client.list_workspaces(&filter).await {
+                Ok(workspaces) => workspaces,
+                Err(_) => client.list_workspaces(&filter).await.map_err(|error| {
+                    VkError::message(format!(
+                        "Could not check host {name} for an existing review workspace ({error}); nothing was created. Rerun when that host responds."
+                    ))
+                })?,
             };
             if let Some(found) = find_review_workspace(&workspaces, issue_id, pr_url) {
                 let found = found.clone();
-                return Some((client, found));
+                return Ok(Some((client, found)));
             }
         }
-        None
+        Ok(None)
     }
 
     /// Link like the UI does; 409 = the cloud already has this workspace's link
@@ -1460,7 +1471,7 @@ impl VkClient {
             .await?;
         let (client, existing) = match find_review_workspace(&workspaces, issue.id, &pr.url) {
             Some(found) => (self.clone(), Some(found.clone())),
-            None => match self.review_workspace_elsewhere(issue.id, &pr.url).await {
+            None => match self.review_workspace_elsewhere(issue.id, &pr.url).await? {
                 Some((client, found)) => (client, Some(found)),
                 None => (self.clone(), None),
             },
@@ -2917,7 +2928,8 @@ mod tests {
     type Routes = HashMap<(&'static str, String), (u16, Value)>;
 
     /// A local stand-in for the Vibe server: `(METHOD, path)` → `(status, body)`;
-    /// every request is recorded with its JSON body.
+    /// every request is recorded with its JSON body. `<path>#<n>` answers only
+    /// the n-th call (from 0) to that path.
     async fn fake_vibe(routes: Routes) -> (String, Calls) {
         use axum::{extract::State, http::Request};
         let calls: Calls = Default::default();
@@ -2937,17 +2949,23 @@ mod tests {
                         .await
                         .unwrap_or_default();
                     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-                    calls
-                        .lock()
-                        .unwrap()
-                        .push((method.clone(), path.clone(), body));
+                    let nth = {
+                        let mut calls = calls.lock().unwrap();
+                        let nth = calls
+                            .iter()
+                            .filter(|(m, p, _)| *m == method && *p == path)
+                            .count();
+                        calls.push((method.clone(), path.clone(), body));
+                        nth
+                    };
                     let route = |wanted: &str| {
                         routes
                             .iter()
                             .find(|((m, p), _)| *m == method && p == wanted)
                             .map(|(_, reply)| reply.clone())
                     };
-                    let (status, reply) = route(&full)
+                    let (status, reply) = route(&format!("{path}#{nth}"))
+                        .or_else(|| route(&full))
                         .or_else(|| route(&path))
                         .unwrap_or((404, json!({ "success": false, "message": "not found" })));
                     (
@@ -3194,9 +3212,18 @@ mod tests {
                 routes.insert((method, format!("/api/host/{host}{}", &path[4..])), reply);
             }
         }
+        // An offline host is not asked (it has no routes here: asking fails).
         routes.insert(
             ("GET", "/api/relay-auth/client/reachable-hosts".into()),
-            ok(json!([{ "host_id": host, "host_name": "i9", "status": "online" }])),
+            ok(json!([
+                { "host_id": Uuid::new_v4(), "host_name": "old", "status": "offline" },
+                { "host_id": host, "host_name": "i9", "status": "online" },
+            ])),
+        );
+        // The relayed summaries come back cut off once; the retry reads them.
+        routes.insert(
+            ("POST", format!("/api/host/{host}/workspaces/summaries#0")),
+            (200, json!("cut off")),
         );
         routes.insert(
             (
@@ -3236,6 +3263,47 @@ mod tests {
         );
         assert!(posted(&calls, "/workspaces/start").is_empty());
         assert_eq!(posted(&calls, &format!("{workspace_id}/links")).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn review_refuses_to_create_when_another_host_cannot_be_checked() {
+        let issue = review_issue();
+        let host = Uuid::new_v4();
+        let (mut routes, _) = review_routes(&issue, &["review"], json!([]), json!([]));
+        routes.insert(
+            ("GET", "/api/relay-auth/client/reachable-hosts".into()),
+            ok(json!([{ "host_id": host, "host_name": "i9", "status": "online" }])),
+        );
+        // Every relayed list comes back cut off.
+        let list = format!("/api/host/{host}/workspaces");
+        routes.insert(("GET", list.clone()), (200, json!("cut off")));
+        let (url, calls) = fake_vibe(routes).await;
+        let client = VkClient::new(&url, "test/1");
+
+        for dry_run in [true, false] {
+            let error = client
+                .review_workspace(ReviewWorkspaceInput {
+                    dry_run,
+                    ..review_input(issue.id)
+                })
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("host i9") && error.contains("Rerun"),
+                "{error}"
+            );
+        }
+        // Asked twice per run, nothing written.
+        let asked = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, path, _)| method == "GET" && *path == list)
+            .count();
+        assert_eq!(asked, 4);
+        assert!(posted(&calls, "/workspaces/start").is_empty());
+        assert!(posted(&calls, "/workspaces/create").is_empty());
     }
 
     #[tokio::test]

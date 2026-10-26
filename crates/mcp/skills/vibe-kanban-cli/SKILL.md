@@ -77,7 +77,10 @@ instructions); a `--prompt` of your own goes in as is.
   `--host`); rerun with it. Server errors (checkout, gh auth) come back verbatim.
 - **Retry = rerun the same command.** An open review workspace for the same issue and PR — on
   the selected host, or else on any reachable host (`host_id` says which) — is returned as
-  `action: "reused"` (no second workspace, no second turn; a missing issue link is redone). `checkout: "pending"` means the first request is still checking out; rerun later.
+  `action: "reused"` (no second workspace, no second turn; a missing issue link is redone). A
+  host that is not offline but cannot be read (asked twice) stops the command, `--dry-run`
+  included, with the host's name and nothing created; rerun when it responds. A review still
+  checking out is not tied to the issue yet, so let the first command return before rerunning.
 - Output: `action`, `host_id`, `workspace_id`, `branch`, `checkout`, `session_id`,
   `execution_process_id`, `pr`, `repo`, `remote`, `target_branch`, `issue_status` (after a start
   it should read "In review"; the move is best-effort on the server, as in the UI).
