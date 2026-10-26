@@ -86,7 +86,7 @@ export function DrawerTab({
     const key = `${selected.id}:${selected.updated_at}:${selected.last_comment_at ?? ''}`;
     if (seenRef.current === key) return;
     seenRef.current = key;
-    const changes: Partial<DrawerNote> & { seen: boolean } = {
+    const changes: Pick<DrawerNote, 'user_seen_at'> & { seen: boolean } = {
       seen: true,
       user_seen_at: new Date().toISOString(),
     };
@@ -118,7 +118,7 @@ export function DrawerTab({
     (note: DrawerNote, archived: boolean) => {
       // `archived_at` moves the note between lists at once; the server ignores
       // it and stamps its own clock.
-      const changes: Partial<DrawerNote> & { archived: boolean } = {
+      const changes: Pick<DrawerNote, 'archived_at'> & { archived: boolean } = {
         archived,
         archived_at: archived ? new Date().toISOString() : null,
       };

@@ -94,29 +94,38 @@ pub struct CreateDrawerNoteRequest {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 pub struct UpdateDrawerNoteRequest {
     #[serde(default, deserialize_with = "some_if_present")]
+    #[ts(optional)]
     pub title: Option<String>,
     #[serde(default, deserialize_with = "some_if_present")]
+    #[ts(optional)]
     pub body: Option<String>,
     /// `null` clears the label.
     #[serde(default, deserialize_with = "some_if_present")]
     #[ts(optional)]
     pub label: Option<Option<String>>,
     #[serde(default, deserialize_with = "some_if_present")]
+    #[ts(optional)]
     pub pinned: Option<bool>,
     /// Moves the note to (true) or back from (false) the archive.
     #[serde(default, deserialize_with = "some_if_present")]
+    #[ts(optional)]
     pub archived: Option<bool>,
     /// `true` records that the user has read the note now.
     #[serde(default, deserialize_with = "some_if_present")]
+    #[ts(optional)]
     pub seen: Option<bool>,
     /// Updating the body from a new turn moves the artifact scope along.
     #[serde(default, deserialize_with = "some_if_present")]
+    #[ts(optional)]
     pub host_id: Option<Uuid>,
     #[serde(default, deserialize_with = "some_if_present")]
+    #[ts(optional)]
     pub workspace_id: Option<Uuid>,
     #[serde(default, deserialize_with = "some_if_present")]
+    #[ts(optional)]
     pub session_id: Option<Uuid>,
     #[serde(default, deserialize_with = "some_if_present")]
+    #[ts(optional)]
     pub execution_id: Option<Uuid>,
 }
 

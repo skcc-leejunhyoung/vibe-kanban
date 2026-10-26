@@ -21,6 +21,18 @@ impl<'a> HostRepository<'a> {
         .await
     }
 
+    pub async fn is_accessible_by(
+        &self,
+        host_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar::<_, bool>("SELECT host_access_role($1, $2) IS NOT NULL")
+            .bind(host_id)
+            .bind(user_id)
+            .fetch_one(self.pool)
+            .await
+    }
+
     pub async fn list_accessible_hosts(
         &self,
         user_id: Uuid,

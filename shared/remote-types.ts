@@ -119,23 +119,23 @@ export type CreateDrawerNoteRequest = {
  */
 id?: string, title: string, body: string, label?: string, pinned?: boolean, host_id?: string, workspace_id?: string, session_id?: string, execution_id?: string, };
 
-export type UpdateDrawerNoteRequest = { title: string | null, body: string | null,
+export type UpdateDrawerNoteRequest = { title?: string, body?: string,
 /**
  * `null` clears the label.
  */
-label?: string | null, pinned: boolean | null,
+label?: string | null, pinned?: boolean,
 /**
  * Moves the note to (true) or back from (false) the archive.
  */
-archived: boolean | null,
+archived?: boolean,
 /**
  * `true` records that the user has read the note now.
  */
-seen: boolean | null,
+seen?: boolean,
 /**
  * Updating the body from a new turn moves the artifact scope along.
  */
-host_id: string | null, workspace_id: string | null, session_id: string | null, execution_id: string | null, };
+host_id?: string, workspace_id?: string, session_id?: string, execution_id?: string, };
 
 export type CreateDrawerCommentRequest = { id?: string, note_id: string, body: string,
 /**

@@ -217,7 +217,9 @@ impl DrawerRepository {
     }
 
     /// Also stamps the note: `last_comment_at` always, and `user_seen_at` when
-    /// the user is the one commenting (they are looking at it).
+    /// the user is the one commenting (they are looking at it). `created_at` is
+    /// the transaction start, so a concurrent comment can commit first with a
+    /// later stamp; `GREATEST` keeps both from moving back.
     pub async fn create_comment(
         pool: &PgPool,
         owner_user_id: Uuid,
@@ -239,8 +241,8 @@ impl DrawerRepository {
         .await?;
         sqlx::query(
             "UPDATE drawer_notes SET
-                last_comment_at = $2,
-                user_seen_at = CASE WHEN $3 THEN $2 ELSE user_seen_at END
+                last_comment_at = GREATEST(last_comment_at, $2),
+                user_seen_at = CASE WHEN $3 THEN GREATEST(user_seen_at, $2) ELSE user_seen_at END
              WHERE id = $1",
         )
         .bind(request.note_id)
