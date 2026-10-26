@@ -1995,6 +1995,9 @@ export function KanbanContainer() {
               getResolvedRelationshipsForIssue={
                 getResolvedRelationshipsForIssue
               }
+              getGithubIssuesForIssue={(issueId) =>
+                githubIssuesByIssueId.get(issueId) ?? EMPTY
+              }
               onIssueClick={handleCardClick}
               selectedIssueId={selectedKanbanIssueId}
               selectedIssueIds={selectedIssueIds}

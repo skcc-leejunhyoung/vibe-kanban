@@ -14,6 +14,8 @@ import {
   type RelationshipDisplayType,
 } from './RelationshipBadge';
 import { Checkbox } from './Checkbox';
+import { GithubIssueBadge } from './PrBadge';
+import type { KanbanGithubIssue } from './KanbanCardContent';
 import {
   IssueWorkspaceCard,
   type WorkspaceWithStats,
@@ -70,6 +72,7 @@ export interface IssueListRowProps {
   statusColor: string;
   tags: IssueListRowTag[];
   relationships?: IssueListRowRelationship[];
+  githubIssues?: KanbanGithubIssue[];
   assignees: KanbanAssigneeUser[];
   milestone?: { name: string; targetDate?: string | null };
   onClick: (e: MouseEvent) => void;
@@ -95,6 +98,7 @@ export function IssueListRow({
   statusColor,
   tags,
   relationships = [],
+  githubIssues = [],
   assignees,
   milestone,
   onClick,
@@ -202,6 +206,25 @@ export function IssueListRow({
                       color={tag.color}
                     />
                   ))}
+                </div>
+              )}
+              {/* Pointer starts are swallowed so clicking a badge (opens
+                  GitHub) never begins a row drag. */}
+              {githubIssues.length > 0 && (
+                <div
+                  className="hidden @3xl:flex items-center gap-half"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                >
+                  {githubIssues.slice(0, 2).map((githubIssue) => (
+                    <GithubIssueBadge key={githubIssue.id} {...githubIssue} />
+                  ))}
+                  {githubIssues.length > 2 && (
+                    <span className="text-sm text-low">
+                      +{githubIssues.length - 2}
+                    </span>
+                  )}
                 </div>
               )}
               {relationships.length > 0 && (

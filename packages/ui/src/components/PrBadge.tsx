@@ -41,7 +41,7 @@ export function GithubIssueBadge({
         openExternalUrl(url);
       }}
       className={cn(
-        'inline-flex items-center gap-half rounded bg-secondary px-1.5 py-0.5 text-xs font-medium text-low transition-colors hover:underline',
+        'inline-flex items-center gap-half rounded bg-panel px-1.5 py-0.5 text-xs font-medium text-low transition-colors hover:underline',
         className
       )}
     >

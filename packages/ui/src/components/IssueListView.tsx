@@ -13,6 +13,7 @@ import type {
   IssueListRowTag,
 } from './IssueListRow';
 import type { WorkspaceWithStats } from './IssueWorkspaceCard';
+import type { KanbanGithubIssue } from './KanbanCardContent';
 
 export interface IssueListViewProps {
   statuses: IssueListSectionStatus[];
@@ -26,6 +27,7 @@ export interface IssueListViewProps {
   getResolvedRelationshipsForIssue?: (
     issueId: string
   ) => IssueListRowRelationship[];
+  getGithubIssuesForIssue?: (issueId: string) => KanbanGithubIssue[];
   onIssueClick: (issueId: string, e: MouseEvent) => void;
   selectedIssueId: string | null;
   selectedIssueIds?: Set<string>;
@@ -70,6 +72,7 @@ export function IssueListView({
   getTagObjectsForIssue,
   getMilestoneForIssue,
   getResolvedRelationshipsForIssue,
+  getGithubIssuesForIssue,
   onIssueClick,
   selectedIssueId,
   selectedIssueIds,
@@ -104,6 +107,7 @@ export function IssueListView({
           getTagObjectsForIssue={getTagObjectsForIssue}
           getMilestoneForIssue={getMilestoneForIssue}
           getResolvedRelationshipsForIssue={getResolvedRelationshipsForIssue}
+          getGithubIssuesForIssue={getGithubIssuesForIssue}
           onIssueClick={onIssueClick}
           selectedIssueId={selectedIssueId}
           selectedIssueIds={selectedIssueIds}

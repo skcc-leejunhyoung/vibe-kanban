@@ -23,6 +23,7 @@ import {
 } from './IssueListRow';
 import type { KanbanAssigneeUser } from './KanbanAssignee';
 import type { WorkspaceWithStats } from './IssueWorkspaceCard';
+import type { KanbanGithubIssue } from './KanbanCardContent';
 
 export interface IssueListSectionStatus {
   id: string;
@@ -42,6 +43,7 @@ export interface IssueListSectionProps {
   getResolvedRelationshipsForIssue?: (
     issueId: string
   ) => IssueListRowRelationship[];
+  getGithubIssuesForIssue?: (issueId: string) => KanbanGithubIssue[];
   onIssueClick: (issueId: string, e: MouseEvent) => void;
   selectedIssueId: string | null;
   selectedIssueIds?: Set<string>;
@@ -89,6 +91,7 @@ export function IssueListSection({
   getTagObjectsForIssue,
   getMilestoneForIssue,
   getResolvedRelationshipsForIssue,
+  getGithubIssuesForIssue,
   onIssueClick,
   selectedIssueId,
   selectedIssueIds,
@@ -166,6 +169,7 @@ export function IssueListSection({
                     statusColor={status.color}
                     tags={getTagObjectsForIssue(issue.id)}
                     relationships={getResolvedRelationshipsForIssue?.(issue.id)}
+                    githubIssues={getGithubIssuesForIssue?.(issue.id)}
                     assignees={issueAssigneesMap[issue.id] ?? []}
                     milestone={getMilestoneForIssue?.(issue.id)}
                     onClick={(e) => onIssueClick(issue.id, e)}
