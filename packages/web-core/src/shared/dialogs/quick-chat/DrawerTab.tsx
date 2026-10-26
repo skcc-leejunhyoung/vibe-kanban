@@ -85,6 +85,9 @@ export function DrawerTab({
     () => list.find((note) => note.id === selectedId) ?? null,
     [list, selectedId]
   );
+  // A note that left the list (archived elsewhere, deleted, a stale link)
+  // falls back to the list instead of an empty detail with no way back.
+  const showDetail = showDetailOnNarrow && !!selected;
 
   // A deep link (also one arriving while the tab is already open) selects its
   // note and switches to the view the note lives in — once per link, so a
@@ -96,6 +99,8 @@ export function DrawerTab({
     setShowDetailOnNarrow(true);
   }, [initialNoteId]);
   useEffect(() => {
+    // A cleared link re-arms it, so the same note's next notification lands.
+    if (!initialNoteId) linkedViewRef.current = null;
     if (!initialNoteId || linkedViewRef.current === initialNoteId) return;
     const target = notes.data.find((note) => note.id === initialNoteId);
     if (!target) return;
@@ -193,8 +198,8 @@ export function DrawerTab({
           'flex flex-col overflow-hidden rounded-md border border-border bg-secondary',
           isPage ? 'min-h-0' : 'max-h-[60vh]',
           isPage
-            ? showDetailOnNarrow && narrow && 'hidden'
-            : showDetailOnNarrow && 'hidden sm:flex'
+            ? showDetail && narrow && 'hidden'
+            : showDetail && 'hidden sm:flex'
         )}
       >
         {collapsed ? (
@@ -350,8 +355,8 @@ export function DrawerTab({
         className={cn(
           'flex min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary',
           isPage
-            ? !showDetailOnNarrow && narrow && 'hidden'
-            : !showDetailOnNarrow && 'hidden sm:flex'
+            ? !showDetail && narrow && 'hidden'
+            : !showDetail && 'hidden sm:flex'
         )}
       >
         {selected ? (
@@ -360,7 +365,7 @@ export function DrawerTab({
             comments={selectedComments}
             view={view}
             narrow={isPage ? narrow : undefined}
-            onBack={() => setShowDetailOnNarrow(false)}
+            onBack={() => select(null)}
             onArchive={() => archive(selected, true)}
             onRestore={() => archive(selected, false)}
             onComment={(body) => {
