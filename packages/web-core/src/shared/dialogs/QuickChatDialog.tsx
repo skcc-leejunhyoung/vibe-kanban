@@ -819,7 +819,9 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
             })}
           </div>
 
-          <div className="@container">
+          {/* The chat box is `w-chat` wide (the conversation column); in the
+              dialog it lines up with the rows above it instead. */}
+          <div className="@container [&_.w-chat]:w-full">
             <CreateChatBox
               editor={{ value: prompt, onChange: setPrompt }}
               renderEditor={({

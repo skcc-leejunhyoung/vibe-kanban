@@ -264,7 +264,10 @@ export function DrawerTab({
     <div
       className={cn(
         'grid gap-base',
-        isPage ? 'h-full min-h-0' : 'min-h-[320px]',
+        // A fixed height in the dialog: the list and the note share it and
+        // each scrolls, instead of a long note stretching the dialog past the
+        // list.
+        isPage ? 'h-full min-h-0' : 'h-[60vh] min-h-[320px]',
         narrow
           ? 'grid-cols-1'
           : collapsed
@@ -277,8 +280,7 @@ export function DrawerTab({
       {/* List column: view tabs in its header, foldable to a rail. */}
       <div
         className={cn(
-          'flex flex-col overflow-hidden rounded-md border border-border bg-secondary',
-          isPage ? 'min-h-0' : 'max-h-[60vh]',
+          'flex min-h-0 flex-col overflow-hidden rounded-md border border-border bg-secondary',
           showDetail && narrow && 'hidden'
         )}
       >
@@ -438,7 +440,7 @@ export function DrawerTab({
         tabIndex={-1}
         data-drawer-detail
         className={cn(
-          'flex min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary outline-none',
+          'flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary outline-none',
           !showDetail && narrow && 'hidden'
         )}
       >
