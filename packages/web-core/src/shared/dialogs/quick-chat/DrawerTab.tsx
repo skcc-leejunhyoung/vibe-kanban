@@ -28,6 +28,7 @@ import type {
 } from 'shared/remote-types';
 import { cn } from '@vibe/ui/lib/cn';
 import { AutoResizeTextarea } from '@vibe/ui/components/AutoResizeTextarea';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import { useDrawerComments, useDrawerNotes } from '@/shared/hooks/useDrawer';
@@ -49,6 +50,7 @@ import {
   findSegmentArtifact,
   splitArtifactSegments,
 } from '@/features/workspace-chat/ui/artifact-preview';
+import { handleDrawerDetailKeyDown } from './drawerKeyboard';
 
 /**
  * The Drawer tab of the Quick chat dialog: notes the Autopilot wrote (title +
@@ -169,15 +171,8 @@ export function DrawerTab({
     [comments.data, selected]
   );
 
-  // One column in the dialog: the clicked note button is hidden with the list,
-  // which drops focus to the body where Escape closes the whole dialog; the
-  // detail takes it so Escape returns to the list first.
-  const detailRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (isPage || !narrow || !showDetail) return;
-    if (detailRef.current?.contains(document.activeElement)) return;
-    detailRef.current?.focus({ preventScroll: true });
-  }, [isPage, narrow, showDetail]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const noteButtonsRef = useRef(new Map<string, HTMLButtonElement>());
 
   // What the user opened (or closed): the selection, the one-column view and,
   // on the page, the URL.
@@ -190,6 +185,21 @@ export function DrawerTab({
     [onSelectNote]
   );
 
+  const backToList = useCallback(() => {
+    select(null);
+    if (collapsed) toggleList();
+    requestAnimationFrame(() => {
+      const row = selectedId ? noteButtonsRef.current.get(selectedId) : null;
+      (row ?? listRef.current)?.focus();
+    });
+  }, [select, collapsed, toggleList, selectedId]);
+
+  const navigateNote = (direction: -1 | 1) => {
+    const index = list.findIndex((note) => note.id === selectedId);
+    const next = list[index + direction];
+    if (index >= 0 && next) select(next.id);
+  };
+
   const archive = useCallback(
     (note: DrawerNote, archived: boolean) => {
       // `archived_at` moves the note between lists at once; the server ignores
@@ -199,9 +209,9 @@ export function DrawerTab({
         archived_at: archived ? new Date().toISOString() : null,
       };
       void notes.update(note.id, changes).persisted.catch(() => {});
-      select(null);
+      backToList();
     },
-    [notes, select]
+    [notes, backToList]
   );
 
   // Keyboard: Escape returns to the list; the archive shortcut (the workspace
@@ -215,12 +225,12 @@ export function DrawerTab({
   useHotkeys(
     'escape',
     (event) => {
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented || event.isComposing) return;
       event.preventDefault();
-      select(null);
+      backToList();
     },
     { enabled: isPage && keysActive, scopes: ['global'] },
-    [select]
+    [backToList]
   );
   const setArchiveOpenNote = useDrawerKeyboardStore(
     (s) => s.setArchiveOpenNote
@@ -249,13 +259,13 @@ export function DrawerTab({
     if (!escapeRef) return;
     escapeRef.current = () => {
       if (!selected) return false;
-      select(null);
+      backToList();
       return true;
     };
     return () => {
       escapeRef.current = null;
     };
-  }, [escapeRef, selected, select]);
+  }, [escapeRef, selected, backToList]);
 
   if (!notes.enabled) {
     return <p className="text-sm text-low">Sign in to see the Drawer.</p>;
@@ -280,6 +290,39 @@ export function DrawerTab({
     >
       {/* List column: view tabs in its header, foldable to a rail. */}
       <div
+        ref={listRef}
+        tabIndex={-1}
+        onKeyDown={(event) => {
+          if (
+            event.defaultPrevented ||
+            event.nativeEvent.isComposing ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            event.shiftKey ||
+            (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')
+          )
+            return;
+          const index = list.findIndex(
+            (note) => noteButtonsRef.current.get(note.id) === event.target
+          );
+          if (index < 0 && event.target !== event.currentTarget) return;
+          const next =
+            index < 0
+              ? 0
+              : Math.max(
+                  0,
+                  Math.min(
+                    list.length - 1,
+                    index + (event.key === 'ArrowDown' ? 1 : -1)
+                  )
+                );
+          const note = list[next];
+          if (note) {
+            event.preventDefault();
+            noteButtonsRef.current.get(note.id)?.focus();
+          }
+        }}
         className={cn(
           'flex min-h-0 flex-col overflow-hidden rounded-md border border-border bg-secondary',
           showDetail && narrow && 'hidden'
@@ -381,6 +424,10 @@ export function DrawerTab({
                 return (
                   <button
                     key={note.id}
+                    ref={(node) => {
+                      if (node) noteButtonsRef.current.set(note.id, node);
+                      else noteButtonsRef.current.delete(note.id);
+                    }}
                     type="button"
                     onClick={() => select(note.id)}
                     className={cn(
@@ -435,13 +482,18 @@ export function DrawerTab({
       </div>
 
       <div
-        // Focusable so Escape from the comment box lands here, where the next
-        // Escape returns to the list instead of leaving the board.
-        ref={detailRef}
-        tabIndex={-1}
         data-drawer-detail
+        data-escape-handled
+        onKeyDown={(event) =>
+          handleDrawerDetailKeyDown(event, {
+            backToList,
+            navigateNote,
+            focusComment: () =>
+              event.currentTarget.querySelector('textarea')?.focus(),
+          })
+        }
         className={cn(
-          'flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary outline-none',
+          'flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary',
           !showDetail && narrow && 'hidden'
         )}
       >
@@ -451,7 +503,8 @@ export function DrawerTab({
             comments={selectedComments}
             view={view}
             narrow={narrow}
-            onBack={() => select(null)}
+            autoFocus={!isPage || isActivePane}
+            onBack={backToList}
             onArchive={() => archive(selected, true)}
             onRestore={() => archive(selected, false)}
             onComment={(body) => {
@@ -501,6 +554,7 @@ function NoteDetail({
   comments,
   view,
   narrow,
+  autoFocus,
   onBack,
   onArchive,
   onRestore,
@@ -512,6 +566,7 @@ function NoteDetail({
   view: 'inbox' | 'archive';
   /** One-column layout: Back returns to the list. */
   narrow: boolean;
+  autoFocus: boolean;
   onBack: () => void;
   onArchive: () => void;
   onRestore: () => void;
@@ -523,11 +578,23 @@ function NoteDetail({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setDraft('');
     setError(null);
   }, [note.id]);
+
+  useEffect(() => {
+    if (
+      !autoFocus ||
+      (isModalKeyboardActive() &&
+        !scrollRef.current?.closest('[role="dialog"]'))
+    )
+      return;
+    scrollRef.current?.focus({ preventScroll: true });
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [note.id, autoFocus]);
 
   const send = useCallback(async () => {
     const body = draft.trim();
@@ -621,7 +688,13 @@ function NoteDetail({
         )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        ref={scrollRef}
+        tabIndex={0}
+        role="region"
+        aria-label={note.title}
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
         <div className="p-base">
           <NoteBody note={note} />
         </div>
@@ -655,18 +728,14 @@ function NoteDetail({
                   void send();
                   return;
                 }
-                // Escape leaves the box (keeping the draft); the next one
-                // returns to the list. On the page the app-wide Escape has
-                // already blurred it.
+                // Keep the draft and return to the keyboard-scrollable body.
                 if (
                   event.key === 'Escape' &&
                   !event.defaultPrevented &&
                   !event.nativeEvent.isComposing
                 ) {
                   event.preventDefault();
-                  event.currentTarget
-                    .closest<HTMLElement>('[data-drawer-detail]')
-                    ?.focus();
+                  scrollRef.current?.focus({ preventScroll: true });
                 }
               }}
               placeholder="Comment…"

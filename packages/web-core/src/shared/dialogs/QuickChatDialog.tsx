@@ -205,7 +205,12 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
   // that handles Escape itself (the comment box) goes first.
   const drawerEscapeRef = useRef<(() => boolean) | null>(null);
   const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    if (
+      event.key !== 'Escape' ||
+      event.defaultPrevented ||
+      event.nativeEvent.isComposing
+    )
+      return;
     if (isDrawerMode && drawerEscapeRef.current?.()) event.preventDefault();
   };
   // Unread count for the tab badge (the shape is shared with the tab itself).
