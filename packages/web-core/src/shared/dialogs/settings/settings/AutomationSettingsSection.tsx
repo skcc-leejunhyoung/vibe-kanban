@@ -462,12 +462,20 @@ const AGENT_ACCESS_TOGGLES: {
 function AgentAccessCard() {
   const { t } = useTranslation('settings');
   const { selectedHost } = useSettingsHost();
-  const { config, machineId, loading, updateAndSaveConfig } = useUserSystem();
+  const {
+    config,
+    machineId,
+    loading,
+    configError,
+    configRefreshing,
+    reloadSystem,
+    updateAndSaveConfig,
+  } = useUserSystem();
   const [busy, setBusy] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const access = config?.agent_access;
   const toggle = async (key: keyof AgentAccessConfig, checked: boolean) => {
-    if (!access) return;
+    if (!access || configError || configRefreshing || busy) return;
     setBusy(true);
     setSaveFailed(false);
     try {
@@ -504,13 +512,38 @@ function AgentAccessCard() {
               )}
         </p>
       )}
-      {saveFailed && (
+      {configError && access && (
+        <p className="text-sm text-error" role="alert">
+          {t(
+            'settings.automation.agentAccess.unverified',
+            'Could not verify current Agent access on this host. The controls show the last confirmed values; reload permissions before making changes.'
+          )}
+        </p>
+      )}
+      {configRefreshing && access && !configError && (
+        <p className="text-sm text-low" role="status">
+          {t(
+            'settings.automation.agentAccess.refreshing',
+            'Checking current Agent access on this host. The controls show the last confirmed values.'
+          )}
+        </p>
+      )}
+      {saveFailed && !configError && (
         <p className="text-sm text-error" role="alert">
           {t(
             'settings.automation.agentAccess.saveFailed',
-            'Agent access could not be saved on the selected host. Check the host connection and try again.'
+            'Agent access save could not be confirmed on the selected host. Check the displayed permissions before trying again.'
           )}
         </p>
+      )}
+      {configError && (
+        <PrimaryButton
+          variant="secondary"
+          disabled={configRefreshing}
+          onClick={() => void reloadSystem()}
+        >
+          {t('settings.automation.agentAccess.reload', 'Reload permissions')}
+        </PrimaryButton>
       )}
       {access &&
         AGENT_ACCESS_TOGGLES.map(({ key, label, helper }) => (
@@ -524,7 +557,7 @@ function AgentAccessCard() {
             )}
             checked={access[key]}
             onChange={(checked) => void toggle(key, checked)}
-            disabled={busy}
+            disabled={busy || configError || configRefreshing}
           />
         ))}
     </SettingsCard>

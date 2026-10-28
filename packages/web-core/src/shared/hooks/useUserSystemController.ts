@@ -33,7 +33,12 @@ export function useUserSystemController({
 } {
   const queryClient = useQueryClient();
 
-  const { data: userSystemInfo, isLoading } = useQuery({
+  const {
+    data: userSystemInfo,
+    isLoading,
+    isError: configError,
+    isFetching: configRefreshing,
+  } = useQuery({
     queryKey,
     queryFn: load,
     enabled,
@@ -97,7 +102,8 @@ export function useUserSystemController({
       if (!config || !configRevision) return false;
 
       const newConfig = { ...config, ...updates };
-      updateConfig(updates);
+      // Permission controls must show confirmed values, including failed revocations.
+      if (!updates.agent_access) updateConfig(updates);
 
       try {
         const saved = await save(newConfig, configRevision);
@@ -192,12 +198,16 @@ export function useUserSystemController({
       setCapabilities,
       reloadSystem,
       loading,
+      configError,
+      configRefreshing,
     }),
     [
       machineId,
       appVersion,
       capabilities,
       config,
+      configError,
+      configRefreshing,
       environment,
       loading,
       previewProxyPort,

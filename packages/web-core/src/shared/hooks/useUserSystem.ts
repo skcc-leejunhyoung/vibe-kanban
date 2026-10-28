@@ -53,6 +53,8 @@ export interface UserSystemContextType {
 
   // State
   loading: boolean;
+  configError: boolean;
+  configRefreshing: boolean;
 }
 
 export const UserSystemContext = createHmrContext<
