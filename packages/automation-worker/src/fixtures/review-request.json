@@ -1,0 +1,34 @@
+{
+  "note": "Synthetic review-request fixture for multi-repository reconciliation and restart recovery.",
+  "login": "fixture-reviewer",
+  "searchItem": {
+    "id": 42001,
+    "number": 42,
+    "repository_url": "https://api.github.com/repos/example/search",
+    "html_url": "https://github.com/example/search/pull/42",
+    "title": "Review request regression fixture",
+    "state": "open",
+    "draft": false,
+    "assignees": [],
+    "labels": [],
+    "updated_at": "2026-10-28T00:00:00Z",
+    "pull_request": {
+      "url": "https://api.github.com/repos/example/search/pulls/42"
+    }
+  },
+  "details": {
+    "number": 42,
+    "requested_reviewers": [
+      {
+        "login": "fixture-reviewer"
+      }
+    ],
+    "head": {
+      "ref": "feature/review-fixture",
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "base": {
+      "ref": "main"
+    }
+  }
+}

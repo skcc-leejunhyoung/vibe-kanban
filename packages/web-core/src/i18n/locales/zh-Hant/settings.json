@@ -638,6 +638,17 @@
       "noHostAvailable": "No host is available for host-specific settings yet.",
       "pairMachineHint": "Pair a machine to open machine settings.",
       "selectMachineHint": "Select a machine to open machine settings."
+    },
+    "automation": {
+      "reviewScope": "Review requests monitored: {{repositories}}",
+      "reviewScopeNone": "None (disabled)",
+      "reviewScopeWarning": "Repositories outside this list are not monitored for review requests. Assigned issue filters apply only to the primary repository. Add a repository below using the existing credential; no organization-wide access is requested.",
+      "editReviewScope": "Edit monitored repositories",
+      "reviewReconciliation": "Last review check: {{checkedAt}} · Open: {{open}} · Untracked or unlinked: {{missing}} · Complete: {{complete}}",
+      "reviewRepositories": "Review repositories (one owner/repo per line)",
+      "reviewRepositoriesHelp": "Save to monitor these repositories. Empty uses the primary owner/repo. Review imports include existing open requests even on the first poll. Enable the connector to start.",
+      "reviewRepositoriesInvalid": "Use explicit owner/repo names, one per line.",
+      "reviewPrs": "Import my review requests"
     }
   },
   "integrations": {

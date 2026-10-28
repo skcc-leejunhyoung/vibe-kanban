@@ -1066,7 +1066,16 @@
           "label": "자동화 쓰기",
           "helper": "자동화 루틴·커넥터·메모리 동기화를 바꿉니다."
         }
-      }
+      },
+      "reviewScope": "리뷰 요청 감시 저장소: {{repositories}}",
+      "reviewScopeNone": "없음 (비활성화)",
+      "reviewScopeWarning": "목록 밖 저장소의 리뷰 요청은 감시하지 않습니다. 일반 이슈의 담당자 필터는 기본 저장소에만 적용됩니다. 아래에서 기존 자격증명으로 저장소를 추가할 수 있으며 조직 전체 권한은 요청하지 않습니다.",
+      "editReviewScope": "감시 저장소 편집",
+      "reviewReconciliation": "최근 리뷰 확인: {{checkedAt}} · 열린 요청: {{open}} · 미추적 또는 미연결: {{missing}} · 전체 확인 완료: {{complete}}",
+      "reviewRepositories": "리뷰 감시 저장소 (한 줄에 owner/repo 하나)",
+      "reviewRepositoriesHelp": "저장하면 이 목록을 감시합니다. 비워 두면 기본 owner/repo를 사용합니다. 첫 확인에서도 기존의 열린 리뷰 요청을 가져옵니다. 시작하려면 커넥터를 활성화하세요.",
+      "reviewRepositoriesInvalid": "명시적인 owner/repo 이름을 한 줄에 하나씩 입력하세요.",
+      "reviewPrs": "내 리뷰 요청 가져오기"
     }
   },
   "integrations": {

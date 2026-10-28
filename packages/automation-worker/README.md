@@ -53,8 +53,9 @@ miss would never be re-tried.
   leftover misses that already hit the cap. `GET /api/retry-queue` lists items;
   `DELETE /api/retry-queue/<id>` discards one.
 
-> Note: there is no idempotency key, so if a failure happened *after* the Vibe
-> issue was actually created (response lost), a retry can create a duplicate.
+> Review PR imports use a stable idempotency key. Other script actions must
+> provide their own deduplication; a lost issue-create response can otherwise
+> create a duplicate on retry.
 
 ## Built-in Connectors
 
@@ -70,9 +71,34 @@ miss would never be re-tried.
   repository. Enable `includeIssuesFromOtherRepositories` on the rule to import
   assigned issues from other repositories on the selected Project as well.
   Set `reviewPrs: true` to also import open, non-draft PRs where review is
-  requested from the user (Search API); imported PRs are tagged `review` in Vibe
+  requested from the user (Search API). Set `reviewRepositories` to an explicit
+  allowlist such as `["example/app", "example/search"]`; an absent or empty
+  list uses the primary `owner/repo`. This list affects review PRs and their
+  comment/review notifications only. Ordinary assigned/created/mentioned issues
+  still use the primary repository and its existing filter. Other repositories
+  are **not monitored**; no organization-wide discovery or credential expansion
+  occurs. Edit the list in Settings → Automation → Edit monitored repositories.
+  Imported PRs are tagged `review` in Vibe
   (the tag is created in the project if missing) and their footer includes a
   `branch: <head> -> <base>` line (fetched via `GET /repos/.../pulls/{n}`).
+  Open review requests are reconciled every poll, including the first poll and
+  backfill, independently of the ordinary issue seed, cursor and bounded seen
+  sets. Identity is repository + PR number; the source repository and head SHA
+  are retained in runtime state and initial issue metadata. Head changes emit
+  `pr_updated` with `previousHeadSha` without creating another issue. Existing
+  structural PR links (including manual recovery) are adopted. Issue creation
+  uses the remote API's stable idempotency key per project + PR URL, independent
+  of the head SHA, to prevent retry/restart duplicates.
+  The settings page shows the last reconciliation time, open PRs/heads, missing
+  or pending links, pending/exhausted retries, and per-repository errors. Search
+  pages are exhausted. If review search is incomplete or hits GitHub's 1000-result
+  ceiling, it falls back to all pages of that same repository's open PRs and
+  filters direct requested reviewers. Failed reads remain visible and are never
+  published as a successful partial reconciliation.
+  PR details, comments and submitted reviews always use the original repository;
+  comment cursors are independent per repository and newly added repositories
+  seed old comments without notifications. Credentials must already allow access
+  to each selected repository; access failures remain visible.
   With `notifyPrComments` enabled (the default), it also watches PRs authored by,
   assigned to, awaiting review from, or previously reviewed by the authenticated
   user. New issue comments and inline review comments from other users create
