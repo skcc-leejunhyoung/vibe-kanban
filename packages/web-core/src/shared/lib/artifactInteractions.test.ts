@@ -37,6 +37,23 @@ beforeEach(() => {
 });
 
 describe('artifact input host routing', () => {
+  it('requires the fixed bundle version when loading a registered form', async () => {
+    await artifactsApi.bundle(
+      'process',
+      'workspace',
+      'session',
+      'form',
+      'paired-host',
+      undefined,
+      'fixed-bundle'
+    );
+    const [url, options] = request.mock.calls[0];
+    expect(
+      new URL(url, 'https://test.invalid').searchParams.get('version')
+    ).toBe('fixed-bundle');
+    expect(options.hostId).toBe('paired-host');
+    expect(options.hostScope).toBe('explicit');
+  });
   it.each([null, 'paired-host'])(
     'pins every response to the artifact host %s',
     async (host) => {

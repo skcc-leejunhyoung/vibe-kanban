@@ -1130,7 +1130,13 @@ const COMMANDS: &[Cmd] = &[
             ),
             req(
                 "delivery",
-                "wait (read with result) or follow_up (same session)",
+                "wait, follow_up (same session), or service (registered handler)",
+                Where::Body,
+                Kind::Str,
+            ),
+            opt(
+                "handler",
+                "Service handler: session.rename (schema: name string, maxLength 80, required)",
                 Where::Body,
                 Kind::Str,
             ),

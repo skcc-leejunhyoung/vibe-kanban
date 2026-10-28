@@ -359,7 +359,9 @@ export type ApprovalInfo = { approval_id: string, tool_name: string, execution_p
 
 export type ArtifactInputSchema = { "type": "object", properties: { [key in string]?: ArtifactInputSchema }, required: Array<string>, } | { "type": "string", enum: Array<string> | null, maxLength: number, } | { "type": "number", minimum: number | null, maximum: number | null, } | { "type": "boolean" } | { "type": "array", items: ArtifactInputSchema, maxItems: number, };
 
-export type ArtifactDelivery = "follow_up" | "wait";
+export type ArtifactDelivery = "follow_up" | "wait" | "service";
+
+export type ArtifactHandler = "session.rename";
 
 export type ArtifactInteractionState = "input_required" | "accepted" | "processing" | "completed" | "failed" | "cancelled" | "expired" | "unknown";
 
@@ -373,7 +375,7 @@ owner_host: string, owner_id: string, artifact_id: string, artifact_hash: string
 /**
  * Covers the HTML and every bundled dependency, not just the HTML hash.
  */
-version: string, schema: ArtifactInputSchema, delivery: ArtifactDelivery, state: ArtifactInteractionState, created_at: string, expires_at: string, result_process_id: string | null, error: string | null, };
+version: string, schema: ArtifactInputSchema, delivery: ArtifactDelivery, handler: ArtifactHandler | null, state: ArtifactInteractionState, created_at: string, expires_at: string, result_process_id: string | null, error: string | null, };
 
 export type ArtifactResponse = { "action": "submit", data: unknown, } | { "action": "cancel" };
 

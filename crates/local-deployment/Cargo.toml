@@ -43,6 +43,7 @@ portable-pty = "0.8"
 dotenv = "0.15"
 
 [dev-dependencies]
+serde_json = { workspace = true }
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
 tempfile = "3.8"
 

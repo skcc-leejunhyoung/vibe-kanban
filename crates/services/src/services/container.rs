@@ -126,6 +126,8 @@ pub enum ContainerError {
     Io(#[from] std::io::Error),
     #[error("Failed to kill process: {0}")]
     KillFailed(std::io::Error),
+    #[error("Artifact response has already been dispatched or cancelled")]
+    ArtifactAlreadyDispatched,
     #[error(transparent)]
     Other(#[from] AnyhowError), // Catches any unclassified errors
 }
@@ -897,7 +899,7 @@ pub trait ContainerService {
             tracing::error!(%execution_process_id, %error, "Failed to publish deferred execution completion");
         }
         if completed.status == ExecutionProcessStatus::Killed {
-            self.discard_queue_for_unstarted_turn(&completed);
+            self.discard_queue_for_unstarted_turn(&completed).await;
         }
         if let Some(msg) = self
             .msg_stores()
@@ -933,7 +935,9 @@ pub trait ContainerService {
             let _drain_hold = self.queued_message_service().hold_drain(session.id);
             let processes =
                 ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await?;
-            self.queued_message_service().clear_queue(session.id);
+            if let Err(error) = self.queued_message_service().clear_queue(session.id).await {
+                stop_error.get_or_insert(ContainerError::Other(error));
+            }
             for process in processes {
                 // Skip dev server processes unless explicitly included
                 if !include_dev_server && process.run_reason == ExecutionProcessRunReason::DevServer
@@ -1861,19 +1865,24 @@ pub trait ContainerService {
                 .map(|()| record),
             Err(e) => Err(e),
         };
-        if let Err(e) = &started {
-            queue.restore_failed(queued, e.to_string());
+        if let Err(e) = &started
+            && !matches!(e, ContainerError::ArtifactAlreadyDispatched)
+        {
+            queue.restore_failed_dispatch(queued, e.to_string()).await;
         }
         drop(hold);
         if let Err(e) = self.resume_deferred_finalization(session.id).await {
             tracing::error!("Failed to resume deferred completion: {e}");
         }
-        let record = started?;
+        let record = match started {
+            Err(ContainerError::ArtifactAlreadyDispatched) => None,
+            other => Some(other?),
+        };
         // The new turn holds the drain now, unless it already ended.
         if let Err(e) = self.drain_queue_if_idle(session, workspace).await {
             tracing::error!("Failed to start queued follow-up: {e}");
         }
-        Ok(Some(record))
+        Ok(record)
     }
 
     /// Create the row for a follow-up turn running `data`. Call with the
@@ -1944,6 +1953,11 @@ pub trait ContainerService {
 
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
+        if let Some(reference) = artifact_request
+            && !super::artifact_interactions::claim_dispatch(reference).await?
+        {
+            return Err(ContainerError::ArtifactAlreadyDispatched);
+        }
         let record = self
             .create_execution_record(
                 workspace,
@@ -1979,7 +1993,7 @@ pub trait ContainerService {
         // leaves the queue alone (see `fail_execution_start`).
         let queue = self.queued_message_service();
         let hold = queue.hold_drain(session.id);
-        let result = self
+        let mut result = self
             .start_followup_for_session(
                 session,
                 workspace,
@@ -1988,11 +2002,14 @@ pub trait ContainerService {
             )
             .await;
         match &result {
+            Err(ContainerError::ArtifactAlreadyDispatched) => {
+                result = Ok(None);
+            }
             Ok(None) => {
                 queue.requeue_front(msg);
             }
             Err(e) => {
-                queue.restore_failed(msg, e.to_string());
+                queue.restore_failed_dispatch(msg, e.to_string()).await;
             }
             Ok(Some(_)) => {}
         }
@@ -2173,7 +2190,7 @@ pub trait ContainerService {
     /// before it ran) drops the session's queued follow-ups, as its finalize
     /// would have, instead of leaving them with nothing to start them —
     /// unless a steer owns the end and is about to run its message.
-    fn discard_queue_for_unstarted_turn(&self, execution_process: &ExecutionProcess) {
+    async fn discard_queue_for_unstarted_turn(&self, execution_process: &ExecutionProcess) {
         let session_id = execution_process.session_id;
         if execution_process.run_reason == ExecutionProcessRunReason::DevServer
             || self.queued_message_service().is_steering(session_id)
@@ -2182,7 +2199,12 @@ pub trait ContainerService {
         }
         let discarded = self
             .queued_message_service()
-            .discard_queued_by(session_id, execution_process.completed_at);
+            .discard_queued_by(session_id, execution_process.completed_at)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!(%session_id, %error, "Could not persist cancelled artifact requests");
+                Vec::new()
+            });
         if !discarded.is_empty() {
             tracing::info!(
                 "Discarded {} queued message(s) for session {session_id}: its turn ended before it ran",
@@ -2218,7 +2240,8 @@ pub trait ContainerService {
                 // queued message that failed to start keeps the rest behind
                 // it); otherwise nothing would start what queued behind this.
                 if !self.queued_message_service().is_drain_held(session.id) {
-                    self.discard_queue_for_unstarted_turn(execution_process);
+                    self.discard_queue_for_unstarted_turn(execution_process)
+                        .await;
                 }
                 if let Ok(Some(completed_process)) =
                     ExecutionProcess::find_by_id(&self.db().pool, execution_process.id).await

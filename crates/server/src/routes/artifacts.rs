@@ -25,6 +25,7 @@ pub struct ArtifactQuery {
     pub(super) session_id: Uuid,
     pub(super) id: Option<String>,
     pub(super) hash: Option<String>,
+    pub(super) version: Option<String>,
 }
 
 pub(super) async fn scoped_manifest(
@@ -296,6 +297,15 @@ pub async fn bundle(
         .bundles
         .get(id)
         .ok_or_else(|| ApiError::BadRequest("Artifact snapshot not available".into()))?;
+    if let Some(version) = &query.version
+        && services::services::artifact_interactions::bundle_version(bundle)
+            .map_err(|error| ApiError::BadRequest(error.to_string()))?
+            != *version
+    {
+        return Err(ApiError::Conflict(
+            "Artifact changed; request a new form".into(),
+        ));
+    }
     // Only document snapshots reload the manifest behind the recovery lock.
     let converted = if artifacts::is_document(&bundle.artifact.mime) {
         artifacts::ensure_document_preview(

@@ -2538,7 +2538,12 @@ impl LocalContainerService {
             // drain starts it.
             let discarded = self
                 .queued_message_service
-                .discard_queued_by(ctx.session.id, ctx.execution_process.completed_at);
+                .discard_queued_by(ctx.session.id, ctx.execution_process.completed_at)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::error!(session_id = %ctx.session.id, %error, "Could not persist cancelled artifact requests");
+                    Vec::new()
+                });
             if !discarded.is_empty() {
                 tracing::info!(
                     "Discarding {} queued message(s) for session {} due to execution status {:?}",
@@ -4210,7 +4215,8 @@ impl ContainerService for LocalContainerService {
                                 );
                             }
                             if status == ExecutionProcessStatus::Killed {
-                                self.discard_queue_for_unstarted_turn(&completed_process);
+                                self.discard_queue_for_unstarted_turn(&completed_process)
+                                    .await;
                             }
                         }
                         if let Some(msg) =
@@ -6236,7 +6242,11 @@ done
                 "{scenario}: finalized before setup ended"
             );
             if scenario != "held after start failure" {
-                queue.cancel_message(session.id, queued.id).unwrap();
+                queue
+                    .cancel_message(session.id, queued.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
             }
             let superseded = matches!(scenario, "superseded" | "monitored failure");
             if superseded {
@@ -6480,7 +6490,11 @@ done
             .await;
         assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
 
-        let msg = queue.cancel_message(session.id, a.id).unwrap();
+        let msg = queue
+            .cancel_message(session.id, a.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             container
                 .start_queued_followup(&session, &workspace, msg)
@@ -6627,6 +6641,117 @@ done
     /// runs once, front first. Every start fails here (no worktree), so the
     /// started message comes back to the front and holds the rest behind it.
     #[tokio::test]
+    async fn restored_artifact_queue_never_repeats_a_completed_or_failed_execution() {
+        use db::models::session_queued_messages::SessionQueuedMessages;
+        use services::services::artifact_interactions::{
+            self as inputs, ArtifactInteractionRef, Receipt,
+        };
+
+        for failed_start in [false, true] {
+            let (mut container, session, workspace) = queue_test_container().await;
+            add_test_repo(&container, &workspace).await;
+            let _logs = SessionLogDir(session.id);
+            let reference = ArtifactInteractionRef {
+                session_id: session.id,
+                execution_id: Uuid::new_v4(),
+                request_id: Uuid::new_v4(),
+            };
+            let receipt: Receipt = serde_json::from_value(serde_json::json!({
+                "boot_id": *inputs::BOOT_ID, "dispatch_claimed": false,
+                "response": {"action":"submit", "data":{"choice":"run"}},
+                "interaction": {
+                    "reference": reference, "workspace_id": workspace.id,
+                    "owner_host":"local", "owner_id":"owner", "artifact_id":"form",
+                    "artifact_hash":"html", "version":"bundle",
+                    "schema":{"type":"object", "properties":{"choice":{"type":"string"}}},
+                    "delivery":"follow_up", "state":"accepted",
+                    "created_at": Utc::now(), "expires_at": Utc::now() + chrono::Duration::hours(1),
+                    "result_process_id":null, "error":null,
+                }
+            }))
+            .unwrap();
+            {
+                let _guard = inputs::LOCK.lock().await;
+                inputs::save(&receipt).await.unwrap();
+            }
+            let data = follow_up("artifact response", BaseCodingAgent::ClaudeCode);
+            let message = container.queued_message_service.enqueue_artifact(
+                session.id,
+                data.clone(),
+                reference.clone(),
+            );
+            if failed_start {
+                // The execution row exists, but the absent worktree prevents spawning.
+                assert!(
+                    container
+                        .drain_queue_if_idle(&session, &workspace)
+                        .await
+                        .is_err()
+                );
+                assert!(!container.queued_message_service.has_queued(session.id));
+                assert_eq!(
+                    inputs::load(&reference).await.unwrap().interaction.state,
+                    inputs::ArtifactInteractionState::Failed
+                );
+            } else {
+                let (record, _) = container
+                    .create_followup_record(&session, &workspace, &data, Some(&reference))
+                    .await
+                    .unwrap();
+                ExecutionProcess::update_completion(
+                    &container.db.pool,
+                    record.id,
+                    ExecutionProcessStatus::Completed,
+                    Some(0),
+                )
+                .await
+                .unwrap();
+            }
+            let first = inputs::load(&reference)
+                .await
+                .unwrap()
+                .interaction
+                .result_process_id;
+            assert!(first.is_some());
+            // Reproduce a failed durable queue deletion followed by a server restart.
+            SessionQueuedMessages::upsert(
+                &container.db.pool,
+                session.id,
+                &serde_json::to_string(&vec![message.clone()]).unwrap(),
+            )
+            .await
+            .unwrap();
+            container.queued_message_service =
+                QueuedMessageService::load(container.db.pool.clone()).await;
+            assert!(
+                container
+                    .queued_message_service
+                    .promote_to_front(session.id, message.id)
+            );
+            assert!(
+                container
+                    .drain_queue_if_idle(&session, &workspace)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(!container.queued_message_service.has_queued(session.id));
+            assert_eq!(
+                turn_prompts(&container, session.id).await,
+                ["artifact response"]
+            );
+            assert_eq!(
+                inputs::load(&reference)
+                    .await
+                    .unwrap()
+                    .interaction
+                    .result_process_id,
+                first
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn queued_message_after_last_finalize_runs_once_in_order() {
         let (container, session, workspace) = queue_test_container().await;
         add_test_repo(&container, &workspace).await;
@@ -6644,7 +6769,7 @@ done
             queue_state(&container, session.id),
             (vec!["m1".to_string()], true)
         );
-        queue.cancel_message(session.id, m1.id);
+        queue.cancel_message(session.id, m1.id).await.unwrap();
 
         // While B's exit handling still winds down: left to its recheck.
         let b_exit_handler = finish_turn(&container, &session, &workspace, "b").await;
@@ -6704,7 +6829,7 @@ done
         let _ = container.drain_queue_if_idle(&session, &workspace).await;
         assert_eq!(turn_prompts(&container, session.id).await, ["a", "m1"]);
         assert!(draft_kept().await, "idle drain");
-        queue.clear_queue(session.id);
+        queue.clear_queue(session.id).await.unwrap();
 
         let turn = finished_turn(&session, &workspace, ExecutionProcessStatus::Completed);
         queue.enqueue(session.id, follow_up("m2", BaseCodingAgent::ClaudeCode));
@@ -6712,7 +6837,7 @@ done
             .finalize_with_queued_followup(&turn, false, false)
             .await;
         assert!(draft_kept().await, "finished turn");
-        queue.clear_queue(session.id);
+        queue.clear_queue(session.id).await.unwrap();
 
         let killed = finished_turn(&session, &workspace, ExecutionProcessStatus::Killed);
         let m3 = queue.enqueue(session.id, follow_up("m3", BaseCodingAgent::ClaudeCode));
@@ -6763,7 +6888,7 @@ done
                 Some("after"),
                 "{status:?}"
             );
-            queue.clear_queue(session.id);
+            queue.clear_queue(session.id).await.unwrap();
         }
     }
 
@@ -6787,7 +6912,7 @@ done
             (vec!["q1".to_string(), "q2".to_string()], true)
         );
 
-        queue.clear_queue(session.id);
+        queue.clear_queue(session.id).await.unwrap();
         queue.enqueue(session.id, follow_up("q3", BaseCodingAgent::ClaudeCode));
         let direct = follow_up("direct", BaseCodingAgent::ClaudeCode);
         assert!(

@@ -12,8 +12,9 @@ use deployment::Deployment;
 use serde::{Deserialize, Serialize};
 use services::services::{
     artifact_interactions::{
-        self as inputs, ArtifactDelivery, ArtifactInputSchema, ArtifactInteraction,
-        ArtifactInteractionRef, ArtifactInteractionState as Status, ArtifactResponse, Receipt,
+        self as inputs, ArtifactDelivery, ArtifactHandler, ArtifactInputSchema,
+        ArtifactInteraction, ArtifactInteractionRef, ArtifactInteractionState as Status,
+        ArtifactResponse, Receipt,
     },
     container::ContainerService,
 };
@@ -54,6 +55,7 @@ pub struct RegisterInteraction {
     pub artifact_id: String,
     pub schema: ArtifactInputSchema,
     pub delivery: ArtifactDelivery,
+    pub handler: Option<ArtifactHandler>,
     /// Required declaration. No protected handler is installed in this version.
     pub sensitive: bool,
 }
@@ -76,6 +78,7 @@ pub async fn register(
         ));
     }
     request.schema.check(0).map_err(bad)?;
+    inputs::check_destination(request.delivery, request.handler, &request.schema).map_err(bad)?;
     if !matches!(request.schema, ArtifactInputSchema::Object { .. }) {
         return Err(ApiError::BadRequest(
             "The input schema must be an object".into(),
@@ -128,6 +131,7 @@ pub async fn register(
             if receipt.interaction.version == version
                 && receipt.interaction.schema == request.schema
                 && receipt.interaction.delivery == request.delivery
+                && receipt.interaction.handler == request.handler
             {
                 return Ok(Json(ApiResponse::success(receipt.interaction)));
             }
@@ -151,6 +155,7 @@ pub async fn register(
         version,
         schema: request.schema,
         delivery: request.delivery,
+        handler: request.handler,
         state: Status::InputRequired,
         created_at: now,
         expires_at: now + Duration::hours(10),
@@ -161,6 +166,7 @@ pub async fn register(
         interaction: interaction.clone(),
         boot_id: *inputs::BOOT_ID,
         response: None,
+        dispatch_claimed: false,
     })
     .await
     .map_err(bad)?;
@@ -220,7 +226,9 @@ async fn refresh(
                 i.state = Status::Failed;
                 i.error = Some(error.clone());
             }
-        } else if receipt.boot_id != *inputs::BOOT_ID {
+        } else if receipt.boot_id != *inputs::BOOT_ID
+            && !(receipt.dispatch_claimed && i.state == Status::Failed)
+        {
             i.state = Status::Unknown;
         } else if i.delivery == ArtifactDelivery::Wait
             && process.status != ExecutionProcessStatus::Running
@@ -346,6 +354,15 @@ pub async fn respond(
             .enqueue_artifact(session.id, data, reference);
     }
     drop(guard);
+    if receipt.interaction.delivery == ArtifactDelivery::Service
+        && matches!(receipt.response, Some(ArtifactResponse::Submit { .. }))
+    {
+        return Ok(Json(ApiResponse::success(
+            inputs::dispatch_service(&deployment.db().pool, &receipt.interaction.reference)
+                .await
+                .map_err(|error| ApiError::Io(std::io::Error::other(error)))?,
+        )));
+    }
     if receipt.interaction.delivery == ArtifactDelivery::FollowUp
         && let Err(error) = super::sessions::queue::drain_idle_queue(&deployment, &session).await
     {

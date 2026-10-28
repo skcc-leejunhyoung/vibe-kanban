@@ -7,12 +7,32 @@ export type ArtifactViewState = {
 export type ArtifactInputBridge = {
   channel: string;
   initial: ArtifactViewState;
+  arrayFields?: string[];
+  requestId?: string;
+  version?: string;
 };
+
+export function collectArtifactFormValues(
+  entries: Iterable<readonly [string, unknown]>,
+  arrayFields: string[] = []
+) {
+  const data: Record<string, unknown> = Object.create(null);
+  for (const name of arrayFields) data[name] = [];
+  for (const [name, value] of entries) {
+    if (!(name in data)) data[name] = value;
+    else if (Array.isArray(data[name])) (data[name] as unknown[]).push(value);
+    else data[name] = [data[name], value];
+  }
+  return data;
+}
 
 // Serialized into the inner sandbox before any artifact code. Keep this
 // function self-contained. The removed bootstrap owns the private capability;
 // artifact scripts can call the API, but cannot manufacture a trusted gesture.
-export function installArtifactInput(config: ArtifactInputBridge) {
+export function installArtifactInput(
+  config: ArtifactInputBridge,
+  collectValues = collectArtifactFormValues
+) {
   document.currentScript?.remove();
   const post = parent.postMessage.bind(parent);
   const stringify = JSON.stringify.bind(JSON);
@@ -122,7 +142,7 @@ export function installArtifactInput(config: ArtifactInputBridge) {
   });
   const submitForm = (form: HTMLFormElement) => {
     if (!form.reportValidity()) return;
-    const data: Record<string, unknown> = Object.create(null);
+    const entries: [string, unknown][] = [];
     for (const [name, value] of new NativeFormData(form)) {
       if (typeof value !== 'string') continue;
       const element = form.elements.namedItem(name);
@@ -133,16 +153,9 @@ export function installArtifactInput(config: ArtifactInputBridge) {
         value !== ''
           ? Number(value)
           : value;
-      data[name] =
-        name in data
-          ? [
-              ...(Array.isArray(data[name])
-                ? (data[name] as unknown[])
-                : [data[name]]),
-              converted,
-            ]
-          : converted;
+      entries.push([name, converted]);
     }
+    const data = collectValues(entries, config.arrayFields);
     form
       .querySelectorAll<HTMLInputElement>(
         'input[type="checkbox"][data-vibe-boolean]'
@@ -308,5 +321,5 @@ export function installArtifactInput(config: ArtifactInputBridge) {
 }
 
 export function artifactInputBootstrap(config: ArtifactInputBridge) {
-  return `(${installArtifactInput.toString()})(${JSON.stringify(config).replaceAll('<', '\\u003c')});`;
+  return `(${installArtifactInput.toString()})(${JSON.stringify(config).replaceAll('<', '\\u003c')}, ${collectArtifactFormValues.toString()});`;
 }

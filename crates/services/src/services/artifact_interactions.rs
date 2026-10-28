@@ -191,6 +191,50 @@ impl ArtifactInputSchema {
 pub enum ArtifactDelivery {
     FollowUp,
     Wait,
+    Service,
+}
+
+/// App-owned allowlist. Artifact data never supplies a URL or target session.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub enum ArtifactHandler {
+    #[serde(rename = "session.rename")]
+    SessionRename,
+}
+
+impl ArtifactHandler {
+    pub fn schema(self) -> ArtifactInputSchema {
+        match self {
+            Self::SessionRename => ArtifactInputSchema::Object {
+                properties: BTreeMap::from([(
+                    "name".into(),
+                    ArtifactInputSchema::String {
+                        choices: None,
+                        max_length: 80,
+                    },
+                )]),
+                required: vec!["name".into()],
+            },
+        }
+    }
+}
+
+pub fn check_destination(
+    delivery: ArtifactDelivery,
+    handler: Option<ArtifactHandler>,
+    schema: &ArtifactInputSchema,
+) -> Result<()> {
+    match (delivery, handler) {
+        (ArtifactDelivery::Service, Some(handler)) => {
+            ensure!(
+                schema == &handler.schema(),
+                "Use the registered handler's input schema"
+            );
+        }
+        (ArtifactDelivery::Service, None) => bail!("A registered service handler is required"),
+        (_, Some(_)) => bail!("A handler requires service delivery"),
+        (_, None) => {}
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -226,6 +270,8 @@ pub struct ArtifactInteraction {
     pub version: String,
     pub schema: ArtifactInputSchema,
     pub delivery: ArtifactDelivery,
+    #[serde(default)]
+    pub handler: Option<ArtifactHandler>,
     pub state: ArtifactInteractionState,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -248,6 +294,9 @@ pub struct Receipt {
     pub interaction: ArtifactInteraction,
     pub boot_id: Uuid,
     pub response: Option<ArtifactResponse>,
+    /// Persisted before dispatch, including before an execution row is created.
+    #[serde(default)]
+    pub dispatch_claimed: bool,
 }
 
 pub fn bundle_version(bundle: &ArtifactBundle) -> Result<String> {
@@ -390,9 +439,41 @@ pub async fn list(session_id: Uuid, execution_id: Uuid) -> Result<Vec<Receipt>> 
     Ok(receipts)
 }
 
+/// A restored queue must not dispatch an accepted response a second time.
+pub async fn claim_dispatch(reference: &ArtifactInteractionRef) -> Result<bool> {
+    let _guard = LOCK.lock().await;
+    let mut receipt = load(reference).await?;
+    let eligible = match receipt.interaction.state {
+        ArtifactInteractionState::Accepted | ArtifactInteractionState::Failed => true,
+        ArtifactInteractionState::Cancelled => {
+            receipt.response == Some(ArtifactResponse::Cancel)
+                && receipt.interaction.delivery == ArtifactDelivery::FollowUp
+        }
+        _ => false,
+    };
+    if receipt.dispatch_claimed
+        || receipt.interaction.result_process_id.is_some()
+        || receipt.response.is_none()
+        || !eligible
+    {
+        return Ok(false);
+    }
+    receipt.dispatch_claimed = true;
+    save(&receipt).await?;
+    Ok(true)
+}
+
 pub async fn mark_started(reference: &ArtifactInteractionRef, execution: Uuid) -> Result<()> {
     let _guard = LOCK.lock().await;
     let mut receipt = load(reference).await?;
+    ensure!(
+        receipt.dispatch_claimed,
+        "Artifact dispatch was not claimed"
+    );
+    ensure!(
+        receipt.interaction.result_process_id.is_none(),
+        "Artifact response has already been dispatched"
+    );
     receipt.interaction.result_process_id = Some(execution);
     if receipt.interaction.state != ArtifactInteractionState::Cancelled {
         receipt.interaction.state = ArtifactInteractionState::Processing;
@@ -401,14 +482,76 @@ pub async fn mark_started(reference: &ArtifactInteractionRef, execution: Uuid) -
     save(&receipt).await
 }
 
+pub async fn mark_dispatch_failed(reference: &ArtifactInteractionRef, error: &str) -> Result<()> {
+    let _guard = LOCK.lock().await;
+    let mut receipt = load(reference).await?;
+    if receipt.interaction.state != ArtifactInteractionState::Cancelled {
+        receipt.interaction.state = ArtifactInteractionState::Failed;
+        receipt.interaction.error = Some(error.to_string());
+        save(&receipt).await?;
+    }
+    Ok(())
+}
+
 pub async fn mark_cancelled(reference: &ArtifactInteractionRef) -> Result<()> {
     let _guard = LOCK.lock().await;
     let mut receipt = load(reference).await?;
-    if receipt.interaction.result_process_id.is_none() {
+    if !receipt.dispatch_claimed && receipt.interaction.result_process_id.is_none() {
+        receipt.dispatch_claimed = true;
         receipt.interaction.state = ArtifactInteractionState::Cancelled;
         save(&receipt).await?;
     }
     Ok(())
+}
+
+/// Called only after the browser response passed owner, scope and schema checks.
+pub async fn dispatch_service(
+    pool: &sqlx::SqlitePool,
+    reference: &ArtifactInteractionRef,
+) -> Result<ArtifactInteraction> {
+    if !claim_dispatch(reference).await? {
+        return Ok(load(reference).await?.interaction);
+    }
+    let mut receipt = {
+        let _guard = LOCK.lock().await;
+        let mut receipt = load(reference).await?;
+        receipt.interaction.state = ArtifactInteractionState::Processing;
+        save(&receipt).await?;
+        receipt
+    };
+    let result: Result<()> = async {
+        let i = &receipt.interaction;
+        check_destination(i.delivery, i.handler, &i.schema)?;
+        let Some(ArtifactResponse::Submit { data }) = &receipt.response else {
+            bail!("No service input was submitted");
+        };
+        i.schema.validate(data, "input")?;
+        let session = db::models::session::Session::find_by_id(pool, reference.session_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session no longer exists"))?;
+        ensure!(
+            session.workspace_id == i.workspace_id,
+            "Wrong handler workspace"
+        );
+        match i.handler {
+            Some(ArtifactHandler::SessionRename) => {
+                db::models::session::Session::update(pool, session.id, data["name"].as_str())
+                    .await?;
+            }
+            None => bail!("No service handler registered"),
+        }
+        Ok(())
+    }
+    .await;
+    let _guard = LOCK.lock().await;
+    receipt.interaction.state = if result.is_ok() {
+        ArtifactInteractionState::Completed
+    } else {
+        ArtifactInteractionState::Failed
+    };
+    receipt.interaction.error = result.err().map(|error| error.to_string());
+    save(&receipt).await?;
+    Ok(receipt.interaction)
 }
 
 #[cfg(test)]
@@ -427,6 +570,7 @@ mod tests {
     }
     fn receipt() -> Receipt {
         Receipt {
+            dispatch_claimed: false,
             boot_id: *BOOT_ID,
             response: None,
             interaction: ArtifactInteraction {
@@ -443,6 +587,7 @@ mod tests {
                 version: "bundle-hash".into(),
                 schema: schema(),
                 delivery: ArtifactDelivery::FollowUp,
+                handler: None,
                 state: ArtifactInteractionState::InputRequired,
                 created_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::hours(1),
@@ -652,7 +797,25 @@ mod tests {
             load(&reference).await.unwrap().interaction.state,
             ArtifactInteractionState::Accepted
         );
-        mark_started(&reference, Uuid::new_v4()).await.unwrap();
+        let (a, b) = tokio::join!(claim_dispatch(&reference), claim_dispatch(&reference));
+        assert_eq!(usize::from(a.unwrap()) + usize::from(b.unwrap()), 1);
+        mark_cancelled(&reference).await.unwrap();
+        assert_eq!(
+            load(&reference).await.unwrap().interaction.state,
+            ArtifactInteractionState::Accepted
+        );
+        let first_execution = Uuid::new_v4();
+        mark_started(&reference, first_execution).await.unwrap();
+        assert!(mark_started(&reference, Uuid::new_v4()).await.is_err());
+        assert_eq!(
+            load(&reference)
+                .await
+                .unwrap()
+                .interaction
+                .result_process_id,
+            Some(first_execution)
+        );
+        assert!(!claim_dispatch(&reference).await.unwrap());
         assert_eq!(
             load(&reference).await.unwrap().interaction.state,
             ArtifactInteractionState::Processing
@@ -682,5 +845,240 @@ mod tests {
                 .accept("form", "bundle-hash", ArtifactResponse::Cancel)
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn restored_queue_cannot_dispatch_consumed_or_uncertain_receipts() {
+        for scenario in [
+            "legacy_completed",
+            "interrupted_before_record",
+            "failed",
+            "cancelled",
+        ] {
+            let mut receipt = receipt();
+            receipt
+                .accept(
+                    "form",
+                    "bundle-hash",
+                    ArtifactResponse::Submit {
+                        data: json!({"choice":"run"}),
+                    },
+                )
+                .unwrap();
+            let reference = receipt.interaction.reference.clone();
+            if scenario == "legacy_completed" {
+                receipt.interaction.result_process_id = Some(Uuid::new_v4());
+                receipt.interaction.state = ArtifactInteractionState::Completed;
+                let mut old = serde_json::to_value(&receipt).unwrap();
+                old.as_object_mut().unwrap().remove("dispatch_claimed");
+                receipt = serde_json::from_value(old).unwrap();
+            } else {
+                receipt.dispatch_claimed = true;
+                receipt.interaction.state = match scenario {
+                    "failed" => ArtifactInteractionState::Failed,
+                    "cancelled" => ArtifactInteractionState::Cancelled,
+                    _ => ArtifactInteractionState::Accepted,
+                };
+            }
+            receipt.boot_id = Uuid::new_v4();
+            {
+                let _guard = LOCK.lock().await;
+                save(&receipt).await.unwrap();
+            }
+            assert!(!claim_dispatch(&reference).await.unwrap(), "{scenario}");
+            assert!(
+                !claim_dispatch(&reference).await.unwrap(),
+                "manual retry: {scenario}"
+            );
+            tokio::fs::remove_dir_all(directory(&reference))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_cancellation_waits_for_its_receipt_and_holds_on_storage_failure() {
+        use db::models::scratch::DraftFollowUpData;
+        use executors::{executors::BaseCodingAgent, profile::ExecutorConfig};
+
+        use super::super::queued_message::QueuedMessageService;
+        let queue = QueuedMessageService::new();
+        let mut receipt = receipt();
+        receipt
+            .accept(
+                "form",
+                "bundle-hash",
+                ArtifactResponse::Submit {
+                    data: json!({"choice":"run"}),
+                },
+            )
+            .unwrap();
+        let reference = receipt.interaction.reference.clone();
+        let session = reference.session_id;
+        let data = DraftFollowUpData {
+            message: "response".into(),
+            executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+        };
+        let guard = LOCK.lock().await;
+        save(&receipt).await.unwrap();
+        let message = queue.enqueue_artifact(session, data.clone(), reference.clone());
+        let cloned_queue = queue.clone();
+        let mut cancel =
+            tokio::spawn(async move { cloned_queue.cancel_message(session, message.id).await });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut cancel)
+                .await
+                .is_err()
+        );
+        drop(guard);
+        assert!(cancel.await.unwrap().unwrap().is_some());
+        let saved = load(&reference).await.unwrap();
+        assert_eq!(saved.interaction.state, ArtifactInteractionState::Cancelled);
+        assert!(saved.dispatch_claimed);
+        assert!(!claim_dispatch(&reference).await.unwrap());
+        // A lost/unreadable receipt must not be acknowledged as cancelled.
+        tokio::fs::remove_dir_all(directory(&reference))
+            .await
+            .unwrap();
+        let message = queue.enqueue_artifact(session, data, reference);
+        assert!(queue.cancel_message(session, message.id).await.is_err());
+        assert_eq!(queue.get_queued(session)[0].id, message.id);
+        assert!(queue.get_queued(session)[0].start_error.is_some());
+        assert!(!queue.can_drain_now(session));
+        assert!(queue.clear_queue(session).await.is_err());
+        assert_eq!(queue.get_queued(session)[0].id, message.id);
+    }
+
+    #[test]
+    fn service_registration_uses_only_the_fixed_handler_schema() {
+        let handler = ArtifactHandler::SessionRename;
+        check_destination(ArtifactDelivery::Service, Some(handler), &handler.schema()).unwrap();
+        assert!(check_destination(ArtifactDelivery::Service, Some(handler), &schema()).is_err());
+        assert!(check_destination(ArtifactDelivery::Service, None, &handler.schema()).is_err());
+        assert!(
+            check_destination(ArtifactDelivery::Wait, Some(handler), &handler.schema()).is_err()
+        );
+        for target in [
+            "jump.password",
+            "https://example.com",
+            "shell",
+            "backend.call",
+        ] {
+            assert!(serde_json::from_value::<ArtifactHandler>(json!(target)).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn service_handler_is_bound_to_session_and_runs_once_with_real_completion() {
+        use db::models::{
+            session::{CreateSession, Session},
+            workspace::{CreateWorkspace, Workspace},
+        };
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let workspace = Workspace::create(
+            &pool,
+            &CreateWorkspace {
+                branch: "test".into(),
+                name: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        let session = Session::create(
+            &pool,
+            &CreateSession {
+                executor: None,
+                variant: None,
+                name: Some("original".into()),
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        for scenario in ["success", "wrong_workspace", "database_failure", "cancel"] {
+            let mut receipt = receipt();
+            receipt.interaction.reference.session_id = session.id;
+            receipt.interaction.workspace_id = if scenario == "wrong_workspace" {
+                Uuid::new_v4()
+            } else {
+                workspace.id
+            };
+            receipt.interaction.delivery = ArtifactDelivery::Service;
+            receipt.interaction.handler = Some(ArtifactHandler::SessionRename);
+            receipt.interaction.schema = ArtifactHandler::SessionRename.schema();
+            receipt
+                .accept(
+                    "form",
+                    "bundle-hash",
+                    if scenario == "cancel" {
+                        ArtifactResponse::Cancel
+                    } else {
+                        ArtifactResponse::Submit {
+                            data: json!({"name":"검토한 이름"}),
+                        }
+                    },
+                )
+                .unwrap();
+            let reference = receipt.interaction.reference.clone();
+            {
+                let _guard = LOCK.lock().await;
+                save(&receipt).await.unwrap();
+            }
+            if scenario == "database_failure" {
+                sqlx::query("CREATE TRIGGER fail_rename BEFORE UPDATE ON sessions BEGIN SELECT RAISE(FAIL, 'rename failed'); END")
+                    .execute(&pool).await.unwrap();
+            }
+            let first = dispatch_service(&pool, &reference).await.unwrap();
+            assert_eq!(
+                first.state,
+                match scenario {
+                    "success" => ArtifactInteractionState::Completed,
+                    "cancel" => ArtifactInteractionState::Cancelled,
+                    _ => ArtifactInteractionState::Failed,
+                }
+            );
+            if scenario == "database_failure" {
+                assert!(first.error.as_ref().unwrap().contains("rename failed"));
+                sqlx::query("DROP TRIGGER fail_rename")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            if scenario == "success" {
+                assert_eq!(
+                    Session::find_by_id(&pool, session.id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .name
+                        .as_deref(),
+                    Some("검토한 이름")
+                );
+            }
+            Session::update(&pool, session.id, Some("later edit"))
+                .await
+                .unwrap();
+            let replay = dispatch_service(&pool, &reference).await.unwrap();
+            assert_eq!(replay.state, first.state);
+            assert_eq!(
+                Session::find_by_id(&pool, session.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .name
+                    .as_deref(),
+                Some("later edit")
+            );
+            tokio::fs::remove_dir_all(directory(&reference))
+                .await
+                .unwrap();
+        }
     }
 }

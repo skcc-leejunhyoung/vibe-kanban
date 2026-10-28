@@ -54,6 +54,20 @@ while waiting. Choose `--delivery follow_up` to queue the response in the same
 session, using its existing executor and permission settings. It starts when that
 session is available. Do not queue an answer behind the execution waiting for it.
 
+For a direct app action, use `--delivery service --handler session.rename` with
+this fixed schema:
+
+```json
+{"type":"object","properties":{"name":{"type":"string","maxLength":80}},"required":["name"]}
+```
+
+The handler updates only the request's bound session, using the existing session
+rename operation. The host caption identifies the action before submission.
+An empty name clears the custom name. The handler cannot select another session,
+accept a URL or execute a command. Completion is reported after the database
+update succeeds; cancelling does not call the handler. Other handler names or
+schemas are rejected.
+
 ## Input protocol
 
 Use a top-level object schema. Supported types are `object`, `string`, `number`,
@@ -66,7 +80,9 @@ objects to 64 properties. The defaults are 4,000 characters per string and 100
 items per array; maximum limits are 16,000 characters and 200 items.
 
 Native named controls submit strings; number/range inputs submit numbers.
-Repeated names submit arrays. A checkbox with `data-vibe-boolean` submits a boolean
+Fields registered as arrays always submit arrays, including zero or one selection
+in a multi-select or checkbox group. Repeated names also submit arrays.
+A checkbox with `data-vibe-boolean` submits a boolean
 including `false` when unchecked. For a custom table or other structured editor,
 call `window.vibe.submit(data)` from the click handler of a button marked
 `data-vibe-submit`. It must be a real user gesture. Programmatic clicks, page load
@@ -94,8 +110,20 @@ Already accepted data cannot be edited in the session queue. Remove it and reque
 a new form if you need different data. Cancelling an input request does not roll
 back a running task; use the existing task stop control for that task.
 
+Preparation failures keep the queued response with its error for an explicit
+queue retry. Once dispatch has been claimed, a failed or uncertain start does not
+run that request again. Check the result and request a new form to start new work.
+The claim is saved before creating an execution, so even a stale queue restored
+after a failed queue deletion cannot repeat the task or overwrite its result.
+Removing a queued artifact response also records cancellation before acknowledging
+it. If that record cannot be saved, the response stays held with the error instead
+of being shown as successfully cancelled.
+
 Inputs stay in page memory during ordinary re-renders, chat row remounts and
-expansion. Reloading the page or restarting the app discards these drafts. Request
+expansion. The complete rendered bundle stays fixed in page memory for the
+request, including when a virtual chat row is removed and mounted again. A first
+load whose registered version is unavailable is rejected. Reloading the page or
+restarting the app discards these drafts. Request
 receipts are retained to prevent replay; they do not restore drafts or automatically
 restart work. Opening history never submits a response. Expired or consumed
 requests are read-only. Fresh requests expire after ten hours; waiting requests
@@ -110,13 +138,25 @@ disabled in registered forms, but ordinary fields cannot determine whether text
 you enter is confidential. There is no protected input handler or credential
 storage in this version.
 
-The two registered destinations are the waiting agent and the same session's
-follow-up queue. External services require a separately registered adapter; an
-artifact cannot select an arbitrary handler. Jump is not a dependency. For a
-future protected adapter, its existing credential request/type exchange is the
-reuse candidate: only credential IDs and status may cross into the agent. URL
-elicitation must retain Jump's protected input and authorization boundary; it
-does not authorize ordinary artifact scripts to collect credentials. No external
-form-submission contract has been verified, so this version exposes no Jump
-action. Prefer an existing designated keychain or stored credential before asking
-for new input, and do not assume the CLI can retrieve the app's saved passwords.
+Registered destinations are the waiting agent, the same session's follow-up queue
+and the app-owned `session.rename` service handler. External services require
+their own registered adapter; an artifact cannot select an arbitrary handler.
+Jump is not a dependency.
+
+### Jump adapter assessment
+
+[Jump's documented MCP credential flow](https://docs.jumpdesktop.com/cli/mcp/)
+keeps credential entry in its own Mission Control page and sends keystrokes to
+the connected device without revealing the value to the agent. Its existing
+`request_credential` / `type_credential` exchange is the reuse candidate; only
+credential IDs and status may cross into an agent. URL elicitation must keep this
+protected input and authorisation boundary. A Mission Control URL carries an
+access key and must not be placed in an ordinary artifact or conversation log.
+
+An adapter must first reuse an existing designated keychain or credential ID.
+If new input is needed, it must use the protected Jump flow or an app-owned input
+component. The public flow does not establish an external form-submission API or
+automatic access to the app's saved passwords. No such contract has been verified,
+so this version registers no Jump action and rejects sensitive requests. Generic
+forms and service delivery work without installing or connecting Jump. Service
+authentication, including phone verification, remains with the service.

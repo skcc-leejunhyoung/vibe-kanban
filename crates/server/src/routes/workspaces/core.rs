@@ -177,7 +177,13 @@ async fn silence_autopilot(deployment: &DeploymentImpl, workspace: &Workspace) {
         }
     };
     // Clear before killing: the kill's exit handler would drain the queue.
-    deployment.queued_message_service().clear_queue(session.id);
+    if let Err(error) = deployment
+        .queued_message_service()
+        .clear_queue(session.id)
+        .await
+    {
+        tracing::warn!(workspace_id = %workspace.id, %error, "Could not persist queued artifact cancellations");
+    }
     // Pending wakeups would otherwise fire into the paused Autopilot (the
     // rate-limit watcher drops its resume itself and runs the deferred cleanup).
     if let Err(error) = ScheduledResume::cancel_pending_for_session(pool, session.id).await {

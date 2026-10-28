@@ -117,6 +117,19 @@ pub(crate) async fn drain_idle_queue(
     deployment: &DeploymentImpl,
     session: &Session,
 ) -> Result<(), ApiError> {
+    let result = prepare_and_drain_idle_queue(deployment, session).await;
+    if let Err(error) = &result {
+        deployment
+            .queued_message_service()
+            .hold_front(session.id, error.to_string());
+    }
+    result
+}
+
+async fn prepare_and_drain_idle_queue(
+    deployment: &DeploymentImpl,
+    session: &Session,
+) -> Result<(), ApiError> {
     if !deployment
         .queued_message_service()
         .can_drain_now(session.id)
@@ -155,10 +168,16 @@ async fn delete_queued_message(
         Some(message_id) => {
             deployment
                 .queued_message_service()
-                .cancel_message(session.id, message_id);
+                .cancel_message(session.id, message_id)
+                .await
+                .map_err(|error| ApiError::Io(std::io::Error::other(error)))?;
         }
         None => {
-            deployment.queued_message_service().clear_queue(session.id);
+            deployment
+                .queued_message_service()
+                .clear_queue(session.id)
+                .await
+                .map_err(|error| ApiError::Io(std::io::Error::other(error)))?;
         }
     }
 

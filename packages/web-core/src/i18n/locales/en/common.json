@@ -803,6 +803,8 @@
       "processing": "The linked task is processing your response.",
       "completed": "The linked task completed.",
       "failed": "The linked task failed. Check the conversation or queued message before retrying.",
+      "failedRecovery": "Nothing restarts automatically. Retry explicitly if the response remains in the queue. Otherwise, check the result and request a new form.",
+      "renameSession": "Submitting changes this conversation's session name.",
       "cancelled": "Cancelled.",
       "expired": "This request has ended or expired. Ask for a new form.",
       "unknown": "The task status could not be confirmed. Check its status before retrying.",

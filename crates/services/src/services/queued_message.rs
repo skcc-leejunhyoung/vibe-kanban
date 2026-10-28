@@ -149,14 +149,22 @@ impl QueuedMessageService {
         );
     }
 
-    fn cancelled_artifact(message: &QueuedMessage) {
-        if let Some(reference) = message.artifact_request.clone() {
-            tokio::spawn(async move {
-                if let Err(error) = super::artifact_interactions::mark_cancelled(&reference).await {
-                    tracing::warn!(request_id = %reference.request_id, %error, "Could not record cancelled artifact request");
+    async fn persist_cancellations(
+        &self,
+        messages: Vec<QueuedMessage>,
+    ) -> anyhow::Result<Vec<QueuedMessage>> {
+        for message in &messages {
+            if let Some(reference) = &message.artifact_request
+                && let Err(error) = super::artifact_interactions::mark_cancelled(reference).await
+            {
+                // Keep an unconfirmed cancellation visible and held for the user.
+                for message in messages.iter().rev() {
+                    self.restore_failed(message.clone(), error.to_string());
                 }
-            });
+                return Err(error);
+            }
         }
+        Ok(messages)
     }
 
     /// Append a message to the back of a session's queue.
@@ -231,6 +239,21 @@ impl QueuedMessageService {
         }
     }
 
+    /// After claiming an artifact, an uncertain start needs a new request,
+    /// never another execution of the same response from the queue.
+    pub async fn restore_failed_dispatch(&self, message: QueuedMessage, error: String) {
+        if let Some(reference) = &message.artifact_request
+            && let Ok(receipt) = super::artifact_interactions::load(reference).await
+            && receipt.dispatch_claimed
+        {
+            match super::artifact_interactions::mark_dispatch_failed(reference, &error).await {
+                Ok(()) => return,
+                Err(cause) => tracing::warn!(%cause, "Could not record artifact start failure"),
+            }
+        }
+        self.restore_failed(message, error);
+    }
+
     /// Pop the front message unless it failed to start (see
     /// [`Self::restore_failed`]); that one waits for an explicit retry.
     fn pop_ready(q: &mut VecDeque<QueuedMessage>) -> Option<QueuedMessage> {
@@ -303,18 +326,25 @@ impl QueuedMessageService {
     }
 
     /// Cancel a single queued message by id. Returns the removed message if found.
-    pub fn cancel_message(&self, session_id: Uuid, message_id: Uuid) -> Option<QueuedMessage> {
+    pub async fn cancel_message(
+        &self,
+        session_id: Uuid,
+        message_id: Uuid,
+    ) -> anyhow::Result<Option<QueuedMessage>> {
+        let _hold = self.hold_drain(session_id);
         let removed = self.queue.get_mut(&session_id).and_then(|mut q| {
             q.iter()
                 .position(|m| m.id == message_id)
                 .and_then(|pos| q.remove(pos))
         });
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
-        if let Some(message) = &removed {
-            Self::cancelled_artifact(message);
+        if removed.is_some() {
             self.changed(session_id);
         }
-        removed
+        Ok(self
+            .persist_cancellations(removed.into_iter().collect())
+            .await?
+            .pop())
     }
 
     /// Move an already-queued message to the front of its session's queue, so a
@@ -365,32 +395,31 @@ impl QueuedMessageService {
     }
 
     /// Remove all queued messages for a session, returning them in order.
-    pub fn clear_queue(&self, session_id: Uuid) -> Vec<QueuedMessage> {
+    pub async fn clear_queue(&self, session_id: Uuid) -> anyhow::Result<Vec<QueuedMessage>> {
+        let _hold = self.hold_drain(session_id);
         let cleared: Vec<QueuedMessage> = self
             .queue
             .remove(&session_id)
             .map(|(_, q)| q.into_iter().collect())
             .unwrap_or_default();
         if !cleared.is_empty() {
-            for message in &cleared {
-                Self::cancelled_artifact(message);
-            }
             self.changed(session_id);
         }
-        cleared
+        self.persist_cancellations(cleared).await
     }
 
     /// Remove the messages queued by the time a failed or stopped turn ended —
     /// the ones it would have run — and keep those sent after it ended (the
     /// follow-up route queues a send while the turn finishes), which the
     /// turn's drain then starts. `None` (end unknown) removes them all.
-    pub fn discard_queued_by(
+    pub async fn discard_queued_by(
         &self,
         session_id: Uuid,
         ended_at: Option<DateTime<Utc>>,
-    ) -> Vec<QueuedMessage> {
+    ) -> anyhow::Result<Vec<QueuedMessage>> {
+        let _hold = self.hold_drain(session_id);
         let Some(ended_at) = ended_at else {
-            return self.clear_queue(session_id);
+            return self.clear_queue(session_id).await;
         };
         let discarded: Vec<QueuedMessage> = self
             .queue
@@ -404,12 +433,9 @@ impl QueuedMessageService {
             .unwrap_or_default();
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
         if !discarded.is_empty() {
-            for message in &discarded {
-                Self::cancelled_artifact(message);
-            }
             self.changed(session_id);
         }
-        discarded
+        self.persist_cancellations(discarded).await
     }
 
     /// Get the queued messages for a session (oldest first).
@@ -600,21 +626,24 @@ mod tests {
         assert_eq!(svc.take_next(session).unwrap().data.message, "queued");
     }
 
-    #[test]
-    fn cancel_message_removes_only_the_targeted_id() {
+    #[tokio::test]
+    async fn cancel_message_removes_only_the_targeted_id() {
         let svc = QueuedMessageService::new();
         let session = Uuid::new_v4();
 
         let a = svc.enqueue(session, sample_data("a"));
         let b = svc.enqueue(session, sample_data("b"));
 
-        assert_eq!(svc.cancel_message(session, a.id).unwrap().id, a.id);
+        assert_eq!(
+            svc.cancel_message(session, a.id).await.unwrap().unwrap().id,
+            a.id
+        );
         let remaining = svc.get_queued(session);
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, b.id);
 
         // Cancelling the last one empties (and removes) the session entry.
-        svc.cancel_message(session, b.id);
+        svc.cancel_message(session, b.id).await.unwrap();
         assert!(!svc.has_queued(session));
         assert!(matches!(svc.get_status(session), QueueStatus::Empty));
     }
@@ -837,21 +866,21 @@ mod tests {
         assert!(svc.reorder(Uuid::new_v4(), &[a.id]).is_empty());
     }
 
-    #[test]
-    fn clear_queue_returns_all_in_order() {
+    #[tokio::test]
+    async fn clear_queue_returns_all_in_order() {
         let svc = QueuedMessageService::new();
         let session = Uuid::new_v4();
         svc.enqueue(session, sample_data("a"));
         svc.enqueue(session, sample_data("b"));
 
-        let cleared = svc.clear_queue(session);
+        let cleared = svc.clear_queue(session).await.unwrap();
         assert_eq!(cleared.len(), 2);
         assert_eq!(cleared[0].data.message, "a");
         assert!(!svc.has_queued(session));
     }
 
-    #[test]
-    fn discard_queued_by_keeps_messages_sent_after_the_turn_ended() {
+    #[tokio::test]
+    async fn discard_queued_by_keeps_messages_sent_after_the_turn_ended() {
         let svc = QueuedMessageService::new();
         let session = Uuid::new_v4();
         svc.enqueue(session, sample_data("behind"));
@@ -860,12 +889,15 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         svc.enqueue(session, sample_data("after"));
 
-        let discarded = svc.discard_queued_by(session, Some(ended_at));
+        let discarded = svc
+            .discard_queued_by(session, Some(ended_at))
+            .await
+            .unwrap();
         assert_eq!(discarded.len(), 1);
         assert_eq!(discarded[0].data.message, "behind");
         assert_eq!(svc.get_queued(session)[0].data.message, "after");
 
-        assert_eq!(svc.discard_queued_by(session, None).len(), 1);
+        assert_eq!(svc.discard_queued_by(session, None).await.unwrap().len(), 1);
         assert!(!svc.has_queued(session));
     }
 

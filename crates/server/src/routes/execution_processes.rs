@@ -754,6 +754,7 @@ async fn subagent_transcript(
             session_id: session.id,
             id: None,
             hash: None,
+            version: None,
         },
     )
     .await

@@ -60,6 +60,7 @@ fn generate_types_content() -> String {
         services::services::approvals::ApprovalInfo::decl(),
         services::services::artifact_interactions::ArtifactInputSchema::decl(),
         services::services::artifact_interactions::ArtifactDelivery::decl(),
+        services::services::artifact_interactions::ArtifactHandler::decl(),
         services::services::artifact_interactions::ArtifactInteractionState::decl(),
         services::services::artifact_interactions::ArtifactInteractionRef::decl(),
         services::services::artifact_interactions::ArtifactInteraction::decl(),

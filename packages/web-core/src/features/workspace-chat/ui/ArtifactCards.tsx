@@ -88,6 +88,7 @@ type ArtifactContent = {
   text: string;
   preview?: ReturnType<typeof buildArtifactPreview>;
   warnings: string[];
+  inputChannel?: string;
 };
 
 // Shared by the chat thumbnail and the dialog so opening costs no second fetch.
@@ -111,11 +112,17 @@ function useArtifactContent(
       artifact.id,
       artifact.content_hash,
       mode,
-      input?.channel,
+      input?.requestId ?? input?.channel,
+      input?.version,
     ],
     enabled,
     retry: false,
-    staleTime: 5 * 60 * 1000,
+    staleTime: input ? Infinity : 5 * 60 * 1000,
+    // Keep the fixed document (and its private channel) across virtual rows.
+    // This is page memory only; refresh/revisit restoration is not supported.
+    gcTime: input ? Infinity : undefined,
+    refetchOnWindowFocus: input ? false : undefined,
+    refetchOnReconnect: input ? false : undefined,
     queryFn: async ({ signal }): Promise<ArtifactContent> => {
       // Snapshots are served as octet streams; object URLs need the real type.
       const fetchBytes = async (hash: string | undefined, mime: string) =>
@@ -140,7 +147,8 @@ function useArtifactContent(
           sessionId,
           artifact.id,
           hostId,
-          signal
+          signal,
+          input?.version
         );
         if (bundle.artifact.content_hash !== artifact.content_hash)
           throw new Error(t('artifacts.changed'));
@@ -208,7 +216,13 @@ function useArtifactContent(
           artifact.mime === 'image/svg+xml',
           input
         );
-        return { blob, text, preview, warnings: bundle.warnings };
+        return {
+          blob,
+          text,
+          preview,
+          warnings: bundle.warnings,
+          inputChannel: input?.channel,
+        };
       }
       return { blob, text, warnings: [] };
     },
@@ -231,13 +245,21 @@ function InteractiveArtifact({
   disconnected: boolean;
 }) {
   const { t } = useTranslation('common');
-  const [pinned] = useState(artifact);
+  const pinned = { ...artifact, content_hash: interaction.artifact_hash };
   const input = useMemo<ArtifactInputBridge>(
     () => ({
       channel: crypto.randomUUID(),
       initial: { status: 'loading', message: '', editable: false },
+      requestId: interaction.reference.request_id,
+      version: interaction.version,
+      arrayFields:
+        interaction.schema.type === 'object'
+          ? Object.entries(interaction.schema.properties)
+              .filter(([, schema]) => schema?.type === 'array')
+              .map(([name]) => name)
+          : [],
     }),
-    []
+    [interaction.reference.request_id, interaction.version, interaction.schema]
   );
   const content = useArtifactContent(pinned, scope, 'preview', true, input);
   if (content.error)
@@ -253,7 +275,7 @@ function InteractiveArtifact({
   return (
     <ArtifactInputFrame
       srcDoc={content.data.preview.srcDoc}
-      channel={input.channel}
+      channel={content.data.inputChannel!}
       interaction={interaction}
       hostId={scope.hostId}
       title={artifact.name}

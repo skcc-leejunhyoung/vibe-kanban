@@ -228,10 +228,11 @@ export const artifactsApi = {
     sessionId: string,
     id: string,
     hostId: string | null,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    version?: string
   ): Promise<import('shared/types').ArtifactBundle> => {
     const response = await makeHostAwareRequest(
-      `/api/execution-processes/${processId}/artifacts/bundle?${new URLSearchParams({ workspace_id: workspaceId, session_id: sessionId, id })}`,
+      `/api/execution-processes/${processId}/artifacts/bundle?${new URLSearchParams({ workspace_id: workspaceId, session_id: sessionId, id, ...(version ? { version } : {}) })}`,
       hostId,
       { signal }
     );

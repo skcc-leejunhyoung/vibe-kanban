@@ -192,9 +192,15 @@ export function ArtifactInputFrame({
           }
         />
         <figcaption className="space-y-half border-t border-border p-base">
+          {interaction.handler === 'session.rename' && (
+            <p className="text-normal">{t('artifacts.input.renameSession')}</p>
+          )}
           <p role={error || disconnected ? 'alert' : 'status'}>
             {view.message}
           </p>
+          {interaction.state === 'failed' && (
+            <p className="text-low">{t('artifacts.input.failedRecovery')}</p>
+          )}
           {interaction.state === 'input_required' && (
             <p className="text-low">{t('artifacts.input.noDraftStorage')}</p>
           )}
