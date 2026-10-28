@@ -1,4 +1,5 @@
 import { dataUrl, isolatePreviewDocument } from '@/shared/lib/isolatedPreview';
+import type { ArtifactInputBridge } from '@/shared/lib/artifactInputBridge';
 import type { ArtifactReference, SubagentControlTarget } from 'shared/types';
 
 // A tool can return both a file link and the same image as base64. Preserve
@@ -42,7 +43,8 @@ export function buildArtifactPreview(
   source: string,
   path: string,
   resources: PreviewResource[],
-  svg = false
+  svg = false,
+  input?: ArtifactInputBridge
 ): { srcDoc: string; warnings: string[] } {
   if (source.length > 2 * 1024 * 1024)
     throw new Error('Preview exceeds 2 MiB; use Source or Download.');
@@ -146,7 +148,10 @@ export function buildArtifactPreview(
   doc.querySelectorAll('style').forEach((node) => {
     node.textContent = rewriteCss(node.textContent ?? '', path);
   });
-  return { srcDoc: isolatePreviewDocument(doc, svg), warnings: [...warnings] };
+  return {
+    srcDoc: isolatePreviewDocument(doc, svg, input),
+    warnings: [...warnings],
+  };
 }
 
 export type InlinePreviewKind =

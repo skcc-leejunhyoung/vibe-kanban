@@ -43,6 +43,33 @@ const button = (html: string, label: string) => {
 };
 
 describe('SessionChatBox while a follow-up send is pending', () => {
+  it('keeps accepted artifact responses removable without offering text edits', () => {
+    const html = renderToStaticMarkup(
+      <SessionChatBox
+        status="running"
+        editor={{ value: '', onChange: () => {} }}
+        renderEditor={() => null}
+        actions={{
+          onSend: () => {},
+          onQueue: () => {},
+          onCancelQueue: () => {},
+          onStop: () => {},
+          onPasteFiles: () => {},
+        }}
+        queuedMessages={[
+          { id: 'artifact', message: 'response', editable: false },
+        ]}
+        onEditQueued={() => {}}
+        onRemoveQueued={() => {}}
+        session={{ sessions: [], onSelectSession: () => {} }}
+      />
+    );
+    expect(button(html, 'conversation.actions.edit')).toBeNull();
+    expect(button(html, 'conversation.actions.removeQueued')).toEqual({
+      disabled: false,
+    });
+  });
+
   it('offers stop and queue while scripts run, with send now disabled', () => {
     const html = render('running', true, false);
     expect(button(html, 'conversation.actions.stop')).toEqual({

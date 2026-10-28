@@ -1,0 +1,122 @@
+---
+title: "Interactive artifact input"
+description: "Collect non-sensitive structured responses inside the chat and continue the connected session."
+---
+
+You can select options or edit a form directly in a registered HTML artifact. Use
+its **Submit** or **Cancel** button; you do not need a second chat submission.
+Unregistered artifacts keep their existing thumbnail and expanded preview.
+
+## Register a form
+
+1. Create and attach an HTML file with a `data-vibe-form` form, named controls and
+   a submit button. Add `data-vibe-cancel` to a cancellation button.
+2. Run `vk session artifacts list <execution-id> --ws <workspace-id> --session
+   <session-id> --json` to find the attached artifact ID. Wait for its snapshot to
+   become ready before registering it.
+3. Run `vk session artifacts request --help`. Supply the execution, workspace,
+   session and artifact IDs, a schema, `--sensitive false`, and a delivery mode.
+   Registration returns a server-generated request ID and fixes the artifact
+   version, dependencies, owner and host for that request.
+
+```html selection.html
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Review options</title></head>
+<body>
+  <h2>Review options</h2>
+  <p data-vibe-status role="status"></p>
+  <form data-vibe-form>
+    <label>Action
+      <select name="choice">
+        <option value="review">Review first</option>
+        <option value="run">Run</option>
+      </select>
+    </label>
+    <button type="submit">Submit</button>
+    <button type="button" data-vibe-cancel>Cancel</button>
+  </form>
+</body>
+</html>
+```
+
+For that form, pass this value to `--schema`:
+
+```json
+{"type":"object","properties":{"choice":{"type":"string","enum":["review","run"]}},"required":["choice"]}
+```
+
+Choose `--delivery wait` when the current execution waits for the answer. Read
+`vk session artifacts result` with the returned request ID until `response` is
+present or the request expires. The result contains structured `submit` data or
+`cancel`; it is delivered directly to the waiting tool. Do not end that execution
+while waiting. Choose `--delivery follow_up` to queue the response in the same
+session, using its existing executor and permission settings. It starts when that
+session is available. Do not queue an answer behind the execution waiting for it.
+
+## Input protocol
+
+Use a top-level object schema. Supported types are `object`, `string`, `number`,
+`boolean` and `array`. Objects accept only registered properties and support
+`required`. Strings support `enum` and `maxLength`; numbers support `minimum`
+and `maximum`; arrays require `items` and support `maxItems`. Unsupported keywords,
+unknown handlers, extra input fields, invalid types and over-limit values are
+rejected. Responses are limited to 32 KiB, schemas to eight nesting levels and
+objects to 64 properties. The defaults are 4,000 characters per string and 100
+items per array; maximum limits are 16,000 characters and 200 items.
+
+Native named controls submit strings; number/range inputs submit numbers.
+Repeated names submit arrays. A checkbox with `data-vibe-boolean` submits a boolean
+including `false` when unchecked. For a custom table or other structured editor,
+call `window.vibe.submit(data)` from the click handler of a button marked
+`data-vibe-submit`. It must be a real user gesture. Programmatic clicks, page load
+and automatic messages cannot submit. `window.vibe.cancel()` uses the same gesture
+rule. The bridge never grants arbitrary URL, shell or backend access.
+
+Read `window.vibe.getState()` or listen for the `vibe:state` event to customise
+your waiting/error UI. The event detail contains `status`, `message` and
+`editable`. A default status message is shown if you omit `data-vibe-status`.
+The host also displays the confirmed state outside the sandbox.
+
+## Submission and recovery
+
+| State | Meaning |
+| --- | --- |
+| Input required / sending | You can edit, or the response is being sent. |
+| Accepted / processing | Vibe received the response, or its linked execution is running. This is not task success. |
+| Completed / failed | The linked execution ended successfully or failed. Check the conversation for its result. |
+| Cancelled / expired | Input was cancelled, the task was stopped, or this request can no longer accept input. |
+| Unconfirmed connection / status | Vibe cannot confirm receipt or execution state. Use the displayed status check or explicit retry. |
+
+Vibe never automatically resends a response after reconnection. A manual retry
+uses the same request and payload; an existing receipt prevents duplicate work.
+Already accepted data cannot be edited in the session queue. Remove it and request
+a new form if you need different data. Cancelling an input request does not roll
+back a running task; use the existing task stop control for that task.
+
+Inputs stay in page memory during ordinary re-renders, chat row remounts and
+expansion. Reloading the page or restarting the app discards these drafts. Request
+receipts are retained to prevent replay; they do not restore drafts or automatically
+restart work. Opening history never submits a response. Expired or consumed
+requests are read-only. Fresh requests expire after ten hours; waiting requests
+also expire when their execution ends. Unanswered requests expire after a server
+restart. A changed artifact or dependency requires a new request.
+
+## Sensitive input and service adapters
+
+This version rejects sensitive requests. Do not enter passwords, credentials or
+other secrets in ordinary artifacts. Password/autofill credential fields are
+disabled in registered forms, but ordinary fields cannot determine whether text
+you enter is confidential. There is no protected input handler or credential
+storage in this version.
+
+The two registered destinations are the waiting agent and the same session's
+follow-up queue. External services require a separately registered adapter; an
+artifact cannot select an arbitrary handler. Jump is not a dependency. For a
+future protected adapter, its existing credential request/type exchange is the
+reuse candidate: only credential IDs and status may cross into the agent. URL
+elicitation must retain Jump's protected input and authorization boundary; it
+does not authorize ordinary artifact scripts to collect credentials. No external
+form-submission contract has been verified, so this version exposes no Jump
+action. Prefer an existing designated keychain or stored credential before asking
+for new input, and do not assume the CLI can retrieve the app's saved passwords.

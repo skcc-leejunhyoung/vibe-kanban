@@ -795,7 +795,23 @@
       "missing": "Source deleted or missing",
       "error": "Snapshot unavailable"
     },
-    "largeSource": "This file exceeds the 2 MiB preview limit. Download to view the complete source."
+    "largeSource": "This file exceeds the 2 MiB preview limit. Download to view the complete source.",
+    "input": {
+      "input_required": "Review the form and submit when ready.",
+      "sending": "Sending your response…",
+      "accepted": "Response received. Waiting for the linked task.",
+      "processing": "The linked task is processing your response.",
+      "completed": "The linked task completed.",
+      "failed": "The linked task failed. Check the conversation or queued message before retrying.",
+      "cancelled": "Cancelled.",
+      "expired": "This request has ended or expired. Ask for a new form.",
+      "unknown": "The task status could not be confirmed. Check its status before retrying.",
+      "disconnected": "Connection or receipt could not be confirmed. Check status or retry explicitly; nothing is sent automatically.",
+      "noDraftStorage": "Do not enter passwords or secrets. Refreshing this page may clear unsubmitted input.",
+      "check": "Check status",
+      "retry": "Retry this response",
+      "collapse": "Collapse"
+    }
   },
   "status": {
     "writing": "Writing the status summary…",

@@ -939,7 +939,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     (messageId: string) => {
       if (isOptimisticQueuedId(messageId)) return;
       const target = queuedMessages.find((m) => m.id === messageId);
-      if (!target) return;
+      if (!target || target.artifact_request) return;
       // Queued edit and sent-message edit are mutually exclusive.
       editContext.cancelEdit();
       if (editingQueuedId === null) {
@@ -2382,6 +2382,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           id: m.id,
           message: m.data.message,
           startError: m.start_error,
+          editable: !m.artifact_request,
         }))}
       onRemoveQueued={handleRemoveQueued}
       onSteerQueued={

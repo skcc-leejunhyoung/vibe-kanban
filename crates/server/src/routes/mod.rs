@@ -18,6 +18,7 @@ pub mod config;
 pub mod containers;
 pub mod filesystem;
 // pub mod github;
+pub mod artifact_interactions;
 pub mod artifacts;
 pub mod attachments;
 pub mod events;

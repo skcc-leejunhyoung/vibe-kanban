@@ -1780,6 +1780,7 @@ pub trait ContainerService {
         session: &Session,
         workspace: &Workspace,
         data: &DraftFollowUpData,
+        artifact_request: Option<&super::artifact_interactions::ArtifactInteractionRef>,
     ) -> Result<Option<ExecutionProcess>, ContainerError> {
         self.wait_for_session_ready(session.id).await;
         let starting = self.lock_session_start(session.id).await;
@@ -1796,7 +1797,7 @@ pub trait ContainerService {
         }
 
         let (record, action) = self
-            .create_followup_record(session, workspace, data)
+            .create_followup_record(session, workspace, data, artifact_request)
             .await?;
         // The row exists: a concurrent start now sees it running.
         drop(starting);
@@ -1845,7 +1846,12 @@ pub trait ContainerService {
         // does.
         let hold = queue.hold_drain(session.id);
         let created = self
-            .create_followup_record(session, workspace, &queued.data)
+            .create_followup_record(
+                session,
+                workspace,
+                &queued.data,
+                queued.artifact_request.as_ref(),
+            )
             .await;
         drop(starting);
         let started = match created {
@@ -1877,6 +1883,7 @@ pub trait ContainerService {
         session: &Session,
         workspace: &Workspace,
         data: &DraftFollowUpData,
+        artifact_request: Option<&super::artifact_interactions::ArtifactInteractionRef>,
     ) -> Result<(ExecutionProcess, ExecutorAction), ContainerError> {
         let executor_profile_id = data.executor_config.profile_id();
 
@@ -1945,6 +1952,14 @@ pub trait ContainerService {
                 &ExecutionProcessRunReason::CodingAgent,
             )
             .await?;
+        if let Some(reference) = artifact_request
+            && let Err(error) =
+                super::artifact_interactions::mark_started(reference, record.id).await
+        {
+            self.fail_execution_start(session, &record, &error.to_string())
+                .await;
+            return Err(error.into());
+        }
         Ok((record, action))
     }
 
@@ -1965,7 +1980,12 @@ pub trait ContainerService {
         let queue = self.queued_message_service();
         let hold = queue.hold_drain(session.id);
         let result = self
-            .start_followup_for_session(session, workspace, &msg.data)
+            .start_followup_for_session(
+                session,
+                workspace,
+                &msg.data,
+                msg.artifact_request.as_ref(),
+            )
             .await;
         match &result {
             Ok(None) => {

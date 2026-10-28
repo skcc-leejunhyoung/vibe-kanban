@@ -68,6 +68,13 @@ async fn live_file_bundle_must_refresh_when_only_css_changes() {
         "dependencies are not separate cards"
     );
     assert_ne!(initial_css, live_css, "the live bundle must refresh CSS");
+    assert_ne!(
+        services::services::artifact_interactions::bundle_version(&initial.bundles[&report.id])
+            .unwrap(),
+        services::services::artifact_interactions::bundle_version(&live.bundles[&report.id])
+            .unwrap(),
+        "a dependency-only change invalidates a registered input version"
+    );
     assert_eq!(
         tokio::fs::read_to_string(artifacts::directory(session, execution).join(&live_css))
             .await

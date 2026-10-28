@@ -221,7 +221,7 @@ fn toggle_for(
         // The agent's own turn attaching its own files (Drawer notes); the
         // route checks the execution belongs to the query's session. Another
         // session's execution falls through to `ControlSessions`.
-        ["execution-processes", _, "artifacts", "register"]
+        ["execution-processes", _, "artifacts", "register" | "interactions"]
             if is_own_session(query, agent_session) =>
         {
             return None;
@@ -555,8 +555,11 @@ mod tests {
         };
         let local = "/api/execution-processes/abc/artifacts/register";
         let paired = format!("/api/host/{host}/execution-processes/abc/artifacts/register");
+        let input = "/api/execution-processes/abc/artifacts/interactions";
+        let paired_input =
+            format!("/api/host/{host}/execution-processes/abc/artifacts/interactions");
         let mine = format!("workspace_id={other}&session_id={own}");
-        for path in [local, paired.as_str()] {
+        for path in [local, paired.as_str(), input, paired_input.as_str()] {
             assert_eq!(register(path, &mine, Some(own)), Decision::Allow, "{path}");
         }
         for (query, agent) in [
@@ -566,11 +569,13 @@ mod tests {
             (format!("session_id={own}&session_id={other}"), Some(own)),
             (format!("session_id={own}&session_id={own}"), Some(own)),
         ] {
-            assert_eq!(
-                register(local, &query, agent),
-                Decision::Gated(Toggle::ControlSessions),
-                "{query} {agent:?}"
-            );
+            for path in [local, input] {
+                assert_eq!(
+                    register(path, &query, agent),
+                    Decision::Gated(Toggle::ControlSessions),
+                    "{path} {query} {agent:?}"
+                );
+            }
         }
         // With `control_sessions` off, another session's execution is refused
         // and the agent's own still goes through.

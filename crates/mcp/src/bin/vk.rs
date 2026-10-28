@@ -1099,6 +1099,68 @@ const COMMANDS: &[Cmd] = &[
         ],
     ),
     cmd(
+        &["session", "artifacts", "request"],
+        "Register non-sensitive inline form input (see the artifact input guide)",
+        "POST",
+        "/execution-processes/{exec}/artifacts/interactions",
+        &[
+            EXEC,
+            keyed(
+                req("ws", "Workspace id", Where::Query, Kind::Str),
+                "workspace_id",
+            ),
+            keyed(
+                req("session", "Session id", Where::Query, Kind::Str),
+                "session_id",
+            ),
+            keyed(
+                req(
+                    "artifact",
+                    "Attached HTML artifact id",
+                    Where::Body,
+                    Kind::Str,
+                ),
+                "artifact_id",
+            ),
+            req(
+                "schema",
+                "Bounded JSON input schema",
+                Where::Body,
+                Kind::Json,
+            ),
+            req(
+                "delivery",
+                "wait (read with result) or follow_up (same session)",
+                Where::Body,
+                Kind::Str,
+            ),
+            req(
+                "sensitive",
+                "Must be false; protected input is not supported",
+                Where::Body,
+                Kind::Bool,
+            ),
+        ],
+    ),
+    cmd(
+        &["session", "artifacts", "result"],
+        "Read an artifact response; a waiting execution receives structured input directly",
+        "GET",
+        "/execution-processes/{exec}/artifacts/interactions/{request}/result",
+        &[
+            EXEC,
+            pos("request", "Registered request id", Where::Path),
+            keyed(
+                req("ws", "Workspace id", Where::Query, Kind::Str),
+                "workspace_id",
+            ),
+            keyed(
+                req("session", "Session id", Where::Query, Kind::Str),
+                "session_id",
+            ),
+        ],
+    ),
+    cmd(
         &["session", "subagent", "transcript"],
         "Transcript of a subagent (Codex thread / Claude task)",
         "POST",

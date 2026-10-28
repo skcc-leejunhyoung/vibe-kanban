@@ -113,7 +113,10 @@ async fn inherit_executor_config(
 
 /// Start the session's front queued message if nothing else will (see
 /// `ContainerService::drain_queue_if_idle`).
-async fn drain_idle_queue(deployment: &DeploymentImpl, session: &Session) -> Result<(), ApiError> {
+pub(crate) async fn drain_idle_queue(
+    deployment: &DeploymentImpl,
+    session: &Session,
+) -> Result<(), ApiError> {
     if !deployment
         .queued_message_service()
         .can_drain_now(session.id)

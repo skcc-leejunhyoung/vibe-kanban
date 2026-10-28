@@ -357,6 +357,26 @@ export type PullRequestInfo = { number: bigint, url: string, status: MergeStatus
 
 export type ApprovalInfo = { approval_id: string, tool_name: string, execution_process_id: string, is_question: boolean, created_at: string, timeout_at: string, };
 
+export type ArtifactInputSchema = { "type": "object", properties: { [key in string]?: ArtifactInputSchema }, required: Array<string>, } | { "type": "string", enum: Array<string> | null, maxLength: number, } | { "type": "number", minimum: number | null, maximum: number | null, } | { "type": "boolean" } | { "type": "array", items: ArtifactInputSchema, maxItems: number, };
+
+export type ArtifactDelivery = "follow_up" | "wait";
+
+export type ArtifactInteractionState = "input_required" | "accepted" | "processing" | "completed" | "failed" | "cancelled" | "expired" | "unknown";
+
+export type ArtifactInteractionRef = { session_id: string, execution_id: string, request_id: string, };
+
+export type ArtifactInteraction = { reference: ArtifactInteractionRef, workspace_id: string,
+/**
+ * Installation identity; remote callers must also be the authenticated host owner.
+ */
+owner_host: string, owner_id: string, artifact_id: string, artifact_hash: string,
+/**
+ * Covers the HTML and every bundled dependency, not just the HTML hash.
+ */
+version: string, schema: ArtifactInputSchema, delivery: ArtifactDelivery, state: ArtifactInteractionState, created_at: string, expires_at: string, result_process_id: string | null, error: string | null, };
+
+export type ArtifactResponse = { "action": "submit", data: unknown, } | { "action": "cancel" };
+
 export type ApprovalStatus = { "status": "pending" } | { "status": "approved" } | { "status": "denied", reason?: string, } | { "status": "timed_out" };
 
 export type QuestionAnswer = { question: string, answer: Array<string>, };
@@ -1412,7 +1432,7 @@ queued_at: string,
  * steer took it off the queue and could not start it; while it heads the
  * queue, the queue waits for the user (send now / edit / remove).
  */
-start_error: string | null, };
+start_error: string | null, artifact_request?: ArtifactInteractionRef, };
 
 export type QueueStatus = { "status": "empty" } | { "status": "queued", messages: Array<QueuedMessage>, };
 

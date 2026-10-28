@@ -1,5 +1,5 @@
-import { useContext, useEffect, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -12,13 +12,15 @@ import {
   SpinnerIcon,
 } from '@phosphor-icons/react';
 import { Download, Loader2, Share2 } from 'lucide-react';
-import type { ArtifactReference } from 'shared/types';
+import type { ArtifactReference, ArtifactInteraction } from 'shared/types';
 import { ExecutionProcessStatus } from 'shared/types';
 import { IconButton } from '@vibe/ui/components/IconButton';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { Switch } from '@vibe/ui/components/Switch';
 import { Dialog } from '@vibe/ui/components/KeyboardDialog';
 import { artifactsApi } from '@/shared/lib/api';
+import type { ArtifactInputBridge } from '@/shared/lib/artifactInputBridge';
+import { ArtifactInputFrame } from './ArtifactInputFrame';
 import { defineModal } from '@/shared/lib/modals';
 import { canEmbedPdf } from '@/shared/lib/pdf-embed';
 import { shareFile } from '@/shared/lib/share-file';
@@ -94,7 +96,8 @@ function useArtifactContent(
   artifact: ArtifactReference,
   scope: Scope,
   mode: 'thumbnail' | 'preview' | 'source',
-  enabled = true
+  enabled = true,
+  input?: ArtifactInputBridge
 ) {
   const { t } = useTranslation('common');
   const { processId, workspaceId, sessionId, hostId } = scope;
@@ -108,6 +111,7 @@ function useArtifactContent(
       artifact.id,
       artifact.content_hash,
       mode,
+      input?.channel,
     ],
     enabled,
     retry: false,
@@ -201,13 +205,63 @@ function useArtifactContent(
           text,
           bundle.base_path ?? artifact.path ?? artifact.name,
           resources,
-          artifact.mime === 'image/svg+xml'
+          artifact.mime === 'image/svg+xml',
+          input
         );
         return { blob, text, preview, warnings: bundle.warnings };
       }
       return { blob, text, warnings: [] };
     },
   });
+}
+
+function InteractiveArtifact({
+  artifact,
+  scope,
+  interaction,
+  refresh,
+  updated,
+  disconnected,
+}: {
+  artifact: ArtifactReference;
+  scope: Scope;
+  interaction: ArtifactInteraction;
+  refresh: () => Promise<void>;
+  updated: (interaction: ArtifactInteraction) => void;
+  disconnected: boolean;
+}) {
+  const { t } = useTranslation('common');
+  const [pinned] = useState(artifact);
+  const input = useMemo<ArtifactInputBridge>(
+    () => ({
+      channel: crypto.randomUUID(),
+      initial: { status: 'loading', message: '', editable: false },
+    }),
+    []
+  );
+  const content = useArtifactContent(pinned, scope, 'preview', true, input);
+  if (content.error)
+    return (
+      <ArtifactCard
+        artifact={pinned}
+        scope={scope}
+        error={content.error.message}
+      />
+    );
+  if (!content.data?.preview)
+    return <p role="status">{t('artifacts.loading')}</p>;
+  return (
+    <ArtifactInputFrame
+      srcDoc={content.data.preview.srcDoc}
+      channel={input.channel}
+      interaction={interaction}
+      hostId={scope.hostId}
+      title={artifact.name}
+      refresh={refresh}
+      updated={updated}
+      disconnected={disconnected}
+    />
+  );
 }
 
 function useObjectUrl(blob: Blob | undefined) {
@@ -586,6 +640,49 @@ function ArtifactTile({
   kind: InlinePreviewKind;
 }) {
   const { t } = useTranslation('common');
+  const queryClient = useQueryClient();
+  const processes = useContext(ExecutionProcessesContext);
+  const running = processes?.executionProcessesAll.some(
+    (p) =>
+      p.id === scope.processId && p.status === ExecutionProcessStatus.running
+  );
+  const inputKey = [
+    'artifact-interactions',
+    scope.hostId,
+    scope.workspaceId,
+    scope.sessionId,
+    scope.processId,
+  ];
+  const inputs = useQuery({
+    queryKey: inputKey,
+    queryFn: ({ signal }) =>
+      artifactsApi.interactions(
+        scope.processId,
+        scope.workspaceId,
+        scope.sessionId,
+        scope.hostId,
+        signal
+      ),
+    enabled: artifact.mime === 'text/html',
+    retry: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    refetchInterval: (q) =>
+      q.state.error
+        ? false
+        : running ||
+            q.state.data?.some((i) =>
+              ['input_required', 'accepted', 'processing'].includes(i.state)
+            )
+          ? 2000
+          : false,
+  });
+  const interaction = inputs.data?.find((i) => i.artifact_id === artifact.id);
+  const { refetch: refetchInputs } = inputs;
+  useEffect(() => {
+    // Capture a registration made just before the source execution finishes.
+    if (!running && artifact.mime === 'text/html') void refetchInputs();
+  }, [running, artifact.mime, refetchInputs]);
   const { theme } = useTheme();
   const setPanel = useUiPreferencesStore(
     (state) => state.setRightMainPanelMode
@@ -600,11 +697,34 @@ function ArtifactTile({
     artifact,
     scope,
     isDocument ? 'thumbnail' : 'preview',
-    load
+    load && !interaction
   );
   const { run, busy, error: actionError } = useArtifactActions(artifact, scope);
   const needsUrl = kind === 'image' || kind === 'video' || isDocument;
   const url = useObjectUrl(needsUrl ? query.data?.blob : undefined);
+  if (interaction)
+    return (
+      <InteractiveArtifact
+        key={interaction.reference.request_id}
+        artifact={artifact}
+        scope={scope}
+        interaction={interaction}
+        disconnected={inputs.isError}
+        refresh={async () => {
+          const result = await inputs.refetch();
+          if (result.error) throw result.error;
+        }}
+        updated={(result) =>
+          queryClient.setQueryData<ArtifactInteraction[]>(inputKey, (current) =>
+            current?.map((i) =>
+              i.reference.request_id === result.reference.request_id
+                ? result
+                : i
+            )
+          )
+        }
+      />
+    );
   if (query.error)
     return (
       <ArtifactCard
@@ -756,6 +876,14 @@ function ArtifactTile({
           onClick={() => void run('download')}
         />
       </figcaption>
+      {inputs.isError && (
+        <p role="alert" className="px-base pb-half text-low">
+          {t('artifacts.input.disconnected')}{' '}
+          <button type="button" onClick={() => void refetchInputs()}>
+            {t('artifacts.input.check')}
+          </button>
+        </p>
+      )}
       {note && (
         <p role="status" className="px-base pb-half text-low">
           {note}

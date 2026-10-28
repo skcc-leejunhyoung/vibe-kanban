@@ -212,6 +212,10 @@ const ARTIFACT_INSTRUCTIONS: &str = "[Artifacts]\n\
              use them as the deliverable when the user requests an image. \
              Save the final HTML inside the workspace, or attach a complete inline HTML document. \
              Prefer self-contained HTML; preview blocks external network requests and cannot run server code. \
+             For non-sensitive user input, use an HTML form with data-vibe-form and internal submit/cancel \
+             controls (data-vibe-cancel), attach it, then register its schema with `vk session artifacts request --help`. \
+             Only registered forms accept input in the chat. Use delivery=wait and read `vk session artifacts result` \
+             while this execution waits, or delivery=follow_up for the same session's next turn. Never request secrets. \
              Ordinary file reads, edits, build outputs, links and unmarked code blocks are not attachments. \
              Do not attach source citations or intermediate files unless requested. \
              When delegating deliverables, pass this attachment convention to the subagent.\n\

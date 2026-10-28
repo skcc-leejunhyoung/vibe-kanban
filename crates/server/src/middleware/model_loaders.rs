@@ -38,9 +38,14 @@ pub async fn load_workspace_middleware(
     Ok(next.run(request).await)
 }
 
+#[derive(serde::Deserialize)]
+pub struct ExecutionProcessPath {
+    id: Uuid,
+}
+
 pub async fn load_execution_process_middleware(
     State(deployment): State<DeploymentImpl>,
-    Path(process_id): Path<Uuid>,
+    Path(ExecutionProcessPath { id: process_id }): Path<ExecutionProcessPath>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
@@ -113,4 +118,41 @@ pub async fn load_session_middleware(
 
     request.extensions_mut().insert(session);
     Ok(next.run(request).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{Router, routing::get};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn execution_path_accepts_nested_artifact_request_id() {
+        async fn read_id(Path(path): Path<ExecutionProcessPath>) -> String {
+            path.id.to_string()
+        }
+        let app = Router::new().nest(
+            "/execution-processes/{id}",
+            Router::new()
+                .route("/artifacts", get(read_id))
+                .route("/artifacts/interactions/{request_id}/result", get(read_id)),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let process_id = Uuid::new_v4();
+        for suffix in [
+            "artifacts".to_owned(),
+            format!("artifacts/interactions/{}/result", Uuid::new_v4()),
+        ] {
+            let response = reqwest::get(format!(
+                "http://{address}/execution-processes/{process_id}/{suffix}"
+            ))
+            .await
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.text().await.unwrap(), process_id.to_string());
+        }
+        server.abort();
+    }
 }

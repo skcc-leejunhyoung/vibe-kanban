@@ -173,6 +173,41 @@ export class ApiError<E = unknown> extends Error {
 }
 
 export const artifactsApi = {
+  interactions: async (
+    processId: string,
+    workspaceId: string,
+    sessionId: string,
+    hostId: string | null,
+    signal?: AbortSignal
+  ): Promise<import('shared/types').ArtifactInteraction[]> => {
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${processId}/artifacts/interactions?${new URLSearchParams({ workspace_id: workspaceId, session_id: sessionId })}`,
+      hostId,
+      { signal }
+    );
+    return handleApiResponse(response);
+  },
+  respond: async (
+    interaction: import('shared/types').ArtifactInteraction,
+    responseData: import('shared/types').ArtifactResponse,
+    hostId: string | null
+  ): Promise<import('shared/types').ArtifactInteraction> => {
+    const { reference } = interaction;
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${reference.execution_id}/artifacts/interactions/${reference.request_id}/respond?${new URLSearchParams({ workspace_id: interaction.workspace_id, session_id: reference.session_id })}`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          artifact_id: interaction.artifact_id,
+          version: interaction.version,
+          owner_host: interaction.owner_host,
+          response: responseData,
+        }),
+      }
+    );
+    return handleApiResponse(response);
+  },
   list: async (
     processId: string,
     workspaceId: string,

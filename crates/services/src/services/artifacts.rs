@@ -1788,7 +1788,7 @@ pub async fn ensure_document_preview(
     observer.persist().await?;
     Ok(Some(bundle))
 }
-async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
     let mut file = tokio::fs::OpenOptions::new()

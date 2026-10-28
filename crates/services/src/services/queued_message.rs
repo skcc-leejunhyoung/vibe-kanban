@@ -31,6 +31,9 @@ pub struct QueuedMessage {
     /// steer took it off the queue and could not start it; while it heads the
     /// queue, the queue waits for the user (send now / edit / remove).
     pub start_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub artifact_request: Option<super::artifact_interactions::ArtifactInteractionRef>,
 }
 
 /// Status of the queue for a session (for frontend display)
@@ -146,9 +149,35 @@ impl QueuedMessageService {
         );
     }
 
+    fn cancelled_artifact(message: &QueuedMessage) {
+        if let Some(reference) = message.artifact_request.clone() {
+            tokio::spawn(async move {
+                if let Err(error) = super::artifact_interactions::mark_cancelled(&reference).await {
+                    tracing::warn!(request_id = %reference.request_id, %error, "Could not record cancelled artifact request");
+                }
+            });
+        }
+    }
+
     /// Append a message to the back of a session's queue.
     pub fn enqueue(&self, session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
         let queued = Self::new_message(session_id, data);
+        self.queue
+            .entry(session_id)
+            .or_default()
+            .push_back(queued.clone());
+        self.changed(session_id);
+        queued
+    }
+
+    pub fn enqueue_artifact(
+        &self,
+        session_id: Uuid,
+        data: DraftFollowUpData,
+        reference: super::artifact_interactions::ArtifactInteractionRef,
+    ) -> QueuedMessage {
+        let mut queued = Self::new_message(session_id, data);
+        queued.artifact_request = Some(reference);
         self.queue
             .entry(session_id)
             .or_default()
@@ -260,10 +289,12 @@ impl QueuedMessageService {
         data: DraftFollowUpData,
     ) -> Option<QueuedMessage> {
         let updated = self.queue.get_mut(&session_id).and_then(|mut q| {
-            q.iter_mut().find(|m| m.id == message_id).map(|m| {
-                m.data = data;
-                m.clone()
-            })
+            q.iter_mut()
+                .find(|m| m.id == message_id && m.artifact_request.is_none())
+                .map(|m| {
+                    m.data = data;
+                    m.clone()
+                })
         });
         if updated.is_some() {
             self.changed(session_id);
@@ -279,7 +310,8 @@ impl QueuedMessageService {
                 .and_then(|pos| q.remove(pos))
         });
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
-        if removed.is_some() {
+        if let Some(message) = &removed {
+            Self::cancelled_artifact(message);
             self.changed(session_id);
         }
         removed
@@ -340,6 +372,9 @@ impl QueuedMessageService {
             .map(|(_, q)| q.into_iter().collect())
             .unwrap_or_default();
         if !cleared.is_empty() {
+            for message in &cleared {
+                Self::cancelled_artifact(message);
+            }
             self.changed(session_id);
         }
         cleared
@@ -369,6 +404,9 @@ impl QueuedMessageService {
             .unwrap_or_default();
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
         if !discarded.is_empty() {
+            for message in &discarded {
+                Self::cancelled_artifact(message);
+            }
             self.changed(session_id);
         }
         discarded
@@ -472,6 +510,7 @@ impl QueuedMessageService {
             data,
             queued_at: Utc::now(),
             start_error: None,
+            artifact_request: None,
         }
     }
 }
@@ -610,6 +649,26 @@ mod tests {
             svc.update_message(Uuid::new_v4(), b.id, sample_data("x"))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn artifact_response_keeps_its_payload_and_request_when_queued() {
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+        let reference = super::super::artifact_interactions::ArtifactInteractionRef {
+            session_id: session,
+            execution_id: Uuid::new_v4(),
+            request_id: Uuid::new_v4(),
+        };
+        let queued = svc.enqueue_artifact(session, sample_data("accepted"), reference.clone());
+        assert!(
+            svc.update_message(session, queued.id, sample_data("edited"))
+                .is_none()
+        );
+        let encoded = serde_json::to_string(&svc.get_queued(session)[0]).unwrap();
+        let restored: QueuedMessage = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.data.message, "accepted");
+        assert_eq!(restored.artifact_request, Some(reference));
     }
 
     #[test]

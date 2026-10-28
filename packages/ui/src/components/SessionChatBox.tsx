@@ -107,6 +107,7 @@ interface ActionsProps {
 export interface QueuedMessageItem {
   id: string;
   message: string;
+  editable?: boolean;
   /** Why the last attempt to start it failed; the queue waits on it. */
   startError?: string | null;
 }
@@ -947,7 +948,7 @@ export function SessionChatBox<TExecutor extends string = string>({
                               </div>
                             )}
                           </div>
-                          {onEditQueued && (
+                          {onEditQueued && queued.editable !== false && (
                             <button
                               type="button"
                               onClick={() => onEditQueued(queued.id)}

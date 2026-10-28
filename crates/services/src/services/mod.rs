@@ -1,5 +1,6 @@
 pub mod agent_journal;
 pub mod approvals;
+pub mod artifact_interactions;
 pub mod artifacts;
 pub mod auth;
 pub mod automation;

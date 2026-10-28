@@ -6792,7 +6792,7 @@ done
         let direct = follow_up("direct", BaseCodingAgent::ClaudeCode);
         assert!(
             container
-                .start_followup_for_session(&session, &workspace, &direct)
+                .start_followup_for_session(&session, &workspace, &direct, None)
                 .await
                 .is_err()
         );
@@ -7266,7 +7266,8 @@ done
                 .start_followup_for_session(
                     &session,
                     &workspace,
-                    &follow_up("next", BaseCodingAgent::ClaudeCode)
+                    &follow_up("next", BaseCodingAgent::ClaudeCode),
+                    None
                 )
                 .await
                 .is_err()

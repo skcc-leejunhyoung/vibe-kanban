@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>초안 편집</title>
+<style>body{font:16px system-ui;padding:20px;color:#202124}label{display:block;margin:16px 0}input,textarea,button{font:inherit;padding:10px}textarea{display:block;max-width:90%;width:420px}button{margin-right:12px}</style></head>
+<body><h2>초안 편집</h2><p data-vibe-status role="status"></p>
+<form data-vibe-form>
+  <label>제목 <input name="title" value="초안" required maxlength="80"></label>
+  <label>본문 <textarea name="body" rows="4">수정할 내용을 입력하세요.</textarea></label>
+  <label>횟수 <input type="number" name="count" value="1" min="1" max="5" required></label>
+  <label><input type="checkbox" name="confirmed" data-vibe-boolean> 검토 완료</label>
+  <button type="submit">수정본 제출</button><button type="button" data-vibe-cancel>취소</button>
+</form></body></html>

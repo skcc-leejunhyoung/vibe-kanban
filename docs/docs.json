@@ -57,6 +57,7 @@
           "workspaces/repositories",
           "workspaces/sessions",
           "workspaces/chat-interface",
+          "workspaces/interactive-artifacts",
           "workspaces/slash-commands",
           "workspaces/interface",
           "workspaces/command-bar",
