@@ -27,6 +27,7 @@ import type {
   DrawerNote,
 } from 'shared/remote-types';
 import { cn } from '@vibe/ui/lib/cn';
+import { AutoResizeTextarea } from '@vibe/ui/components/AutoResizeTextarea';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import { useDrawerComments, useDrawerNotes } from '@/shared/hooks/useDrawer';
@@ -644,9 +645,10 @@ function NoteDetail({
           )}
           <div ref={endRef} />
           <div className="flex items-end gap-half rounded-md border border-border bg-secondary px-base py-half">
-            <textarea
+            <AutoResizeTextarea
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={setDraft}
+              preventNewlines={false}
               onKeyDown={(event) => {
                 if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                   event.preventDefault();
@@ -669,7 +671,7 @@ function NoteDetail({
               }}
               placeholder="Comment…"
               rows={1}
-              className="min-h-[28px] flex-1 resize-none bg-transparent py-half text-high placeholder:text-low"
+              className="max-h-[160px] min-h-[28px] min-w-0 flex-1 overflow-y-auto py-half text-high placeholder:text-low"
             />
             <button
               type="button"
@@ -752,15 +754,16 @@ function ResolvedGroup({
   onReopen: (comment: DrawerComment) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const toggleRef = useRef<HTMLButtonElement>(null);
   return (
     <div className="flex flex-col gap-base">
       <button
+        ref={toggleRef}
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         className="inline-flex items-center gap-half self-start text-sm text-low hover:text-normal"
       >
-        <CheckIcon className="size-icon-xs" />
         {comments.length} resolved
         <CaretDownIcon
           className={cn(
@@ -769,17 +772,32 @@ function ResolvedGroup({
           )}
         />
       </button>
-      {open &&
-        comments.map((comment) => (
-          <CommentRow
-            key={comment.id}
-            comment={comment}
-            dimmed
-            actionTitle="Reopen"
-            actionIcon={ArrowCounterClockwiseIcon}
-            onAction={() => onReopen(comment)}
-          />
-        ))}
+      {open && (
+        <>
+          {comments.map((comment) => (
+            <CommentRow
+              key={comment.id}
+              comment={comment}
+              dimmed
+              actionTitle="Reopen"
+              actionIcon={ArrowCounterClockwiseIcon}
+              onAction={() => onReopen(comment)}
+            />
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              toggleRef.current?.focus();
+            }}
+            aria-expanded={open}
+            className="inline-flex items-center gap-half self-start text-sm text-low hover:text-normal"
+          >
+            Hide resolved
+            <CaretDownIcon className="size-icon-xs rotate-180" />
+          </button>
+        </>
+      )}
     </div>
   );
 }
