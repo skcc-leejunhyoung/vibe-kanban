@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
+use tokio::{io::AsyncReadExt, process::Command};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 use workspace_utils::{
@@ -193,6 +193,14 @@ impl ClaudeCode {
     pub async fn read_account_usage(
         &self,
     ) -> Result<Vec<crate::usage::AgentUsageWindow>, ExecutorError> {
+        self.read_account_usage_with_timeout(Duration::from_secs(30))
+            .await
+    }
+
+    async fn read_account_usage_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<crate::usage::AgentUsageWindow>, ExecutorError> {
         let parts = CommandBuilder::new(
             self.cmd
                 .base_command_override
@@ -221,6 +229,7 @@ impl ClaudeCode {
             .args(args)
             .kill_on_drop(true)
             .stdin(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .current_dir(std::env::temp_dir());
         ExecutionEnv::new(Default::default(), false, String::new())
@@ -230,15 +239,29 @@ impl ClaudeCode {
         if self.disable_api_key.unwrap_or(false) {
             command.env_remove("ANTHROPIC_API_KEY");
         }
-        let output = tokio::time::timeout(Duration::from_secs(30), command.output())
-            .await
+        let mut child = command.group_spawn_no_window()?;
+        let result = tokio::time::timeout(timeout, async {
+            let mut stdout = Vec::new();
+            child
+                .inner()
+                .stdout
+                .take()
+                .ok_or_else(|| std::io::Error::other("Claude /usage missing stdout"))?
+                .read_to_end(&mut stdout)
+                .await?;
+            Ok::<_, std::io::Error>((child.wait().await?, stdout))
+        })
+        .await;
+        // Keep the group handle until cleanup, even if the wrapper has already exited.
+        workspace_utils::process::kill_process_group(&mut child).await?;
+        let (status, stdout) = result
             .map_err(|_| ExecutorError::Io(std::io::Error::other("Claude /usage timed out")))??;
-        if !output.status.success() {
+        if !status.success() {
             return Err(ExecutorError::Io(std::io::Error::other(
                 "Claude /usage unavailable",
             )));
         }
-        crate::usage::parse_claude_usage(&output.stdout)
+        crate::usage::parse_claude_usage(&stdout)
     }
 
     async fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
@@ -3971,6 +3994,100 @@ impl ClaudeToolData {
 mod tests {
     use super::*;
     use crate::logs::utils::{EntryIndexProvider, patch::extract_normalized_entry_from_patch};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn usage_timeout_stops_descendants_even_after_the_wrapper_exits() {
+        for leader_exits in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let worker = dir.path().join("worker.sh");
+            let wrapper = dir.path().join("wrapper.sh");
+            let pid_file = dir.path().join("worker.pid");
+            let stopped_file = dir.path().join("stopped");
+            std::fs::write(
+                &worker,
+                r#"trap '' INT
+trap 'printf stopped > "$USAGE_TEST_STOPPED"; exit 0' TERM
+printf '%s' "$$" > "$USAGE_TEST_PID"
+while :; do sleep 0.1; done
+"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &wrapper,
+                "sh \"$USAGE_TEST_WORKER\" &\n[ \"$USAGE_TEST_LEADER_EXITS\" = true ] && exit 0\nwait\n",
+            )
+            .unwrap();
+            let claude: ClaudeCode = serde_json::from_value(serde_json::json!({
+                "base_command_override": format!("sh {}", shlex::try_quote(wrapper.to_str().unwrap()).unwrap()),
+                "env": {
+                    "USAGE_TEST_WORKER": worker,
+                    "USAGE_TEST_PID": pid_file,
+                    "USAGE_TEST_STOPPED": stopped_file,
+                    "USAGE_TEST_LEADER_EXITS": leader_exits.to_string()
+                }
+            }))
+            .unwrap();
+
+            let result = claude
+                .read_account_usage_with_timeout(Duration::from_secs(1))
+                .await;
+            let stopped = stopped_file.exists();
+            if !stopped && let Ok(pid) = std::fs::read_to_string(&pid_file) {
+                let _ = std::process::Command::new("kill")
+                    .args(["-KILL", pid.trim()])
+                    .status();
+            }
+            assert!(pid_file.exists(), "fixture worker must have started");
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Claude /usage timed out"),
+                "leader_exits={leader_exits}"
+            );
+            assert!(
+                stopped,
+                "descendant must be stopped before returning; leader_exits={leader_exits}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn usage_process_group_preserves_output_and_rejects_failed_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("usage.sh");
+        std::fs::write(
+            &script,
+            "printf ignored >&2\nprintf '%s' \"$USAGE_TEST_OUTPUT\"\nexit \"$USAGE_TEST_EXIT\"\n",
+        )
+        .unwrap();
+        let valid = serde_json::json!({
+            "local_command": "usage", "num_turns": 0, "total_cost_usd": 0,
+            "is_error": false, "result": "Current session: 25% used"
+        })
+        .to_string();
+        for (output, exit, succeeds) in [
+            (valid.as_str(), "0", true),
+            (valid.as_str(), "1", false),
+            ("invalid JSON", "0", false),
+        ] {
+            let claude: ClaudeCode = serde_json::from_value(serde_json::json!({
+                "base_command_override": format!("sh {}", shlex::try_quote(script.to_str().unwrap()).unwrap()),
+                "env": { "USAGE_TEST_OUTPUT": output, "USAGE_TEST_EXIT": exit }
+            }))
+            .unwrap();
+            let result = claude
+                .read_account_usage_with_timeout(Duration::from_secs(2))
+                .await;
+            if succeeds {
+                assert_eq!(result.unwrap()[0].used_percent, 25.0);
+            } else {
+                assert!(result.is_err());
+            }
+        }
+    }
 
     #[tokio::test]
     async fn suppresses_untrusted_workspace_warning_but_keeps_real_stderr() {

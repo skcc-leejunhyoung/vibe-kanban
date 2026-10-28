@@ -56,8 +56,9 @@ async fn get_usage(
             ));
         }
     };
+    // Usage follows this host's default CLI login across session presets.
     let agent = ExecutorConfigs::get_cached().get_coding_agent(&ExecutorProfileId::new(executor));
-    // Do not retain another profile/account's last values after a config change.
+    // Discard cached values when that default CLI configuration changes.
     let fingerprint =
         Sha256::digest(serde_json::to_vec(&agent).map_err(std::io::Error::other)?).into();
     let value = cached_usage(cache, fingerprint, async {
