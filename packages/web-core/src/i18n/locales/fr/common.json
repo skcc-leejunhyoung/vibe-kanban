@@ -1,10 +1,12 @@
 {
   "agentUsage": {
-    "session": "Session (5 h)",
-    "weekly": "Semaine (tous les modèles)",
-    "hostAccount": "Compte CLI par défaut sur cet hôte · actualisation toutes les 5 min",
+    "fable": "Limite hebdomadaire de Fable",
+    "resetCreditsUnavailable": "Réinitialisations : non fournies par /usage",
+    "session": "Limite de 5 heures",
+    "weekly": "Limite hebdomadaire (tous les modèles)",
+    "hostAccount": "Compte CLI par défaut sur cet hôte · consultation toutes les 5 min",
     "used": "{{percent}}% utilisé",
-    "updated": "Mis à jour à {{time}}",
+    "updated": "Consulté à {{time}}",
     "retryAt": "Nouvel essai après {{time}}",
     "lastKnown": "Dernière utilisation connue. Actualisation temporairement indisponible.",
     "unavailable": "Utilisation indisponible. Vérifiez la connexion CLI et la prise en charge de /usage."

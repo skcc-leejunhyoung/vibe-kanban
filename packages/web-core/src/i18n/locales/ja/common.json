@@ -1,10 +1,12 @@
 {
   "agentUsage": {
-    "session": "セッション (5時間)",
-    "weekly": "週間 (全モデル)",
-    "hostAccount": "このホストの既定CLIアカウント · 5分ごとに更新",
+    "fable": "Fableの週間上限",
+    "resetCreditsUnavailable": "リセット権: /usage では取得できません",
+    "session": "5時間の上限",
+    "weekly": "週間上限 (全モデル)",
+    "hostAccount": "このホストの既定CLIアカウント · 5分ごとに確認",
     "used": "{{percent}}% 使用",
-    "updated": "更新 {{time}}",
+    "updated": "確認 {{time}}",
     "retryAt": "{{time}} 以降に再試行",
     "lastKnown": "最後に確認した使用量です。現在は更新できません。",
     "unavailable": "使用量を取得できません。CLIのログインと /usage の対応を確認してください。"

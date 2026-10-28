@@ -1,0 +1,112 @@
+import type { ReactNode } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createInstance } from 'i18next';
+import { I18nextProvider } from 'react-i18next';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { BaseCodingAgent, type AgentUsage } from 'shared/types';
+import common from '@/i18n/locales/ko/common.json';
+import { AgentUsageTooltip } from './AgentUsageTooltip';
+
+vi.mock('@vibe/ui/components/Tooltip', () => ({
+  Tooltip: ({
+    children,
+    content,
+  }: {
+    children: ReactNode;
+    content: ReactNode;
+  }) => (
+    <>
+      {children}
+      {content}
+    </>
+  ),
+}));
+vi.mock('@/shared/lib/api', () => ({ agentsApi: { getUsage: vi.fn() } }));
+vi.mock('@/shared/providers/HostIdProvider', () => ({ useHostId: () => null }));
+
+const i18n = createInstance();
+beforeAll(async () => {
+  await i18n.init({ lng: 'ko', resources: { ko: { common } } });
+});
+
+const usage: AgentUsage = {
+  windows: [
+    {
+      label: 'Current session',
+      used_percent: 25,
+      reset_description: 'resets at 18:00',
+    },
+    {
+      label: 'Current week (all models)',
+      used_percent: 60,
+      reset_description: null,
+    },
+    {
+      label: 'Current week (Fable)',
+      used_percent: 90,
+      reset_description: null,
+    },
+  ],
+  updated_at: '2026-10-28T01:00:00Z',
+  next_refresh_at: '2026-10-28T01:05:00Z',
+  unavailable: false,
+};
+
+function render(
+  data = usage,
+  agent = BaseCodingAgent.CLAUDE_CODE,
+  hostId: string | null = null
+) {
+  const client = new QueryClient();
+  client.setQueryData(['agentUsage', hostId ?? 'local', agent], data);
+  const html = renderToStaticMarkup(
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={client}>
+        <AgentUsageTooltip agent={agent} name="Agent" hostId={hostId}>
+          <span>icon</span>
+        </AgentUsageTooltip>
+      </QueryClientProvider>
+    </I18nextProvider>
+  );
+  client.clear();
+  return html;
+}
+
+describe('AgentUsageTooltip', () => {
+  it('shows all three independent Claude limits and their reset information', () => {
+    const html = render();
+    for (const [label, percent] of [
+      ['5시간 제한', 25],
+      ['주간 전체 제한', 60],
+      ['Fable 주간 제한', 90],
+    ]) {
+      expect(html).toContain(`aria-label="${label}"`);
+      expect(html).toContain(`aria-valuenow="${percent}"`);
+    }
+    expect(html).toContain('resets at 18:00');
+    expect(html).toContain('리셋권: /usage에서 미제공');
+    expect(html).toContain('조회 ');
+  });
+
+  it('does not invent an absent model limit or reset-credit count', () => {
+    const html = render({ ...usage, windows: usage.windows.slice(0, 2) });
+    expect(html).not.toContain('Fable 주간 제한');
+    expect(html).toContain('리셋권: /usage에서 미제공');
+    expect(html).not.toContain('리셋권: 0');
+  });
+
+  it('keeps the selected host values and stale-data notice', () => {
+    const html = render(
+      { ...usage, unavailable: true },
+      BaseCodingAgent.CLAUDE_CODE,
+      'host-b'
+    );
+    expect(html).toContain('Fable 주간 제한');
+    expect(html).toContain('마지막으로 확인한 사용량');
+  });
+
+  it('does not apply the Claude reset-credit limitation to Codex', () => {
+    expect(render(usage, BaseCodingAgent.CODEX)).not.toContain('리셋권:');
+  });
+});

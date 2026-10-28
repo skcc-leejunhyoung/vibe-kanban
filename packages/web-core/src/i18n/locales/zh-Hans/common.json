@@ -1,10 +1,12 @@
 {
   "agentUsage": {
-    "session": "会话（5 小时）",
-    "weekly": "每周（所有模型）",
-    "hostAccount": "此主机的默认 CLI 账户 · 每 5 分钟更新",
+    "fable": "Fable 每周限额",
+    "resetCreditsUnavailable": "重置次数：/usage 未提供",
+    "session": "5 小时限额",
+    "weekly": "每周总限额",
+    "hostAccount": "此主机的默认 CLI 账户 · 每 5 分钟查询",
     "used": "已使用 {{percent}}%",
-    "updated": "更新于 {{time}}",
+    "updated": "查询于 {{time}}",
     "retryAt": "{{time}} 后重试",
     "lastKnown": "显示上次查询的用量。暂时无法更新。",
     "unavailable": "无法获取用量。请检查 CLI 登录及 /usage 支持。"

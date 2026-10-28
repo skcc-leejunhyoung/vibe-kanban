@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import type { BaseCodingAgent } from 'shared/types';
+import { BaseCodingAgent } from 'shared/types';
 import { Tooltip } from '@vibe/ui/components/Tooltip';
 import { agentsApi } from '@/shared/lib/api';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
@@ -43,6 +43,7 @@ export function AgentUsageTooltip({
       return t('agentUsage.session');
     if (value === 'Current week (all models)' || value === '7d')
       return t('agentUsage.weekly');
+    if (value === 'Current week (Fable)') return t('agentUsage.fable');
     return value;
   };
 
@@ -88,6 +89,11 @@ export function AgentUsageTooltip({
               )}
             </span>
           ))}
+          {agent === BaseCodingAgent.CLAUDE_CODE && (
+            <span className="text-sm text-low">
+              {t('agentUsage.resetCreditsUnavailable')}
+            </span>
+          )}
           {unavailable && (
             <span className="text-low">
               {t(
