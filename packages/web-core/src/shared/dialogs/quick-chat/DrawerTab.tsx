@@ -28,7 +28,6 @@ import type {
 } from 'shared/remote-types';
 import { cn } from '@vibe/ui/lib/cn';
 import { AutoResizeTextarea } from '@vibe/ui/components/AutoResizeTextarea';
-import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import { useDrawerComments, useDrawerNotes } from '@/shared/hooks/useDrawer';
@@ -51,6 +50,7 @@ import {
   splitArtifactSegments,
 } from '@/features/workspace-chat/ui/artifact-preview';
 import { handleDrawerDetailKeyDown } from './drawerKeyboard';
+import { useDrawerBodyFocus } from './useDrawerBodyFocus';
 
 /**
  * The Drawer tab of the Quick chat dialog: notes the Autopilot wrote (title +
@@ -173,6 +173,7 @@ export function DrawerTab({
 
   const listRef = useRef<HTMLDivElement>(null);
   const noteButtonsRef = useRef(new Map<string, HTMLButtonElement>());
+  const [focusRequest, setFocusRequest] = useState(0);
 
   // What the user opened (or closed): the selection, the one-column view and,
   // on the page, the URL.
@@ -180,6 +181,7 @@ export function DrawerTab({
     (noteId: string | null) => {
       setSelectedId(noteId);
       setShowDetailOnNarrow(noteId !== null);
+      if (noteId) setFocusRequest((request) => request + 1);
       onSelectNote?.(noteId);
     },
     [onSelectNote]
@@ -513,6 +515,7 @@ export function DrawerTab({
             view={view}
             narrow={narrow}
             autoFocus={!isPage || isActivePane}
+            focusRequest={focusRequest}
             onBack={backToList}
             onArchive={() => archive(selected, true)}
             onRestore={() => archive(selected, false)}
@@ -564,6 +567,7 @@ function NoteDetail({
   view,
   narrow,
   autoFocus,
+  focusRequest,
   onBack,
   onArchive,
   onRestore,
@@ -576,6 +580,7 @@ function NoteDetail({
   /** One-column layout: Back returns to the list. */
   narrow: boolean;
   autoFocus: boolean;
+  focusRequest: number;
   onBack: () => void;
   onArchive: () => void;
   onRestore: () => void;
@@ -594,16 +599,12 @@ function NoteDetail({
     setError(null);
   }, [note.id]);
 
-  useEffect(() => {
-    if (
-      !autoFocus ||
-      (isModalKeyboardActive() &&
-        !scrollRef.current?.closest('[role="dialog"]'))
-    )
-      return;
-    scrollRef.current?.focus({ preventScroll: true });
-    if (scrollRef.current) scrollRef.current.scrollTop = 0;
-  }, [note.id, autoFocus]);
+  useDrawerBodyFocus(scrollRef, {
+    noteId: note.id,
+    enabled: autoFocus,
+    narrow,
+    focusRequest,
+  });
 
   const send = useCallback(async () => {
     const body = draft.trim();
