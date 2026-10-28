@@ -59,3 +59,9 @@ Do not manually edit shared/remote-types.ts, instead edit crates/remote/src/bin/
 - Use `.env` for local overrides; never commit secrets. Key envs: `FRONTEND_PORT`, `BACKEND_PORT`, `HOST` 
 - Dev ports and assets are managed by `scripts/setup-dev-environment.js`.
 
+## Local Planning Documents & Preview Artifacts
+- Keep task-specific plans, design notes, verification reports, review write-ups, and preview artifacts local. Save file-based deliverables (HTML, SVG, Mermaid, screenshots, PDFs, etc.) under the Git-ignored `/artifacts/` directory.
+- Do not stage, commit, or include these temporary outputs in pull requests unless the user explicitly requests versioning the specific files. Creating or attaching a deliverable does not authorize adding it to Git. Never bypass ignore rules with `git add -f`.
+- Before committing, inspect `git diff --cached --name-status` and exclude temporary documents and artifacts. When removing an already tracked local deliverable, preserve its local copy with `git rm --cached -- <path>` and add a precise ignore rule.
+- Maintain established product documentation, README files, agent guidelines, application HTML entry points, and test fixtures as required by the task; these remain versioned project files.
+
