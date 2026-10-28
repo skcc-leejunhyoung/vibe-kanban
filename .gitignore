@@ -113,3 +113,5 @@ docs/local
 
 # Local planning, review, and preview deliverables
 /artifacts/
+/SKC-4774-validation.md
+/docs/frontend-ui-library-refactor-audit.md
