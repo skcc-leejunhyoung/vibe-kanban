@@ -292,6 +292,15 @@ export function DrawerTab({
       <div
         ref={listRef}
         tabIndex={-1}
+        onFocusCapture={() => {
+          if (!collapsed) return;
+          useUiPreferencesStore.setState({ isDrawerListVisible: true });
+          requestAnimationFrame(() => {
+            const noteId = selected?.id ?? list[0]?.id;
+            const row = noteId ? noteButtonsRef.current.get(noteId) : null;
+            (row ?? listRef.current)?.focus();
+          });
+        }}
         onKeyDown={(event) => {
           if (
             event.defaultPrevented ||
