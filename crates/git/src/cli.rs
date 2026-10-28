@@ -764,6 +764,16 @@ impl GitCli {
         } else {
             format!("refs/heads/{branch}:refs/heads/{branch}")
         };
+        self.push_refspec(repo_path, remote_url, &refspec, no_verify)
+    }
+
+    pub(crate) fn push_refspec(
+        &self,
+        repo_path: &Path,
+        remote_url: &str,
+        refspec: &str,
+        no_verify: bool,
+    ) -> Result<(), GitCliError> {
         ensure_safe_remote_url(remote_url)?;
         let envs = vec![(OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0"))];
 

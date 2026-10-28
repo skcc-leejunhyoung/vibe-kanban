@@ -91,6 +91,17 @@ pub struct GitRemote {
     pub url: String,
 }
 
+struct WorkBranchRemote {
+    remote: String,
+    source_ref: String,
+    tracking_ref: String,
+}
+
+fn review_tracking_ref(branch: &str) -> Option<String> {
+    uuid::Uuid::parse_str(branch.strip_prefix("review/")?).ok()?;
+    Some(format!("refs/vibe-kanban/{branch}"))
+}
+
 /// Result of fast-forwarding a work branch to its own remote
 /// (see [`GitService::pull_workspace_branch`]).
 #[derive(Debug, Clone)]
@@ -1059,6 +1070,16 @@ impl GitService {
     ) -> Result<(usize, usize), GitServiceError> {
         let repo = Repository::open(repo_path)?;
         let branch_ref = Self::find_branch(&repo, branch_name)?.into_reference();
+        if base_branch_name.is_none() && review_tracking_ref(branch_name).is_some() {
+            let remote = self.work_branch_remote(repo_path, branch_name)?;
+            GitCli::new().fetch_with_refspec(
+                repo_path,
+                &remote.remote,
+                &format!("+{}:{}", remote.source_ref, remote.tracking_ref),
+            )?;
+            let upstream = repo.find_reference(&remote.tracking_ref)?;
+            return self.get_branch_status_inner(&repo, &branch_ref, &upstream);
+        }
         // base branch is either given or upstream of branch_name
         let base_branch_ref = if let Some(bn) = base_branch_name {
             Self::find_branch(&repo, bn)?
@@ -1336,6 +1357,9 @@ impl GitService {
         let git = GitCli::new();
         git.delete_branch(repo_path, branch_name)
             .map_err(|e| GitServiceError::InvalidRepository(e.to_string()))?;
+        if let Some(reference) = review_tracking_ref(branch_name) {
+            git.git(repo_path, ["update-ref", "-d", &reference])?;
+        }
         Ok(())
     }
 
@@ -1517,35 +1541,33 @@ impl GitService {
 
         // Resolve the remote the branch tracks, falling back to the default
         // remote (origin) for branches that were never pushed with an upstream.
-        let remote = self.resolve_remote_for_branch(worktree_path, work_branch)?;
-        let remote_tracking = format!("{}/{work_branch}", remote.name);
+        let remote = self.work_branch_remote(worktree_path, work_branch)?;
+        let remote_tracking = &remote.tracking_ref;
 
         // Fetch just this branch into its remote-tracking ref so the comparison
         // below sees the latest remote tip.
-        let refspec = format!(
-            "+refs/heads/{work_branch}:refs/remotes/{}/{work_branch}",
-            remote.name
-        );
+        let refspec = format!("+{}:{}", remote.source_ref, remote.tracking_ref);
         let git_cli = GitCli::new();
-        if let Err(e) = git_cli.fetch_with_refspec(repo.path(), &remote.url, &refspec) {
+        if let Err(e) = git_cli.fetch_with_refspec(repo.path(), &remote.remote, &refspec) {
             // The most common cause is a branch that only exists locally (never
             // pushed) — surface that as a clear, actionable message.
             let msg = e.to_string();
             if msg.contains("find remote ref") {
                 return Err(GitServiceError::BranchNotFound(format!(
-                    "'{work_branch}' does not exist on remote '{}' yet (nothing to pull)",
-                    remote.name
+                    "'{}' does not exist on its remote yet (nothing to pull)",
+                    remote.source_ref
                 )));
             }
             return Err(GitServiceError::InvalidRepository(format!(
                 "Failed to fetch '{work_branch}' from '{}': {}",
-                remote.name,
+                remote.remote,
                 msg.lines().next().unwrap_or(&msg)
             )));
         }
 
-        let (ahead, behind) =
-            self.get_branch_status(worktree_path, work_branch, &remote_tracking)?;
+        let branch_ref = Self::find_branch(&repo, work_branch)?.into_reference();
+        let upstream = repo.find_reference(remote_tracking)?;
+        let (ahead, behind) = self.get_branch_status_inner(&repo, &branch_ref, &upstream)?;
 
         if behind == 0 {
             return Ok(PullOutcome::UpToDate);
@@ -1556,7 +1578,7 @@ impl GitService {
 
         // Remote is strictly ahead: fast-forward the checked-out branch in place.
         let new_head = git_cli
-            .merge_ff_only_current(worktree_path, &remote_tracking)
+            .merge_ff_only_current(worktree_path, remote_tracking)
             .map_err(|e| {
                 GitServiceError::InvalidRepository(format!("Fast-forward pull failed: {e}"))
             })?;
@@ -1599,23 +1621,19 @@ impl GitService {
             ));
         }
 
-        let remote = self.resolve_remote_for_branch(worktree_path, work_branch)?;
-        let remote_tracking = format!("{}/{work_branch}", remote.name);
-        let remote_refname = format!("refs/remotes/{}/{work_branch}", remote.name);
-        let refspec = format!(
-            "+refs/heads/{work_branch}:refs/remotes/{}/{work_branch}",
-            remote.name
-        );
-        git.fetch_with_refspec(repo.path(), &remote.url, &refspec)
+        let remote = self.work_branch_remote(worktree_path, work_branch)?;
+        let remote_tracking = &remote.tracking_ref;
+        let refspec = format!("+{}:{}", remote.source_ref, remote.tracking_ref);
+        git.fetch_with_refspec(repo.path(), &remote.remote, &refspec)
             .map_err(|e| {
                 GitServiceError::InvalidRepository(format!(
                     "Failed to fetch '{work_branch}' from '{}': {e}",
-                    remote.name
+                    remote.remote
                 ))
             })?;
 
         let remote_head = repo
-            .find_reference(&remote_refname)?
+            .find_reference(remote_tracking)?
             .peel_to_commit()?
             .id()
             .to_string();
@@ -1711,7 +1729,7 @@ impl GitService {
         worktree_path: &Path,
         work_branch: &str,
     ) -> Result<(), GitServiceError> {
-        let remote = self.resolve_remote_for_branch(worktree_path, work_branch)?;
+        let remote = self.work_branch_remote(worktree_path, work_branch)?;
         self.merge_named_remote_into_workspace_branch(worktree_path, work_branch, &remote)
     }
 
@@ -1719,35 +1737,33 @@ impl GitService {
         &self,
         worktree_path: &Path,
         work_branch: &str,
-        remote: &GitRemote,
+        remote: &WorkBranchRemote,
     ) -> Result<(), GitServiceError> {
         let repo = self.open_repo(worktree_path)?;
-        let remote_tracking = format!("{}/{work_branch}", remote.name);
+        let remote_tracking = &remote.tracking_ref;
 
         // Refresh the remote-tracking ref so the comparison and merge below see
         // the latest remote tip (same refspec fetch as `pull_workspace_branch`).
-        let refspec = format!(
-            "+refs/heads/{work_branch}:refs/remotes/{}/{work_branch}",
-            remote.name
-        );
+        let refspec = format!("+{}:{}", remote.source_ref, remote.tracking_ref);
         let git = GitCli::new();
-        if let Err(e) = git.fetch_with_refspec(repo.path(), &remote.url, &refspec) {
+        if let Err(e) = git.fetch_with_refspec(repo.path(), &remote.remote, &refspec) {
             let msg = e.to_string();
             if msg.contains("find remote ref") {
                 return Err(GitServiceError::BranchNotFound(format!(
-                    "'{work_branch}' does not exist on remote '{}' yet (nothing to pull)",
-                    remote.name
+                    "'{}' does not exist on its remote yet (nothing to pull)",
+                    remote.source_ref
                 )));
             }
             return Err(GitServiceError::InvalidRepository(format!(
                 "Failed to fetch '{work_branch}' from '{}': {}",
-                remote.name,
+                remote.remote,
                 msg.lines().next().unwrap_or(&msg)
             )));
         }
 
-        let (ahead, behind) =
-            self.get_branch_status(worktree_path, work_branch, &remote_tracking)?;
+        let branch_ref = Self::find_branch(&repo, work_branch)?.into_reference();
+        let upstream = repo.find_reference(remote_tracking)?;
+        let (ahead, behind) = self.get_branch_status_inner(&repo, &branch_ref, &upstream)?;
         if behind == 0 {
             // Local already contains every remote commit; nothing to integrate.
             return Ok(());
@@ -1762,7 +1778,7 @@ impl GitService {
 
         if ahead == 0 {
             // Remote is strictly ahead: fast-forward in place, no merge commit.
-            git.merge_ff_only_current(worktree_path, &remote_tracking)
+            git.merge_ff_only_current(worktree_path, remote_tracking)
                 .map_err(|e| {
                     GitServiceError::InvalidRepository(format!("Fast-forward pull failed: {e}"))
                 })?;
@@ -1772,7 +1788,7 @@ impl GitService {
         // Diverged: merge the remote-tracking ref into the current branch.
         let message =
             format!("Merge remote-tracking branch '{remote_tracking}' into '{work_branch}'");
-        match git.merge_branch_into_current(worktree_path, &remote_tracking, &message) {
+        match git.merge_branch_into_current(worktree_path, remote_tracking, &message) {
             Ok(_) => Ok(()),
             Err(GitCliError::CommandFailed(output)) => {
                 let looks_like_conflict = output.contains("CONFLICT")
@@ -1852,6 +1868,11 @@ impl GitService {
                     (checkout, Some(dir))
                 }
             };
+        let remote = WorkBranchRemote {
+            remote: remote.url,
+            source_ref: format!("refs/heads/{branch}"),
+            tracking_ref: format!("refs/remotes/{remote_name}/{branch}"),
+        };
         let result = match self.merge_named_remote_into_workspace_branch(&checkout, branch, &remote)
         {
             Err(GitServiceError::MergeConflicts { message, .. }) => {
@@ -2403,6 +2424,60 @@ impl GitService {
             .or_else(|_| self.get_default_remote(repo_path))
     }
 
+    fn work_branch_remote(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+    ) -> Result<WorkBranchRemote, GitServiceError> {
+        if let Some(tracking_ref) = review_tracking_ref(branch) {
+            let repo = Repository::open(repo_path)?;
+            let config = repo.config()?;
+            let remote = config.get_string(&format!("branch.{branch}.remote"))?;
+            let source_ref = config.get_string(&format!("branch.{branch}.merge"))?;
+            if remote.is_empty()
+                || !Reference::is_valid_name(&source_ref)
+                || !(source_ref.starts_with("refs/heads/") || source_ref.starts_with("refs/pull/"))
+            {
+                return Err(GitServiceError::InvalidRepository(format!(
+                    "Review branch '{branch}' has an invalid PR upstream"
+                )));
+            }
+            // gh may configure an unnamed fork URL; cache its head per review.
+            return Ok(WorkBranchRemote {
+                remote,
+                source_ref,
+                tracking_ref,
+            });
+        }
+        let remote = self.resolve_remote_for_branch(repo_path, branch)?;
+        Ok(WorkBranchRemote {
+            remote: remote.url,
+            source_ref: format!("refs/heads/{branch}"),
+            tracking_ref: format!("refs/remotes/{}/{branch}", remote.name),
+        })
+    }
+
+    /// Cache the PR head just checked out by gh, without a second network fetch.
+    pub fn record_review_head(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+    ) -> Result<(), GitServiceError> {
+        let remote = self.work_branch_remote(repo_path, branch)?;
+        let repo = Repository::open(repo_path)?;
+        let head = Self::find_branch(&repo, branch)?
+            .get()
+            .peel_to_commit()?
+            .id();
+        repo.reference(
+            &remote.tracking_ref,
+            head,
+            true,
+            "record checked-out PR head",
+        )?;
+        Ok(())
+    }
+
     fn get_remote_from_branch_ref<'a>(
         &self,
         repo: &'a Repository,
@@ -2435,15 +2510,30 @@ impl GitService {
         let repo = Repository::open(worktree_path)?;
         self.check_worktree_clean(&repo)?;
 
-        // Get the remote
-        let remote = self.default_remote(&repo, worktree_path)?;
+        let remote = self.work_branch_remote(worktree_path, branch_name)?;
+        if !remote.source_ref.starts_with("refs/heads/") {
+            return Err(GitServiceError::InvalidRepository(
+                "This PR upstream is read-only; it has no writable head branch".to_string(),
+            ));
+        }
+        let refspec = format!(
+            "{}refs/heads/{branch_name}:{}",
+            if force { "+" } else { "" },
+            remote.source_ref
+        );
 
         let git_cli = GitCli::new();
-        if let Err(e) = git_cli.push(worktree_path, &remote.url, branch_name, force, no_verify) {
+        // The PR head belongs to the fetch repository, even with a separate push URL.
+        let push_url = if repo.find_remote(&remote.remote).is_ok() {
+            git_cli.get_remote_url(worktree_path, &remote.remote)?
+        } else {
+            remote.remote.clone()
+        };
+        if let Err(e) = git_cli.push_refspec(worktree_path, &push_url, &refspec, no_verify) {
             if !force && matches!(e, GitCliError::PushRejected(_)) {
                 match self.pull_workspace_branch(worktree_path, branch_name)? {
                     PullOutcome::FastForwarded { .. } => {
-                        git_cli.push(worktree_path, &remote.url, branch_name, false, no_verify)?;
+                        git_cli.push_refspec(worktree_path, &push_url, &refspec, no_verify)?;
                     }
                     // Both sides advanced: a fast-forward is impossible and the
                     // remote holds commits the local branch lacks. Surface this
@@ -2464,15 +2554,17 @@ impl GitService {
         let mut branch = Self::find_branch(&repo, branch_name)?;
         if !branch.get().is_remote() {
             if let Some(branch_target) = branch.get().target() {
-                let remote_ref = format!("refs/remotes/{}/{branch_name}", remote.name);
                 repo.reference(
-                    &remote_ref,
+                    &remote.tracking_ref,
                     branch_target,
                     true,
                     "update remote tracking branch",
                 )?;
             }
-            branch.set_upstream(Some(&format!("{}/{branch_name}", remote.name)))?;
+            if review_tracking_ref(branch_name).is_none() {
+                let default_remote = self.default_remote(&repo, worktree_path)?;
+                branch.set_upstream(Some(&format!("{}/{branch_name}", default_remote.name)))?;
+            }
         }
 
         Ok(())
@@ -2638,7 +2730,7 @@ impl GitService {
 
     /// Ahead/behind of `branch_name` relative to its counterpart on
     /// `remote_name`, computed from the local remote-tracking ref
-    /// (`refs/remotes/<remote>/<branch>`). Returns
+    /// (`refs/remotes/<remote>/<branch>`), or a private review's cached PR head. Returns
     /// `(remote_branch_exists, ahead, behind)`. Callers should
     /// [`fetch_remote`] first for an up-to-date comparison.
     pub fn get_remote_tracking_status(
@@ -2653,7 +2745,10 @@ impl GitService {
             GitServiceError::BranchNotFound(format!("Branch '{branch_name}' has no commit"))
         })?;
 
-        let remote_ref = format!("refs/remotes/{remote_name}/{branch_name}");
+        let remote_ref = match review_tracking_ref(branch_name) {
+            Some(reference) => reference,
+            None => format!("refs/remotes/{remote_name}/{branch_name}"),
+        };
         match repo.find_reference(&remote_ref) {
             Ok(reference) => {
                 let remote_oid = reference.target().ok_or_else(|| {

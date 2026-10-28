@@ -1089,7 +1089,19 @@ pub async fn create_pr(
     }
 
     let no_verify = deployment.config().read().await.git_push_no_verify;
-    if let Err(e) = git.push_to_remote(&worktree_path, &head_branch, false, no_verify) {
+    if !git.is_worktree_clean(&worktree_path)? {
+        return Err(ApiError::BadRequest(
+            "Commit tracked changes before creating a pull request".to_string(),
+        ));
+    }
+    // A new PR publishes its requested head, even when the work branch reviews another PR.
+    if let Err(e) = git.push_branch_to_named_remote(
+        &worktree_path,
+        &head_branch,
+        &push_remote.name,
+        false,
+        no_verify,
+    ) {
         tracing::error!("Failed to push branch to remote: {}", e);
         match e {
             GitServiceError::GitCLI(GitCliError::AuthFailed(_)) => {
@@ -2034,13 +2046,10 @@ async fn checkout_pr_branch(
     remote: &GitRemote,
     pr: &PrReviewInput,
 ) -> Result<Workspace, String> {
-    let review_workspace = Workspace {
-        branch: Workspace::review_branch_name(workspace.id),
-        ..workspace.clone()
-    };
     let container_ref = deployment
         .container()
-        .ensure_container_exists_unlocked(&review_workspace)
+        // Start detached at the base so gh creates the private branch and its upstream.
+        .ensure_container_exists_unlocked(workspace)
         .await
         .map_err(|e| e.to_string())?;
     let worktree_path = PathBuf::from(&container_ref).join(&repo.name);
@@ -2069,6 +2078,9 @@ async fn checkout_pr_head(
             &branch,
         )
         .map_err(|e| e.to_string())?;
+    git::GitService::new()
+        .record_review_head(worktree_path, &branch)
+        .map_err(|e| format!("Failed to record PR upstream: {e}"))?;
     Workspace::update_branch_name(pool, workspace.id, &branch)
         .await
         .map_err(|e| e.to_string())?;

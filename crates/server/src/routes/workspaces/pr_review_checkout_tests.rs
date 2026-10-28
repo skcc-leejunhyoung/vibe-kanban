@@ -215,10 +215,16 @@ async fn review_checkout_preserves_author_and_recreates_private_branch() {
             .unwrap();
             let review_branch = Workspace::review_branch_name(id);
             let directory = case.join(id.to_string());
-            WorkspaceManager::ensure_workspace_exists(&directory, &inputs, &review_branch)
+            WorkspaceManager::ensure_workspace_exists(&directory, &inputs, &pending.branch)
                 .await
                 .unwrap();
             let worktree = directory.join("widgets");
+            assert!(
+                cli.git(&worktree, ["branch", "--show-current"])
+                    .unwrap()
+                    .trim()
+                    .is_empty()
+            );
             assert_eq!(
                 Workspace::find_by_id(&pool, id)
                     .await
@@ -232,6 +238,17 @@ async fn review_checkout_preserves_author_and_recreates_private_branch() {
                 .await
                 .unwrap();
             assert_eq!(ready.branch, review_branch);
+            assert_eq!(
+                cli.git(&worktree, ["rev-parse", "--abbrev-ref", "@{upstream}"])
+                    .unwrap()
+                    .trim(),
+                "origin/feature/review-fixture"
+            );
+            assert_eq!(
+                git.get_remote_tracking_status(&worktree, &ready.branch, "origin")
+                    .unwrap(),
+                (true, 0, 0)
+            );
             assert!(ready.pr_head_is_work_branch(Some(&pr.head_branch)));
             let mut normal = ready.clone();
             normal.branch = "work".into();
@@ -277,13 +294,9 @@ async fn review_checkout_preserves_author_and_recreates_private_branch() {
         .await
         .unwrap();
         let directory = case.join("failed");
-        WorkspaceManager::ensure_workspace_exists(
-            &directory,
-            &inputs,
-            &Workspace::review_branch_name(id),
-        )
-        .await
-        .unwrap();
+        WorkspaceManager::ensure_workspace_exists(&directory, &inputs, &pending.branch)
+            .await
+            .unwrap();
         Workspace::update_container_ref(&pool, id, directory.to_str().unwrap())
             .await
             .unwrap();

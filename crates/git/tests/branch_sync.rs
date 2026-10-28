@@ -192,6 +192,224 @@ fn pull_reports_diverged_without_touching_local_branch() {
 }
 
 #[test]
+fn private_review_syncs_the_pr_head_on_named_and_unnamed_remotes() {
+    for remote_kind in ["origin", "fork", "url"] {
+        let temp = TempDir::new().unwrap();
+        let remote_url = setup_remote_and_local_feature(&temp);
+        let path = temp.path().join("local");
+        let repo = Repository::open(&path).unwrap();
+        let author_tip = repo.head().unwrap().target().unwrap();
+        let branch = "review/00000000-0000-4000-8000-000000000001";
+        repo.branch(branch, &repo.find_commit(author_tip).unwrap(), false)
+            .unwrap();
+        checkout_branch(&repo, branch);
+        let remote = match remote_kind {
+            "fork" => {
+                repo.remote("fork", &remote_url).unwrap();
+                repo.remote_set_url("origin", "/missing-primary-remote")
+                    .unwrap();
+                "fork"
+            }
+            "url" => remote_url.as_str(),
+            _ => "origin",
+        };
+        // gh uses a URL here for a fork that has no named local remote.
+        let mut config = repo.config().unwrap();
+        if remote_kind != "url" {
+            config
+                .set_str(
+                    &format!("remote.{remote}.pushurl"),
+                    "/missing-push-repository",
+                )
+                .unwrap();
+        }
+        config
+            .set_str(&format!("branch.{branch}.remote"), remote)
+            .unwrap();
+        config
+            .set_str(&format!("branch.{branch}.merge"), "refs/heads/feature")
+            .unwrap();
+
+        let service = GitService::new();
+        assert_eq!(
+            service
+                .get_remote_branch_status(&path, branch, None)
+                .unwrap(),
+            (0, 0)
+        );
+        assert_eq!(
+            service
+                .get_remote_tracking_status(&path, branch, "origin")
+                .unwrap(),
+            (true, 0, 0)
+        );
+        collaborator_push_feature_commit(&temp, &remote_url, "v2\n");
+        assert!(matches!(
+            service.pull_workspace_branch(&path, branch).unwrap(),
+            PullOutcome::FastForwarded { commits: 1, .. }
+        ));
+        write_file(&path, "review-fix.txt", "review fix\n");
+        let fix = commit_all(&repo, "review fix");
+        assert_eq!(
+            service
+                .get_remote_branch_status(&path, branch, None)
+                .unwrap(),
+            (1, 0)
+        );
+        // This pushes only to the disposable bare repository under TempDir.
+        service.push_to_remote(&path, branch, false, false).unwrap();
+        let upstream = Repository::open_bare(&remote_url).unwrap();
+        assert_eq!(upstream.refname_to_id("refs/heads/feature").unwrap(), fix);
+        assert!(
+            upstream
+                .find_reference(&format!("refs/heads/{branch}"))
+                .is_err()
+        );
+        assert_eq!(
+            repo.refname_to_id("refs/heads/feature").unwrap(),
+            author_tip
+        );
+        assert_eq!(
+            service
+                .get_remote_branch_status(&path, branch, None)
+                .unwrap(),
+            (0, 0)
+        );
+
+        write_file(&path, "local-only.txt", "local\n");
+        let local_tip = commit_all(&repo, "diverged local");
+        let updater_path = temp.path().join("updater");
+        let updater = Repository::open(&updater_path).unwrap();
+        write_file(&updater_path, "remote-only.txt", "remote\n");
+        let remote_tip = commit_all(&updater, "diverged remote");
+        push_ref(&updater, "refs/heads/feature", "refs/heads/feature");
+        assert!(matches!(
+            service.push_to_remote(&path, branch, false, false),
+            Err(GitServiceError::PushDiverged { .. })
+        ));
+        service
+            .merge_remote_into_workspace_branch(&path, branch)
+            .unwrap();
+        let merged_tip = repo.head().unwrap().target().unwrap();
+        assert!(repo.graph_descendant_of(merged_tip, local_tip).unwrap());
+        assert!(repo.graph_descendant_of(merged_tip, remote_tip).unwrap());
+        service.push_to_remote(&path, branch, false, false).unwrap();
+        assert_eq!(
+            upstream.refname_to_id("refs/heads/feature").unwrap(),
+            merged_tip
+        );
+
+        write_file(&path, "discard.txt", "discard\n");
+        commit_all(&repo, "discarded local commit");
+        assert_eq!(
+            service
+                .reset_workspace_branch_to_remote(&path, branch)
+                .unwrap(),
+            merged_tip.to_string()
+        );
+        write_file(&path, "force-fix.txt", "force fix\n");
+        let force_tip = commit_all(&repo, "force fix");
+        write_file(&updater_path, "remote-force-only.txt", "remote\n");
+        commit_all(&updater, "remote advance before force");
+        push_ref(&updater, "refs/heads/feature", "refs/heads/feature");
+        service.push_to_remote(&path, branch, true, false).unwrap();
+        assert_eq!(
+            upstream.refname_to_id("refs/heads/feature").unwrap(),
+            force_tip
+        );
+        assert_eq!(
+            repo.refname_to_id("refs/heads/feature").unwrap(),
+            author_tip
+        );
+        assert!(
+            upstream
+                .find_reference(&format!("refs/heads/{branch}"))
+                .is_err()
+        );
+        // Creating a new PR explicitly publishes the requested local branch.
+        repo.remote("publish", &remote_url).unwrap();
+        service
+            .push_branch_to_named_remote(&path, branch, "publish", false, false)
+            .unwrap();
+        write_file(&path, "new-pr-fix.txt", "new PR\n");
+        let new_pr_tip = commit_all(&repo, "new PR fix");
+        service.push_to_remote(&path, branch, false, false).unwrap();
+        assert_eq!(
+            upstream
+                .refname_to_id(&format!("refs/heads/{branch}"))
+                .unwrap(),
+            new_pr_tip
+        );
+        assert_eq!(
+            upstream.refname_to_id("refs/heads/feature").unwrap(),
+            force_tip
+        );
+        checkout_branch(&repo, "feature");
+        service.delete_branch(&path, branch).unwrap();
+        assert!(
+            repo.find_reference(&format!("refs/vibe-kanban/{branch}"))
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn private_review_rejects_missing_or_invalid_upstream_and_read_only_push() {
+    let temp = TempDir::new().unwrap();
+    let remote_url = setup_remote_and_local_feature(&temp);
+    let path = temp.path().join("local");
+    let repo = Repository::open(&path).unwrap();
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    let branch = "review/00000000-0000-4000-8000-000000000002";
+    repo.branch(branch, &head, false).unwrap();
+    checkout_branch(&repo, branch);
+    let service = GitService::new();
+    assert!(service.pull_workspace_branch(&path, branch).is_err());
+    assert!(service.push_to_remote(&path, branch, false, false).is_err());
+    let mut config = repo.config().unwrap();
+    config
+        .set_str(&format!("branch.{branch}.remote"), "origin")
+        .unwrap();
+    for reference in [
+        "refs/heads/../main",
+        "refs/tags/release",
+        "refs/heads/main:injected",
+    ] {
+        config
+            .set_str(&format!("branch.{branch}.merge"), reference)
+            .unwrap();
+        assert!(service.pull_workspace_branch(&path, branch).is_err());
+        assert!(service.push_to_remote(&path, branch, false, false).is_err());
+    }
+    let upstream = Repository::open_bare(remote_url).unwrap();
+    upstream
+        .reference("refs/pull/42/head", head.id(), false, "fixture PR")
+        .unwrap();
+    config
+        .set_str(&format!("branch.{branch}.merge"), "refs/pull/42/head")
+        .unwrap();
+    assert_eq!(
+        service
+            .get_remote_branch_status(&path, branch, None)
+            .unwrap(),
+        (0, 0)
+    );
+    assert!(matches!(
+        service.pull_workspace_branch(&path, branch).unwrap(),
+        PullOutcome::UpToDate
+    ));
+    let error = service
+        .push_to_remote(&path, branch, false, false)
+        .unwrap_err();
+    assert!(error.to_string().contains("read-only"), "{error}");
+    assert!(
+        upstream
+            .find_reference(&format!("refs/heads/{branch}"))
+            .is_err()
+    );
+}
+
+#[test]
 fn merge_base_brings_base_commits_into_work_branch() {
     let temp = TempDir::new().unwrap();
     let repo_path = temp.path().join("repo");
