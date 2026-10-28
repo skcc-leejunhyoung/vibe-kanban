@@ -156,6 +156,16 @@ pub struct InPlaceSession {
 }
 
 impl Workspace {
+    /// A review owns this local branch so it never resets the PR author's checkout.
+    pub fn review_branch_name(id: Uuid) -> String {
+        format!("review/{id}")
+    }
+
+    pub fn pr_head_is_work_branch(&self, pr_head: Option<&str>) -> bool {
+        self.branch == Self::review_branch_name(self.id)
+            || pr_head.is_none_or(|head| head == self.branch)
+    }
+
     /// Fetch all workspaces. Newest first.
     pub async fn fetch_all(pool: &SqlitePool) -> Result<Vec<Self>, WorkspaceError> {
         let workspaces = sqlx::query_as!(

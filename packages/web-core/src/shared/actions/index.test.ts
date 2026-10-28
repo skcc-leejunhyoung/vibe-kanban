@@ -1400,6 +1400,26 @@ describe('Actions.GitMerge', () => {
     expect(merge).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, 'host-1'])(
+    'blocks direct merge from a private review branch on host %s',
+    async (currentHostId) => {
+      const { ctx } = makeCtx(
+        { id: 'ws1', branch: 'review/ws1' },
+        { currentHostId }
+      );
+      getBranchStatus.mockResolvedValue(
+        branchStatusWithMerge(openPr('feature/review-fixture'))
+      );
+
+      await Actions.GitMerge.execute(ctx, 'ws1', 'repo1');
+
+      expect(showConfirm).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Cannot Merge' })
+      );
+      expect(merge).not.toHaveBeenCalled();
+    }
+  );
+
   it('allows direct merge when the open PR is from an intermediate feature branch', async () => {
     const { ctx, invalidateQueries } = makeCtx(
       { id: 'ws1', branch: 'work' },

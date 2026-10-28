@@ -1726,6 +1726,18 @@ async fn cleanup_failed_pr_workspace(pool: &sqlx::SqlitePool, workspace: &Worksp
                     workspace_dir.display(),
                     e
                 );
+                return;
+            }
+            let git = git::GitService::new();
+            let branch = Workspace::review_branch_name(workspace_id);
+            for repo in repositories {
+                if git
+                    .check_local_branch_exists(&repo.path, &branch)
+                    .unwrap_or(false)
+                    && let Err(e) = git.delete_branch(&repo.path, &branch)
+                {
+                    tracing::warn!("Failed to remove review branch {branch}: {e}");
+                }
             }
         });
     }
@@ -1751,10 +1763,8 @@ pub(crate) async fn canonical_remotes(remotes: &[GitRemote], repo_path: &Path) -
     .await
 }
 
-/// Rows of a review workspace on an existing PR branch: the workspace and its
-/// single repo on the PR base ref (`gh pr checkout` switches the worktree to the
-/// head branch; keeping the repo `target_branch` at the base ref means later
-/// merges / new PRs target the base) and the PR link.
+/// Keep the base ref as a pending marker until the private review branch is
+/// checked out. The repo target and PR link retain the actual base and head.
 async fn create_pr_review_rows(
     deployment: &DeploymentImpl,
     workspace_name: Option<String>,
@@ -2015,8 +2025,8 @@ async fn prepare_pr_setup(
     Ok(Some((session, record, setup_action)))
 }
 
-/// Worktree on the base ref, then `gh pr checkout` onto the head branch and
-/// the row renamed to it. The caller holds the workspace's container lock.
+/// Check out the PR on a workspace-owned branch, then persist that branch as
+/// the ready marker. The caller holds the workspace's container lock.
 async fn checkout_pr_branch(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
@@ -2024,26 +2034,42 @@ async fn checkout_pr_branch(
     remote: &GitRemote,
     pr: &PrReviewInput,
 ) -> Result<Workspace, String> {
-    let pool = &deployment.db().pool;
+    let review_workspace = Workspace {
+        branch: Workspace::review_branch_name(workspace.id),
+        ..workspace.clone()
+    };
     let container_ref = deployment
         .container()
-        .ensure_container_exists_unlocked(workspace)
+        .ensure_container_exists_unlocked(&review_workspace)
         .await
         .map_err(|e| e.to_string())?;
-    // gh pr checkout handles SSH/HTTPS auth correctly regardless of fork URL.
     let worktree_path = PathBuf::from(&container_ref).join(&repo.name);
+    checkout_pr_head(&deployment.db().pool, workspace, &worktree_path, remote, pr).await
+}
+
+/// Persist the ready marker only after the PR checkout has succeeded.
+async fn checkout_pr_head(
+    pool: &sqlx::SqlitePool,
+    workspace: &Workspace,
+    worktree_path: &Path,
+    remote: &GitRemote,
+    pr: &PrReviewInput,
+) -> Result<Workspace, String> {
+    let branch = Workspace::review_branch_name(workspace.id);
+    // gh pr checkout handles SSH/HTTPS auth correctly regardless of fork URL.
     let repo_info = GhCli::new()
-        .get_repo_info(&remote.url, &worktree_path)
+        .get_repo_info(&remote.url, worktree_path)
         .map_err(|e| format!("Failed to get repository info: {e}"))?;
     GhCli::new()
         .pr_checkout(
-            &worktree_path,
+            worktree_path,
             &repo_info.owner,
             &repo_info.repo_name,
             pr.pr_number,
+            &branch,
         )
         .map_err(|e| e.to_string())?;
-    Workspace::update_branch_name(pool, workspace.id, &pr.head_branch)
+    Workspace::update_branch_name(pool, workspace.id, &branch)
         .await
         .map_err(|e| e.to_string())?;
     Workspace::find_by_id(pool, workspace.id)
@@ -2051,6 +2077,10 @@ async fn checkout_pr_branch(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "workspace was deleted meanwhile".to_string())
 }
+
+#[cfg(all(test, unix))]
+#[path = "pr_review_checkout_tests.rs"]
+mod review_checkout_tests;
 
 /// A checkout that failed: drop the PR link written up front (it would keep
 /// pointing at the removed workspace and shadow a retry's own link) and

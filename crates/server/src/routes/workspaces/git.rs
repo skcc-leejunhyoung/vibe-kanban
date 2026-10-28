@@ -494,8 +494,7 @@ pub async fn merge_workspace(
     let has_open_pr_from_work_branch = merges.iter().any(|m| {
         matches!(m, Merge::Pr(pr)
             if matches!(pr.pr_info.status, MergeStatus::Open)
-                && pr.head_branch_name.as_deref().unwrap_or(workspace.branch.as_str())
-                    == workspace.branch)
+                && workspace.pr_head_is_work_branch(pr.head_branch_name.as_deref()))
     });
     if has_open_pr_from_work_branch {
         return Err(ApiError::BadRequest(
@@ -1345,10 +1344,13 @@ pub async fn get_workspace_branch_status(
                 if let Merge::Pr(pr) = merge
                     && matches!(pr.pr_info.status, MergeStatus::Open)
                 {
-                    let head = pr
-                        .head_branch_name
-                        .clone()
-                        .unwrap_or_else(|| workspace.branch.clone());
+                    let head = if workspace.pr_head_is_work_branch(pr.head_branch_name.as_deref()) {
+                        workspace.branch.clone()
+                    } else {
+                        pr.head_branch_name
+                            .clone()
+                            .unwrap_or_else(|| workspace.branch.clone())
+                    };
                     if let Some((ahead, behind)) =
                         compute_pr_head_ahead_behind(&git, &repo, &head, &pr.target_branch_name)
                     {
@@ -1866,8 +1868,7 @@ pub async fn rename_branch(
     let has_open_pr_from_work_branch = merges.into_iter().any(|merge| {
         matches!(merge, Merge::Pr(pr_merge)
             if matches!(pr_merge.pr_info.status, MergeStatus::Open)
-                && pr_merge.head_branch_name.as_deref().unwrap_or(workspace.branch.as_str())
-                    == workspace.branch)
+                && workspace.pr_head_is_work_branch(pr_merge.head_branch_name.as_deref()))
     });
     if has_open_pr_from_work_branch {
         return Ok(ResponseJson(ApiResponse::error_with_data(

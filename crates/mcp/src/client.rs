@@ -1111,6 +1111,15 @@ pub struct ReviewWorkspaceOutcome {
     pub execution_process_id: Option<Uuid>,
 }
 
+fn review_checkout_state(workspace_id: Uuid, branch: &str, pr_head: &str) -> &'static str {
+    // Older review workspaces checked out the PR's own branch.
+    if branch == pr_head || branch == Workspace::review_branch_name(workspace_id) {
+        "ready"
+    } else {
+        "pending"
+    }
+}
+
 /// The issue must carry `review` (matched like the UI) and not `vibe`: the
 /// server would start the vibe pipeline, which merges the branch it worked on.
 pub fn check_review_tags(issue: &str, tag_names: &[&str]) -> Result<(), VkError> {
@@ -1542,13 +1551,9 @@ impl VkClient {
             remote,
             workspace_id: existing.as_ref().map(|w| w.id),
             branch: existing.as_ref().map(|w| w.branch.clone()),
-            checkout: existing.as_ref().map(|w| {
-                if w.branch == pr.head_branch {
-                    "ready"
-                } else {
-                    "pending"
-                }
-            }),
+            checkout: existing
+                .as_ref()
+                .map(|w| review_checkout_state(w.id, &w.branch, &pr.head_branch)),
             session_id: existing.as_ref().and_then(|w| w.latest_session_id),
             execution_process_id: None,
             pr,
@@ -1607,11 +1612,11 @@ impl VkClient {
                 };
                 outcome.action = "created";
                 outcome.workspace_id = Some(workspace.id);
-                outcome.checkout = Some(if workspace.branch == outcome.pr.head_branch {
-                    "ready"
-                } else {
-                    "pending"
-                });
+                outcome.checkout = Some(review_checkout_state(
+                    workspace.id,
+                    &workspace.branch,
+                    &outcome.pr.head_branch,
+                ));
                 outcome.branch = Some(workspace.branch);
                 if let Err(error) = client.link_review_workspace(workspace.id, issue.id).await {
                     return Err(VkError::message(format!(
@@ -3144,45 +3149,60 @@ mod tests {
 
     #[tokio::test]
     async fn review_rerun_reuses_the_workspace_without_a_second_turn() {
-        let issue = review_issue();
-        let workspace_id = Uuid::new_v4();
-        let session_id = Uuid::new_v4();
-        let workspace = json!({
-            "id": workspace_id, "task_id": issue.id, "container_ref": null,
-            "branch": "feature-x", "setup_completed_at": null, "created_at": Utc::now(),
-            "updated_at": Utc::now(), "archived": false, "pinned": false, "name": "Fix login",
-            "worktree_deleted": false, "ephemeral": false, "in_place": false, "autopilot": false,
-            "cleanup_blocked_reason": null, "status_note": null, "status_updated_at": null,
-        });
-        let summary = json!({
-            "workspace_id": workspace_id, "latest_session_id": session_id,
-            "pr_status": "open", "pr_url": review_pr(42, "open").url,
-        });
-        let (mut routes, _) =
-            review_routes(&issue, &["review"], json!([workspace]), json!([summary]));
-        // The cloud already has the link (unique local workspace id).
-        routes.insert(
-            ("POST", format!("/api/workspaces/{workspace_id}/links")),
-            fail(409, "resource already exists"),
-        );
-        routes.insert(
+        for branch_kind in ["legacy", "private", "pending", "other-review"] {
+            let issue = review_issue();
+            let workspace_id = Uuid::new_v4();
+            let session_id = Uuid::new_v4();
+            let branch = match branch_kind {
+                "legacy" => "feature-x".to_string(),
+                "private" => Workspace::review_branch_name(workspace_id),
+                "pending" => "origin/main".to_string(),
+                _ => Workspace::review_branch_name(Uuid::new_v4()),
+            };
+            let workspace = json!({
+                "id": workspace_id, "task_id": issue.id, "container_ref": null,
+                "branch": branch, "setup_completed_at": null, "created_at": Utc::now(),
+                "updated_at": Utc::now(), "archived": false, "pinned": false, "name": "Fix login",
+                "worktree_deleted": false, "ephemeral": false, "in_place": false, "autopilot": false,
+                "cleanup_blocked_reason": null, "status_note": null, "status_updated_at": null,
+            });
+            let summary = json!({
+                "workspace_id": workspace_id, "latest_session_id": session_id,
+                "pr_status": "open", "pr_url": review_pr(42, "open").url,
+            });
+            let (mut routes, _) =
+                review_routes(&issue, &["review"], json!([workspace]), json!([summary]));
+            // The cloud already has the link (unique local workspace id).
+            routes.insert(
+                ("POST", format!("/api/workspaces/{workspace_id}/links")),
+                fail(409, "resource already exists"),
+            );
+            routes.insert(
             ("GET", format!("/api/workspaces/{workspace_id}/repos")),
             ok(json!([{ "id": Uuid::new_v4(), "name": "widgets", "target_branch": "origin/main" }])),
         );
-        let (url, calls) = fake_vibe(routes).await;
+            let (url, calls) = fake_vibe(routes).await;
 
-        let outcome = VkClient::new(&url, "test/1")
-            .review_workspace(review_input(issue.id))
-            .await
-            .unwrap();
-        assert_eq!(outcome.action, "reused");
-        assert_eq!(outcome.workspace_id, Some(workspace_id));
-        assert_eq!(outcome.session_id, Some(session_id));
-        assert_eq!(outcome.checkout, Some("ready"));
-        assert_eq!(outcome.target_branch, "origin/main");
-        assert!(posted(&calls, "/workspaces/start").is_empty());
-        assert!(posted(&calls, "/workspaces/create").is_empty());
-        assert_eq!(posted(&calls, "/links").len(), 1);
+            let outcome = VkClient::new(&url, "test/1")
+                .review_workspace(review_input(issue.id))
+                .await
+                .unwrap();
+            assert_eq!(outcome.action, "reused");
+            assert_eq!(outcome.workspace_id, Some(workspace_id));
+            assert_eq!(outcome.session_id, Some(session_id));
+            assert_eq!(
+                outcome.checkout,
+                Some(if matches!(branch_kind, "legacy" | "private") {
+                    "ready"
+                } else {
+                    "pending"
+                })
+            );
+            assert_eq!(outcome.target_branch, "origin/main");
+            assert!(posted(&calls, "/workspaces/start").is_empty());
+            assert!(posted(&calls, "/workspaces/create").is_empty());
+            assert_eq!(posted(&calls, "/links").len(), 1);
+        }
     }
 
     #[tokio::test]
@@ -3352,7 +3372,7 @@ mod tests {
         let workspace_id = Uuid::new_v4();
         let created = json!({
             "id": workspace_id, "task_id": issue.id, "container_ref": "/wt/x",
-            "branch": "feature-x", "setup_completed_at": null, "created_at": Utc::now(),
+            "branch": Workspace::review_branch_name(workspace_id), "setup_completed_at": null, "created_at": Utc::now(),
             "updated_at": Utc::now(), "archived": false, "pinned": false, "name": "Fix login",
             "worktree_deleted": false, "ephemeral": false, "in_place": false, "autopilot": false,
             "cleanup_blocked_reason": null, "status_note": null, "status_updated_at": null,

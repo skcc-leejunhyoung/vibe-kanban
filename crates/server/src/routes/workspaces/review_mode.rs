@@ -1,7 +1,7 @@
 //! Pure decision logic for "review mode" workspace creation.
 //!
 //! Review mode lets a workspace created from a `review`-tagged issue work
-//! directly on an existing PR's head branch (no new `vk/` worktree branch) and
+//! on an existing PR's head commit using a private local review branch, and
 //! auto-link that PR. This module holds only the *pure* decisions; the
 //! side-effecting setup (gh pr checkout, DB writes, worktree creation) lives in
 //! the handler shell so it can be exercised by `cargo test` without git/gh.
@@ -16,7 +16,7 @@ use utils::repo_url::{pr_in_remote, pr_repo_key, without_credentials};
 pub enum BranchSetup<'a> {
     /// Default: create a new `vk/`-prefixed worktree branch from the target branch.
     NewWorktreeBranch,
-    /// Review mode: check out an existing PR head branch and link the PR.
+    /// Review mode: check out the PR head on a private branch and link the PR.
     ExistingPrBranch(&'a PrReviewInput),
 }
 

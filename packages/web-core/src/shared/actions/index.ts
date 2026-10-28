@@ -652,12 +652,13 @@ async function findRepoTargetBranch(
 
 function isOpenPrFromWorkspaceBranch(
   merge: Merge,
-  workspaceBranch: string
+  workspace: Pick<Workspace, 'id' | 'branch'>
 ): boolean {
   return (
     merge.type === 'pr' &&
     merge.pr_info.status === 'open' &&
-    (merge.head_branch_name ?? workspaceBranch) === workspaceBranch
+    ((merge.head_branch_name ?? workspace.branch) === workspace.branch ||
+      workspace.branch === `review/${workspace.id}`)
   );
 }
 
@@ -2685,7 +2686,7 @@ export const Actions = {
       // Only block direct merge when the open PR is from this workspace branch.
       // Feature-branch PRs must not block continued work -> feature merges.
       const hasOpenPR = repoStatus?.merges?.some((m: Merge) =>
-        isOpenPrFromWorkspaceBranch(m, workspace.branch)
+        isOpenPrFromWorkspaceBranch(m, workspace)
       );
       if (hasOpenPR) {
         await ConfirmDialog.show({

@@ -1008,6 +1008,7 @@ impl GhCli {
         owner: &str,
         repo: &str,
         pr_number: i64,
+        branch: &str,
     ) -> Result<(), GhCliError> {
         self.run(
             [
@@ -1017,6 +1018,8 @@ impl GhCli {
                 "--repo",
                 &format!("{owner}/{repo}"),
                 "--force",
+                "--branch",
+                branch,
             ],
             Some(repo_path),
         )?;
