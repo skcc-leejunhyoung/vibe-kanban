@@ -540,7 +540,7 @@ capabilities: { [key in string]?: Array<BaseAgentCapability> }, shared_api_base:
 
 export type HostAppearance = { primary_color: string, };
 
-export type AgentUsage = { windows: Array<AgentUsageWindow>, updated_at: string | null, next_refresh_at: string, unavailable: boolean, };
+export type AgentUsage = { windows: Array<AgentUsageWindow>, reset_credits: number | null, updated_at: string | null, next_refresh_at: string, unavailable: boolean, };
 
 export type AgentUsageWindow = { label: string, used_percent: number, reset_description: string | null, };
 

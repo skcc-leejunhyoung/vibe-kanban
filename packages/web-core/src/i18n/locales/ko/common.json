@@ -1,5 +1,6 @@
 {
   "agentUsage": {
+    "resetCredits": "리셋권 {{count}}개",
     "session": "5시간",
     "weekly": "주간",
     "fable": "Fable",

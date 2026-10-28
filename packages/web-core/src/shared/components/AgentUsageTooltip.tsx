@@ -84,10 +84,15 @@ export function AgentUsageTooltip({
               )}
             </span>
           ))}
+          {data?.reset_credits != null && (
+            <span className="text-sm text-low">
+              {t('agentUsage.resetCredits', { count: data.reset_credits })}
+            </span>
+          )}
           {unavailable && (
             <span className="text-low">
               {t(
-                data?.windows.length
+                data?.windows.length || data?.reset_credits != null
                   ? 'agentUsage.lastKnown'
                   : 'agentUsage.unavailable'
               )}

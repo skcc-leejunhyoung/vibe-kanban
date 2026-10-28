@@ -846,7 +846,7 @@ impl Codex {
     /// Query account limits without starting a conversation or inference turn.
     pub async fn read_account_usage(
         &self,
-    ) -> Result<Vec<crate::usage::AgentUsageWindow>, ExecutorError> {
+    ) -> Result<crate::usage::AgentUsageSnapshot, ExecutorError> {
         let response = self
             .probe_app_server(
                 std::time::Duration::from_secs(30),
@@ -854,26 +854,7 @@ impl Codex {
                 |client| async move { client.get_account_rate_limits().await },
             )
             .await?;
-        Ok(
-            [response.rate_limits.primary, response.rate_limits.secondary]
-                .into_iter()
-                .flatten()
-                .filter(|window| (0..=100).contains(&window.used_percent))
-                .map(|window| crate::usage::AgentUsageWindow {
-                    label: match window.window_duration_mins {
-                        Some(300) => "5h".to_string(),
-                        Some(10080) => "7d".to_string(),
-                        Some(mins) => format!("{mins} min"),
-                        None => "Usage".to_string(),
-                    },
-                    used_percent: f64::from(window.used_percent),
-                    reset_description: window
-                        .resets_at
-                        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
-                        .map(|time| format!("resets {}", time.format("%Y-%m-%d %H:%M UTC"))),
-                })
-                .collect(),
-        )
+        Ok(crate::usage::parse_codex_usage(response))
     }
 
     /// Read a (sub)thread's transcript from a short-lived `codex app-server`.

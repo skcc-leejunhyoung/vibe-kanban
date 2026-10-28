@@ -1,5 +1,6 @@
 {
   "agentUsage": {
+    "resetCredits": "Réinitialisations : {{count}}",
     "session": "5 h",
     "weekly": "Semaine",
     "fable": "Fable",

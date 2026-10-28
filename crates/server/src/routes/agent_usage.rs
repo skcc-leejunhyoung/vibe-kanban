@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use executors::{
     executors::{BaseCodingAgent, CodingAgent},
     profile::{ExecutorConfigs, ExecutorProfileId},
-    usage::AgentUsageWindow,
+    usage::{AgentUsageSnapshot, AgentUsageWindow},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,6 +26,7 @@ static CODEX_USAGE: LazyLock<Mutex<UsageCache>> = LazyLock::new(Default::default
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct AgentUsage {
     pub windows: Vec<AgentUsageWindow>,
+    pub reset_credits: Option<u32>,
     pub updated_at: Option<DateTime<Utc>>,
     pub next_refresh_at: DateTime<Utc>,
     pub unavailable: bool,
@@ -64,7 +65,13 @@ async fn get_usage(
             Some(CodingAgent::ClaudeCode(claude))
                 if !claude.claude_code_router.unwrap_or(false) =>
             {
-                claude.read_account_usage().await
+                claude
+                    .read_account_usage()
+                    .await
+                    .map(|windows| AgentUsageSnapshot {
+                        windows,
+                        reset_credits: None,
+                    })
             }
             Some(CodingAgent::Codex(codex)) if !codex.oss.unwrap_or(false) => {
                 codex.read_account_usage().await
@@ -81,7 +88,7 @@ async fn get_usage(
 async fn cached_usage(
     cache: &Mutex<UsageCache>,
     fingerprint: [u8; 32],
-    fetch: impl Future<Output = Result<Vec<AgentUsageWindow>, ()>>,
+    fetch: impl Future<Output = Result<AgentUsageSnapshot, ()>>,
 ) -> AgentUsage {
     // Hold the per-provider lock through refresh: tabs and tooltips share one probe.
     let mut cache = cache.lock().await;
@@ -101,13 +108,15 @@ async fn cached_usage(
     let now = Utc::now();
     let mut value = cache.value.take().unwrap_or(AgentUsage {
         windows: Vec::new(),
+        reset_credits: None,
         updated_at: None,
         next_refresh_at: now,
         unavailable: false,
     });
     let delay = match result {
-        Ok(windows) if !windows.is_empty() => {
-            value.windows = windows;
+        Ok(usage) if !usage.windows.is_empty() || usage.reset_credits.is_some() => {
+            value.windows = usage.windows;
+            value.reset_credits = usage.reset_credits;
             value.updated_at = Some(now);
             value.unavailable = false;
             cache.failures = 0;
@@ -134,12 +143,15 @@ mod tests {
 
     use super::*;
 
-    fn windows() -> Vec<AgentUsageWindow> {
-        vec![AgentUsageWindow {
-            label: "5h".into(),
-            used_percent: 25.0,
-            reset_description: None,
-        }]
+    fn usage() -> AgentUsageSnapshot {
+        AgentUsageSnapshot {
+            windows: vec![AgentUsageWindow {
+                label: "5h".into(),
+                used_percent: 25.0,
+                reset_description: None,
+            }],
+            reset_credits: Some(2),
+        }
     }
 
     #[tokio::test]
@@ -153,14 +165,15 @@ mod tests {
                 cached_usage(&cache, [0; 32], async {
                     calls.fetch_add(1, Ordering::SeqCst);
                     tokio::task::yield_now().await;
-                    Ok(windows())
+                    Ok(usage())
                 })
                 .await
             }));
         }
         for task in tasks {
             let value = task.await.unwrap();
-            assert_eq!(value.windows, windows());
+            assert_eq!(value.windows, usage().windows);
+            assert_eq!(value.reset_credits, Some(2));
             assert!(!value.unavailable);
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -169,13 +182,14 @@ mod tests {
     #[tokio::test]
     async fn usage_failure_preserves_last_success_and_backs_off() {
         let cache = Mutex::new(UsageCache::default());
-        let initial = cached_usage(&cache, [0; 32], async { Ok(windows()) }).await;
+        let initial = cached_usage(&cache, [0; 32], async { Ok(usage()) }).await;
         for minutes in [15, 30, 60, 60] {
             cache.lock().await.next_attempt = None;
             let value = cached_usage(&cache, [0; 32], async { Err(()) }).await;
             assert!(value.unavailable);
             assert_eq!(value.updated_at, initial.updated_at);
             assert_eq!(value.windows, initial.windows);
+            assert_eq!(value.reset_credits, initial.reset_credits);
             assert!(
                 (minutes * 60 - 2..=minutes * 60)
                     .contains(&(value.next_refresh_at - Utc::now()).num_seconds())
@@ -187,7 +201,7 @@ mod tests {
         }
         cache.lock().await.next_attempt = None;
         assert!(
-            !cached_usage(&cache, [0; 32], async { Ok(windows()) })
+            !cached_usage(&cache, [0; 32], async { Ok(usage()) })
                 .await
                 .unavailable
         );
@@ -197,10 +211,43 @@ mod tests {
     #[tokio::test]
     async fn usage_profile_change_discards_previous_account_and_cooldown() {
         let cache = Mutex::new(UsageCache::default());
-        cached_usage(&cache, [0; 32], async { Ok(windows()) }).await;
+        cached_usage(&cache, [0; 32], async { Ok(usage()) }).await;
         let changed = cached_usage(&cache, [1; 32], async { Err(()) }).await;
         assert!(changed.unavailable);
         assert!(changed.windows.is_empty());
+        assert!(changed.reset_credits.is_none());
         assert!(changed.updated_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn usage_refresh_clears_reset_counts_that_are_no_longer_available() {
+        let cache = Mutex::new(UsageCache::default());
+        cached_usage(&cache, [0; 32], async { Ok(usage()) }).await;
+        for reset_credits in [Some(0), None] {
+            cache.lock().await.next_attempt = None;
+            let value = cached_usage(&cache, [0; 32], async {
+                Ok(AgentUsageSnapshot {
+                    reset_credits,
+                    ..usage()
+                })
+            })
+            .await;
+            assert_eq!(value.reset_credits, reset_credits);
+            assert!(!value.unavailable);
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_accepts_reset_credits_without_a_quota_window() {
+        let cache = Mutex::new(UsageCache::default());
+        let value = cached_usage(&cache, [0; 32], async {
+            Ok(AgentUsageSnapshot {
+                windows: Vec::new(),
+                reset_credits: Some(0),
+            })
+        })
+        .await;
+        assert!(!value.unavailable);
+        assert_eq!(value.reset_credits, Some(0));
     }
 }

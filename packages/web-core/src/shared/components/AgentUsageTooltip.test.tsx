@@ -49,6 +49,7 @@ const usage: AgentUsage = {
     },
   ],
   updated_at: '2026-10-28T01:00:00Z',
+  reset_credits: null,
   next_refresh_at: '2026-10-28T01:05:00Z',
   unavailable: false,
 };
@@ -87,7 +88,7 @@ describe('AgentUsageTooltip', () => {
     expect(html).toContain('18:00');
     expect(html).not.toContain('resets at');
     expect(html).not.toContain('기본 CLI 계정');
-    expect(html).not.toContain('리셋권:');
+    expect(html).not.toContain('리셋권');
     expect(html).not.toContain('조회 ');
     expect(html).not.toContain('재조회');
   });
@@ -95,7 +96,7 @@ describe('AgentUsageTooltip', () => {
   it('does not invent an absent model limit or reset-credit count', () => {
     const html = render({ ...usage, windows: usage.windows.slice(0, 2) });
     expect(html).not.toContain('Fable');
-    expect(html).not.toContain('리셋권:');
+    expect(html).not.toContain('리셋권');
   });
 
   it('keeps the selected host values and stale-data notice', () => {
@@ -127,6 +128,34 @@ describe('AgentUsageTooltip', () => {
     expect(html).toContain('62%');
     expect(html).toContain('2026-11-02 04:48 UTC');
     expect(html).not.toContain('5시간');
-    expect(html).not.toContain('리셋권:');
+    expect(html).not.toContain('리셋권');
+  });
+
+  it.each([0, 2])(
+    'shows a known reset-credit count of %i without extra explanation',
+    (count) => {
+      const html = render(
+        { ...usage, reset_credits: count },
+        BaseCodingAgent.CODEX
+      );
+      expect(html).toContain(`리셋권 ${count}개`);
+      expect(html).not.toContain('미제공');
+      expect(html).not.toContain('재조회');
+    }
+  );
+
+  it('marks cached reset credits as stale even without quota windows', () => {
+    const html = render(
+      {
+        ...usage,
+        windows: [],
+        reset_credits: 2,
+        unavailable: true,
+      },
+      BaseCodingAgent.CODEX
+    );
+    expect(html).toContain('리셋권 2개');
+    expect(html).toContain('이전 값');
+    expect(html).not.toContain('조회 불가');
   });
 });
