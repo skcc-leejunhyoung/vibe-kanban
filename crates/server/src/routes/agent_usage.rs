@@ -27,6 +27,7 @@ static CODEX_USAGE: LazyLock<Mutex<UsageCache>> = LazyLock::new(Default::default
 pub struct AgentUsage {
     pub windows: Vec<AgentUsageWindow>,
     pub reset_credits: Option<u32>,
+    pub reset_credit_expirations: Vec<Option<DateTime<Utc>>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub next_refresh_at: DateTime<Utc>,
     pub unavailable: bool,
@@ -72,6 +73,7 @@ async fn get_usage(
                     .map(|windows| AgentUsageSnapshot {
                         windows,
                         reset_credits: None,
+                        reset_credit_expirations: Vec::new(),
                     })
             }
             Some(CodingAgent::Codex(codex)) if !codex.oss.unwrap_or(false) => {
@@ -110,6 +112,7 @@ async fn cached_usage(
     let mut value = cache.value.take().unwrap_or(AgentUsage {
         windows: Vec::new(),
         reset_credits: None,
+        reset_credit_expirations: Vec::new(),
         updated_at: None,
         next_refresh_at: now,
         unavailable: false,
@@ -118,6 +121,7 @@ async fn cached_usage(
         Ok(usage) if !usage.windows.is_empty() || usage.reset_credits.is_some() => {
             value.windows = usage.windows;
             value.reset_credits = usage.reset_credits;
+            value.reset_credit_expirations = usage.reset_credit_expirations;
             value.updated_at = Some(now);
             value.unavailable = false;
             cache.failures = 0;
@@ -152,6 +156,7 @@ mod tests {
                 reset_description: None,
             }],
             reset_credits: Some(2),
+            reset_credit_expirations: vec![DateTime::from_timestamp(1793299994, 0)],
         }
     }
 
@@ -175,6 +180,10 @@ mod tests {
             let value = task.await.unwrap();
             assert_eq!(value.windows, usage().windows);
             assert_eq!(value.reset_credits, Some(2));
+            assert_eq!(
+                value.reset_credit_expirations,
+                usage().reset_credit_expirations
+            );
             assert!(!value.unavailable);
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -191,6 +200,10 @@ mod tests {
             assert_eq!(value.updated_at, initial.updated_at);
             assert_eq!(value.windows, initial.windows);
             assert_eq!(value.reset_credits, initial.reset_credits);
+            assert_eq!(
+                value.reset_credit_expirations,
+                initial.reset_credit_expirations
+            );
             assert!(
                 (minutes * 60 - 2..=minutes * 60)
                     .contains(&(value.next_refresh_at - Utc::now()).num_seconds())
@@ -217,6 +230,7 @@ mod tests {
         assert!(changed.unavailable);
         assert!(changed.windows.is_empty());
         assert!(changed.reset_credits.is_none());
+        assert!(changed.reset_credit_expirations.is_empty());
         assert!(changed.updated_at.is_none());
     }
 
@@ -229,11 +243,13 @@ mod tests {
             let value = cached_usage(&cache, [0; 32], async {
                 Ok(AgentUsageSnapshot {
                     reset_credits,
+                    reset_credit_expirations: Vec::new(),
                     ..usage()
                 })
             })
             .await;
             assert_eq!(value.reset_credits, reset_credits);
+            assert!(value.reset_credit_expirations.is_empty());
             assert!(!value.unavailable);
         }
     }
@@ -245,6 +261,7 @@ mod tests {
             Ok(AgentUsageSnapshot {
                 windows: Vec::new(),
                 reset_credits: Some(0),
+                reset_credit_expirations: Vec::new(),
             })
         })
         .await;

@@ -1,6 +1,8 @@
 {
   "agentUsage": {
     "resetCredits": "Restablecimientos: {{count}}",
+    "resetCreditsExpire": "{{count}} · caducan {{date}}",
+    "resetCreditsNeverExpire": "{{count}} · sin caducidad",
     "session": "5 h",
     "weekly": "Semanal",
     "fable": "Fable",

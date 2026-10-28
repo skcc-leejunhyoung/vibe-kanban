@@ -1,6 +1,8 @@
 {
   "agentUsage": {
     "resetCredits": "Resets: {{count}}",
+    "resetCreditsExpire": "{{count}} · expires {{date}}",
+    "resetCreditsNeverExpire": "{{count}} · no expiry",
     "session": "5h",
     "weekly": "Weekly",
     "fable": "Fable",

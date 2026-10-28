@@ -1,6 +1,8 @@
 {
   "agentUsage": {
     "resetCredits": "重置次数 {{count}}",
+    "resetCreditsExpire": "{{count}} 次 · {{date}}到期",
+    "resetCreditsNeverExpire": "{{count}} 次 · 永不过期",
     "session": "5 小时",
     "weekly": "每周",
     "fable": "Fable",

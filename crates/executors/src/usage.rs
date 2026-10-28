@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -14,6 +15,7 @@ pub struct AgentUsageWindow {
 pub struct AgentUsageSnapshot {
     pub windows: Vec<AgentUsageWindow>,
     pub reset_credits: Option<u32>,
+    pub reset_credit_expirations: Vec<Option<DateTime<Utc>>>,
 }
 
 pub(crate) fn parse_codex_usage(
@@ -21,7 +23,23 @@ pub(crate) fn parse_codex_usage(
 ) -> AgentUsageSnapshot {
     let reset_credits = response
         .rate_limit_reset_credits
+        .as_ref()
         .and_then(|credits| u32::try_from(credits.available_count).ok());
+    let mut reset_credit_expirations: Vec<_> = response
+        .rate_limit_reset_credits
+        .filter(|_| reset_credits.is_some_and(|count| count > 0))
+        .and_then(|credits| credits.credits)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|credit| {
+            credit.status == codex_app_server_protocol::RateLimitResetCreditStatus::Available
+        })
+        .filter_map(|credit| match credit.expires_at {
+            Some(seconds) => DateTime::from_timestamp(seconds, 0).map(Some),
+            None => Some(None),
+        })
+        .collect();
+    reset_credit_expirations.sort_by_key(|expiration| (expiration.is_none(), *expiration));
     let windows = [response.rate_limits.primary, response.rate_limits.secondary]
         .into_iter()
         .flatten()
@@ -43,6 +61,7 @@ pub(crate) fn parse_codex_usage(
     AgentUsageSnapshot {
         windows,
         reset_credits,
+        reset_credit_expirations,
     }
 }
 
@@ -103,7 +122,10 @@ mod tests {
         assert!(!claude.read_account_usage().await.unwrap().is_empty());
         let codex_usage = codex.read_account_usage().await.unwrap();
         assert!(!codex_usage.windows.is_empty());
-        eprintln!("Codex reset credits: {:?}", codex_usage.reset_credits);
+        eprintln!(
+            "Codex reset credits: {:?}, expirations: {:?}",
+            codex_usage.reset_credits, codex_usage.reset_credit_expirations
+        );
     }
 
     fn result(text: &str) -> serde_json::Value {
@@ -139,6 +161,63 @@ mod tests {
             }))
             .unwrap();
             assert_eq!(parse_codex_usage(response).reset_credits, expected);
+        }
+    }
+
+    fn credit(status: &str, expires_at: Option<i64>) -> serde_json::Value {
+        serde_json::json!({
+            "id": "test-credit", "resetType": "codexRateLimits", "status": status,
+            "grantedAt": 1793000000, "expiresAt": expires_at
+        })
+    }
+
+    #[test]
+    fn codex_usage_keeps_available_credit_expiries_and_distinguishes_no_expiry() {
+        let response = serde_json::from_value(serde_json::json!({
+            "rateLimits": {},
+            "rateLimitResetCredits": { "availableCount": 8, "credits": [
+                credit("available", Some(1794007459)),
+                credit("available", Some(1793299994)),
+                credit("available", Some(1793299994)),
+                credit("available", None),
+                credit("redeemed", Some(1793100000)),
+                credit("redeeming", Some(1793100000)),
+                credit("expired", Some(1793100000)),
+                credit("available", Some(i64::MAX))
+            ] }
+        }))
+        .unwrap();
+        let usage = parse_codex_usage(response);
+        assert_eq!(usage.reset_credits, Some(8));
+        assert_eq!(
+            usage.reset_credit_expirations,
+            vec![
+                DateTime::from_timestamp(1793299994, 0),
+                DateTime::from_timestamp(1793299994, 0),
+                DateTime::from_timestamp(1794007459, 0),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_usage_does_not_invent_expiries_for_unknown_or_unavailable_credits() {
+        for credits in [
+            serde_json::json!({"availableCount": 2}),
+            serde_json::json!({"availableCount": 2, "credits": null}),
+            serde_json::json!({"availableCount": 2, "credits": []}),
+            serde_json::json!({"availableCount": 0, "credits": [credit("available", None)]}),
+            serde_json::json!({"availableCount": -1, "credits": [credit("available", None)]}),
+        ] {
+            let response = serde_json::from_value(serde_json::json!({
+                "rateLimits": {}, "rateLimitResetCredits": credits
+            }))
+            .unwrap();
+            assert!(
+                parse_codex_usage(response)
+                    .reset_credit_expirations
+                    .is_empty()
+            );
         }
     }
 

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { BaseCodingAgent } from 'shared/types';
 import { Tooltip } from '@vibe/ui/components/Tooltip';
 import { agentsApi } from '@/shared/lib/api';
+import { formatDateShortWithTime } from '@/shared/lib/date';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 
@@ -37,6 +38,13 @@ export function AgentUsageTooltip({
     refetchOnWindowFocus: false,
     retry: false,
   });
+  const resetCreditExpirations = new Map<string | null, number>();
+  for (const expiration of data?.reset_credit_expirations ?? []) {
+    resetCreditExpirations.set(
+      expiration,
+      (resetCreditExpirations.get(expiration) ?? 0) + 1
+    );
+  }
   const unavailable = isError || data?.unavailable;
   const label = (value: string) => {
     if (value === 'Current session' || value === '5h')
@@ -85,8 +93,20 @@ export function AgentUsageTooltip({
             </span>
           ))}
           {data?.reset_credits != null && (
-            <span className="text-sm text-low">
-              {t('agentUsage.resetCredits', { count: data.reset_credits })}
+            <span className="flex flex-col gap-1 text-sm text-low">
+              <span>
+                {t('agentUsage.resetCredits', { count: data.reset_credits })}
+              </span>
+              {[...resetCreditExpirations].map(([expiration, count]) => (
+                <span key={expiration ?? 'never'}>
+                  {expiration === null
+                    ? t('agentUsage.resetCreditsNeverExpire', { count })
+                    : t('agentUsage.resetCreditsExpire', {
+                        count,
+                        date: formatDateShortWithTime(expiration),
+                      })}
+                </span>
+              ))}
             </span>
           )}
           {unavailable && (

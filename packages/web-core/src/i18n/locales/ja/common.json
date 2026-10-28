@@ -1,6 +1,8 @@
 {
   "agentUsage": {
     "resetCredits": "リセット {{count}}回",
+    "resetCreditsExpire": "{{count}}回 · {{date}}まで",
+    "resetCreditsNeverExpire": "{{count}}回 · 無期限",
     "session": "5時間",
     "weekly": "週間",
     "fable": "Fable",

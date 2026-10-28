@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { BaseCodingAgent, type AgentUsage } from 'shared/types';
 import common from '@/i18n/locales/ko/common.json';
+import { formatDateShortWithTime } from '@/shared/lib/date';
 import { AgentUsageTooltip } from './AgentUsageTooltip';
 
 vi.mock('@vibe/ui/components/Tooltip', () => ({
@@ -50,6 +51,7 @@ const usage: AgentUsage = {
   ],
   updated_at: '2026-10-28T01:00:00Z',
   reset_credits: null,
+  reset_credit_expirations: [],
   next_refresh_at: '2026-10-28T01:05:00Z',
   unavailable: false,
 };
@@ -150,6 +152,7 @@ describe('AgentUsageTooltip', () => {
         ...usage,
         windows: [],
         reset_credits: 2,
+        reset_credit_expirations: ['2026-10-30T05:00:00Z'],
         unavailable: true,
       },
       BaseCodingAgent.CODEX
@@ -157,5 +160,32 @@ describe('AgentUsageTooltip', () => {
     expect(html).toContain('리셋권 2개');
     expect(html).toContain('이전 값');
     expect(html).not.toContain('조회 불가');
+    expect(html).toContain('만료');
+  });
+
+  it('groups each supplied expiry without replacing the authoritative total', () => {
+    const first = '2026-10-30T05:00:00Z';
+    const second = '2026-11-07T05:00:00Z';
+    const html = render(
+      {
+        ...usage,
+        reset_credits: 8,
+        reset_credit_expirations: [first, first, second, null],
+      },
+      BaseCodingAgent.CODEX
+    );
+    expect(html).toContain('리셋권 8개');
+    expect(html).toContain(`2개 · ${formatDateShortWithTime(first)} 만료`);
+    expect(html).toContain(`1개 · ${formatDateShortWithTime(second)} 만료`);
+    expect(html).toContain('1개 · 만료 없음');
+    expect(html.match(/2개 · /g)).toHaveLength(1);
+  });
+
+  it('does not invent expiry dates when only a reset count is known', () => {
+    const legacyUsage = { ...usage, reset_credits: 2 };
+    Reflect.deleteProperty(legacyUsage, 'reset_credit_expirations');
+    const html = render(legacyUsage, BaseCodingAgent.CODEX);
+    expect(html).toContain('리셋권 2개');
+    expect(html).not.toContain('만료');
   });
 });
