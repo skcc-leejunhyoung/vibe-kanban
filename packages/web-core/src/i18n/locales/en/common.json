@@ -1,15 +1,10 @@
 {
   "agentUsage": {
-    "fable": "Fable weekly limit",
-    "resetCreditsUnavailable": "Limit resets: not provided by /usage",
-    "session": "5-hour limit",
-    "weekly": "Weekly limit (all models)",
-    "hostAccount": "Default CLI account on this host · checked every 5 min",
-    "used": "{{percent}}% used",
-    "updated": "Checked {{time}}",
-    "retryAt": "Retry after {{time}}",
-    "lastKnown": "Showing last known usage. Refresh is temporarily unavailable.",
-    "unavailable": "Usage unavailable. Check CLI sign-in and /usage support."
+    "session": "5h",
+    "weekly": "Weekly",
+    "fable": "Fable",
+    "lastKnown": "Last known",
+    "unavailable": "Unavailable"
   },
   "editorNames": {
     "custom": "Custom"

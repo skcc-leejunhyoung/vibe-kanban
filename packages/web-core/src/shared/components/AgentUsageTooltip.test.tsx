@@ -77,23 +77,25 @@ describe('AgentUsageTooltip', () => {
   it('shows all three independent Claude limits and their reset information', () => {
     const html = render();
     for (const [label, percent] of [
-      ['5시간 제한', 25],
-      ['주간 전체 제한', 60],
-      ['Fable 주간 제한', 90],
+      ['5시간', 25],
+      ['주간', 60],
+      ['Fable', 90],
     ]) {
       expect(html).toContain(`aria-label="${label}"`);
       expect(html).toContain(`aria-valuenow="${percent}"`);
     }
-    expect(html).toContain('resets at 18:00');
-    expect(html).toContain('리셋권: /usage에서 미제공');
-    expect(html).toContain('조회 ');
+    expect(html).toContain('18:00');
+    expect(html).not.toContain('resets at');
+    expect(html).not.toContain('기본 CLI 계정');
+    expect(html).not.toContain('리셋권:');
+    expect(html).not.toContain('조회 ');
+    expect(html).not.toContain('재조회');
   });
 
   it('does not invent an absent model limit or reset-credit count', () => {
     const html = render({ ...usage, windows: usage.windows.slice(0, 2) });
-    expect(html).not.toContain('Fable 주간 제한');
-    expect(html).toContain('리셋권: /usage에서 미제공');
-    expect(html).not.toContain('리셋권: 0');
+    expect(html).not.toContain('Fable');
+    expect(html).not.toContain('리셋권:');
   });
 
   it('keeps the selected host values and stale-data notice', () => {
@@ -102,11 +104,29 @@ describe('AgentUsageTooltip', () => {
       BaseCodingAgent.CLAUDE_CODE,
       'host-b'
     );
-    expect(html).toContain('Fable 주간 제한');
-    expect(html).toContain('마지막으로 확인한 사용량');
+    expect(html).toContain('aria-label="Fable"');
+    expect(html).toContain('이전 값');
   });
 
-  it('does not apply the Claude reset-credit limitation to Codex', () => {
-    expect(render(usage, BaseCodingAgent.CODEX)).not.toContain('리셋권:');
+  it('shows only the weekly window when Codex returns no five-hour limit', () => {
+    const html = render(
+      {
+        ...usage,
+        windows: [
+          {
+            label: '7d',
+            used_percent: 62,
+            reset_description: 'resets 2026-11-02 04:48 UTC',
+          },
+        ],
+      },
+      BaseCodingAgent.CODEX
+    );
+    expect(html.match(/role="progressbar"/g)).toHaveLength(1);
+    expect(html).toContain('aria-label="주간"');
+    expect(html).toContain('62%');
+    expect(html).toContain('2026-11-02 04:48 UTC');
+    expect(html).not.toContain('5시간');
+    expect(html).not.toContain('리셋권:');
   });
 });

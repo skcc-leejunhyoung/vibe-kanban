@@ -1,15 +1,10 @@
 {
   "agentUsage": {
-    "fable": "Fable 每週限額",
-    "resetCreditsUnavailable": "重設次數：/usage 未提供",
-    "session": "5 小時限額",
-    "weekly": "每週總限額",
-    "hostAccount": "此主機的預設 CLI 帳戶 · 每 5 分鐘查詢",
-    "used": "已使用 {{percent}}%",
-    "updated": "查詢於 {{time}}",
-    "retryAt": "{{time}} 後重試",
-    "lastKnown": "顯示上次查詢的用量。暫時無法更新。",
-    "unavailable": "無法取得用量。請檢查 CLI 登入及 /usage 支援。"
+    "session": "5 小時",
+    "weekly": "每週",
+    "fable": "Fable",
+    "lastKnown": "上次資料",
+    "unavailable": "無法查詢"
   },
   "editorNames": {
     "custom": "自訂"

@@ -1,15 +1,10 @@
 {
   "agentUsage": {
-    "fable": "Límite semanal de Fable",
-    "resetCreditsUnavailable": "Restablecimientos: /usage no los proporciona",
-    "session": "Límite de 5 horas",
-    "weekly": "Límite semanal (todos los modelos)",
-    "hostAccount": "Cuenta CLI predeterminada de este host · consulta cada 5 min",
-    "used": "{{percent}}% usado",
-    "updated": "Consultado {{time}}",
-    "retryAt": "Reintento después de {{time}}",
-    "lastKnown": "Se muestra el último uso conocido. No se puede actualizar temporalmente.",
-    "unavailable": "Uso no disponible. Comprueba el inicio de sesión CLI y la compatibilidad con /usage."
+    "session": "5 h",
+    "weekly": "Semanal",
+    "fable": "Fable",
+    "lastKnown": "Último valor",
+    "unavailable": "No disponible"
   },
   "editorNames": {
     "custom": "Personalizado"
