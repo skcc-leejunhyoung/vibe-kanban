@@ -127,6 +127,8 @@ fn generate_types_content() -> String {
         server::routes::oauth::TokenResponse::decl(),
         server::routes::config::UserSystemInfo::decl(),
         server::routes::config::HostAppearance::decl(),
+        server::routes::agent_usage::AgentUsage::decl(),
+        executors::usage::AgentUsageWindow::decl(),
         server::routes::config::Environment::decl(),
         server::routes::config::McpServerQuery::decl(),
         server::routes::config::UpdateMcpServersBody::decl(),

@@ -1,4 +1,14 @@
 {
+  "agentUsage": {
+    "session": "세션 (5시간)",
+    "weekly": "주간 (전체 모델)",
+    "hostAccount": "이 호스트의 기본 CLI 계정 · 5분마다 갱신",
+    "used": "{{percent}}% 사용",
+    "updated": "갱신 {{time}}",
+    "retryAt": "{{time}} 이후 재조회",
+    "lastKnown": "마지막으로 확인한 사용량입니다. 현재 갱신할 수 없습니다.",
+    "unavailable": "사용량을 조회할 수 없습니다. CLI 로그인과 /usage 지원 여부를 확인하세요."
+  },
   "editorNames": {
     "custom": "사용자 지정"
   },

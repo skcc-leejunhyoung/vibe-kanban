@@ -1,9 +1,12 @@
 import { BaseCodingAgent } from 'shared/types';
 import { useTheme, getResolvedTheme } from '@/shared/hooks/useTheme';
+import { AgentUsageTooltip } from './AgentUsageTooltip';
 
 type AgentIconProps = {
   agent: BaseCodingAgent | null | undefined;
   className?: string;
+  showUsage?: boolean;
+  hostId?: string | null;
 };
 
 export function getAgentName(
@@ -32,7 +35,12 @@ export function getAgentName(
   }
 }
 
-export function AgentIcon({ agent, className = 'h-4 w-4' }: AgentIconProps) {
+export function AgentIcon({
+  agent,
+  className = 'h-4 w-4',
+  showUsage = false,
+  hostId,
+}: AgentIconProps) {
   const { theme } = useTheme();
   const resolvedTheme = getResolvedTheme(theme);
   const isDark = resolvedTheme === 'dark';
@@ -77,5 +85,16 @@ export function AgentIcon({ agent, className = 'h-4 w-4' }: AgentIconProps) {
       return null;
   }
 
-  return <img src={iconPath} alt={agentName} className={className} />;
+  const icon = <img src={iconPath} alt={agentName} className={className} />;
+  if (
+    showUsage &&
+    (agent === BaseCodingAgent.CLAUDE_CODE || agent === BaseCodingAgent.CODEX)
+  ) {
+    return (
+      <AgentUsageTooltip agent={agent} name={agentName} hostId={hostId}>
+        {icon}
+      </AgentUsageTooltip>
+    );
+  }
+  return icon;
 }

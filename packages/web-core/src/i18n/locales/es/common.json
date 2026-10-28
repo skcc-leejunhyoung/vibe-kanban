@@ -1,4 +1,14 @@
 {
+  "agentUsage": {
+    "session": "Sesión (5 h)",
+    "weekly": "Semanal (todos los modelos)",
+    "hostAccount": "Cuenta CLI predeterminada de este host · se actualiza cada 5 min",
+    "used": "{{percent}}% usado",
+    "updated": "Actualizado {{time}}",
+    "retryAt": "Reintento después de {{time}}",
+    "lastKnown": "Se muestra el último uso conocido. No se puede actualizar temporalmente.",
+    "unavailable": "Uso no disponible. Comprueba el inicio de sesión CLI y la compatibilidad con /usage."
+  },
   "editorNames": {
     "custom": "Personalizado"
   },

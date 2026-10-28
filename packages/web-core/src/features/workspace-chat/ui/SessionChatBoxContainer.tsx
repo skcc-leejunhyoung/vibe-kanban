@@ -2285,6 +2285,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         }
         renderAgentIcon={(executor, className) => (
           <AgentIcon
+            showUsage
             agent={executor as BaseCodingAgent | null | undefined}
             className={className}
           />
@@ -2352,6 +2353,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       }
       renderAgentIcon={(executor, className) => (
         <AgentIcon
+          showUsage
           agent={executor as BaseCodingAgent | null | undefined}
           className={className}
         />

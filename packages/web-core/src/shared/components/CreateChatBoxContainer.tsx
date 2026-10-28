@@ -629,6 +629,7 @@ export function CreateChatBoxContainer({
                   )}
                   agentIcon={
                     <AgentIcon
+                      showUsage
                       agent={effectiveExecutor}
                       className="size-icon-base"
                     />

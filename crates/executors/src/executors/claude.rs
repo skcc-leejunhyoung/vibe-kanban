@@ -190,6 +190,57 @@ pub struct ClaudeCode {
 }
 
 impl ClaudeCode {
+    pub async fn read_account_usage(
+        &self,
+    ) -> Result<Vec<crate::usage::AgentUsageWindow>, ExecutorError> {
+        let parts = CommandBuilder::new(
+            self.cmd
+                .base_command_override
+                .as_deref()
+                .unwrap_or("claude"),
+        )
+        .params([
+            "-p",
+            "/usage",
+            "--output-format",
+            "json",
+            "--safe-mode",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "--mcp-config",
+            "{\"mcpServers\":{}}",
+            "--no-session-persistence",
+            "--max-budget-usd",
+            "0.000001",
+        ])
+        .build_initial()?;
+        let (program, args) = parts.into_resolved().await?;
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .kill_on_drop(true)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .current_dir(std::env::temp_dir());
+        ExecutionEnv::new(Default::default(), false, String::new())
+            .with_profile(&self.cmd)
+            .apply_to_command(&mut command);
+        command.env_remove("CLAUDECODE");
+        if self.disable_api_key.unwrap_or(false) {
+            command.env_remove("ANTHROPIC_API_KEY");
+        }
+        let output = tokio::time::timeout(Duration::from_secs(30), command.output())
+            .await
+            .map_err(|_| ExecutorError::Io(std::io::Error::other("Claude /usage timed out")))??;
+        if !output.status.success() {
+            return Err(ExecutorError::Io(std::io::Error::other(
+                "Claude /usage unavailable",
+            )));
+        }
+        crate::usage::parse_claude_usage(&output.stdout)
+    }
+
     async fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
         // If base_command_override is provided and claude_code_router is also set, log a warning
         if self.cmd.base_command_override.is_some() && self.claude_code_router.is_some() {

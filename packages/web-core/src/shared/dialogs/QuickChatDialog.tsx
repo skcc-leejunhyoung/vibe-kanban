@@ -860,6 +860,8 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
               )}
               agentIcon={
                 <AgentIcon
+                  showUsage
+                  hostId={selectedHostId}
                   agent={effectiveExecutor}
                   className="size-icon-base"
                 />

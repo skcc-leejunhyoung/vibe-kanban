@@ -1,4 +1,14 @@
 {
+  "agentUsage": {
+    "session": "Session (5h)",
+    "weekly": "Weekly (all models)",
+    "hostAccount": "Default CLI account on this host · refreshes every 5 min",
+    "used": "{{percent}}% used",
+    "updated": "Updated {{time}}",
+    "retryAt": "Retry after {{time}}",
+    "lastKnown": "Showing last known usage. Refresh is temporarily unavailable.",
+    "unavailable": "Usage unavailable. Check CLI sign-in and /usage support."
+  },
   "editorNames": {
     "custom": "Custom"
   },

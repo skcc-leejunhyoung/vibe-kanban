@@ -1,4 +1,14 @@
 {
+  "agentUsage": {
+    "session": "工作階段（5 小時）",
+    "weekly": "每週（所有模型）",
+    "hostAccount": "此主機的預設 CLI 帳戶 · 每 5 分鐘更新",
+    "used": "已使用 {{percent}}%",
+    "updated": "更新於 {{time}}",
+    "retryAt": "{{time}} 後重試",
+    "lastKnown": "顯示上次查詢的用量。暫時無法更新。",
+    "unavailable": "無法取得用量。請檢查 CLI 登入及 /usage 支援。"
+  },
   "editorNames": {
     "custom": "自訂"
   },

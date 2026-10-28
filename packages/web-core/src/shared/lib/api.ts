@@ -32,6 +32,7 @@ import {
   UpdateTag,
   UserSystemInfo,
   HostAppearance,
+  AgentUsage,
   McpServerQuery,
   UpdateMcpServersBody,
   GetMcpServerResponse,
@@ -2844,6 +2845,17 @@ export const scratchApi = {
 
 // Agents API
 export const agentsApi = {
+  getUsage: async (
+    agent: BaseCodingAgent,
+    hostId: string | null
+  ): Promise<AgentUsage> => {
+    const response = await makeHostAwareRequest(
+      `/api/agents/${agent}/usage`,
+      hostId
+    );
+    return handleApiResponse<AgentUsage>(response);
+  },
+
   getDiscoveredOptionsStreamUrl: (
     agent: BaseCodingAgent,
     opts?: {
