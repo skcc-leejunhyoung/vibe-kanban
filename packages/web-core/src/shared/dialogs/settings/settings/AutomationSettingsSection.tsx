@@ -22,7 +22,10 @@ import {
   SettingsSelect,
   SettingsTextarea,
 } from './SettingsComponents';
-import { useSettingsMachineClient } from './SettingsHostContext';
+import {
+  useSettingsHost,
+  useSettingsMachineClient,
+} from './SettingsHostContext';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import {
   AUTOMATION_CONNECTOR_DEFAULTS,
@@ -446,7 +449,7 @@ const AGENT_ACCESS_TOGGLES: {
     key: 'update_config',
     label: 'Update settings',
     helper:
-      'Change preferences, executor profiles, MCP servers and repo scripts.',
+      'Register existing repository checkouts and change preferences, executor profiles, MCP servers and repo scripts (agent_access.update_config).',
   },
   {
     key: 'automation_write',
@@ -458,16 +461,20 @@ const AGENT_ACCESS_TOGGLES: {
 /** Toggles gating what the `vk` CLI and the MCP server may change. */
 function AgentAccessCard() {
   const { t } = useTranslation('settings');
-  const { config, updateAndSaveConfig } = useUserSystem();
+  const { selectedHost } = useSettingsHost();
+  const { config, machineId, loading, updateAndSaveConfig } = useUserSystem();
   const [busy, setBusy] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
   const access = config?.agent_access;
-  if (!access) return null;
   const toggle = async (key: keyof AgentAccessConfig, checked: boolean) => {
+    if (!access) return;
     setBusy(true);
+    setSaveFailed(false);
     try {
-      await updateAndSaveConfig({
+      const saved = await updateAndSaveConfig({
         agent_access: { ...access, [key]: checked },
       });
+      setSaveFailed(!saved);
     } finally {
       setBusy(false);
     }
@@ -477,23 +484,49 @@ function AgentAccessCard() {
       title={t('settings.automation.agentAccess.title', 'Agent access')}
       description={t(
         'settings.automation.agentAccess.description',
-        'What coding agents may change through the vk CLI and the MCP server. Reads are always allowed; a denied call tells the agent which toggle is off and is logged.'
+        'What coding agents may change on the selected host through the vk CLI and the MCP server. These permissions can be viewed and saved even when no Automation Worker is installed or reachable. Reads are always allowed; denied calls identify the required toggle and are logged.'
       )}
     >
-      {AGENT_ACCESS_TOGGLES.map(({ key, label, helper }) => (
-        <SettingsCheckbox
-          key={key}
-          id={`agent-access-${key}`}
-          label={t(`settings.automation.agentAccess.${key}.label`, label)}
-          description={t(
-            `settings.automation.agentAccess.${key}.helper`,
-            helper
+      <p className="text-sm text-low">
+        {t('settings.automation.agentAccess.host', {
+          defaultValue: 'Target host: {{host}} ({{id}})',
+          host: selectedHost?.label,
+          id: machineId ?? selectedHost?.id,
+        })}
+      </p>
+      {!access && (
+        <p className="text-sm text-low" role={loading ? 'status' : 'alert'}>
+          {loading
+            ? t('settings.general.loading')
+            : t(
+                'settings.automation.agentAccess.loadFailed',
+                'Could not load Agent access for this host. Check the host connection and reopen settings.'
+              )}
+        </p>
+      )}
+      {saveFailed && (
+        <p className="text-sm text-error" role="alert">
+          {t(
+            'settings.automation.agentAccess.saveFailed',
+            'Agent access could not be saved on the selected host. Check the host connection and try again.'
           )}
-          checked={access[key]}
-          onChange={(checked) => void toggle(key, checked)}
-          disabled={busy}
-        />
-      ))}
+        </p>
+      )}
+      {access &&
+        AGENT_ACCESS_TOGGLES.map(({ key, label, helper }) => (
+          <SettingsCheckbox
+            key={key}
+            id={`agent-access-${key}`}
+            label={t(`settings.automation.agentAccess.${key}.label`, label)}
+            description={t(
+              `settings.automation.agentAccess.${key}.helper`,
+              helper
+            )}
+            checked={access[key]}
+            onChange={(checked) => void toggle(key, checked)}
+            disabled={busy}
+          />
+        ))}
     </SettingsCard>
   );
 }
@@ -939,6 +972,8 @@ export function AutomationSettingsSection() {
 
   return (
     <div className="space-y-6">
+      <AgentAccessCard key={machineClient?.target.id} />
+
       {error && (
         <div className="rounded-sm border border-error/50 bg-error/10 p-4 text-sm text-error">
           {error}
@@ -949,8 +984,6 @@ export function AutomationSettingsSection() {
           {notice}
         </div>
       )}
-
-      <AgentAccessCard />
 
       {/* Master switch */}
       <SettingsCard

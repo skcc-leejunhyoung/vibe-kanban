@@ -377,14 +377,28 @@ pub fn blocked_config_fields(changed: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Why an agent request is refused under `access`, or `None` to let it through.
-fn denial(decision: Decision, access: &AgentAccessConfig) -> Option<String> {
+/// Why an agent request is refused on this host, or `None` to let it through.
+fn denial(
+    decision: Decision,
+    config: &Config,
+    machine_id: &str,
+    method: &Method,
+    path: &str,
+) -> Option<String> {
     match decision {
         Decision::Allow => None,
         Decision::Forbidden => Some("this operation is not available to agents".to_string()),
-        Decision::Gated(toggle) => (!toggle.enabled(access)).then(|| {
+        Decision::Gated(toggle) => (!toggle.enabled(&config.agent_access)).then(|| {
+            let host = crate::runtime::relay_registration::clean_host_nickname(config, machine_id);
+            let operation = if *method == Method::POST && path.ends_with("/repos") {
+                "repository registration (existing checkout)"
+            } else {
+                "agent operation"
+            };
             format!(
-                "agent_access.{} is off; enable it under Settings → Automation → Agent access",
+                "{operation} ({method} {path}) denied by host {host} (machine ID: {machine_id}): agent_access.{} is off. \
+                 In Settings, select that host → Automation → Agent access and review this toggle. \
+                 Agent access is managed by the host and does not require an Automation Worker.",
                 toggle.key()
             )
         }),
@@ -420,8 +434,9 @@ pub async fn guard_agent_access(
     // The query string is the argument summary; bodies are not read here.
     let query = request.uri().query().unwrap_or("").to_owned();
     let decision = classify(&method, &path, &query, session.parse().ok());
-    let access = deployment.config().read().await.agent_access.clone();
-    let denial = denial(decision, &access);
+    let config = deployment.config().read().await;
+    let denial = denial(decision, &config, deployment.user_id(), &method, &path);
+    drop(config);
     let is_write = !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
     match denial {
         Some(reason) => {
@@ -564,9 +579,43 @@ mod tests {
             ..AgentAccessConfig::default()
         };
         let theirs = register(local, &format!("session_id={other}"), Some(own));
-        assert!(denial(theirs, &off).is_some_and(|reason| reason.contains("control_sessions")));
-        assert_eq!(denial(theirs, &AgentAccessConfig::default()), None);
-        assert_eq!(denial(register(local, &mine, Some(own)), &off), None);
+        let reason = |decision, access: &AgentAccessConfig| {
+            let config = Config {
+                agent_access: access.clone(),
+                ..Config::default()
+            };
+            denial(decision, &config, "test host", &Method::POST, local)
+        };
+        assert!(reason(theirs, &off).is_some_and(|reason| reason.contains("control_sessions")));
+        assert_eq!(reason(theirs, &AgentAccessConfig::default()), None);
+        assert_eq!(reason(register(local, &mine, Some(own)), &off), None);
+    }
+
+    #[test]
+    fn repo_registration_denial_identifies_policy_host_and_required_toggle() {
+        let host = Uuid::new_v4();
+        for path in ["/api/repos".to_string(), format!("/api/host/{host}/repos")] {
+            let decision = gated(Method::POST, &path);
+            assert_eq!(decision, Decision::Gated(Toggle::UpdateConfig));
+            let mut config = Config {
+                host_nickname: Some("i9-mbp".to_string()),
+                ..Config::default()
+            };
+            let reason = denial(decision, &config, "i9", &Method::POST, &path)
+                .expect("repo registration requires update_config even without a worker");
+            for detail in [
+                "repository registration (existing checkout)",
+                "i9-mbp (machine ID: i9)",
+                "agent_access.update_config is off",
+                "select that host",
+                "does not require an Automation Worker",
+                &path,
+            ] {
+                assert!(reason.contains(detail), "{reason}");
+            }
+            config.agent_access.update_config = true;
+            assert_eq!(denial(decision, &config, "i9", &Method::POST, &path), None);
+        }
     }
 
     #[test]
