@@ -110,7 +110,8 @@ export function installArtifactInput(
         'form[data-vibe-form] button,input[type="submit"],[data-vibe-submit],[data-vibe-cancel]'
       )
       .forEach((button) => {
-        button.disabled = !state.editable;
+        if (!disabled.has(button)) disabled.set(button, button.disabled);
+        button.disabled = !state.editable || disabled.get(button)!;
       });
     // A password field cannot opt itself into the ordinary input path.
     fields().forEach((element) => {
@@ -140,10 +141,13 @@ export function installArtifactInput(
     writable: false,
     configurable: false,
   });
-  const submitForm = (form: HTMLFormElement) => {
+  const submitForm = (
+    form: HTMLFormElement,
+    submitter?: HTMLButtonElement | HTMLInputElement
+  ) => {
     if (!form.reportValidity()) return;
     const entries: [string, unknown][] = [];
-    for (const [name, value] of new NativeFormData(form)) {
+    for (const [name, value] of new NativeFormData(form, submitter)) {
       if (typeof value !== 'string') continue;
       const element = form.elements.namedItem(name);
       if (element instanceof HTMLInputElement && !safe(element)) continue;
@@ -165,14 +169,17 @@ export function installArtifactInput(
       });
     send('submit', data);
   };
-  const arm = (form?: HTMLFormElement | null) => {
+  const arm = (
+    form?: HTMLFormElement | null,
+    submitter?: HTMLButtonElement | HTMLInputElement
+  ) => {
     armed = true;
     used = false;
     // Sandboxed documents cannot perform native form navigation. Finish the
     // explicit gesture ourselves, after the artifact's own click handlers.
     later(() => {
       try {
-        if (!used && state.editable && form) submitForm(form);
+        if (!used && state.editable && form) submitForm(form, submitter);
       } finally {
         armed = false;
       }
@@ -228,7 +235,7 @@ export function installArtifactInput(
           registeredForm)
       ) {
         event.preventDefault();
-        arm(registeredForm);
+        arm(registeredForm, button.type === 'submit' ? button : undefined);
       }
     },
     true
@@ -259,7 +266,15 @@ export function installArtifactInput(
       const form = target instanceof Input ? inputForm(target) : null;
       if (form && attribute(form, 'data-vibe-form') !== null) {
         event.preventDefault();
-        arm(form);
+        const submitter =
+          target.type === 'submit'
+            ? target
+            : Array.from(form.elements).find(
+                (element): element is HTMLButtonElement | HTMLInputElement =>
+                  (element instanceof Button || element instanceof Input) &&
+                  element.type === 'submit'
+              );
+        if (!submitter?.disabled) arm(form, submitter);
       }
     },
     true

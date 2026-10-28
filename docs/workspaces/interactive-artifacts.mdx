@@ -80,6 +80,9 @@ objects to 64 properties. The defaults are 4,000 characters per string and 100
 items per array; maximum limits are 16,000 characters and 200 items.
 
 Native named controls submit strings; number/range inputs submit numbers.
+The activated submit button also contributes its name and value. Pressing Enter
+in a text field uses the form's first submit button; a disabled default button
+does not submit.
 Fields registered as arrays always submit arrays, including zero or one selection
 in a multi-select or checkbox group. Repeated names also submit arrays.
 A checkbox with `data-vibe-boolean` submits a boolean

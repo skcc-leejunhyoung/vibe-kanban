@@ -28,6 +28,7 @@ import { formatFileSize } from '@/shared/lib/utils';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { isPendingProcessId } from '@/shared/providers/executionProcessScope';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
+import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import { MermaidDiagram } from '@/shared/components/MermaidDiagram';
 import { PdfPages } from '@/shared/components/PdfPages';
@@ -245,6 +246,26 @@ function InteractiveArtifact({
   disconnected: boolean;
 }) {
   const { t } = useTranslation('common');
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (
+      interaction.handler === 'session.rename' &&
+      interaction.state === 'completed'
+    ) {
+      void queryClient.invalidateQueries({
+        queryKey: workspaceSessionKeys.byWorkspace(
+          scope.workspaceId,
+          scope.hostId
+        ),
+      });
+    }
+  }, [
+    interaction.handler,
+    interaction.state,
+    queryClient,
+    scope.workspaceId,
+    scope.hostId,
+  ]);
   const pinned = { ...artifact, content_hash: interaction.artifact_hash };
   const input = useMemo<ArtifactInputBridge>(
     () => ({
