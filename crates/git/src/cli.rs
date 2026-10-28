@@ -821,36 +821,15 @@ impl GitCli {
         Ok(output.trim().to_string())
     }
 
-    /// List all remotes with their URLs using `git remote -v`.
-    /// Returns a Vec of (name, url) tuples, deduplicated (fetch/push show the same URL).
+    /// List each remote's fetch URL without `remote -v` display annotations.
     pub fn list_remotes(&self, repo_path: &Path) -> Result<Vec<(String, String)>, GitCliError> {
-        let output = self.git(repo_path, ["remote", "-v"])?;
-        let mut seen = std::collections::HashSet::new();
-        let mut remotes = Vec::new();
-
-        for line in output.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // Format: "name\turl (fetch)" or "name\turl (push)"
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 2 {
-                let name = parts[0].to_string();
-                // Remove the " (fetch)" or " (push)" suffix from URL
-                let url = parts[1]
-                    .strip_suffix(" (fetch)")
-                    .or_else(|| parts[1].strip_suffix(" (push)"))
-                    .unwrap_or(parts[1])
-                    .to_string();
-
-                if seen.insert(name.clone()) {
-                    remotes.push((name, url));
-                }
-            }
-        }
-
-        Ok(remotes)
+        self.git(repo_path, ["remote"])?
+            .lines()
+            .map(|name| {
+                self.get_remote_url(repo_path, name)
+                    .map(|url| (name.to_string(), url))
+            })
+            .collect()
     }
 
     // Parse `git diff --name-status` output into structured entries.

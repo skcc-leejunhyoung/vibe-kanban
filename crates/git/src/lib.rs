@@ -2546,6 +2546,36 @@ impl GitService {
         self.fetch_all_from_remote(&repo, &remote)
     }
 
+    /// Prepare a review's missing base ref without changing local branches or checkout.
+    pub fn ensure_remote_branch(
+        &self,
+        repo_path: &Path,
+        remote_name: &str,
+        branch: &str,
+    ) -> Result<(), GitServiceError> {
+        let source = format!("refs/heads/{branch}");
+        let target = format!("refs/remotes/{remote_name}/{branch}");
+        if !Reference::is_valid_name(&source) || !Reference::is_valid_name(&target) {
+            return Err(GitServiceError::InvalidRepository(format!(
+                "Invalid review base ref '{remote_name}/{branch}'"
+            )));
+        }
+        let repo = Repository::open(repo_path)?;
+        repo.find_remote(remote_name)?;
+        match repo.find_reference(&target) {
+            Ok(reference) => {
+                reference.peel_to_commit()?;
+                return Ok(());
+            }
+            Err(e) if e.code() == git2::ErrorCode::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        // Use the remote name so Git retains its partial-clone filter and authentication.
+        GitCli::new().fetch_with_refspec(repo_path, remote_name, &format!("{source}:{target}"))?;
+        repo.find_reference(&target)?.peel_to_commit()?;
+        Ok(())
+    }
+
     /// Fast-forward a local branch to its counterpart on `remote`
     /// (`git pull --ff-only` semantics), without requiring the branch to be
     /// checked out in a worktree. Callers should [`fetch_remote`] first so the

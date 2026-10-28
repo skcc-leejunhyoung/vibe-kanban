@@ -1795,6 +1795,15 @@ async fn create_pr_review_rows(
     .clone();
 
     let target_branch_ref = review_target_branch_ref(&remote.name, &pr.base_branch);
+    deployment
+        .git()
+        .ensure_remote_branch(&repo.path, &remote.name, &pr.base_branch)
+        .map_err(|e| {
+            ApiError::BadRequest(format!(
+                "Repository '{}': could not prepare review base '{target_branch_ref}' from remote '{}'; no review workspace was created: {e}",
+                repo.name, remote.name
+            ))
+        })?;
 
     let workspace_id = Uuid::new_v4();
     let workspace = Workspace::create(
