@@ -53,7 +53,8 @@ miss would never be re-tried.
   leftover misses that already hit the cap. `GET /api/retry-queue` lists items;
   `DELETE /api/retry-queue/<id>` discards one.
 
-> Review PR imports use a stable idempotency key. Other script actions must
+> Review PR imports use a stable client issue ID and recover via GET. Other
+> script actions must
 > provide their own deduplication; a lost issue-create response can otherwise
 > create a duplicate on retry.
 
@@ -78,17 +79,31 @@ miss would never be re-tried.
   still use the primary repository and its existing filter. Other repositories
   are **not monitored**; no organization-wide discovery or credential expansion
   occurs. Edit the list in Settings → Automation → Edit monitored repositories.
-  Imported PRs are tagged `review` in Vibe
-  (the tag is created in the project if missing) and their footer includes a
-  `branch: <head> -> <base>` line (fetched via `GET /repos/.../pulls/{n}`).
+  Imported PRs are tagged `review` in Vibe (the tag is created in the project if
+  missing). Branch metadata is fetched via `GET /repos/.../pulls/{n}`.
   Open review requests are reconciled every poll, including the first poll and
   backfill, independently of the ordinary issue seed, cursor and bounded seen
   sets. Identity is repository + PR number; the source repository and head SHA
   are retained in runtime state and initial issue metadata. Head changes emit
-  `pr_updated` with `previousHeadSha` without creating another issue. Existing
-  structural PR links (including manual recovery) are adopted. Issue creation
-  uses the remote API's stable idempotency key per project + PR URL, independent
-  of the head SHA, to prevent retry/restart duplicates.
+  `pr_updated` with `previousHeadSha` without creating another issue, and update
+  that issue's head metadata. Existing structural PR links (including manual
+  recovery) and prior assigned-PR `issueMap` entries are adopted in the intended
+  project. New review issues use a deterministic client UUID per project + PR
+  URL, independent of head SHA. After a lost create response or server restart,
+  the worker retrieves that UUID instead of depending on a separate running
+  action receipt. The API's existing issue primary key prevents a second row.
+  The actual import action records its destination in `reviewPrTargets`; only
+  those destinations are reconciled. Another project's link cannot suppress an
+  import. Existing rules' discovery side effects are recorded in
+  `reviewPrRuleReceipts` so repair polls do not repeat arbitrary script actions.
+  Missing review tags and structural links are repaired on the existing issue,
+  including a restart between issue creation and link creation. A failed repair
+  remains visible as missing; it is not reported as tracked. Comment/review
+  failures are isolated per repository and never block primary issue polling;
+  unsuccessful activity reads do not advance their repository cursor. Related
+  activity searches use the overlap day's update filter so a large historical
+  authored/reviewed set cannot permanently block current comment collection.
+  Review-request discovery remains independent of issue/update cursors.
   The settings page shows the last reconciliation time, open PRs/heads, missing
   or pending links, pending/exhausted retries, and per-repository errors. Search
   pages are exhausted. If review search is incomplete or hits GitHub's 1000-result

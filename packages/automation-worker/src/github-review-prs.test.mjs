@@ -261,3 +261,20 @@ test('review search falls back beyond the search ceiling or timeout and reads ev
     );
   }
 });
+
+test('an unreadable PR remains visibly missing without skipping later PRs in the repository', async () => {
+  const h = harness();
+  h.args.repositories = [repository];
+  h.args.loadPrs = async () => [{ ...pr, number: 1 }, pr];
+  h.args.loadHead = async (item) => {
+    if (item.number === 1) throw new Error('Head API 503');
+    return head;
+  };
+  const result = await reconcileGithubReviewPrs(h.args);
+  assert.equal(result.complete, false);
+  assert.equal(result.open.length, 2);
+  assert.equal(result.missing.length, 1);
+  assert.equal(result.open[0].headSha, null);
+  assert.equal(result.open[1].status, 'tracked');
+  assert.equal(h.events.length, 1);
+});

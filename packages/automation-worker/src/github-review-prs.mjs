@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   githubIssueRepository,
   githubIssueLinkKey,
@@ -142,6 +143,25 @@ async function listGithubReviewPrs({
   return [...prs.values()];
 }
 
+// The API accepts a client UUID. A lost response or server restart can then be
+// recovered by GET, without a separate non-atomic action receipt.
+export function githubReviewIssueId(projectId, url) {
+  const bytes = createHash('sha256')
+    .update(`${projectId}:${url.toLowerCase()}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x80;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function githubReviewRuleVersion(rule) {
+  return createHash('sha256')
+    .update(JSON.stringify([rule.script, rule.config || {}]))
+    .digest('hex');
+}
+
 // Independent of issue cursors/seed/seenIds: old, newly requested reviews and
 // previously seeded misses are reconciled against actual PR→issue links.
 export async function reconcileGithubReviewPrs({
@@ -162,36 +182,59 @@ export async function reconcileGithubReviewPrs({
     try {
       const prs = await loadPrs(repository);
       for (const pr of prs) {
-        const key = githubIssueLinkKey(pr);
-        const head = await loadHead(pr);
-        const previousHeadSha = heads[key]?.headSha || null;
-        let tracking = await findTracking(pr);
-        const retry = pendingRetry(pr);
-        if (!tracking && !retry) {
-          await emit({ ...pr, ...head, type: 'pr' });
-          processed += 1;
-          tracking = await findTracking(pr);
-        } else if (
-          tracking &&
-          previousHeadSha &&
-          previousHeadSha !== head.headSha
-        ) {
-          await emit({ ...pr, ...head, type: 'pr_updated', previousHeadSha });
+        try {
+          const key = githubIssueLinkKey(pr);
+          const head = await loadHead(pr);
+          const previousHeadSha = heads[key]?.headSha || null;
+          let tracking = await findTracking(pr, head);
+          const retry = pendingRetry(pr);
+          if ((!tracking || tracking.needsDelivery) && !retry) {
+            await emit({ ...pr, ...head, type: 'pr' });
+            processed += 1;
+            tracking = await findTracking(pr, head);
+          }
+          if (tracking && previousHeadSha && previousHeadSha !== head.headSha) {
+            await emit({ ...pr, ...head, type: 'pr_updated', previousHeadSha });
+          }
+          heads[key] = head;
+          for (const target of tracking?.targets || []) {
+            if (target.error)
+              errors.push({
+                repository,
+                number: pr.number,
+                connectorId: target.connectorId,
+                ruleId: target.ruleId,
+                error: target.error,
+              });
+          }
+          rows.push({
+            repository,
+            number: pr.number,
+            url: pr.html_url,
+            ...head,
+            issueId: tracking?.issueId || null,
+            targets: tracking?.targets || [],
+            status: tracking?.linked
+              ? 'tracked'
+              : pendingRetry(pr) || (tracking ? 'link_pending' : 'untracked'),
+          });
+          await persist();
+        } catch (error) {
+          errors.push({
+            repository,
+            number: pr.number,
+            error: String(error.message || error),
+          });
+          rows.push({
+            repository,
+            number: pr.number,
+            url: pr.html_url,
+            headSha: null,
+            issueId: null,
+            status: 'error',
+            error: String(error.message || error),
+          });
         }
-        heads[key] = head;
-        rows.push({
-          repository,
-          number: pr.number,
-          url: pr.html_url,
-          ...head,
-          issueId: tracking?.issueId || null,
-          status: tracking?.linked
-            ? 'tracked'
-            : tracking
-              ? 'link_pending'
-              : pendingRetry(pr) || 'untracked',
-        });
-        await persist();
       }
     } catch (error) {
       errors.push({ repository, error: String(error.message || error) });

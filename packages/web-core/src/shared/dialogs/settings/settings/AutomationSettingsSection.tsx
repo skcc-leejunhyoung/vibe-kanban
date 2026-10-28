@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { GithubReviewScope } from './GithubReviewScope';
 import { useTranslation } from 'react-i18next';
 import type {
   AgentAccessConfig,
@@ -1448,102 +1449,15 @@ export function AutomationSettingsSection() {
 
         {(state?.connectors ?? [])
           .filter((c) => c.type === 'github')
-          .map((c) => {
-            const repositories =
-              Array.isArray(c.config.reviewRepositories) &&
-              c.config.reviewRepositories.length
-                ? c.config.reviewRepositories.map(String)
-                : [`${c.config.owner}/${c.config.repo}`];
-            const reconciliation = c.config.reviewPrReconciliation as
-              | {
-                  checkedAt: string;
-                  complete: boolean;
-                  open: Array<{
-                    repository: string;
-                    number: number;
-                    headSha: string;
-                  }>;
-                  missing: Array<{
-                    repository: string;
-                    number: number;
-                    status: string;
-                  }>;
-                  errors: Array<{ repository: string; error: string }>;
-                }
-              | undefined;
-            return (
-              <div
-                key={c.id}
-                className="space-y-2 rounded-sm border border-border p-3 text-sm"
-              >
-                <div className="font-medium text-normal">{c.name}</div>
-                <p>
-                  {t(
-                    'settings.automation.reviewScope',
-                    'Review requests monitored: {{repositories}}',
-                    {
-                      repositories:
-                        state?.enabled && c.enabled && c.config.reviewPrs
-                          ? repositories.join(', ')
-                          : t(
-                              'settings.automation.reviewScopeNone',
-                              'None (disabled)'
-                            ),
-                    }
-                  )}
-                </p>
-                <p className="text-low">
-                  {t(
-                    'settings.automation.reviewScopeWarning',
-                    'Repositories outside this list are not monitored for review requests. Assigned issue filters apply only to the primary repository. Add a repository below using the existing credential; no organization-wide access is requested.'
-                  )}
-                </p>
-                <PrimaryButton
-                  variant="secondary"
-                  value={t(
-                    'settings.automation.editReviewScope',
-                    'Edit monitored repositories'
-                  )}
-                  onClick={() => editConnector(c)}
-                  disabled={busy}
-                />
-                {reconciliation && (
-                  <div className="space-y-1 text-low">
-                    <p>
-                      {t(
-                        'settings.automation.reviewReconciliation',
-                        'Last review check: {{checkedAt}} · Open: {{open}} · Untracked or unlinked: {{missing}} · Complete: {{complete}}',
-                        {
-                          checkedAt: reconciliation.checkedAt,
-                          open: reconciliation.open.length,
-                          missing: reconciliation.missing.length,
-                          complete: String(reconciliation.complete),
-                        }
-                      )}
-                    </p>
-                    {reconciliation.open.map((pr) => (
-                      <p key={`${pr.repository}#${pr.number}`}>
-                        {pr.repository}#{pr.number} · {pr.headSha.slice(0, 12)}
-                      </p>
-                    ))}
-                    {reconciliation.missing.map((pr) => (
-                      <p
-                        className="text-warning"
-                        key={`${pr.repository}#${pr.number}`}
-                      >
-                        {pr.repository}#{pr.number} · {pr.status}
-                      </p>
-                    ))}
-                    {reconciliation.errors.map((error) => (
-                      <p className="text-warning" key={error.repository}>
-                        {error.repository}: {error.error}
-                      </p>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          .map((c) => (
+            <GithubReviewScope
+              key={c.id}
+              connector={c}
+              workerEnabled={state?.enabled ?? false}
+              busy={busy}
+              onEdit={editConnector}
+            />
+          ))}
 
         {connector && (
           <div className="space-y-4 rounded-sm border border-border p-4">

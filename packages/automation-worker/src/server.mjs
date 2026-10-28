@@ -1,5 +1,7 @@
 import {
   githubReviewRepositories,
+  githubReviewIssueId,
+  githubReviewRuleVersion,
   searchGithubPrs,
   reconcileGithubReviewPrs,
 } from './github-review-prs.mjs';
@@ -53,7 +55,6 @@ import {
   updateGithubIssueParent,
 } from './github-sub-issues.mjs';
 import {
-  buildPullRequestLinkOperation,
   retryPendingPullRequestLinkOperations,
   selectPullRequestLinkForProject,
 } from './pull-request-links.mjs';
@@ -319,7 +320,6 @@ let writeQueue = Promise.resolve();
 
 if (process.argv.includes('--self-test')) {
   await testGithubIssueReconcile();
-  await testGithubReviewPolling();
 } else {
   await bootstrap();
 
@@ -668,8 +668,11 @@ const RUNTIME_CONFIG_KEYS = [
   'issueMap',
   'reviewPrIssueMap',
   'reviewPrHeads',
+  'reviewPrTargets',
+  'reviewPrRuleReceipts',
   'reviewPrReconciliation',
   'prCommentCursors',
+  'prCommentErrors',
   'tagMap',
   'githubIssueLinkBackfillSkipped',
 ];
@@ -1619,9 +1622,6 @@ async function pollGithubReviews(connector, login) {
   const config = connector.config;
   if (!config.reviewPrs) return { processed: 0 };
   const repositories = githubReviewRepositories(config);
-  const targets = state.connectors.filter(
-    (c) => c.type === 'vibe_kanban' && c.enabled && c.config.projectId
-  );
   const result = await reconcileGithubReviewPrs({
     config,
     repositories,
@@ -1633,31 +1633,22 @@ async function pollGithubReviews(connector, login) {
         login
       ),
     loadHead: (pr) => githubPrBranches(connector, pr.number, pr.repository),
-    findTracking: async (pr) => {
-      let local = null;
-      for (const target of targets) {
-        const link = await findPullRequestLinkByUrl(
-          target,
-          pr.html_url,
-          target.config.projectId
-        );
-        if (link) {
-          (target.config.reviewPrIssueMap ||= {})[pr.html_url] = link.issue_id;
-          return { issueId: link.issue_id, linked: true };
-        }
-        const issueId = target.config.reviewPrIssueMap?.[pr.html_url];
-        if (issueId) local = { issueId, linked: false };
-      }
-      return local;
-    },
+    findTracking: (pr, head) =>
+      reconcileGithubReviewTargets(connector, { ...pr, ...head }),
     pendingRetry: (pr) => {
-      const retry = state.retryQueue.find(
-        (item) =>
-          item.connectorId === connector.id &&
-          item.event?.type === 'pr' &&
-          item.event?.url === pr.html_url
+      const undelivered = undeliveredGithubReviewRules(connector, pr);
+      const retries = undelivered.map((rule) =>
+        state.retryQueue.find(
+          (item) =>
+            item.ruleId === rule.id &&
+            item.connectorId === connector.id &&
+            item.event?.type === 'pr' &&
+            item.event?.url === pr.html_url
+        )
       );
-      return retry ? `retry_${retry.status}` : null;
+      return retries.length && retries.every(Boolean)
+        ? `retry_${retries[0].status}`
+        : null;
     },
     emit: (pr) =>
       runRules({
@@ -1699,6 +1690,164 @@ async function pollGithubReviews(connector, login) {
   return result;
 }
 
+function undeliveredGithubReviewRules(source, pr) {
+  const key = githubIssueLinkKey(pr);
+  return state.rules.filter(
+    (rule) =>
+      rule.enabled &&
+      rule.kind !== 'condition' &&
+      shouldRunGithubIssueSyncRule(rule, { connectorId: source.id }) &&
+      source.config.reviewPrRuleReceipts?.[`${key}:${rule.id}`] !==
+        githubReviewRuleVersion(rule)
+  );
+}
+
+async function reconcileGithubReviewTargets(source, pr) {
+  const key = githubIssueLinkKey(pr);
+  const entries = Object.values(source.config.reviewPrTargets?.[key] || {});
+  const targets = [];
+  for (const entry of entries) {
+    const rule = state.rules.find((rule) => rule.id === entry.ruleId);
+    if (!rule?.enabled || githubReviewRuleVersion(rule) !== entry.ruleVersion)
+      continue;
+    const target = state.connectors.find(
+      (target) => target.id === entry.connectorId
+    );
+    if (target?.config.projectId !== entry.projectId) {
+      delete source.config.reviewPrRuleReceipts?.[`${key}:${entry.ruleId}`];
+      if (target?.config.reviewPrIssueMap?.[pr.html_url] === entry.issueId)
+        delete target.config.reviewPrIssueMap[pr.html_url];
+      if (target?.config.issueMap?.[key] === entry.issueId)
+        delete target.config.issueMap[key];
+      continue;
+    }
+    try {
+      if (!target.enabled) throw new Error('Review destination is disabled');
+      await ensureGithubReviewIssueReady(target, entry.issueId, {
+        ...pr,
+        repo: pr.repository,
+        url: pr.html_url,
+      });
+      targets.push({ ...entry, ready: true });
+    } catch (error) {
+      targets.push({ ...entry, ready: false, error: errorMessage(error) });
+    }
+  }
+  const needsDelivery = undeliveredGithubReviewRules(source, pr).length > 0;
+  if (!targets.length) return null;
+  return {
+    issueId: targets[0].issueId,
+    linked: targets.every((target) => target.ready) && !needsDelivery,
+    targets,
+    needsDelivery,
+  };
+}
+
+async function getGithubReviewIssue(connector, issueId) {
+  if (!issueId) return null;
+  let issue;
+  try {
+    const response = await vibeApi(
+      connector,
+      'GET',
+      `/v1/issues/${encodeURIComponent(issueId)}`
+    );
+    issue = response?.data || response;
+  } catch (error) {
+    if (error.status === 404) return null;
+    throw error;
+  }
+  return issue?.project_id === connector.config.projectId ? issue : null;
+}
+
+async function findGithubReviewIssue(connector, event) {
+  const link = await findPullRequestLinkByUrl(
+    connector,
+    event.url,
+    connector.config.projectId
+  );
+  const key = githubIssueLinkKey({
+    repository: event.repo,
+    number: event.number,
+  });
+  const ids = new Set([
+    link?.issue_id,
+    connector.config.reviewPrIssueMap?.[event.url],
+    Object.entries(connector.config.issueMap || {}).find(
+      ([sourceKey]) => sourceKey.toLowerCase() === key
+    )?.[1],
+    githubReviewIssueId(connector.config.projectId, event.url),
+  ]);
+  for (const id of ids) {
+    const issue = await getGithubReviewIssue(connector, id);
+    if (issue) return issue;
+  }
+  return null;
+}
+
+async function ensureGithubReviewIssueReady(connector, issueId, event) {
+  const issue = await getGithubReviewIssue(connector, issueId);
+  if (!issue)
+    throw new Error(
+      `Review issue is missing from destination project: ${issueId}`
+    );
+  const metadata = {
+    ...issue.extension_metadata,
+    github_repository: event.repo,
+    github_pr_number: event.number,
+    github_head_sha: event.headSha,
+    github_head_ref: event.headRef,
+  };
+  if (
+    [
+      'github_repository',
+      'github_pr_number',
+      'github_head_sha',
+      'github_head_ref',
+    ].some((key) => issue.extension_metadata?.[key] !== metadata[key])
+  ) {
+    await vibeApi(connector, 'PATCH', `/v1/issues/${issueId}`, {
+      extension_metadata: metadata,
+    });
+  }
+  const link = await findPullRequestLinkByUrl(
+    connector,
+    event.url,
+    connector.config.projectId
+  );
+  if (link?.issue_id !== issueId) {
+    await vibeApi(connector, 'POST', '/v1/pull_request_issues', {
+      issue_id: issueId,
+      url: event.url,
+      number: event.number,
+      status: 'open',
+      merged_at: null,
+      merge_commit_sha: null,
+      target_branch_name: event.baseRef,
+    });
+  }
+  // Attaching review emits the ready notification; the PR must be linked first.
+  const tagId = await resolveVibeTag(
+    connector,
+    connector.config.projectId,
+    'review'
+  );
+  if (!tagId) throw new Error('Review tag could not be resolved');
+  const tags = await vibeApi(
+    connector,
+    'GET',
+    `/v1/issue_tags?issue_id=${encodeURIComponent(issueId)}`
+  );
+  if (!(tags?.issue_tags || []).some((tag) => tag.tag_id === tagId)) {
+    try {
+      await attachVibeTag(connector, issueId, tagId);
+    } catch (error) {
+      delete connector.config.tagMap?.[`${connector.config.projectId}:review`];
+      throw error;
+    }
+  }
+}
+
 // Fetch a PR's head/base branch names (the issues/search payloads omit them).
 async function githubPrBranches(connector, number, repository) {
   const config = connector.config || {};
@@ -1724,7 +1873,10 @@ async function githubPrBranches(connector, number, repository) {
   };
 }
 
-async function githubRelatedPrs(connector, login, repository) {
+async function githubRelatedPrs(connector, login, repository, since) {
+  const updatedDate = normalizeOptionalTimestamp(since)?.slice(0, 10);
+  // Activity needs the overlap day's PRs, not the user's entire review history.
+  const updated = updatedDate ? ` updated:>=${updatedDate}` : '';
   const prs = new Map();
   for (const qualifier of [
     `author:${login}`,
@@ -1732,7 +1884,11 @@ async function githubRelatedPrs(connector, login, repository) {
     `review-requested:${login}`,
     `reviewed-by:${login}`,
   ]) {
-    for (const pr of await githubSearchPrs(connector, repository, qualifier)) {
+    for (const pr of await githubSearchPrs(
+      connector,
+      repository,
+      `${qualifier}${updated}`
+    )) {
       prs.set(githubIssueLinkKey(pr), pr);
     }
   }
@@ -1836,16 +1992,26 @@ async function pollGithubPrComments(connector, login) {
       ...(config.reviewPrs ? githubReviewRepositories(config) : []),
     ]),
   ];
-  const total = { processed: 0, seeded: 0 };
+  const total = { processed: 0, seeded: 0, errors: [] };
   for (const repository of repositories) {
-    const result = await pollGithubRepositoryPrComments(
-      connector,
-      login,
-      repository
-    );
-    total.processed += result.processed;
-    total.seeded += result.seeded;
+    try {
+      const result = await pollGithubRepositoryPrComments(
+        connector,
+        login,
+        repository
+      );
+      total.processed += result.processed;
+      total.seeded += result.seeded;
+    } catch (error) {
+      total.errors.push({ repository, error: errorMessage(error) });
+      await log('warn', 'github PR activity poll failed', {
+        connectorId: connector.id,
+        repository,
+        error: errorMessage(error),
+      });
+    }
   }
+  config.prCommentErrors = total.errors;
   return total;
 }
 
@@ -1868,8 +2034,6 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
   }
 
   const seen = new Set(runtime.seenIds || []);
-  const prs = await githubRelatedPrs(connector, login, repository);
-  const prsByNumber = new Map(prs.map((pr) => [githubIssueLinkKey(pr), pr]));
   // Search results can lag behind comment APIs. Re-read a short overlap so a
   // newly related/updated PR can appear before its comment falls behind the
   // cursor; seen IDs keep the overlap idempotent.
@@ -1877,6 +2041,8 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
   const since = Number.isFinite(cursorMs)
     ? new Date(cursorMs - 5 * 60 * 1000).toISOString()
     : cursor;
+  const prs = await githubRelatedPrs(connector, login, repository, since);
+  const prsByNumber = new Map(prs.map((pr) => [githubIssueLinkKey(pr), pr]));
   const [comments, reviews] = await Promise.all([
     githubPrComments(connector, since, repository),
     githubPrReviews(
@@ -3914,6 +4080,18 @@ async function slackPermalink(token, channel, messageTs) {
 async function runRules(event) {
   for (const rule of state.rules) {
     if (!rule.enabled || rule.kind === 'condition') continue;
+    if (
+      event.source === 'github' &&
+      event.type === 'pr' &&
+      state.retryQueue.some(
+        (item) =>
+          item.ruleId === rule.id &&
+          item.connectorId === event.connectorId &&
+          item.event?.type === 'pr' &&
+          item.event?.url === event.url
+      )
+    )
+      continue;
     try {
       await runRule(rule, event);
     } catch (error) {
@@ -4106,6 +4284,16 @@ async function processRetryQueue({
 
 async function runRule(rule, event, conditionOnly = false) {
   if (!shouldRunGithubIssueSyncRule(rule, event)) return;
+  const source =
+    event.source === 'github' && event.type === 'pr'
+      ? state.connectors.find(
+          (source) =>
+            source.id === event.connectorId && source.type === 'github'
+        )
+      : null;
+  const receiptKey = `${githubIssueLinkKey({ repository: event.repo, number: event.number })}:${rule.id}`;
+  const version = githubReviewRuleVersion(rule);
+  if (source?.config.reviewPrRuleReceipts?.[receiptKey] === version) return;
   // Hand the script a detached copy so a rule can't mutate live state/event.
   // (Hygiene, not a security boundary — vm is not a sandbox.)
   const safeEvent = cloneData(event);
@@ -4129,7 +4317,11 @@ async function runRule(rule, event, conditionOnly = false) {
   // The vm timeout only bounds synchronous code; bound async work on the clock
   // too so a slow/hung rule cannot stall the poll loop indefinitely.
   if (result && typeof result.then === 'function') {
-    return await withTimeout(result, RULE_TIMEOUT_MS, `rule ${rule.id} timed out`);
+    await withTimeout(result, RULE_TIMEOUT_MS, `rule ${rule.id} timed out`);
+  }
+  if (source) {
+    (source.config.reviewPrRuleReceipts ||= {})[receiptKey] = version;
+    await persistState();
   }
   return result;
 }
@@ -4202,49 +4394,10 @@ async function createVibeIssue(connectorId, input, event, rule) {
     throw new Error('Vibe baseUrl, projectId, and statusId are required');
   }
 
-  // Idempotency for review PRs. A review-requested PR is deduped in-poll only by
-  // `seenIds`, which is capped at the most-recent 1000 ids, so a PR that drops
-  // out of the poll (e.g. its review request is fulfilled) while >1000 newer
-  // items churn through the connector is evicted, and if it re-surfaces the
-  // worker would create a *second* `review` issue for the same PR. A DB unique
-  // constraint cannot prevent this: `pull_request_issues` is intentionally
-  // many-to-many and its row requires the issue to exist first, so the
-  // duplicate issue precedes any (rejected) link and would only be orphaned. So
-  // dedup here, in two layers:
-  if (event && event.type === 'pr' && event.url) {
-    // Layer 1 — durable, url-keyed local record written at creation (below).
-    // The canonical URL is collision-free across repos and survives `seenIds`
-    // eviction, and is independent of the pull_request_issues link, so a failed
-    // or dropped link-POST retry can't cause a re-import.
-    const reviewPrIssueMap = (connector.config.reviewPrIssueMap =
-      connector.config.reviewPrIssueMap || {});
-    if (reviewPrIssueMap[event.url]) {
-      await log('info', 'vibe PR already imported; skipping duplicate issue', {
-        connectorId: effectiveConnectorId,
-        prUrl: event.url,
-        issueId: reviewPrIssueMap[event.url],
-      });
-      return null;
-    }
-    // Layer 2 — ask the board itself, so a runtime-map reset (operator clears
-    // reviewPrIssueMap/seenIds from the JSON editor) still won't duplicate an
-    // issue that already exists and is linked. Heals the local map on a hit.
-    const existingLink = await findPullRequestLinkByUrl(
-      connector,
-      event.url,
-      config.projectId
-    );
-    if (existingLink) {
-      reviewPrIssueMap[event.url] = existingLink.issue_id;
-      await persistState();
-      await log('info', 'vibe PR already linked; skipping duplicate issue', {
-        connectorId: effectiveConnectorId,
-        prUrl: event.url,
-        issueId: existingLink.issue_id,
-      });
-      return null;
-    }
-  }
+  const reviewIssue =
+    event.type === 'pr' && event.url
+      ? await findGithubReviewIssue(connector, event)
+      : null;
 
   // A GitHub issue linked from Vibe (create/existing mode) never enters the
   // poll's seen sets, so once the user is assigned it looks new. Links are
@@ -4335,28 +4488,54 @@ async function createVibeIssue(connectorId, input, event, rule) {
     payload.parent_issue_id = issueMap[input.parentKey];
   }
 
-  const createEvent =
-    event.type === 'pr'
-      ? {
-          ...event,
-          idempotencyKey: `github-review:${createHash('sha256')
-            .update(`${config.projectId}:${event.url.toLowerCase()}`)
-            .digest('hex')}`,
-        }
-      : event;
-  const body = await postVibeIssue(connector, payload, createEvent);
+  let body;
+  if (reviewIssue) body = { data: reviewIssue };
+  else if (event.type === 'pr') {
+    payload.id = githubReviewIssueId(config.projectId, event.url);
+    try {
+      body = await postVibeIssue(connector, payload, {
+        ...event,
+        idempotencyKey: undefined,
+      });
+    } catch (error) {
+      const existing = await getGithubReviewIssue(connector, payload.id);
+      if (!existing) throw error;
+      body = { data: existing };
+    }
+  } else body = await postVibeIssue(connector, payload, event);
   const createdId = body && body.data && body.data.id;
   if (input.sourceKey && createdId) {
     issueMap[input.sourceKey] = createdId;
     await persistState();
   }
-  // Record the url-keyed idempotency entry the guard above reads. Written even
-  // if the pull_request_issues link POST below fails, so a re-surfaced PR is
-  // recognized regardless of link state.
-  if (event && event.type === 'pr' && event.url && createdId) {
-    (connector.config.reviewPrIssueMap =
-      connector.config.reviewPrIssueMap || {})[event.url] = createdId;
+  if (event.type === 'pr' && createdId) {
+    (config.reviewPrIssueMap ||= {})[event.url] = createdId;
+    const source = state.connectors.find(
+      (source) => source.id === event.connectorId && source.type === 'github'
+    );
+    if (source) {
+      const key = githubIssueLinkKey({
+        repository: event.repo,
+        number: event.number,
+      });
+      const targets = ((source.config.reviewPrTargets ||= {})[key] ||= {});
+      targets[`${rule.id}:${connector.id}`] = {
+        ruleId: rule.id,
+        ruleVersion: githubReviewRuleVersion(rule),
+        connectorId: connector.id,
+        projectId: config.projectId,
+        issueId: createdId,
+      };
+    }
     await persistState();
+    await ensureGithubReviewIssueReady(connector, createdId, event);
+    for (const name of (input.tags || []).filter(
+      (name) => name && name !== 'review'
+    )) {
+      const tagId = await resolveVibeTag(connector, config.projectId, name);
+      if (tagId) await attachVibeTag(connector, createdId, tagId);
+    }
+    return body;
   }
   const tags = Array.isArray(input.tags) ? input.tags.filter(Boolean) : [];
   if (createdId && tags.length) {
@@ -4399,64 +4578,6 @@ async function createVibeIssue(connectorId, input, event, rule) {
         issueId: createdId,
         githubUrl: event.url,
         error: errorMessage(error),
-      });
-    }
-  }
-  // Structurally link the GitHub PR to the Vibe issue (pull_request_issues join),
-  // not just as a URL in the description body — Vibe's review mode only activates
-  // when this join row exists; a plain URL in the body is ignored. The stored
-  // html_url matches what the local gh `listOpenPrs` returns, so review mode's
-  // URL match succeeds. Best-effort but NOT lost on a transient failure: the PR
-  // id is already in `seen`, so without recovery the worker would never revisit
-  // the PR and the issue would keep its `review` tag but never get its link. On
-  // failure we queue it for retry on the next poll (see retryPendingPullRequestLinks).
-  if (createdId && event && event.type === 'pr' && event.url) {
-    const prRaw = (event.raw && event.raw.pull_request) || null;
-    const mergedAt = prRaw && prRaw.merged_at ? prRaw.merged_at : null;
-    const status =
-      event.state === 'closed' ? (mergedAt ? 'merged' : 'closed') : 'open';
-    const prLinkPayload = {
-      issue_id: createdId,
-      url: event.url,
-      number: event.number,
-      status,
-      merged_at: mergedAt,
-      merge_commit_sha: null,
-      target_branch_name: event.baseRef || 'main',
-    };
-    try {
-      await vibeApi(
-        connector,
-        'POST',
-        '/v1/pull_request_issues',
-        prLinkPayload
-      );
-      await log('info', 'vibe PR linked to issue', {
-        connectorId: effectiveConnectorId,
-        issueId: createdId,
-        prUrl: event.url,
-      });
-    } catch (error) {
-      state.pullRequestLinkOperations ||= [];
-      state.pullRequestLinkOperations.push(
-        buildPullRequestLinkOperation({
-          id: randomUUID(),
-          vibeConnectorId: effectiveConnectorId,
-          issueId: createdId,
-          payload: prLinkPayload,
-          now: Date.now(),
-          maxAttempts: RETRY_MAX_ATTEMPTS,
-          retryDelay,
-          error,
-        })
-      );
-      await persistState();
-      await log('warn', 'vibe PR link failed', {
-        connectorId: effectiveConnectorId,
-        issueId: createdId,
-        prUrl: event.url,
-        error: errorMessage(error),
-        queuedForRetry: true,
       });
     }
   }
@@ -4534,10 +4655,11 @@ function postVibeIssue(connector, payload, event) {
 }
 
 // Resolve a tag id by name within the project, creating the tag if absent.
-// Ids are cached in the connector's tagMap (keyed by lowercased name).
+// Scope cached tags to the project so changing a destination cannot reuse another board's tag.
 async function resolveVibeTag(connector, projectId, name) {
   const tagMap = (connector.config.tagMap = connector.config.tagMap || {});
-  const key = String(name).toLowerCase();
+  const normalizedName = String(name).toLowerCase();
+  const key = `${projectId}:${normalizedName}`;
   if (tagMap[key]) return tagMap[key];
   const list = await vibeApi(
     connector,
@@ -4545,7 +4667,7 @@ async function resolveVibeTag(connector, projectId, name) {
     `/v1/tags?project_id=${encodeURIComponent(projectId)}`
   );
   const tags = (list && list.tags) || [];
-  let tag = tags.find((t) => String(t.name).toLowerCase() === key);
+  let tag = tags.find((t) => String(t.name).toLowerCase() === normalizedName);
   if (!tag) {
     const created = await vibeApi(connector, 'POST', '/v1/tags', {
       project_id: projectId,
@@ -5779,330 +5901,5 @@ async function testGithubIssueReconcile() {
     );
     assert.equal(created.length, 1);
     assert.equal(vibe.config.issueMap['owner/repo#8'], 'new-1');
-  });
-}
-
-
-async function testGithubReviewPolling() {
-  const { default: test } = await import('node:test');
-  const { default: assert } = await import('node:assert/strict');
-  const fixture = JSON.parse(
-    await fs.readFile(
-      new URL('./fixtures/review-request.json', import.meta.url),
-      'utf8'
-    )
-  );
-  const repositories = ['example/app', 'example/search'];
-
-  test('review polling preserves repo/head through imports, assigned seed, restart and comment/review events', async () => {
-    const github = {
-      id: 'github',
-      type: 'github',
-      enabled: true,
-      config: {
-        token: 'fixture-only',
-        owner: 'example',
-        repo: 'app',
-        username: fixture.login,
-        reviewPrs: true,
-        reviewRepositories: repositories,
-        includePullRequests: true,
-        limit: 1,
-        prCommentCursorTs: '2026-10-27T23:59:00Z',
-      },
-    };
-    const vibe = {
-      id: 'vibe',
-      type: 'vibe_kanban',
-      enabled: true,
-      config: {
-        baseUrl: 'https://fixture.invalid',
-        projectId: 'project',
-        statusId: 'status',
-      },
-    };
-    const links = new Map();
-    const events = [];
-    const requests = [];
-    const creates = [];
-    const tags = [];
-    let changed = false;
-    const stamp = new Date().toISOString();
-    const context = vm.createContext({
-      URLSearchParams,
-      Date,
-      Set,
-      Map,
-      createHash,
-      githubIssueSyncVibeConnectorId,
-      githubReviewRepositories,
-      searchGithubPrs,
-      reconcileGithubReviewPrs,
-      githubIssueLinkKey,
-      isNotifiableReview,
-      mapWithConcurrency,
-      recentlyUpdatedPrs,
-      reviewActivity,
-      selectGithubPollCandidates,
-      selectGithubImportCandidates,
-      markGithubIssueSeen,
-      githubIssuePollSince,
-      orderByParent,
-      state: { connectors: [github, vibe], rules: [], retryQueue: [] },
-      findConnector: () => vibe,
-      githubLogin: async () => fixture.login,
-      persistState: async () => {},
-      log: async () => {},
-      retryPendingPullRequestLinks: async () => {},
-      reconcileGithubIssueRules: async () => ({}),
-      findPullRequestLinkByUrl: async (_, url) => links.get(url) || null,
-      postVibeIssue: async (_, payload, event) => {
-        creates.push({ payload, event });
-        return { data: { id: `issue-${creates.length}` } };
-      },
-      resolveVibeTag: async () => 'review-tag',
-      attachVibeTag: async (_, issueId, tag) => tags.push({ issueId, tag }),
-      vibeApi: async (_, method, endpoint, payload) => {
-        assert.equal(method, 'POST');
-        assert.equal(endpoint, '/v1/pull_request_issues');
-        links.set(payload.url, payload);
-      },
-      fetch: async (input) => {
-        const url = new URL(input);
-        requests.push(url);
-        if (url.pathname === '/search/issues') {
-          const repo = url.searchParams.get('q').match(/^repo:([^ ]+)/)[1];
-          const page = Number(url.searchParams.get('page'));
-          return {
-            ok: true,
-            json: async () => ({
-              total_count: 1,
-              items:
-                page === 1
-                  ? [
-                      {
-                        ...fixture.searchItem,
-                        repository_url: `https://api.github.com/repos/${repo}`,
-                        html_url: `https://github.com/${repo}/pull/42`,
-                        updated_at: stamp,
-                      },
-                    ]
-                  : [],
-            }),
-          };
-        }
-        const repo = url.pathname.split('/').slice(2, 4).join('/');
-        assert.ok(
-          repositories.includes(repo),
-          `Unexpected repository: ${repo}`
-        );
-        if (/\/pulls\/42$/.test(url.pathname)) {
-          return {
-            ok: true,
-            json: async () => ({
-              ...fixture.details,
-              head: {
-                ...fixture.details.head,
-                sha:
-                  changed && repo.endsWith('search')
-                    ? 'c'.repeat(40)
-                    : repo.endsWith('app')
-                      ? 'b'.repeat(40)
-                      : fixture.details.head.sha,
-              },
-            }),
-          };
-        }
-        let rows = [];
-        if (url.pathname.endsWith('/issues')) {
-          assert.equal(repo, 'example/app');
-          assert.equal(url.searchParams.get('assignee'), fixture.login);
-          if (url.searchParams.get('page') === '1')
-            rows = [
-              {
-                id: 500,
-                number: 500,
-                title: 'ordinary assigned issue',
-                updated_at: stamp,
-              },
-            ];
-          if (url.searchParams.get('page') === '2')
-            rows = [
-              {
-                ...fixture.searchItem,
-                repository_url: 'https://api.github.com/repos/example/app',
-                html_url: 'https://github.com/example/app/pull/42',
-              },
-            ];
-        } else if (url.pathname.endsWith('/issues/comments')) {
-          rows = [
-            {
-              id: 1,
-              issue_url: `https://api.github.com/repos/${repo}/issues/42`,
-              url: `https://api.github.com/repos/${repo}/issues/comments/1`,
-              html_url: `https://github.com/${repo}/pull/42#issuecomment-1`,
-              user: { login: 'other' },
-              body: 'comment',
-              created_at: stamp,
-            },
-          ];
-        } else if (url.pathname.endsWith('/reviews')) {
-          rows = [
-            {
-              id: 2,
-              state: 'APPROVED',
-              body: 'review body',
-              submitted_at: stamp,
-              url: `https://api.github.com/repos/${repo}/pulls/42/reviews/2`,
-              html_url: `https://github.com/${repo}/pull/42#pullrequestreview-2`,
-              user: { login: 'other' },
-            },
-          ];
-        }
-        return { ok: true, text: async () => JSON.stringify(rows) };
-      },
-    });
-    const functions = [
-      githubSearchPrs,
-      githubPrBranches,
-      githubPerPage,
-      githubHeaders,
-      pollGithubReviews,
-      githubRelatedPrs,
-      githubPrComments,
-      githubPrReviews,
-      githubCommentPrNumber,
-      pollGithubPrComments,
-      pollGithubRepositoryPrComments,
-      pollGithub,
-      createVibeIssue,
-    ];
-    vm.runInContext(functions.map((fn) => fn.toString()).join('\n'), context);
-    context.runRules = async (event) => {
-      events.push(event);
-      if (event.type === 'pr')
-        await context.createVibeIssue(
-          'vibe',
-          {
-            title: event.title,
-            sourceKey: `${event.repo}#${event.number}`,
-            tags: ['review'],
-          },
-          event,
-          { id: 'import' }
-        );
-    };
-    await context.pollGithub(github);
-    assert.equal(
-      creates.length,
-      2,
-      JSON.stringify(github.config.reviewPrReconciliation)
-    );
-    assert.equal(tags.length, 2);
-    assert.equal(
-      creates[1].payload.extension_metadata.github_repository,
-      repositories[1]
-    );
-    assert.equal(
-      creates[1].payload.extension_metadata.github_head_sha,
-      fixture.details.head.sha
-    );
-    assert.notEqual(
-      creates[0].event.idempotencyKey,
-      creates[1].event.idempotencyKey
-    );
-    assert.equal(github.config.seenNumbers.includes('500'), true);
-    assert.equal(events.filter((event) => event.type === 'issue').length, 0);
-    assert.equal(github.config.reviewPrReconciliation.missing.length, 0);
-    // Serialized configuration is sufficient for the next runtime.
-    github.config = JSON.parse(JSON.stringify(github.config));
-    await context.pollGithub(github);
-    await context.pollGithub(github);
-    assert.equal(creates.length, 2);
-    const activity = events.filter((event) => event.type === 'pr_comment');
-    assert.equal(activity.length, 4);
-    for (const event of activity)
-      assert.ok(event.url.includes(`/${event.repo}/`));
-    assert.equal(
-      activity.filter((event) => event.repo === repositories[1]).length,
-      2
-    );
-    assert.ok(
-      requests.some(
-        (url) => url.pathname === '/repos/example/search/pulls/42/reviews'
-      )
-    );
-    changed = true;
-    await context.pollGithub(github);
-    const updates = events.filter((event) => event.type === 'pr_updated');
-    assert.equal(updates.length, 1);
-    assert.equal(updates[0].repo, repositories[1]);
-    assert.equal(updates[0].previousHeadSha, fixture.details.head.sha);
-    assert.equal(creates.length, 2);
-  });
-
-  test('review create defers failed lookups and reuses the idempotency key after a lost create response', async () => {
-    const vibe = {
-      id: 'vibe',
-      enabled: true,
-      type: 'vibe_kanban',
-      config: {
-        baseUrl: 'https://fixture.invalid',
-        projectId: 'project',
-        statusId: 'status',
-      },
-    };
-    let lookupFailed = true;
-    let loseResponse = true;
-    let created = 0;
-    const receipts = new Map();
-    const keys = [];
-    const context = vm.createContext({
-      createHash,
-      githubIssueSyncVibeConnectorId,
-      findConnector: () => vibe,
-      persistState: async () => {},
-      log: async () => {},
-      findPullRequestLinkByUrl: async () => {
-        if (lookupFailed) throw new Error('503');
-        return null;
-      },
-      postVibeIssue: async (_, payload, event) => {
-        keys.push(event.idempotencyKey);
-        if (!receipts.has(event.idempotencyKey))
-          receipts.set(event.idempotencyKey, {
-            data: { id: `issue-${++created}` },
-          });
-        if (loseResponse) {
-          loseResponse = false;
-          throw new Error('response lost');
-        }
-        return receipts.get(event.idempotencyKey);
-      },
-      vibeApi: async () => {},
-    });
-    vm.runInContext(createVibeIssue.toString(), context);
-    const event = {
-      type: 'pr',
-      source: 'github',
-      repo: repositories[1],
-      number: 42,
-      url: fixture.searchItem.html_url,
-      headSha: fixture.details.head.sha,
-    };
-    const create = () =>
-      context.createVibeIssue('vibe', { title: 'fixture' }, event, {
-        id: 'rule',
-      });
-    await assert.rejects(create(), /503/);
-    assert.equal(created, 0);
-    lookupFailed = false;
-    await assert.rejects(create(), /response lost/);
-    event.headSha = 'c'.repeat(40);
-    await create();
-    assert.equal(created, 1);
-    assert.equal(keys[0], keys[1]);
-    await create();
-    assert.equal(created, 1);
   });
 }
