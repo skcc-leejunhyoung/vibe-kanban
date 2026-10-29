@@ -28,8 +28,10 @@ async function setup(runRule = async () => ({ status: "completed" })) {
   };
   let saved;
   let failed = false;
+  let beforeSave;
   let calls = 0;
   const persist = async () => {
+    await beforeSave?.();
     if (failed) throw new Error("disk unavailable");
     saved = structuredClone(state);
   };
@@ -50,7 +52,7 @@ async function setup(runRule = async () => ({ status: "completed" })) {
     },
   };
   await channels.configure(config);
-  const binding = channels.describe(config.id, scope);
+  const binding = await channels.describe(config.id, scope);
   const request = {
     scope,
     version: binding.version,
@@ -70,6 +72,9 @@ async function setup(runRule = async () => ({ status: "completed" })) {
     request,
     calls: () => calls,
     saved: () => saved,
+    beforeSave: (callback) => {
+      beforeSave = callback;
+    },
     fail: () => {
       failed = true;
     },
@@ -80,7 +85,7 @@ test("published data updates in place and only the registered publisher and sche
   const t = await setup();
   await t.channels.publish("publisher", t.config.id, { count: 3 });
   await t.channels.publish("publisher", t.config.id, { count: 4 });
-  const snapshot = t.channels.snapshot(
+  const snapshot = await t.channels.snapshot(
     t.config.id,
     scope,
     t.binding.version,
@@ -187,6 +192,38 @@ test("an interrupted or failed operation remains unknown and never retries autom
     (await restarted.request(t.config.id, t.request)).status,
     "unknown",
   );
+  await assert.rejects(
+    restarted.request(t.config.id, { ...t.request, request_id: randomUUID() }),
+    /still running/,
+  );
+  await restarted.complete(
+    "publisher",
+    t.config.id,
+    t.request.request_id,
+    "completed",
+  );
+  assert.equal(
+    (
+      await restarted.snapshot(
+        t.config.id,
+        scope,
+        t.binding.version,
+        t.request.binding_id,
+      )
+    ).request.status,
+    "completed",
+  );
+  await t.channels.complete(
+    "publisher",
+    t.config.id,
+    t.request.request_id,
+    "failed",
+  );
+  await t.channels.request(t.config.id, {
+    ...t.request,
+    request_id: randomUUID(),
+  });
+  assert.equal(t.calls(), 2);
 });
 
 test("request claim must be durable before rule execution", async () => {
@@ -222,11 +259,13 @@ test("acceptance is separate from completion; a registered publisher can finish 
     "completed",
   );
   assert.equal(
-    t.channels.snapshot(
-      t.config.id,
-      scope,
-      t.binding.version,
-      t.request.binding_id,
+    (
+      await t.channels.snapshot(
+        t.config.id,
+        scope,
+        t.binding.version,
+        t.request.binding_id,
+      )
     ).request.status,
     "completed",
   );
@@ -244,7 +283,7 @@ test("changed scripts invalidate bindings and same IDs cannot cross channels or 
     t.channels.request(t.config.id, { ...t.request, binding_id: randomUUID() }),
     /different data/,
   );
-  assert.throws(
+  await assert.rejects(
     () =>
       t.channels.snapshot(
         t.config.id,
@@ -269,16 +308,18 @@ test("disabled channels and publisher write failures do not expose new data", as
     /disk/,
   );
   assert.equal(
-    t.channels.snapshot(
-      t.config.id,
-      scope,
-      t.binding.version,
-      t.request.binding_id,
+    (
+      await t.channels.snapshot(
+        t.config.id,
+        scope,
+        t.binding.version,
+        t.request.binding_id,
+      )
     ).data.count,
     1,
   );
   t.state.enabled = false;
-  assert.throws(() => t.channels.describe(t.config.id, scope), /disabled/);
+  await assert.rejects(t.channels.describe(t.config.id, scope), /disabled/);
 });
 
 test("schema rejects secrets, unsupported keywords, bad scalar types and excessive payloads", () => {
@@ -319,7 +360,7 @@ test("channel scope cannot be reassigned and malformed actions cannot be configu
   for (const actions of [[], "invalid", { refresh: null }]) {
     await assert.rejects(t.channels.configure({ ...t.config, actions }));
   }
-  assert.deepEqual(t.channels.describe(t.config.id, scope), t.binding);
+  assert.deepEqual(await t.channels.describe(t.config.id, scope), t.binding);
 });
 
 test("a failed completion write does not report a durable completion", async () => {
@@ -336,13 +377,112 @@ test("a failed completion write does not report a durable completion", async () 
     /disk/,
   );
   assert.equal(
-    t.channels.snapshot(
-      t.config.id,
-      scope,
-      t.binding.version,
-      t.request.binding_id,
+    (
+      await t.channels.snapshot(
+        t.config.id,
+        scope,
+        t.binding.version,
+        t.request.binding_id,
+      )
     ).request.status,
     "accepted",
   );
   assert.equal(t.calls(), 1);
+});
+
+for (const operation of ["publish", "complete"]) {
+  test(`reads wait for ${operation} persistence and see rollback on failure`, async () => {
+    const t = await setup(async () => ({ status: "accepted" }));
+    await t.channels.request(t.config.id, t.request);
+    await t.channels.publish("publisher", t.config.id, { count: 1 });
+    let rejectSave;
+    let entered;
+    const saving = new Promise((resolve) => {
+      entered = resolve;
+    });
+    t.beforeSave(() => {
+      entered();
+      return new Promise((_, reject) => {
+        rejectSave = reject;
+      });
+    });
+    const write =
+      operation === "publish"
+        ? t.channels.publish("publisher", t.config.id, { count: 2 })
+        : t.channels.complete(
+            "publisher",
+            t.config.id,
+            t.request.request_id,
+            "completed",
+          );
+    await saving;
+    let visible = false;
+    const read = t.channels
+      .snapshot(t.config.id, scope, t.binding.version, t.request.binding_id)
+      .then((snapshot) => {
+        visible = true;
+        return snapshot;
+      });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(visible, false);
+    const failed = assert.rejects(write, /disk/);
+    rejectSave(new Error("disk unavailable"));
+    await failed;
+    const snapshot = await read;
+    assert.equal(snapshot.data.count, 1);
+    assert.equal(snapshot.request.status, "accepted");
+    snapshot.data.count = 99;
+    assert.equal(
+      (
+        await t.channels.snapshot(
+          t.config.id,
+          scope,
+          t.binding.version,
+          t.request.binding_id,
+        )
+      ).data.count,
+      1,
+    );
+  });
+}
+
+test("channel deletion frees capacity without reviving old bindings", async () => {
+  const t = await setup();
+  for (let n = 1; n < 128; n++) {
+    await t.channels.configure({
+      ...t.config,
+      id: `channel-${n}`,
+      scope: { ...scope, session_id: `session-${n}` },
+    });
+  }
+  await assert.rejects(
+    t.channels.configure({ ...t.config, id: "channel-128" }),
+    /Too many/,
+  );
+  await t.channels.remove(t.config.id);
+  await t.channels.configure(t.config);
+  const renewed = await t.channels.describe(t.config.id, scope);
+  assert.notEqual(renewed.version, t.binding.version);
+  await assert.rejects(t.channels.request(t.config.id, t.request), /changed/);
+  await t.channels.remove("channel-1");
+  await t.channels.configure({ ...t.config, id: "channel-128" });
+  assert.equal(Object.keys(t.state.artifactChannels).length, 128);
+});
+
+test("channel deletion refuses every unresolved state and rolls back failed writes", async () => {
+  const t = await setup(async () => ({ status: "accepted" }));
+  await t.channels.request(t.config.id, t.request);
+  for (const status of ["processing", "accepted", "unknown"]) {
+    t.state.artifactRequests[t.request.request_id].status = status;
+    await assert.rejects(t.channels.remove(t.config.id), /unfinished/);
+  }
+  await t.channels.complete(
+    "publisher",
+    t.config.id,
+    t.request.request_id,
+    "cancelled",
+  );
+  t.fail();
+  await assert.rejects(t.channels.remove(t.config.id), /disk/);
+  assert.deepEqual(await t.channels.describe(t.config.id, scope), t.binding);
 });

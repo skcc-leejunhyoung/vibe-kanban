@@ -2,7 +2,6 @@ import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type {
   ArtifactAutomationRequest,
-  ArtifactAutomationResult,
   ArtifactInteraction,
 } from 'shared/types';
 import { ApiError, artifactsApi } from '@/shared/lib/api';
@@ -18,25 +17,14 @@ export function useArtifactAutomation(
     !!interaction.automation && interaction.state === 'input_required';
   const key = `${hostId}:${interaction.owner_id}:${interaction.reference.request_id}`;
   const [pending, setPending] = useState(() => pendingRequests.get(key));
-  const [result, setResult] = useState<ArtifactAutomationResult>();
   const [error, setError] = useState<string>();
   const [uncertain, setUncertain] = useState(!!pending);
   const [sending, setSending] = useState(false);
   const inFlight = useRef(false);
   const snapshot = useQuery({
-    queryKey: [
-      'artifact-automation',
-      key,
-      interaction.automation?.version,
-      pending?.request_id,
-    ],
+    queryKey: ['artifact-automation', key, interaction.automation?.version],
     queryFn: ({ signal }) =>
-      artifactsApi.automationSnapshot(
-        interaction,
-        hostId,
-        pending?.request_id,
-        signal
-      ),
+      artifactsApi.automationSnapshot(interaction, hostId, undefined, signal),
     enabled: active,
     retry: false,
     retryOnMount: false,
@@ -44,9 +32,7 @@ export function useArtifactAutomation(
     refetchOnWindowFocus: false,
     refetchInterval: (query) => (active && !query.state.error ? 2000 : false),
   });
-  const latest = snapshot.data?.request;
-  const current =
-    latest?.request_id === result?.request_id ? latest : (result ?? latest);
+  const current = snapshot.data?.request;
   const busy =
     sending || ['processing', 'accepted'].includes(current?.status ?? '');
   const connected = active && snapshot.isSuccess && !snapshot.isError;
@@ -58,14 +44,10 @@ export function useArtifactAutomation(
     pendingRequests.set(key, request);
     setPending(request);
     try {
-      const response = await artifactsApi.automationRequest(
-        interaction,
-        request,
-        hostId
-      );
-      setResult(response);
+      await artifactsApi.automationRequest(interaction, request, hostId);
       setUncertain(false);
       pendingRequests.delete(key);
+      setPending(undefined);
     } catch (cause) {
       const rejected =
         cause instanceof ApiError &&
@@ -77,19 +59,27 @@ export function useArtifactAutomation(
         setPending(undefined);
       }
     } finally {
+      await snapshot.refetch();
       inFlight.current = false;
       setSending(false);
     }
   };
   const check = async () => {
+    if (pending) {
+      const receipt = await artifactsApi.automationSnapshot(
+        interaction,
+        hostId,
+        pending.request_id
+      );
+      if (receipt.request) {
+        setUncertain(false);
+        pendingRequests.delete(key);
+        setPending(undefined);
+      }
+    }
     const response = await snapshot.refetch();
     if (response.error) throw response.error;
     setError(undefined);
-    if (response.data?.request) {
-      setResult(response.data.request);
-      setUncertain(false);
-      pendingRequests.delete(key);
-    }
   };
   return {
     snapshot: snapshot.data,
@@ -117,7 +107,6 @@ export function useArtifactAutomation(
         !Object.hasOwn(interaction.automation.actions, action)
       )
         return;
-      setResult(undefined);
       void send({ request_id: crypto.randomUUID(), action, data });
     },
     check,

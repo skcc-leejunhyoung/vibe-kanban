@@ -2863,6 +2863,13 @@ const COMMANDS: &[Cmd] = &[
     ),
     // ---- automation ---------------------------------------------------------
     cmd(
+        &["automation", "artifact-channels", "delete"],
+        "Delete an unused artifact channel (refuses unfinished requests)",
+        "DELETE",
+        "/automation/artifact-channels/{id}",
+        &[pos("id", "Channel id", Where::Path)],
+    ),
+    cmd(
         &["automation", "routines", "upsert"],
         "Create or update a routine",
         "POST",

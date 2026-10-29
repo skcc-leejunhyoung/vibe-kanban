@@ -24,8 +24,15 @@ test(
     };
     const token = randomUUID();
     let notifications = 0;
+    let slowCalls = 0;
+    let releaseSlow;
     const host = createServer((req, res) => {
       res.setHeader("content-type", "application/json");
+      if (req.url === "/synthetic-slow") {
+        slowCalls++;
+        releaseSlow = () => res.end("{}");
+        return;
+      }
       if (req.url === "/api/automation-actions/status")
         return res.end(
           JSON.stringify({ hostId: scope.owner_host, busy: false }),
@@ -51,6 +58,11 @@ test(
       if (event.request_id) await ctx.artifacts.complete('dashboard', event.request_id, 'completed');
     }
     if (event.source === 'artifact') {
+      if (event.action === 'slow') {
+        await ctx.actions.http.request('${baseUrl}/synthetic-slow');
+        await ctx.artifacts.complete('dashboard', event.request_id, 'completed');
+        return { status: 'completed' };
+      }
       if (event.action === 'start') return ctx.actions.vibe.runRoutine('notify');
       await ctx.artifacts.publish('dashboard', event.data);
       return { status: 'completed' };
@@ -106,6 +118,7 @@ test(
             PORT: String(port),
             ADMIN_TOKEN: token,
             AUTOMATION_DATA_DIR: directory,
+            RULE_TIMEOUT_MS: "250",
           },
           stdio: "pipe",
         },
@@ -131,9 +144,14 @@ test(
         await exited;
       }
     };
-    const call = async (route, body, authenticated = true) => {
+    const call = async (
+      route,
+      body,
+      authenticated = true,
+      method = body === undefined ? "GET" : "POST",
+    ) => {
       const response = await fetch(`http://127.0.0.1:${port}/api/${route}`, {
-        method: body === undefined ? "GET" : "POST",
+        method,
         headers: {
           "content-type": "application/json",
           ...(authenticated ? { authorization: `Bearer ${token}` } : {}),
@@ -161,6 +179,11 @@ test(
           start: {
             rule_id: "publisher",
             label: "Start",
+            schema: { type: "object", properties: {} },
+          },
+          slow: {
+            rule_id: "publisher",
+            label: "Slow",
             schema: { type: "object", properties: {} },
           },
         },
@@ -240,6 +263,51 @@ test(
           .request.status,
         "completed",
       );
+      const slowRequest = {
+        ...startRequest,
+        action: "slow",
+        request_id: randomUUID(),
+      };
+      assert.equal(
+        (await call("artifact-channels/dashboard/request", slowRequest)).data
+          .status,
+        "unknown",
+      );
+      assert.equal(
+        (
+          await call("artifact-channels/dashboard/request", {
+            ...slowRequest,
+            request_id: randomUUID(),
+          })
+        ).status,
+        409,
+      );
+      assert.equal(slowCalls, 1);
+      assert.equal(
+        (await call("artifact-channels/dashboard", undefined, false, "DELETE"))
+          .status,
+        401,
+      );
+      assert.equal(
+        (await call("artifact-channels/dashboard", undefined, true, "DELETE"))
+          .status,
+        409,
+      );
+      releaseSlow();
+      const completionDeadline = Date.now() + 3000;
+      while (
+        (await call("artifact-channels/dashboard/snapshot", slowRequest)).data
+          .request.status !== "completed"
+      ) {
+        assert.ok(Date.now() < completionDeadline, "late completion was lost");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(
+        (await call("artifact-channels/dashboard/request", slowRequest)).data
+          .status,
+        "completed",
+      );
+      assert.equal(slowCalls, 1);
       await stop();
       await start();
       assert.equal(
@@ -256,7 +324,18 @@ test(
       );
       assert.equal(saved.retryQueue.length, 0);
       assert.equal(saved.artifactChannels.dashboard.data.count, 5);
+      assert.equal(
+        (await call("artifact-channels/dashboard", undefined, true, "DELETE"))
+          .status,
+        200,
+      );
+      assert.equal(
+        (await call("artifact-channels/dashboard/snapshot", startRequest))
+          .status,
+        404,
+      );
     } finally {
+      releaseSlow?.();
       await stop();
       await new Promise((resolve) => host.close(resolve));
       await rm(directory, { recursive: true, force: true });

@@ -514,6 +514,18 @@ mod tests {
             gated(Method::POST, "/api/automation/routines"),
             Decision::Gated(Toggle::AutomationWrite)
         );
+        for path in [
+            "/api/automation/artifact-channels/dashboard".to_string(),
+            format!(
+                "/api/host/{}/automation/artifact-channels/dashboard",
+                Uuid::new_v4()
+            ),
+        ] {
+            assert_eq!(
+                gated(Method::DELETE, &path),
+                Decision::Gated(Toggle::AutomationWrite)
+            );
+        }
         assert_eq!(
             gated(Method::POST, "/api/sessions/s/follow-up"),
             Decision::Gated(Toggle::ControlSessions)

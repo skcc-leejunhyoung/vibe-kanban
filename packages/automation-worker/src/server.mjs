@@ -426,16 +426,20 @@ async function route(req, res) {
     return;
   }
 
-  if ((url.pathname === '/api/artifact-channels' || url.pathname.startsWith('/api/artifact-channels/')) && req.method === 'POST') {
-    const input = await readBodyJson(req);
+  if ((url.pathname === '/api/artifact-channels' || url.pathname.startsWith('/api/artifact-channels/')) && ['POST', 'DELETE'].includes(req.method)) {
+    const input = req.method === 'POST' ? await readBodyJson(req) : null;
     try {
       const parts = url.pathname.split('/').filter(Boolean);
       let result;
-      if (parts.length === 2) result = await artifactChannels.configure(input);
+      if (req.method === 'DELETE') {
+        if (parts.length !== 3) return sendJson(res, 404, { error: 'not found' });
+        result = await artifactChannels.remove(parts[2]);
+      }
+      else if (parts.length === 2) result = await artifactChannels.configure(input);
       else if (parts.length === 4 && parts[3] === 'describe')
-        result = artifactChannels.describe(parts[2], input.scope);
+        result = await artifactChannels.describe(parts[2], input.scope);
       else if (parts.length === 4 && parts[3] === 'snapshot')
-        result = artifactChannels.snapshot(parts[2], input.scope, input.version, input.binding_id, input.request_id);
+        result = await artifactChannels.snapshot(parts[2], input.scope, input.version, input.binding_id, input.request_id);
       else if (parts.length === 4 && parts[3] === 'request')
         result = await artifactChannels.request(parts[2], input);
       else return sendJson(res, 404, { error: 'not found' });

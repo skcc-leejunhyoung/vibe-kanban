@@ -225,7 +225,9 @@ successful return is `accepted`, not completion.
 These explicit user requests bypass the connector retry queue. The worker
 persists the request claim before invoking a Rule, deduplicates matching IDs and
 allows one in-flight operation per binding. Interrupted or uncertain operations
-are not replayed after restart. A lost response can be checked or explicitly
+are not replayed after restart and block further actions on that binding until
+a registered publisher explicitly confirms the outcome, including late completion.
+A lost response can be checked or explicitly
 retried with the same ID. Data and receipts live in the existing private state
 file; the generic settings response excludes them. Channels are capped at 128,
 actions/publishers at 16 each, and the request ledger at 4,096 records. Expired
@@ -234,6 +236,9 @@ terminal receipts are pruned before admitting new requests.
 The admin-token-gated worker API uses `POST /api/artifact-channels` to configure
 and `POST /api/artifact-channels/:id/{describe,snapshot,request}` for the scoped
 bridge. The host injects its token; artifacts cannot call these routes directly.
+`DELETE /api/artifact-channels/:id` (or `vk automation artifact-channels delete <id>`)
+frees an unused channel slot through the existing automation write permission.
+It refuses unresolved requests, and recreating the ID never revives old bindings.
 
 ## Autopilot: journal events → one prompt
 

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const MAX_BYTES = 32768;
 const own = (object, key) => Object.hasOwn(object, key);
@@ -15,6 +15,8 @@ const uuid = (value) =>
   typeof value === "string" &&
   /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 const scopeKeys = ["owner_id", "owner_host", "workspace_id", "session_id"];
+const unresolved = (record) =>
+  ["processing", "accepted", "unknown"].includes(record.status);
 
 // The same closed, bounded schema subset as artifact input; no secret fields.
 export function validateArtifactSchema(
@@ -147,6 +149,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
   for (const record of Object.values(state.artifactRequests)) {
     if (record.status === "processing") record.status = "unknown";
   }
+  // Reads wait for persistence and rollback before exposing a changed state.
   let writes = Promise.resolve();
   const locked = (callback) => {
     const pending = writes.then(callback);
@@ -177,6 +180,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
     return {
       channel_id: channel.id,
       version: hash([
+        channel.generation,
         channel.scope,
         channel.data_schema,
         channel.publishers,
@@ -207,7 +211,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
       : null;
   return {
     describe(id, scope) {
-      return scoped(id, scope).binding;
+      return locked(() => structuredClone(scoped(id, scope).binding));
     },
     async configure(input) {
       return locked(async () => {
@@ -267,6 +271,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
           fail("Channel scope is immutable; use a new channel ID", 409);
         const channel = {
           id: input.id,
+          generation: previous?.generation ?? randomUUID(),
           scope: Object.fromEntries(
             scopeKeys.map((key) => [key, input.scope[key]]),
           ),
@@ -289,24 +294,50 @@ export function createArtifactChannels({ state, persist, runRule }) {
         return { channel_id: channel.id };
       });
     },
-    snapshot(id, scope, version, bindingId, requestId) {
-      const { channel } = scoped(id, scope, version);
-      const record = requestId
-        ? state.artifactRequests[requestId]
-        : Object.values(state.artifactRequests).findLast(
-            (item) => item.channel_id === id && item.binding_id === bindingId,
+    async remove(id) {
+      return locked(async () => {
+        if (!name(id) || !own(state.artifactChannels, id))
+          fail("Unknown artifact channel", 404);
+        if (
+          Object.values(state.artifactRequests).some(
+            (record) => record.channel_id === id && unresolved(record),
+          )
+        )
+          fail(
+            "Resolve unfinished artifact requests before deleting the channel",
+            409,
           );
-      if (
-        record &&
-        (record.channel_id !== id || record.binding_id !== bindingId)
-      )
-        fail("Wrong request scope", 403);
-      return {
-        revision: channel.revision,
-        updated_at: channel.updated_at,
-        data: channel.data,
-        request: publicRecord(record),
-      };
+        const channel = state.artifactChannels[id];
+        delete state.artifactChannels[id];
+        try {
+          await persist();
+        } catch (error) {
+          state.artifactChannels[id] = channel;
+          throw error;
+        }
+        return { channel_id: id };
+      });
+    },
+    snapshot(id, scope, version, bindingId, requestId) {
+      return locked(() => {
+        const { channel } = scoped(id, scope, version);
+        const record = requestId
+          ? state.artifactRequests[requestId]
+          : Object.values(state.artifactRequests).findLast(
+              (item) => item.channel_id === id && item.binding_id === bindingId,
+            );
+        if (
+          record &&
+          (record.channel_id !== id || record.binding_id !== bindingId)
+        )
+          fail("Wrong request scope", 403);
+        return structuredClone({
+          revision: channel.revision,
+          updated_at: channel.updated_at,
+          data: channel.data,
+          request: publicRecord(record),
+        });
+      });
     },
     async publish(ruleId, id, data) {
       return locked(async () => {
@@ -342,8 +373,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
           fail("Unknown artifact request", 404);
         if (!["completed", "failed", "cancelled"].includes(status))
           fail("Invalid completion state");
-        if (!["processing", "accepted"].includes(record.status))
-          return publicRecord(record);
+        if (!unresolved(record)) return publicRecord(record);
         const previous = { status: record.status, message: record.message };
         record.status = status;
         record.message =
@@ -386,13 +416,10 @@ export function createArtifactChannels({ state, persist, runRule }) {
         if (previous) {
           if (previous.fingerprint !== fingerprint)
             fail("Request ID already used with different data", 409);
-          return previous;
+          return publicRecord(previous);
         }
         for (const [key, item] of Object.entries(state.artifactRequests)) {
-          if (
-            Date.parse(item.expires_at) < Date.now() &&
-            !["processing", "accepted"].includes(item.status)
-          )
+          if (Date.parse(item.expires_at) < Date.now() && !unresolved(item))
             delete state.artifactRequests[key];
         }
         if (Object.keys(state.artifactRequests).length >= 4096)
@@ -400,12 +427,13 @@ export function createArtifactChannels({ state, persist, runRule }) {
         // One in-flight operation per mounted binding also prevents double clicks.
         if (
           Object.values(state.artifactRequests).some(
-            (item) =>
-              item.binding_id === input.binding_id &&
-              ["processing", "accepted"].includes(item.status),
+            (item) => item.binding_id === input.binding_id && unresolved(item),
           )
         )
-          fail("An artifact request is still running", 409);
+          fail(
+            "An artifact request is still running or its outcome is unknown. Check the automation result.",
+            409,
+          );
         const entry = {
           request_id: input.request_id,
           channel_id: id,
@@ -438,7 +466,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
         };
         return entry;
       });
-      if (!dispatch) return publicRecord(record);
+      if (!dispatch) return record;
       // This calls the existing trusted rule executor, without its automatic retry queue.
       try {
         const result = await runRule(dispatch.rule, dispatch.event);
@@ -473,7 +501,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
           }
         });
       }
-      return publicRecord(record);
+      return locked(() => publicRecord(record));
     },
   };
 }

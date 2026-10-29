@@ -182,6 +182,14 @@ change owner or session. Editing the channel contract or an action Rule invalida
 existing bindings; close the old request and register a new one. A disabled Rule,
 channel or automation worker rejects requests.
 
+You can remove an unused channel with
+`vk automation artifact-channels delete review-dashboard` (use `--host` for a
+paired host). This uses the existing automation write permission and frees one
+of the worker's 128 channel slots. Deletion refuses processing, accepted or
+unknown requests. First verify the actual outcome and have a registered publisher
+report its final state. Deleting a channel ends its dashboard connections; creating
+the same channel ID again requires new bindings and cannot revive the old ones.
+
 ```html dashboard.html
 <!doctype html>
 <html lang="en">
@@ -229,7 +237,11 @@ execution permission checks. Its result is acceptance, not task completion.
 Connection errors stop polling and show an error. **Check status** resumes reads;
 it does not resend actions. **Retry same response** reuses the pending request ID.
 An interrupted or unconfirmed action stays `unknown` and is never automatically
-rerun. Check its result before creating a new binding. If the channel is unavailable,
+rerun. Further actions on that binding are blocked until a registered publisher
+explicitly confirms `completed`, `failed` or `cancelled`. A late completion report
+also resolves a timed-out request without rerunning it. Status reads follow the
+latest operation on the binding, including requests from another browser window.
+Check its result before creating a new binding. If the channel is unavailable,
 the host's **Close dashboard connection** control still ends the binding without
 stopping work already in progress. Reloading does not restore
 drafts or submit anything. Closing the dashboard ends the binding, not work that
