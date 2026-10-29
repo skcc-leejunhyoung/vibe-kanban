@@ -812,7 +812,10 @@
       "noDraftStorage": "Do not enter passwords or secrets. Refreshing this page may clear unsubmitted input.",
       "check": "Check status",
       "retry": "Retry this response",
-      "collapse": "Collapse"
+      "collapse": "Collapse",
+      "automationActions": "Connected automation actions: {{actions}}",
+      "automationReady": "Automation data updates here. Use a connected action button to request work.",
+      "automationClose": "Close dashboard connection (running work continues)"
     }
   },
   "status": {

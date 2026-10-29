@@ -173,6 +173,46 @@ export class ApiError<E = unknown> extends Error {
 }
 
 export const artifactsApi = {
+  automationSnapshot: async (
+    interaction: import('shared/types').ArtifactInteraction,
+    hostId: string | null,
+    operationId?: string,
+    signal?: AbortSignal
+  ): Promise<import('shared/types').ArtifactAutomationSnapshot> => {
+    const { reference } = interaction;
+    const query = new URLSearchParams({
+      workspace_id: interaction.workspace_id,
+      session_id: reference.session_id,
+    });
+    if (operationId) query.set('operation_id', operationId);
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${reference.execution_id}/artifacts/interactions/${reference.request_id}/automation?${query}`,
+      hostId,
+      { signal }
+    );
+    return handleApiResponse(response);
+  },
+  automationRequest: async (
+    interaction: import('shared/types').ArtifactInteraction,
+    request: import('shared/types').ArtifactAutomationRequest,
+    hostId: string | null
+  ): Promise<import('shared/types').ArtifactAutomationResult> => {
+    const { reference } = interaction;
+    const response = await makeHostAwareRequest(
+      `/api/execution-processes/${reference.execution_id}/artifacts/interactions/${reference.request_id}/automation?${new URLSearchParams({ workspace_id: interaction.workspace_id, session_id: reference.session_id })}`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          artifact_id: interaction.artifact_id,
+          version: interaction.version,
+          owner_host: interaction.owner_host,
+          request,
+        }),
+      }
+    );
+    return handleApiResponse(response);
+  },
   interactions: async (
     processId: string,
     workspaceId: string,

@@ -2,6 +2,10 @@ export type ArtifactViewState = {
   status: string;
   message: string;
   editable: boolean;
+  data?: unknown;
+  revision?: number;
+  updatedAt?: string | null;
+  request?: unknown;
 };
 
 export type ArtifactInputBridge = {
@@ -10,6 +14,7 @@ export type ArtifactInputBridge = {
   arrayFields?: string[];
   requestId?: string;
   version?: string;
+  actions?: string[];
 };
 
 export function collectArtifactFormValues(
@@ -75,6 +80,7 @@ export function installArtifactInput(
   let used = false;
   let composing = false;
   let composingEnter = false;
+  let armedAction: string | undefined;
   const disabled = new WeakMap<Element, boolean>();
   const fields = () =>
     Array.from(
@@ -107,7 +113,7 @@ export function installArtifactInput(
       banner.textContent = state.message;
     document
       .querySelectorAll<HTMLButtonElement>(
-        'form[data-vibe-form] button,input[type="submit"],[data-vibe-submit],[data-vibe-cancel]'
+        'form[data-vibe-form] button,input[type="submit"],[data-vibe-submit],[data-vibe-cancel],[data-vibe-request]'
       )
       .forEach((button) => {
         if (!disabled.has(button)) disabled.set(button, button.disabled);
@@ -126,17 +132,31 @@ export function installArtifactInput(
       }
     });
   };
-  const send = (event: 'submit' | 'cancel', data?: unknown) => {
+  const send = (event: 'submit' | 'cancel' | 'request', data?: unknown) => {
     if (!armed || used || !state.editable)
       throw new Error('Use the artifact submit or cancel button');
     used = true;
     emit(event, data);
+  };
+  const request = (action: string, data: unknown = {}) => {
+    if (!config.actions?.includes(action) || armedAction !== action)
+      throw new Error('Use the registered automation action button');
+    send('request', { action, data });
   };
   Object.defineProperty(window, 'vibe', {
     value: Object.freeze({
       submit: (data: unknown) => send('submit', data),
       cancel: () => send('cancel'),
       getState: () => ({ ...state }),
+      getData: () =>
+        parse(
+          stringify({
+            data: state.data ?? null,
+            revision: state.revision ?? 0,
+            updatedAt: state.updatedAt ?? null,
+          })
+        ),
+      request,
     }),
     writable: false,
     configurable: false,
@@ -171,17 +191,21 @@ export function installArtifactInput(
   };
   const arm = (
     form?: HTMLFormElement | null,
-    submitter?: HTMLButtonElement | HTMLInputElement
+    submitter?: HTMLButtonElement | HTMLInputElement,
+    action?: string
   ) => {
     armed = true;
     used = false;
+    armedAction = action;
     // Sandboxed documents cannot perform native form navigation. Finish the
     // explicit gesture ourselves, after the artifact's own click handlers.
     later(() => {
       try {
-        if (!used && state.editable && form) submitForm(form, submitter);
+        if (!used && state.editable && action) request(action);
+        else if (!used && state.editable && form) submitForm(form, submitter);
       } finally {
         armed = false;
+        armedAction = undefined;
       }
     }, 0);
   };
@@ -214,7 +238,7 @@ export function installArtifactInput(
         return;
       const button = closest(
         targetOf(event),
-        'button,input[type="submit"],[data-vibe-submit],[data-vibe-cancel]'
+        'button,input[type="submit"],[data-vibe-submit],[data-vibe-cancel],[data-vibe-request]'
       );
       if (!button || button.disabled) return;
       const form =
@@ -225,7 +249,11 @@ export function installArtifactInput(
             : null;
       const registeredForm =
         form && attribute(form, 'data-vibe-form') !== null ? form : null;
-      if (attribute(button, 'data-vibe-cancel') !== null) {
+      const action = attribute(button, 'data-vibe-request');
+      if (action !== null) {
+        event.preventDefault();
+        if (config.actions?.includes(action)) arm(null, undefined, action);
+      } else if (attribute(button, 'data-vibe-cancel') !== null) {
         arm();
         event.preventDefault();
         send('cancel');
@@ -317,6 +345,16 @@ export function installArtifactInput(
     }
     render();
     dispatchEvent(new CustomEvent('vibe:state', { detail: { ...state } }));
+    if (config.actions)
+      dispatchEvent(
+        new CustomEvent('vibe:data', {
+          detail: {
+            data: state.data ?? null,
+            revision: state.revision ?? 0,
+            updatedAt: state.updatedAt ?? null,
+          },
+        })
+      );
   });
   addEventListener('DOMContentLoaded', () => {
     if (!document.querySelector('[data-vibe-status]')) {

@@ -72,6 +72,7 @@ import {
   validateRoutineScope,
 } from './routines.mjs';
 import { fetchWithRetry } from './fetch-retry.mjs';
+import { createArtifactChannels } from './artifact-channels.mjs';
 import {
   DEFAULT_KINDS,
   createCoalescer,
@@ -317,6 +318,7 @@ const githubIssueLinkInFlight = new Map();
 // if discussions outgrow worker memory. Restart/reset deliberately does a full read.
 const githubCommentSyncCache = new Map();
 let writeQueue = Promise.resolve();
+let artifactChannels = createArtifactChannels({ state, persist: () => persistState(true), runRule });
 
 if (process.argv.includes('--self-test')) {
   await testGithubIssueReconcile();
@@ -348,6 +350,7 @@ async function bootstrap() {
   state = await readJson(STATE_PATH, defaultState);
   logs = await readJson(LOG_PATH, []);
   ensureDefaults();
+  artifactChannels = createArtifactChannels({ state, persist: () => persistState(true), runRule });
   restoreRoutineBuffers();
   await persistState();
   scheduleAll();
@@ -420,6 +423,26 @@ async function route(req, res) {
 
   if (!isAuthorized(req)) {
     sendJson(res, 401, { error: 'unauthorized' });
+    return;
+  }
+
+  if ((url.pathname === '/api/artifact-channels' || url.pathname.startsWith('/api/artifact-channels/')) && req.method === 'POST') {
+    const input = await readBodyJson(req);
+    try {
+      const parts = url.pathname.split('/').filter(Boolean);
+      let result;
+      if (parts.length === 2) result = await artifactChannels.configure(input);
+      else if (parts.length === 4 && parts[3] === 'describe')
+        result = artifactChannels.describe(parts[2], input.scope);
+      else if (parts.length === 4 && parts[3] === 'snapshot')
+        result = artifactChannels.snapshot(parts[2], input.scope, input.version, input.binding_id, input.request_id);
+      else if (parts.length === 4 && parts[3] === 'request')
+        result = await artifactChannels.request(parts[2], input);
+      else return sendJson(res, 404, { error: 'not found' });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, error.statusCode || 503, { error: error.statusCode ? error.message : 'Artifact automation unavailable' });
+    }
     return;
   }
 
@@ -709,6 +732,8 @@ function preserveMaskedSecrets(prevConfig, nextConfig) {
 // Deep copy of state with every credential replaced by the mask, for responses.
 function maskState(current) {
   const copy = cloneData(current);
+  delete copy.artifactRequests;
+  delete copy.artifactChannels;
   // Incomplete operations can contain issue titles/descriptions. They are
   // internal recovery state, not automation settings, so never expose them.
   delete copy.githubIssueLinkOperations;
@@ -1115,8 +1140,8 @@ async function runRoutine(routine, event, idempotencyKey) {
   state.routineClaims[idempotencyKey] = { runId: run.id, status: 'running' };
   routineInFlight.add(routine.id);
   if (targetHostId) routineHostInFlight.add(targetHostId);
-  await persistState();
   try {
+    await persistState(event.source === 'artifact');
     await executeRoutineAction(routine, {
       ...event,
       routineIdempotencyKey: idempotencyKey,
@@ -1125,10 +1150,10 @@ async function runRoutine(routine, event, idempotencyKey) {
     state.routineIdempotency[idempotencyKey] = run.id;
     state.routineClaims[idempotencyKey].status = 'succeeded';
   } catch (error) {
-    run.status = 'retrying';
-    state.routineClaims[idempotencyKey].status = 'retrying';
+    run.status = event.source === 'artifact' ? 'exhausted' : 'retrying';
+    state.routineClaims[idempotencyKey].status = run.status;
     run.error = errorMessage(error);
-    await enqueueRoutineRetry(routine, event, idempotencyKey, error);
+    if (event.source !== 'artifact') await enqueueRoutineRetry(routine, event, idempotencyKey, error);
   } finally {
     run.finishedAt = new Date().toISOString();
     routineInFlight.delete(routine.id);
@@ -4331,8 +4356,20 @@ function createRuleContext(rule, event, conditionOnly = false) {
     log: (level, message, meta = {}) =>
       log(level, message, { ruleId: rule.id, ...meta }),
     connectors: cloneData(state.connectors),
+    artifacts: {
+      publish: (channelId, data) => artifactChannels.publish(rule.id, channelId, data),
+      complete: (channelId, requestId, status, message) => artifactChannels.complete(rule.id, channelId, requestId, status, message),
+    },
     actions: {
       vibe: {
+        runRoutine: async (routineId) => {
+          if (event.source !== 'artifact') throw new Error('An explicit artifact request is required');
+          const routine = state.routines.find((item) => item.id === routineId && item.enabled);
+          if (!routine || routine.action?.targetHostId !== event.scope?.owner_host)
+            throw new Error('Routine is unavailable on the bound host');
+          const result = await runRoutine(routine, event, `artifact:${event.request_id}:${routineId}`);
+          return { status: result.ok ? 'accepted' : 'unknown' };
+        },
         createIssue: (connectorId, input) =>
           createVibeIssue(connectorId, input, event, rule),
         notifyPullRequestComment: (connectorId, input) =>
@@ -4352,7 +4389,10 @@ function createRuleContext(rule, event, conditionOnly = false) {
       },
     },
   };
-  if (conditionOnly) delete context.actions;
+  if (conditionOnly) {
+    delete context.actions;
+    delete context.artifacts;
+  }
   return context;
 }
 
@@ -4780,8 +4820,8 @@ async function readJson(filePath, fallback) {
   }
 }
 
-async function persistState() {
-  await enqueueWrite(STATE_PATH, JSON.stringify(state, null, 2));
+async function persistState(strict = false) {
+  await enqueueWrite(STATE_PATH, JSON.stringify(state, null, 2), strict);
 }
 
 let logsDirty = false;
@@ -4801,10 +4841,10 @@ function scheduleLogFlush() {
   if (typeof logFlushTimer.unref === 'function') logFlushTimer.unref();
 }
 
-function enqueueWrite(filePath, content) {
+function enqueueWrite(filePath, content, strict = false) {
   // Keep the chain alive: one rejected write must not permanently stall every
-  // future persist. Each task reports and swallows its own error.
-  writeQueue = writeQueue.then(async () => {
+  // future persist. Artifact dispatch claims must report failures to the caller.
+  const pending = writeQueue.then(async () => {
     try {
       const tmpPath = `${filePath}.${process.pid}.tmp`;
       await fs.writeFile(tmpPath, content);
@@ -4814,9 +4854,11 @@ function enqueueWrite(filePath, content) {
         `[persist] write failed for ${filePath}:`,
         errorMessage(error)
       );
+      if (strict) throw error;
     }
   });
-  return writeQueue;
+  writeQueue = pending.catch(() => {});
+  return pending;
 }
 
 function log(level, message, meta = {}) {

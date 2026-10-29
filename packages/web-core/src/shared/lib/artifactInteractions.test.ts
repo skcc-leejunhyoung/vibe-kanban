@@ -31,12 +31,46 @@ const interaction = {
 
 beforeEach(() => {
   request.mockReset();
-  request.mockResolvedValue(
-    new Response(JSON.stringify({ success: true, data: interaction }))
+  request.mockImplementation(
+    async () =>
+      new Response(JSON.stringify({ success: true, data: interaction }))
   );
 });
 
 describe('artifact input host routing', () => {
+  it.each([null, 'paired-host'])(
+    'pins automation data and actions to %s with stable request IDs',
+    async (host) => {
+      await artifactsApi.automationSnapshot(interaction, host, 'operation');
+      const [readUrl, readOptions] = request.mock.calls[0];
+      expect(readUrl).toContain('operation_id=operation');
+      expect(readOptions.hostId).toBe(host);
+      expect(readOptions.hostScope).toBe('explicit');
+      const action = { request_id: 'operation', action: 'refresh', data: {} };
+      await artifactsApi.automationRequest(interaction, action, host);
+      const [url, options] = request.mock.calls[1];
+      expect(url).toContain('/interactions/request/automation?');
+      expect(options.hostId).toBe(host);
+      expect(options.relayHostId).toBe(host);
+      expect(JSON.parse(options.body)).toEqual({
+        artifact_id: 'form',
+        version: 'bundle',
+        owner_host: 'owner-host',
+        request: action,
+      });
+    }
+  );
+  it('does not automatically repeat an uncertain automation action', async () => {
+    request.mockRejectedValue(new Error('Response lost'));
+    await expect(
+      artifactsApi.automationRequest(
+        interaction,
+        { request_id: 'operation', action: 'refresh', data: {} },
+        'paired-host'
+      )
+    ).rejects.toThrow('Response lost');
+    expect(request).toHaveBeenCalledTimes(1);
+  });
   it('requires the fixed bundle version when loading a registered form', async () => {
     await artifactsApi.bundle(
       'process',

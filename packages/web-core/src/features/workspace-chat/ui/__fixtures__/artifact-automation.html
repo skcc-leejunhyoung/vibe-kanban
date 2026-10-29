@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review dashboard example</title>
+<style>body{font:16px system-ui;padding:20px;color:#192338}button,input{font:inherit;padding:10px;margin:5px}output{display:block;font-size:32px;font-weight:700}small{display:block;color:#526078}</style></head>
+<body>
+  <h2>리뷰 대기 현황</h2><output id="count">데이터 대기 중</output>
+  <small id="updated">아직 갱신되지 않았습니다</small><p data-vibe-status role="status"></p>
+  <button type="button" data-vibe-request="refresh">새로고침</button>
+  <label>검토 메모 <input id="note" name="note" autocomplete="off"></label>
+  <button type="button" data-vibe-cancel>연결 종료</button>
+  <script>
+    function render(snapshot) {
+      document.getElementById('count').textContent = snapshot.data ? `${snapshot.data.count}개` : '데이터 대기 중';
+      document.getElementById('updated').textContent = snapshot.updatedAt ? `마지막 갱신: ${new Date(snapshot.updatedAt).toLocaleTimeString()}` : '아직 갱신되지 않았습니다';
+    }
+    addEventListener('vibe:data', event => render(event.detail));
+    render(window.vibe.getData());
+  </script>
+</body></html>

@@ -1025,6 +1025,10 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/artifacts/bundle", get(super::artifacts::bundle))
         .route("/artifacts/content", get(super::artifacts::content))
         .route(
+            "/artifacts/automation-channels",
+            post(super::artifact_interactions::configure_automation_channel),
+        )
+        .route(
             "/artifacts/interactions",
             get(super::artifact_interactions::list).post(super::artifact_interactions::register),
         )
@@ -1035,6 +1039,13 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route(
             "/artifacts/interactions/{request_id}/result",
             get(super::artifact_interactions::result),
+        )
+        .route(
+            "/artifacts/interactions/{request_id}/automation",
+            get(super::artifact_interactions::automation_snapshot).merge(
+                post(super::artifact_interactions::automation_request)
+                    .layer(from_fn(finish_after_disconnect)),
+            ),
         )
         .route("/raw-logs/ws", get(stream_raw_logs_ws))
         .route("/raw-logs/sse", get(stream_raw_logs_sse))

@@ -12,9 +12,10 @@ use deployment::Deployment;
 use serde::{Deserialize, Serialize};
 use services::services::{
     artifact_interactions::{
-        self as inputs, ArtifactDelivery, ArtifactHandler, ArtifactInputSchema,
-        ArtifactInteraction, ArtifactInteractionRef, ArtifactInteractionState as Status,
-        ArtifactResponse, Receipt,
+        self as inputs, ArtifactAutomationBinding, ArtifactAutomationRequest,
+        ArtifactAutomationResult, ArtifactAutomationSnapshot, ArtifactDelivery, ArtifactHandler,
+        ArtifactInputSchema, ArtifactInteraction, ArtifactInteractionRef,
+        ArtifactInteractionState as Status, ArtifactResponse, Receipt,
     },
     container::ContainerService,
 };
@@ -51,11 +52,42 @@ async fn owner_id(deployment: &DeploymentImpl) -> String {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ConfigureAutomationChannel {
+    pub config: serde_json::Value,
+}
+
+/// Uses the automation-write gate. Agents cannot silently grant access by registering a form.
+pub async fn configure_automation_channel(
+    Extension(process): Extension<ExecutionProcess>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<ArtifactQuery>,
+    Json(mut request): Json<ConfigureAutomationChannel>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
+    check_owner()?;
+    scoped_manifest(&deployment, &process, &query).await?;
+    let config = request
+        .config
+        .as_object_mut()
+        .ok_or_else(|| ApiError::BadRequest("Expected channel configuration".into()))?;
+    let channel = config
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    config.insert("scope".into(), serde_json::json!({"owner_id": owner_id(&deployment).await,
+        "owner_host": deployment.user_id(), "workspace_id": query.workspace_id, "session_id": process.session_id}));
+    let result = super::automation::artifact_channel(&channel, "configure", request.config).await?;
+    Ok(Json(ApiResponse::success(result)))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegisterInteraction {
     pub artifact_id: String,
     pub schema: ArtifactInputSchema,
     pub delivery: ArtifactDelivery,
     pub handler: Option<ArtifactHandler>,
+    pub automation_channel: Option<String>,
     /// Required declaration. No protected handler is installed in this version.
     pub sensitive: bool,
 }
@@ -105,6 +137,34 @@ pub async fn register(
         .bundles
         .get(&request.artifact_id)
         .ok_or_else(|| ApiError::BadRequest("Unknown artifact".into()))?;
+    let owner = owner_id(&deployment).await;
+    let automation = match (request.delivery, &request.automation_channel) {
+        (ArtifactDelivery::Automation, Some(channel)) => {
+            let binding: ArtifactAutomationBinding = super::automation::artifact_channel(
+                channel,
+                "describe",
+                serde_json::json!({"scope": {"owner_id": owner, "owner_host": deployment.user_id(),
+                    "workspace_id": query.workspace_id, "session_id": process.session_id}}),
+            )
+            .await?;
+            binding.check().map_err(bad)?;
+            if binding.channel_id != *channel {
+                return Err(ApiError::BadRequest("Wrong automation channel".into()));
+            }
+            Some(binding)
+        }
+        (ArtifactDelivery::Automation, None) => {
+            return Err(ApiError::BadRequest(
+                "An automation channel is required".into(),
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(ApiError::BadRequest(
+                "A channel requires automation delivery".into(),
+            ));
+        }
+        (_, None) => None,
+    };
     if bundle.artifact.mime != "text/html"
         || bundle.artifact.content_hash.is_none()
         || bundle.artifact.status != executors::logs::artifacts::ArtifactStatus::Ready
@@ -132,6 +192,7 @@ pub async fn register(
                 && receipt.interaction.schema == request.schema
                 && receipt.interaction.delivery == request.delivery
                 && receipt.interaction.handler == request.handler
+                && receipt.interaction.automation == automation
             {
                 return Ok(Json(ApiResponse::success(receipt.interaction)));
             }
@@ -149,13 +210,14 @@ pub async fn register(
         },
         workspace_id: query.workspace_id,
         owner_host: deployment.user_id().to_string(),
-        owner_id: owner_id(&deployment).await,
+        owner_id: owner,
         artifact_id: request.artifact_id,
         artifact_hash: bundle.artifact.content_hash.clone().unwrap(),
         version,
         schema: request.schema,
         delivery: request.delivery,
         handler: request.handler,
+        automation,
         state: Status::InputRequired,
         created_at: now,
         expires_at: now + Duration::hours(10),
@@ -274,6 +336,150 @@ pub struct SubmitInteraction {
     pub version: String,
     pub owner_host: String,
     pub response: ArtifactResponse,
+}
+
+#[derive(Deserialize)]
+pub struct AutomationQuery {
+    pub operation_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubmitAutomation {
+    pub artifact_id: String,
+    pub version: String,
+    pub owner_host: String,
+    pub request: ArtifactAutomationRequest,
+}
+
+async fn automation_receipt(
+    deployment: &DeploymentImpl,
+    process: &ExecutionProcess,
+    query: &ArtifactQuery,
+    path: &InteractionPath,
+) -> Result<Receipt, ApiError> {
+    check_owner()?;
+    if path.id != process.id {
+        return Err(ApiError::Forbidden("Wrong execution".into()));
+    }
+    let manifest = scoped_manifest(deployment, process, query)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Artifact snapshot unavailable".into()))?;
+    let _guard = inputs::LOCK.lock().await;
+    let mut receipt = inputs::load(&ArtifactInteractionRef {
+        session_id: process.session_id,
+        execution_id: process.id,
+        request_id: path.request_id,
+    })
+    .await
+    .map_err(bad)?;
+    refresh(deployment, process, query, &mut receipt).await?;
+    let i = &receipt.interaction;
+    if i.delivery != ArtifactDelivery::Automation
+        || i.state != Status::InputRequired
+        || i.automation.is_none()
+    {
+        return Err(ApiError::Conflict(
+            "Automation binding has ended; register a new request".into(),
+        ));
+    }
+    let bundle = manifest
+        .bundles
+        .get(&i.artifact_id)
+        .ok_or_else(|| ApiError::BadRequest("Artifact is no longer available".into()))?;
+    if inputs::bundle_version(bundle).map_err(bad)? != i.version {
+        return Err(ApiError::Conflict(
+            "Artifact changed; register a new request".into(),
+        ));
+    }
+    Ok(receipt)
+}
+
+fn automation_scope(i: &ArtifactInteraction) -> serde_json::Value {
+    serde_json::json!({"owner_id": i.owner_id, "owner_host": i.owner_host,
+        "workspace_id": i.workspace_id, "session_id": i.reference.session_id})
+}
+
+pub async fn automation_snapshot(
+    Extension(process): Extension<ExecutionProcess>,
+    State(deployment): State<DeploymentImpl>,
+    Path(path): Path<InteractionPath>,
+    Query(query): Query<ArtifactQuery>,
+    Query(operation): Query<AutomationQuery>,
+) -> Result<Json<ApiResponse<ArtifactAutomationSnapshot>>, ApiError> {
+    let receipt = automation_receipt(&deployment, &process, &query, &path).await?;
+    let i = &receipt.interaction;
+    let binding = i.automation.as_ref().unwrap();
+    let snapshot: ArtifactAutomationSnapshot = super::automation::artifact_channel(
+        &binding.channel_id,
+        "snapshot",
+        serde_json::json!({"scope": automation_scope(i), "version": binding.version,
+            "binding_id": i.reference.request_id, "request_id": operation.operation_id}),
+    )
+    .await?;
+    if !snapshot.data.is_null() {
+        if serde_json::to_vec(&snapshot.data)
+            .map_err(|error| bad(error.into()))?
+            .len()
+            > inputs::MAX_RESPONSE_BYTES
+        {
+            return Err(ApiError::BadGateway(
+                "Automation data exceeds its size limit".into(),
+            ));
+        }
+        binding
+            .data_schema
+            .validate(&snapshot.data, "data")
+            .map_err(bad)?;
+    }
+    Ok(Json(ApiResponse::success(snapshot)))
+}
+
+pub async fn automation_request(
+    Extension(process): Extension<ExecutionProcess>,
+    State(deployment): State<DeploymentImpl>,
+    Path(path): Path<InteractionPath>,
+    Query(query): Query<ArtifactQuery>,
+    headers: HeaderMap,
+    Json(request): Json<SubmitAutomation>,
+) -> Result<Json<ApiResponse<ArtifactAutomationResult>>, ApiError> {
+    if headers.contains_key(crate::middleware::agent_access::AGENT_HEADER) {
+        return Err(ApiError::Forbidden(
+            "Automation requests require user input".into(),
+        ));
+    }
+    let receipt = automation_receipt(&deployment, &process, &query, &path).await?;
+    let i = &receipt.interaction;
+    if request.owner_host != i.owner_host
+        || request.artifact_id != i.artifact_id
+        || request.version != i.version
+    {
+        return Err(ApiError::Forbidden(
+            "Artifact request scope does not match".into(),
+        ));
+    }
+    let binding = i.automation.as_ref().unwrap();
+    let action = binding
+        .actions
+        .get(&request.request.action)
+        .ok_or_else(|| ApiError::Forbidden("Unregistered automation action".into()))?;
+    if serde_json::to_vec(&request.request.data)
+        .map_err(|error| bad(error.into()))?
+        .len()
+        > inputs::MAX_RESPONSE_BYTES
+    {
+        return Err(ApiError::BadRequest("Automation input is too large".into()));
+    }
+    action
+        .schema
+        .validate(&request.request.data, "input")
+        .map_err(bad)?;
+    let result = super::automation::artifact_channel(&binding.channel_id, "request", serde_json::json!({
+        "scope": automation_scope(i), "version": binding.version, "binding_id": i.reference.request_id,
+        "expires_at": i.expires_at, "request_id": request.request.request_id,
+        "action": request.request.action, "data": request.request.data,
+    })).await?;
+    Ok(Json(ApiResponse::success(result)))
 }
 
 pub async fn respond(

@@ -273,6 +273,9 @@ function InteractiveArtifact({
       initial: { status: 'loading', message: '', editable: false },
       requestId: interaction.reference.request_id,
       version: interaction.version,
+      actions: interaction.automation
+        ? Object.keys(interaction.automation.actions)
+        : undefined,
       arrayFields:
         interaction.schema.type === 'object'
           ? Object.entries(interaction.schema.properties)
@@ -280,7 +283,12 @@ function InteractiveArtifact({
               .map(([name]) => name)
           : [],
     }),
-    [interaction.reference.request_id, interaction.version, interaction.schema]
+    [
+      interaction.reference.request_id,
+      interaction.version,
+      interaction.schema,
+      interaction.automation,
+    ]
   );
   const content = useArtifactContent(pinned, scope, 'preview', true, input);
   if (content.error)

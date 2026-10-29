@@ -59,6 +59,66 @@ fn worker_token() -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
+/// Only registered artifact operations cross this bridge; never a caller-supplied URL.
+pub(super) async fn artifact_channel<T: DeserializeOwned>(
+    channel: &str,
+    operation: &str,
+    payload: serde_json::Value,
+) -> Result<T, ApiError> {
+    if !services::services::artifact_interactions::valid_channel_id(channel)
+        || !["describe", "snapshot", "request", "configure"].contains(&operation)
+    {
+        return Err(ApiError::BadRequest(
+            "Invalid artifact automation operation".into(),
+        ));
+    }
+    let unavailable = || {
+        ApiError::BadGateway("Artifact automation unavailable; check status before retrying".into())
+    };
+    let token = worker_token().ok_or_else(unavailable)?;
+    let path = if operation == "configure" {
+        "artifact-channels".to_string()
+    } else {
+        format!("artifact-channels/{channel}/{operation}")
+    };
+    let mut response = client()
+        .post(format!(
+            "{}/api/{path}",
+            worker_base_url().trim_end_matches('/')
+        ))
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(20))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|_| unavailable())?;
+    let status = response.status();
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
+        if body.len() + chunk.len() > 128 * 1024 {
+            return Err(unavailable());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    if !status.is_success() {
+        let message = serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| {
+                v.get("error")
+                    .and_then(|e| e.as_str())
+                    .map(|e| e.chars().take(500).collect())
+            })
+            .unwrap_or_else(|| "Artifact automation request failed".to_string());
+        return Err(match status.as_u16() {
+            400 | 413 | 422 => ApiError::BadRequest(message),
+            403 | 404 => ApiError::Forbidden(message),
+            409 | 429 => ApiError::Conflict(message),
+            _ => unavailable(),
+        });
+    }
+    serde_json::from_slice(&body).map_err(|_| unavailable())
+}
+
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/automation/{*tail}", any(proxy))

@@ -359,7 +359,7 @@ export type ApprovalInfo = { approval_id: string, tool_name: string, execution_p
 
 export type ArtifactInputSchema = { "type": "object", properties: { [key in string]?: ArtifactInputSchema }, required: Array<string>, } | { "type": "string", enum: Array<string> | null, maxLength: number, } | { "type": "number", minimum: number | null, maximum: number | null, } | { "type": "boolean" } | { "type": "array", items: ArtifactInputSchema, maxItems: number, };
 
-export type ArtifactDelivery = "follow_up" | "wait" | "service";
+export type ArtifactDelivery = "follow_up" | "wait" | "service" | "automation";
 
 export type ArtifactHandler = "session.rename";
 
@@ -375,9 +375,19 @@ owner_host: string, owner_id: string, artifact_id: string, artifact_hash: string
 /**
  * Covers the HTML and every bundled dependency, not just the HTML hash.
  */
-version: string, schema: ArtifactInputSchema, delivery: ArtifactDelivery, handler: ArtifactHandler | null, state: ArtifactInteractionState, created_at: string, expires_at: string, result_process_id: string | null, error: string | null, };
+version: string, schema: ArtifactInputSchema, delivery: ArtifactDelivery, handler: ArtifactHandler | null, automation: ArtifactAutomationBinding | null, state: ArtifactInteractionState, created_at: string, expires_at: string, result_process_id: string | null, error: string | null, };
 
 export type ArtifactResponse = { "action": "submit", data: unknown, } | { "action": "cancel" };
+
+export type ArtifactAutomationAction = { label: string, schema: ArtifactInputSchema, };
+
+export type ArtifactAutomationBinding = { channel_id: string, version: string, data_schema: ArtifactInputSchema, actions: { [key in string]?: ArtifactAutomationAction }, };
+
+export type ArtifactAutomationRequest = { request_id: string, action: string, data: unknown, };
+
+export type ArtifactAutomationResult = { request_id: string, action: string, status: ArtifactInteractionState, message: string | null, };
+
+export type ArtifactAutomationSnapshot = { revision: number, updated_at: string | null, data: unknown, request: ArtifactAutomationResult | null, };
 
 export type ApprovalStatus = { "status": "pending" } | { "status": "approved" } | { "status": "denied", reason?: string, } | { "status": "timed_out" };
 

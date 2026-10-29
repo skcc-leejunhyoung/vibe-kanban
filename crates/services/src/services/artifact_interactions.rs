@@ -192,6 +192,86 @@ pub enum ArtifactDelivery {
     FollowUp,
     Wait,
     Service,
+    Automation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactAutomationAction {
+    pub label: String,
+    pub schema: ArtifactInputSchema,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactAutomationBinding {
+    pub channel_id: String,
+    pub version: String,
+    pub data_schema: ArtifactInputSchema,
+    pub actions: BTreeMap<String, ArtifactAutomationAction>,
+}
+
+impl ArtifactAutomationBinding {
+    pub fn check(&self) -> Result<()> {
+        ensure!(
+            valid_channel_id(&self.channel_id),
+            "Invalid automation channel"
+        );
+        ensure!(self.version.len() == 64, "Invalid automation version");
+        ensure!(self.actions.len() <= 16, "Too many automation actions");
+        self.data_schema.check(0)?;
+        for (name, action) in &self.actions {
+            ensure!(valid_channel_id(name), "Invalid automation action");
+            ensure!(
+                !action.label.is_empty() && action.label.len() <= 480,
+                "Invalid action label"
+            );
+            ensure!(
+                matches!(action.schema, ArtifactInputSchema::Object { .. }),
+                "Expected an object schema"
+            );
+            action.schema.check(0)?;
+        }
+        Ok(())
+    }
+}
+
+pub fn valid_channel_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 80
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && !["__proto__", "constructor", "prototype"].contains(&value)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactAutomationRequest {
+    pub request_id: Uuid,
+    pub action: String,
+    #[ts(type = "unknown")]
+    pub data: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactAutomationResult {
+    pub request_id: Uuid,
+    pub action: String,
+    pub status: ArtifactInteractionState,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactAutomationSnapshot {
+    #[ts(type = "number")]
+    pub revision: u64,
+    pub updated_at: Option<DateTime<Utc>>,
+    #[ts(type = "unknown")]
+    pub data: Value,
+    pub request: Option<ArtifactAutomationResult>,
 }
 
 /// App-owned allowlist. Artifact data never supplies a URL or target session.
@@ -272,6 +352,8 @@ pub struct ArtifactInteraction {
     pub delivery: ArtifactDelivery,
     #[serde(default)]
     pub handler: Option<ArtifactHandler>,
+    #[serde(default)]
+    pub automation: Option<ArtifactAutomationBinding>,
     pub state: ArtifactInteractionState,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -344,6 +426,11 @@ impl Receipt {
         response: ArtifactResponse,
     ) -> Result<bool> {
         let i = &mut self.interaction;
+        ensure!(
+            i.delivery != ArtifactDelivery::Automation
+                || matches!(response, ArtifactResponse::Cancel),
+            "Use a registered automation action"
+        );
         ensure!(
             i.artifact_id == artifact_id && i.version == version,
             "Artifact version does not match"
@@ -588,6 +675,7 @@ mod tests {
                 schema: schema(),
                 delivery: ArtifactDelivery::FollowUp,
                 handler: None,
+                automation: None,
                 state: ArtifactInteractionState::InputRequired,
                 created_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::hours(1),
@@ -595,6 +683,50 @@ mod tests {
                 error: None,
             },
         }
+    }
+
+    #[test]
+    fn automation_binding_is_bounded_and_cannot_use_one_shot_submit() {
+        let mut binding = ArtifactAutomationBinding {
+            channel_id: "dashboard".into(),
+            version: "a".repeat(64),
+            data_schema: schema(),
+            actions: BTreeMap::from([(
+                "refresh".into(),
+                ArtifactAutomationAction {
+                    label: "Refresh".into(),
+                    schema: schema(),
+                },
+            )]),
+        };
+        binding.check().unwrap();
+        binding.channel_id = "../state".into();
+        assert!(binding.check().is_err());
+        binding.channel_id = "dashboard".into();
+        binding.actions.get_mut("refresh").unwrap().schema = ArtifactInputSchema::Boolean;
+        assert!(binding.check().is_err());
+        let mut receipt = receipt();
+        receipt.interaction.delivery = ArtifactDelivery::Automation;
+        assert!(
+            receipt
+                .accept(
+                    "form",
+                    "bundle-hash",
+                    ArtifactResponse::Submit {
+                        data: json!({"choice":"run"})
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            receipt
+                .accept("form", "bundle-hash", ArtifactResponse::Cancel)
+                .unwrap()
+        );
+        assert_eq!(
+            receipt.interaction.state,
+            ArtifactInteractionState::Cancelled
+        );
     }
 
     #[test]

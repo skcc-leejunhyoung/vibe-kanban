@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { ArtifactInteraction, ArtifactResponse } from 'shared/types';
 import { ApiError, artifactsApi } from '@/shared/lib/api';
 import type { ArtifactViewState } from '@/shared/lib/artifactInputBridge';
+import { useArtifactAutomation } from './useArtifactAutomation';
 
 // Native form drafts only, scoped to this page and request. No browser storage,
 // backend writes, or model messages on input. Virtualized rows may unmount.
@@ -38,23 +39,49 @@ export function ArtifactInputFrame({
   const [error, setError] = useState<string>();
   const [uncertain, setUncertain] = useState(!!views.get(key)?.pending);
   const [expanded, setExpanded] = useState(false);
-  const view: ArtifactViewState = {
-    status: sending
+  const automation = useArtifactAutomation(interaction, hostId);
+  const live = !!interaction.automation;
+  const displayError = error ?? (live ? automation.error : undefined);
+  const displayStatus =
+    live && interaction.state === 'input_required'
+      ? (automation.current?.status ?? interaction.state)
+      : interaction.state;
+  const messageStatus =
+    sending || (live && automation.sending)
       ? 'sending'
-      : disconnected || uncertain
-        ? 'disconnected'
-        : interaction.state,
+      : live && displayStatus === 'input_required'
+        ? 'automationReady'
+        : displayStatus;
+  const view: ArtifactViewState = {
+    status:
+      sending || (live && automation.sending)
+        ? 'sending'
+        : disconnected || uncertain || (live && automation.uncertain)
+          ? 'disconnected'
+          : displayStatus,
     message:
-      error ??
-      (disconnected || uncertain
+      displayError ??
+      (disconnected || uncertain || (live && automation.uncertain)
         ? t('artifacts.input.disconnected')
-        : (interaction.error ??
-          t(`artifacts.input.${sending ? 'sending' : interaction.state}`))),
+        : ((live && interaction.state === 'input_required'
+            ? automation.current?.message
+            : undefined) ??
+          interaction.error ??
+          t(`artifacts.input.${messageStatus}`))),
     editable:
       !sending &&
       !disconnected &&
       !uncertain &&
-      interaction.state === 'input_required',
+      interaction.state === 'input_required' &&
+      (!live || automation.editable),
+    ...(live
+      ? {
+          data: automation.snapshot?.data,
+          revision: automation.snapshot?.revision,
+          updatedAt: automation.snapshot?.updated_at,
+          request: automation.current,
+        }
+      : {}),
   };
   const state = useRef(view);
   state.current = view;
@@ -74,7 +101,16 @@ export function ArtifactInputFrame({
 
   useEffect(() => {
     postState();
-  }, [postState, view.status, view.message, view.editable]);
+  }, [
+    postState,
+    view.status,
+    view.message,
+    view.editable,
+    view.data,
+    view.revision,
+    view.updatedAt,
+    view.request,
+  ]);
 
   const submit = async (response: ArtifactResponse) => {
     if (busy.current) return;
@@ -104,8 +140,8 @@ export function ArtifactInputFrame({
       setSending(false);
     }
   };
-  const handlers = useRef({ submit, refresh });
-  handlers.current = { submit, refresh };
+  const handlers = useRef({ submit, refresh, request: automation.request });
+  handlers.current = { submit, refresh, request: automation.request };
   useEffect(() => {
     const listener = (event: MessageEvent) => {
       if (event.source !== frame.current?.contentWindow) return;
@@ -126,6 +162,16 @@ export function ArtifactInputFrame({
       )
         return;
       switch (event.data.event) {
+        case 'request':
+          if (
+            state.current.editable &&
+            typeof event.data.data?.action === 'string'
+          )
+            handlers.current.request(
+              event.data.data.action,
+              event.data.data.data
+            );
+          break;
         case 'ready':
           postState(true);
           break;
@@ -156,6 +202,7 @@ export function ArtifactInputFrame({
   const check = async () => {
     try {
       await handlers.current.refresh();
+      if (live) await automation.check();
       setError(undefined);
       setUncertain(false);
       const saved = views.get(key);
@@ -192,10 +239,20 @@ export function ArtifactInputFrame({
           }
         />
         <figcaption className="space-y-half border-t border-border p-base">
+          {interaction.automation && (
+            <p className="text-normal">
+              {t('artifacts.input.automationActions', {
+                actions: Object.values(interaction.automation.actions)
+                  .map((action) => action?.label)
+                  .filter(Boolean)
+                  .join(', '),
+              })}
+            </p>
+          )}
           {interaction.handler === 'session.rename' && (
             <p className="text-normal">{t('artifacts.input.renameSession')}</p>
           )}
-          <p role={error || disconnected ? 'alert' : 'status'}>
+          <p role={displayError || disconnected ? 'alert' : 'status'}>
             {view.message}
           </p>
           {interaction.state === 'failed' && (
@@ -204,16 +261,29 @@ export function ArtifactInputFrame({
           {interaction.state === 'input_required' && (
             <p className="text-low">{t('artifacts.input.noDraftStorage')}</p>
           )}
+          {live && !view.editable && interaction.state === 'input_required' && (
+            <button
+              type="button"
+              className="rounded-sm bg-secondary px-base py-half"
+              disabled={sending}
+              onClick={() => void submit({ action: 'cancel' })}
+            >
+              {t('artifacts.input.automationClose')}
+            </button>
+          )}
           {(disconnected ||
             uncertain ||
-            error ||
+            displayError ||
+            (live &&
+              (automation.uncertain ||
+                automation.current?.status === 'unknown')) ||
             interaction.state === 'unknown' ||
             interaction.state === 'failed') && (
             <div className="flex gap-base">
               <button
                 type="button"
                 className="rounded-sm bg-secondary px-base py-half"
-                disabled={sending}
+                disabled={sending || automation.sending}
                 onClick={() => void check()}
               >
                 {t('artifacts.input.check')}
@@ -224,6 +294,16 @@ export function ArtifactInputFrame({
                   className="rounded-sm bg-secondary px-base py-half"
                   disabled={sending}
                   onClick={() => void submit(views.get(key)!.pending!)}
+                >
+                  {t('artifacts.input.retry')}
+                </button>
+              )}
+              {live && automation.retry && (
+                <button
+                  type="button"
+                  className="rounded-sm bg-secondary px-base py-half"
+                  disabled={automation.sending}
+                  onClick={() => void automation.retry?.()}
                 >
                   {t('artifacts.input.retry')}
                 </button>

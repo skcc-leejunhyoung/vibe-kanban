@@ -1099,6 +1099,29 @@ const COMMANDS: &[Cmd] = &[
         ],
     ),
     cmd(
+        &["session", "artifacts", "automation-channel"],
+        "Configure a scoped automation channel (requires automation-write access)",
+        "POST",
+        "/execution-processes/{exec}/artifacts/automation-channels",
+        &[
+            EXEC,
+            keyed(
+                req("ws", "Workspace id", Where::Query, Kind::Str),
+                "workspace_id",
+            ),
+            keyed(
+                req("session", "Session id", Where::Query, Kind::Str),
+                "session_id",
+            ),
+            req(
+                "config",
+                "Channel configuration JSON: id, enabled, sensitive=false, data_schema, publishers, actions",
+                Where::Body,
+                Kind::Json,
+            ),
+        ],
+    ),
+    cmd(
         &["session", "artifacts", "request"],
         "Register non-sensitive inline form input (see the artifact input guide)",
         "POST",
@@ -1130,7 +1153,7 @@ const COMMANDS: &[Cmd] = &[
             ),
             req(
                 "delivery",
-                "wait, follow_up (same session), or service (registered handler)",
+                "wait, follow_up, service, or automation (registered channel)",
                 Where::Body,
                 Kind::Str,
             ),
@@ -1139,6 +1162,15 @@ const COMMANDS: &[Cmd] = &[
                 "Service handler: session.rename (schema: name string, maxLength 80, required)",
                 Where::Body,
                 Kind::Str,
+            ),
+            keyed(
+                opt(
+                    "automation-channel",
+                    "Scoped automation channel id",
+                    Where::Body,
+                    Kind::Str,
+                ),
+                "automation_channel",
             ),
             req(
                 "sensitive",

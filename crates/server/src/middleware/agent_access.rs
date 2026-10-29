@@ -231,7 +231,8 @@ fn toggle_for(
             Toggle::UpdateConfig
         }
         ["repos", ..] => Toggle::UpdateConfig,
-        ["automation", ..] | ["automation-actions", ..] | ["agent-memory-sync", ..] => {
+        ["automation", ..] | ["automation-actions", ..] | ["agent-memory-sync", ..]
+        | ["execution-processes", _, "artifacts", "automation-channels"] => {
             Toggle::AutomationWrite
         }
         ["remote", ..] | ["tags", ..] | ["organizations", ..] => Toggle::WriteIssues,
@@ -559,6 +560,15 @@ mod tests {
         let paired_input =
             format!("/api/host/{host}/execution-processes/abc/artifacts/interactions");
         let mine = format!("workspace_id={other}&session_id={own}");
+        for path in [
+            "/api/execution-processes/abc/artifacts/automation-channels".to_string(),
+            format!("/api/host/{host}/execution-processes/abc/artifacts/automation-channels"),
+        ] {
+            assert_eq!(
+                register(&path, &mine, Some(own)),
+                Decision::Gated(Toggle::AutomationWrite)
+            );
+        }
         for path in [local, paired.as_str(), input, paired_input.as_str()] {
             assert_eq!(register(path, &mine, Some(own)), Decision::Allow, "{path}");
         }

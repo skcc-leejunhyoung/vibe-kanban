@@ -1,6 +1,6 @@
 ---
 title: "Interactive artifact input"
-description: "Collect non-sensitive structured responses inside the chat and continue the connected session."
+description: "Collect structured responses and display live automation data inside the chat."
 ---
 
 You can select options or edit a form directly in a registered HTML artifact. Use
@@ -133,6 +133,108 @@ requests are read-only. Fresh requests expire after ten hours; waiting requests
 also expire when their execution ends. Unanswered requests expire after a server
 restart. A changed artifact or dependency requires a new request.
 
+## Automation dashboards
+
+An automation dashboard receives data from an existing trusted automation Rule.
+Buttons can request named actions handled by those Rules. The artifact never
+receives connector credentials, arbitrary API access or the worker's admin token.
+
+1. Create or reuse enabled script Rules in **Settings → Automation**. A publishing
+   Rule calls `await ctx.artifacts.publish('review-dashboard', { count: 3 })` after
+   obtaining a complete result from its existing event or connector. A button Rule
+   receives `event.source === 'artifact'`, `event.action`, `event.data` and
+   `event.request_id`. Return `{ status: 'completed' }` only after its work finishes.
+2. Attach the dashboard HTML and configure a channel with
+   `vk session artifacts automation-channel <execution-id> --ws <workspace-id>
+   --session <session-id> --config '<JSON>'`. This requires automation write
+   permission. Vibe supplies the owner, host, workspace and session scope.
+3. Register the attached artifact using `vk session artifacts request` with
+   `--delivery automation --automation-channel review-dashboard --sensitive false`
+   and `--schema '{"type":"object","properties":{}}'`, plus the usual execution,
+   workspace, session and artifact IDs.
+
+Example channel configuration, using two existing synthetic Rule IDs:
+
+```json
+{
+  "id": "review-dashboard",
+  "enabled": true,
+  "sensitive": false,
+  "data_schema": {
+    "type": "object",
+    "properties": { "count": { "type": "number", "minimum": 0 } },
+    "required": ["count"]
+  },
+  "publishers": ["review-events", "refresh-review-count"],
+  "actions": {
+    "refresh": {
+      "label": "Refresh review count",
+      "rule_id": "refresh-review-count",
+      "schema": { "type": "object", "properties": {} }
+    }
+  }
+}
+```
+
+The channel uses the same bounded schema subset as input forms. Only listed
+publisher Rules may update its data or finish its requests. Channels cannot
+change owner or session. Editing the channel contract or an action Rule invalidates
+existing bindings; close the old request and register a new one. A disabled Rule,
+channel or automation worker rejects requests.
+
+```html dashboard.html
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Review dashboard</title></head>
+<body>
+  <p>Reviews waiting: <output id="count">Waiting for data</output></p>
+  <p data-vibe-status role="status"></p>
+  <button type="button" data-vibe-request="refresh">Refresh</button>
+  <button type="button" data-vibe-cancel>Close dashboard</button>
+  <script>
+    function render() {
+      document.getElementById('count').textContent =
+        window.vibe.getData().data?.count ?? 'Waiting for data';
+    }
+    window.addEventListener('vibe:data', render);
+    render();
+  </script>
+</body>
+</html>
+```
+
+The default action button sends `{}`. To send registered input fields, call
+`window.vibe.request('refresh', data)` synchronously from that button's click
+handler. A real click, keyboard activation or touch is required. Page load,
+timers and programmatic clicks cannot start work. The host displays the registered
+action labels outside the artifact.
+
+Vibe checks for channel data every two seconds while the binding is active.
+`window.vibe.getData()` and the `vibe:data` event detail contain the latest
+`data`, `revision` and `updatedAt`. Updates do not reload the iframe or erase draft input.
+The initial data is `null` until a publisher provides a value. A published count
+is a snapshot: the publishing Rule must calculate the count from the full current
+result, rather than assume each individual event is a complete count.
+
+Each click has a new request ID. Vibe saves its claim before dispatch, accepts
+only one in-flight request per binding, and reuses the same ID on explicit retry.
+Rules return `completed`, `failed`, `cancelled` or `accepted`; `accepted` means
+work continues elsewhere. A registered publisher later calls
+`await ctx.artifacts.complete(channelId, requestId, 'completed')` (or `failed` /
+`cancelled`) when that work actually ends. To start an existing Routine, return
+`await ctx.actions.vibe.runRoutine('registered-routine-id')` from the action Rule.
+The Routine must target this binding's host and retains its existing scope and
+execution permission checks. Its result is acceptance, not task completion.
+
+Connection errors stop polling and show an error. **Check status** resumes reads;
+it does not resend actions. **Retry same response** reuses the pending request ID.
+An interrupted or unconfirmed action stays `unknown` and is never automatically
+rerun. Check its result before creating a new binding. If the channel is unavailable,
+the host's **Close dashboard connection** control still ends the binding without
+stopping work already in progress. Reloading does not restore
+drafts or submit anything. Closing the dashboard ends the binding, not work that
+has already started. The normal ten-hour expiry and restart rules still apply.
+
 ## Sensitive input and service adapters
 
 This version rejects sensitive requests. Do not enter passwords, credentials or
@@ -141,8 +243,9 @@ disabled in registered forms, but ordinary fields cannot determine whether text
 you enter is confidential. There is no protected input handler or credential
 storage in this version.
 
-Registered destinations are the waiting agent, the same session's follow-up queue
-and the app-owned `session.rename` service handler. External services require
+Registered destinations are the waiting agent, the same session's follow-up queue,
+the app-owned `session.rename` service handler and explicitly bound automation
+actions. External services require
 their own registered adapter; an artifact cannot select an arbitrary handler.
 Jump is not a dependency.
 

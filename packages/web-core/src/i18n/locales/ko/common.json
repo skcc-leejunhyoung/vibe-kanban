@@ -812,7 +812,10 @@
       "noDraftStorage": "암호 등 민감한 값은 입력하지 마세요. 새로고침하면 미제출 입력이 사라질 수 있습니다.",
       "check": "상태 확인",
       "retry": "같은 응답 재시도",
-      "collapse": "접기"
+      "collapse": "접기",
+      "automationActions": "연결된 자동화 요청: {{actions}}",
+      "automationReady": "자동화 데이터가 이 화면에 갱신됩니다. 연결된 작업은 버튼을 눌러 요청하세요.",
+      "automationClose": "대시보드 연결 종료 (진행 중인 작업은 계속됨)"
     }
   },
   "status": {

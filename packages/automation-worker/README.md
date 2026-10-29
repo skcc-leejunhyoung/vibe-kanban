@@ -201,6 +201,40 @@ retries, origin chains, and execution deadlines are persisted in `state.json`
 so worker restarts resume them. Action requests carry an `Idempotency-Key`
 header for target APIs that support durable side-effect deduplication.
 
+## Artifact channels
+
+Existing trusted Rules can publish non-sensitive dashboard snapshots with
+`await ctx.artifacts.publish(channelId, data)`. Register the channel and its
+closed data/action schemas through `vk session artifacts automation-channel`;
+Vibe binds owner, host, workspace and session. Attach an HTML artifact and register
+it with `--delivery automation --automation-channel <channel-id>`. See
+[`interactive-artifacts.mdx`](../../docs/workspaces/interactive-artifacts.mdx)
+for a complete configuration and HTML example.
+
+Only configured publisher Rules may publish or complete requests. Only named
+actions can be invoked by the artifact. The action Rule receives an `artifact`
+event with `request_id`, `channel_id`, `action`, `data` and `scope`; return
+`{ status: 'completed' }` after work finishes, or `accepted` if it continues
+elsewhere. A publisher records eventual completion with
+`ctx.artifacts.complete(channelId, requestId, 'completed')` (also `failed` or
+`cancelled`). From an artifact action Rule,
+`ctx.actions.vibe.runRoutine(routineId)` runs an existing enabled Routine on the
+bound host, using the existing host bridge scope and execution policies. Its
+successful return is `accepted`, not completion.
+
+These explicit user requests bypass the connector retry queue. The worker
+persists the request claim before invoking a Rule, deduplicates matching IDs and
+allows one in-flight operation per binding. Interrupted or uncertain operations
+are not replayed after restart. A lost response can be checked or explicitly
+retried with the same ID. Data and receipts live in the existing private state
+file; the generic settings response excludes them. Channels are capped at 128,
+actions/publishers at 16 each, and the request ledger at 4,096 records. Expired
+terminal receipts are pruned before admitting new requests.
+
+The admin-token-gated worker API uses `POST /api/artifact-channels` to configure
+and `POST /api/artifact-channels/:id/{describe,snapshot,request}` for the scoped
+bridge. The host injects its token; artifacts cannot call these routes directly.
+
 ## Autopilot: journal events → one prompt
 
 Every signed-in host pushes its agent journal (`process.*`, `approval.*`,
