@@ -13,6 +13,7 @@ test(
   "a stalled Autopilot host cannot block another routine registration",
   { timeout: 10000 },
   async () => {
+    const hostId = "00000000-0000-4000-8000-000000000456";
     const directory = await mkdtemp(
       path.join(tmpdir(), "synthetic-notification-worker-"),
     );
@@ -23,6 +24,8 @@ test(
     const remote = createServer(async (req, res) => {
       if (req.url.startsWith("/stalled/")) return;
       res.setHeader("content-type", "application/json");
+      if (req.url === "/v1/hosts")
+        return res.end(JSON.stringify({ hosts: [{ id: hostId, machine_id: "healthy", access_role: "owner" }] }));
       if (req.url === "/api/automation-actions/status")
         return res.end(
           JSON.stringify({ hostId: "healthy", notificationProtocol: 2 }),
@@ -115,7 +118,7 @@ test(
           );
         }),
       ]);
-      assert.equal(result.host_id, "healthy");
+      assert.equal(result.host_id, hostId);
       assert.equal(result.revoke, false);
     } finally {
       clearTimeout(deadline);
@@ -140,6 +143,7 @@ test(
     );
     const statePath = path.join(directory, "state.json");
     const hostId = randomUUID();
+    const machineId = "npm_user_0000000000000002";
     const sessionId = randomUUID();
     const alertId = randomUUID();
     const leaseId = randomUUID();
@@ -166,8 +170,10 @@ test(
           res.setHeader("content-type", "application/json");
           res.end(JSON.stringify(data));
         };
+        if (req.url === "/v1/hosts")
+          return respond({ hosts: [{ id: hostId, machine_id: machineId, access_role: "owner" }] });
         if (req.url === "/api/automation-actions/status")
-          return respond({ hostId, notificationProtocol: 2 });
+          return respond({ hostId: machineId, notificationProtocol: 2 });
         if (req.url === "/api/workspaces/autopilot")
           return respond({
             data: {
@@ -176,6 +182,7 @@ test(
             },
           });
         if (req.url === "/v1/autopilot-notification-leases") {
+          assert.equal(body.host_id, hostId);
           if (!instance) previousInstance = body.instance_id;
           instance = body.instance_id;
           return respond({ id: leaseId, protocol: 2 });
@@ -259,7 +266,7 @@ test(
           config: {
             baseUrl,
             bearerToken: "synthetic-token",
-            hostBridges: { [hostId]: { baseUrl } },
+            hostBridges: { [machineId]: { baseUrl } },
           },
         },
         {
@@ -281,7 +288,7 @@ test(
           action: {
             type: "send_prompt",
             connectorId: "vibe",
-            targetHostId: hostId,
+            targetHostId: machineId,
             input: {
               target: "autopilot",
               queue: true,

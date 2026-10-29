@@ -181,12 +181,18 @@ matching Routines.
 
 Host actions (`start_workspace`, `send_prompt`, and `notification`) require an
 explicit `targetHostId`. Configure that host under the Vibe connector's
-`hostBridges` map. Project and repository allowlists are deny-by-default:
+`hostBridges` map.
+
+Use the machine ID returned as `hostId` by `GET /api/automation-actions/status`.
+Notification routing resolves it to the owner's registered remote host UUID
+through `GET /v1/hosts`; these identifiers are different.
+
+Project and repository allowlists are deny-by-default:
 
 ```json
 {
   "hostBridges": {
-    "<host uuid>": {
+    "<machine ID>": {
       "baseUrl": "http://host.docker.internal:47823",
       "projectIds": ["<project uuid>"],
       "repositoryIds": ["<repository uuid>"]

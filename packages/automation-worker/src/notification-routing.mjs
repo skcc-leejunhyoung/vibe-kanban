@@ -35,9 +35,21 @@ export function createNotificationRouting({ api, instanceId }) {
       for (const item of itemsOf(event)) known.set(keyOf(item), item);
     },
     async register(routine, kinds, enabled) {
-      const hostId = routine.action.targetHostId;
+      const targetHostId = routine.action.targetHostId;
       const previous = leases.get(routine.id);
       if (!enabled && !previous) return;
+      let hostId = previous?.hostId;
+      if (enabled) {
+        const page = await api(routine, "GET", "/v1/hosts");
+        hostId = page.hosts?.find(
+          (host) =>
+            host.machine_id === targetHostId && host.access_role === "owner",
+        )?.id;
+        if (!hostId)
+          throw new Error(
+            "An owned registered host is required for notification routing",
+          );
+      }
       const response = await api(
         routine,
         "PUT",

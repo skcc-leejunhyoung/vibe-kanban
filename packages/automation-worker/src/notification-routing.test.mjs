@@ -12,8 +12,10 @@ function fixture(instanceId = "instance") {
   let receipt = { status: "missing" };
   let failure;
   let protocol = 2;
-  const api = async (_routine, method, path, payload, host, meta) => {
+  const api = async (routine, method, path, payload, host, meta) => {
     calls.push({ method, path, payload, host, meta });
+    if (path === "/v1/hosts")
+      return { hosts: [{ id: routine.action.targetHostId, machine_id: routine.action.targetHostId, access_role: "owner" }] };
     if (path.startsWith("/v1/notifications/"))
       assert.match(path, /\/(claim|renew-claim|handoff|consume|release)$/);
     if (failure?.(path, payload))
@@ -74,6 +76,8 @@ test("a rejected routine claim cannot reuse its lease in the next routine", asyn
   const routing = createNotificationRouting({
     instanceId: "synthetic-instance",
     async api(routine, _method, path, payload) {
+      if (path === "/v1/hosts")
+        return { hosts: [{ id: routine.action.targetHostId, machine_id: routine.action.targetHostId, access_role: "owner" }] };
       if (path === "/v1/autopilot-notification-leases")
         return { id: `lease-${routine.id}`, protocol: 2 };
       claims.push(payload);
@@ -125,7 +129,9 @@ test("a changed target registers its own lease without reclaiming a superseded w
   let superseded = false;
   const routing = createNotificationRouting({
     instanceId: "synthetic-instance",
-    async api(_routine, _method, path, payload) {
+    async api(routine, _method, path, payload) {
+      if (path === "/v1/hosts")
+        return { hosts: [{ id: routine.action.targetHostId, machine_id: routine.action.targetHostId, access_role: "owner" }] };
       if (path === "/v1/autopilot-notification-leases") {
         registrations.push(payload.register);
         if (payload.register)
@@ -160,6 +166,37 @@ test("a changed target registers its own lease without reclaiming a superseded w
   await assert.rejects(routing.register(current, [], true), { status: 409 });
   await assert.rejects(routing.register(current, [], true), { status: 409 });
   assert.deepEqual(registrations, [true, false, true, false, false]);
+});
+
+test("notification leases use the owned remote UUID rather than the machine ID", async () => {
+  const machineId = "npm_user_0000000000000001";
+  const hostId = "00000000-0000-4000-8000-000000000123";
+  const registrations = [];
+  let owned = true;
+  const routing = createNotificationRouting({
+    instanceId: "synthetic-instance",
+    async api(_routine, _method, path, payload) {
+      if (path === "/v1/hosts")
+        return {
+          hosts: [{
+            id: hostId,
+            machine_id: machineId,
+            access_role: owned ? "owner" : "viewer",
+          }],
+        };
+      registrations.push(payload);
+      assert.equal(payload.host_id, hostId);
+      return { id: "synthetic-lease", protocol: 2 };
+    },
+  });
+  const target = { id: "synthetic-routine", action: { targetHostId: machineId } };
+  await routing.register(target, [], true);
+  owned = false;
+  await assert.rejects(routing.register(target, [], true), /owned.*host/i);
+  assert.equal(registrations.length, 1);
+  await routing.register(target, [], false);
+  assert.equal(registrations.at(-1).host_id, hostId);
+  assert.equal(registrations.at(-1).revoke, true);
 });
 
 test("batch is frozen before the host stages and admits it", async () => {
@@ -394,6 +431,7 @@ test("a false condition releases a pending alert immediately, without claiming r
   const original = journalEventToWorkerEvent({ cursor: 1, kind: 'cloud.notification', host_id: null, host_name: 'cloud', data: { id, type: 'workspace_task_completed', revision: 1, intent: 'raw_event' } });
   assert.equal(eventMatchesRoutine(routine, original), true);
   const routing = createNotificationRouting({ instanceId: 'synthetic-instance', api: async (_r, _method, path) => {
+    if (path === '/v1/hosts') return { hosts: [{ id: 'synthetic-host', machine_id: 'synthetic-host', access_role: 'owner' }] };
     if (path === '/v1/autopilot-notification-leases') return { id: 'synthetic-lease', protocol: 2 };
     return { claims: [{ id, revision: 1, state: 'autopilot_pending', type: 'workspace_task_completed', host_id: 'synthetic-host' }] };
   } });
