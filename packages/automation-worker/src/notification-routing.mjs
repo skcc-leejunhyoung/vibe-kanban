@@ -1,3 +1,5 @@
+import { journalEventToWorkerEvent } from './vibe-events.mjs';
+
 // Central claims, rather than the worker's best-effort JSON cache, own held alerts.
 export function createNotificationRouting({ api, instanceId }) {
   const leases = new Map();
@@ -44,10 +46,23 @@ export function createNotificationRouting({ api, instanceId }) {
           routine_id: routine.id,
           instance_id: instanceId,
           kinds,
+          protocol: 2,
           register: !previous,
           revoke: !enabled,
         },
       );
+      if (enabled && response.protocol !== 2) {
+        leases.delete(routine.id);
+        await api(routine, 'PUT', '/v1/autopilot-notification-leases', {
+          host_id: routine.action.targetHostId,
+          routine_id: routine.id,
+          instance_id: instanceId,
+          kinds,
+          protocol: 2,
+          revoke: true,
+        });
+        throw new Error('notification protocol 2 is required on the remote server');
+      }
       if (enabled) leases.set(routine.id, response.id);
       else leases.delete(routine.id);
     },
@@ -112,7 +127,22 @@ export function createNotificationRouting({ api, instanceId }) {
       const recovered = [];
       for (const row of page.claims || []) {
         const event = {
-          id: `notification:${row.id}:${row.revision}`,
+          ...journalEventToWorkerEvent({
+            kind: 'cloud.notification',
+            host_name: 'cloud',
+            workspace_id: row.workspace_id,
+            cursor: row.cursor,
+            at: row.at,
+            data: {
+              id: row.id,
+              type: row.type,
+              revision: row.revision,
+              intent: 'raw_event',
+            },
+          }),
+          // Before handoff there is no queue side effect to replay. A new
+          // worker must not inherit a crashed run's local exhausted receipt.
+          id: `notification:${row.id}:${row.revision}:${instanceId}`,
           source: "vibe",
           type: "vk_event",
           kind: "cloud.notification",
@@ -120,7 +150,6 @@ export function createNotificationRouting({ api, instanceId }) {
           notificationRevision: row.revision,
           notificationIntent: "raw_event",
           notificationClaim: { lease_id: lease, claim_token: row.claim_token },
-          hostId: row.host_id || null,
           workspaceId: row.workspace_id || null,
           data: { id: row.id, type: row.type },
         };
@@ -136,9 +165,7 @@ export function createNotificationRouting({ api, instanceId }) {
             true,
           );
           if (receipt.status === "succeeded") {
-            await request(routine, event, "consume", {
-              handoff_key: row.handoff_key,
-            });
+            known.delete(key);
           } else if (receipt.status === "missing" && row.handoff) {
             const members = row.handoff.members || [];
             const first = members[0];
@@ -161,14 +188,11 @@ export function createNotificationRouting({ api, instanceId }) {
             await api(
               routine,
               "POST",
-              row.handoff.path,
-              row.handoff.payload,
+              `${row.handoff.path}/notification-handoff`,
+              { lease_id: lease, handoff: row.handoff },
               true,
               row.handoff.meta,
             );
-            await request(routine, event, "consume", {
-              handoff_key: row.handoff_key,
-            });
           }
           // Running or unreachable is uncertain: renew, never resend under a new key.
           continue;
@@ -197,25 +221,32 @@ export function createNotificationRouting({ api, instanceId }) {
           claim_token: item.notificationClaim.claim_token,
         })),
       };
-      if (items.length)
+      if (items.length) {
+        // Raw alerts always enter the durable queue, including an idle target.
+        delivery.path = delivery.path.replace(/\/follow-up$/, '/queue');
+        delivery.payload = {
+          message: delivery.payload.message ?? delivery.payload.prompt,
+          executor_config: delivery.payload.executor_config,
+        };
         await request(routine, items[0], "handoff", {
           handoff_key: delivery.meta.idempotencyKey,
           handoff: delivery,
           members: delivery.members,
         });
-      // A restored local buffer cannot bypass a terminal central fallback.
+      }
+      // The receiving host stages the exact body, then atomically admits every
+      // member centrally before publishing any runnable queue entry.
       const result = await api(
         routine,
         "POST",
-        delivery.path,
-        delivery.payload,
+        items.length ? `${delivery.path}/notification-handoff` : delivery.path,
+        items.length
+          ? { lease_id: items[0].notificationClaim.lease_id, handoff: delivery }
+          : delivery.payload,
         true,
         delivery.meta,
       );
       for (const item of items) {
-        await request(routine, item, "consume", {
-          handoff_key: delivery.meta.idempotencyKey,
-        });
         known.delete(keyOf(item));
       }
       return result;

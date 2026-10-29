@@ -88,3 +88,23 @@ it('keeps the native banner when the read is rejected as stale', async () => {
   await expect(mutation.persisted).rejects.toThrow('revision conflict');
   expect(dismissDeliveredPushNotifications).not.toHaveBeenCalled();
 });
+it('rejects a read from an older rendered revision after the collection has advanced', async () => {
+  await dom.render(<Probe />);
+  const currentCollectionRevision = 3;
+  shape.updateMany.mockImplementation((updates, metadata) => {
+    // The collection uses the captured metadata before its current row revision.
+    const expected =
+      metadata?.notificationRevisions[updates[0].id] ??
+      currentCollectionRevision;
+    return {
+      persisted:
+        expected === currentCollectionRevision
+          ? Promise.resolve()
+          : Promise.reject(new Error('revision conflict')),
+    };
+  });
+  const mutation = latest.updateMany([
+    { id: 'synthetic-alert', changes: { seen: true } },
+  ]);
+  await expect(mutation.persisted).rejects.toThrow('revision conflict');
+});

@@ -1,7 +1,7 @@
 use axum::{
     Extension, Json, Router,
     extract::{Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     middleware::{from_fn, from_fn_with_state},
     response::Json as ResponseJson,
     routing::{get, post},
@@ -39,6 +39,37 @@ struct QueueMessageRequest {
 #[derive(Debug, Deserialize)]
 struct CancelQuery {
     message_id: Option<Uuid>,
+}
+
+/// Persist, admit, and publish an immutable notification handoff.
+async fn notification_handoff(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<api_types::NotificationHandoff>,
+) -> Result<StatusCode, ApiError> {
+    if request.handoff["path"].as_str()
+        != Some(format!("/api/sessions/{}/queue", session.id).as_str())
+    {
+        return Err(ApiError::BadRequest(
+            "notification handoff session changed".into(),
+        ));
+    }
+    let session_id = services::services::notification_handoffs::receive(
+        &deployment.db().pool,
+        &deployment.remote_client()?,
+        deployment.queued_message_service(),
+        request,
+    )
+    .await
+    .map_err(|_| {
+        ApiError::Conflict("notification handoff was not accepted; check its receipt".into())
+    })?;
+    if let Some(session) =
+        db::models::session::Session::find_by_id(&deployment.db().pool, session_id).await?
+    {
+        crate::routes::sessions::queue::drain_idle_queue(&deployment, &session).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Append a follow-up message to the back of the session's queue. The messages
@@ -480,6 +511,10 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route(
             "/",
             post(queue_message).layer(from_fn(finish_after_disconnect)),
+        )
+        .route(
+            "/notification-handoff",
+            post(notification_handoff).layer(from_fn(finish_after_disconnect)),
         )
         .route(
             "/steer",

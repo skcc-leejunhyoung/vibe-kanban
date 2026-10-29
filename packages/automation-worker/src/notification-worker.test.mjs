@@ -25,7 +25,7 @@ test(
       res.setHeader("content-type", "application/json");
       if (req.url === "/api/automation-actions/status")
         return res.end(
-          JSON.stringify({ hostId: "healthy", notificationProtocol: 1 }),
+          JSON.stringify({ hostId: "healthy", notificationProtocol: 2 }),
         );
       if (req.url === "/api/workspaces/autopilot")
         return res.end(
@@ -35,7 +35,7 @@ test(
         let body = "";
         for await (const part of req) body += part;
         registered(JSON.parse(body));
-        return res.end(JSON.stringify({ id: "synthetic-lease" }));
+        return res.end(JSON.stringify({ id: "synthetic-lease", protocol: 2 }));
       }
       res.end(JSON.stringify({ claims: [], events: [] }));
     });
@@ -167,7 +167,7 @@ test(
           res.end(JSON.stringify(data));
         };
         if (req.url === "/api/automation-actions/status")
-          return respond({ hostId, notificationProtocol: 1 });
+          return respond({ hostId, notificationProtocol: 2 });
         if (req.url === "/api/workspaces/autopilot")
           return respond({
             data: {
@@ -178,7 +178,7 @@ test(
         if (req.url === "/v1/autopilot-notification-leases") {
           if (!instance) previousInstance = body.instance_id;
           instance = body.instance_id;
-          return respond({ id: leaseId });
+          return respond({ id: leaseId, protocol: 2 });
         }
         if (req.url.startsWith("/v1/notification-claims?"))
           return respond({
@@ -212,18 +212,14 @@ test(
             if (action === "handoff") {
               handoffKey = body.handoff_key;
               handoff = body.handoff;
-            } else if (action === "consume") {
-              assert.equal(body.handoff_key, handoffKey);
-              consumeCalls++;
-              consumed.resolve();
             } else assert.equal(action, "renew-claim");
           }
           return respond({ data: { claim_token: claimToken }, txid: 1 });
         }
-        if (req.url === `/api/sessions/${sessionId}/queue`) {
+        if (req.url === `/api/sessions/${sessionId}/queue/notification-handoff`) {
           queueCalls++;
           assert.equal(req.headers["idempotency-key"], handoffKey);
-          assert.deepEqual(body, handoff.payload);
+          assert.deepEqual(body, { lease_id: leaseId, handoff });
           accepted.resolve();
           return; // Accepted by the destination, but the HTTP response is lost on kill.
         }
@@ -232,6 +228,10 @@ test(
             decodeURIComponent(req.url.split("/").at(-1)),
             handoffKey,
           );
+          // The host completes admission from its durable inbox, independently
+          // from the killed worker and its missing local state.
+          consumeCalls++;
+          consumed.resolve();
           return respond({ status: "succeeded" });
         }
         return respond({ events: [], claims: [] });

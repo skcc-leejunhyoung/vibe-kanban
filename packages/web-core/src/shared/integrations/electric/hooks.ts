@@ -41,7 +41,8 @@ export interface UseShapeMutationResult<TRow, TCreate, TUpdate>
   update: (id: string, changes: Partial<TUpdate>) => MutationResult;
   /** Update multiple rows in a single optimistic transaction */
   updateMany: (
-    updates: Array<{ id: string; changes: Partial<TUpdate> }>
+    updates: Array<{ id: string; changes: Partial<TUpdate> }>,
+    metadata?: Record<string, unknown>
   ) => MutationResult;
   /** Delete a row by ID (optimistic), returns persistence promise */
   remove: (id: string) => MutationResult;
@@ -185,6 +186,11 @@ export function useShape<
         ids: string[],
         updater: (drafts: Array<Record<string, unknown>>) => void
       ): TransactionResult;
+      (
+        ids: string[],
+        config: { metadata?: Record<string, unknown> },
+        updater: (drafts: Array<Record<string, unknown>>) => void
+      ): TransactionResult;
     };
     delete: (id: string) => TransactionResult;
   };
@@ -231,7 +237,10 @@ export function useShape<
   );
 
   const updateMany = useCallback(
-    (updates: Array<{ id: string; changes: unknown }>): MutationResult => {
+    (
+      updates: Array<{ id: string; changes: unknown }>,
+      metadata?: Record<string, unknown>
+    ): MutationResult => {
       if (!typedCollection || updates.length === 0) {
         return { persisted: Promise.resolve() };
       }
@@ -243,6 +252,7 @@ export function useShape<
 
       const tx = typedCollection.update(
         ids,
+        { metadata },
         (drafts: Array<Record<string, unknown>>) => {
           for (const draft of drafts) {
             const draftId = String(draft.id ?? '');

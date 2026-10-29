@@ -283,18 +283,20 @@ Delivering the prompt still goes through the host that runs the Autopilot:
 `send_prompt` needs that host in the Vibe connector's `hostBridges` (keyed by
 the `hostId` of its `GET /api/automation-actions/status`).
 
-A notification the Autopilot is woken for leaves the user's inbox: when a
-`cloud.notification` event matches a routine with `target: "autopilot"` and
-that host's Autopilot is active (`GET /api/workspaces/autopilot`, checked at
-most once a minute), the worker marks the notification seen and archived on
-the remote server right away (it moves to the Archive tab), so the user reads
-the Autopilot's summary instead of the raw notification. A paused Autopilot
-leaves the inbox as it was. If the batch is then skipped (Autopilot paused
-before the flush) or its delivery is given up after retries, the claimed
-notifications return to the inbox unseen; notifications that arrived while
-the Autopilot was paused but were delivered after it resumed are archived on
-delivery. The Autopilot's own notifications (`vk notify send --ws autopilot`)
-are tagged by the host and never enter this path, so they stay visible.
+An active Autopilot routine registers a short-lived central notification lease.
+New raw alerts assigned to it stay unseen and are held outside the user's inbox
+and native delivery. At handoff, the destination host first saves the exact
+prompt to its durable inbox. The remote server then checks and accepts the entire
+batch in one transaction, marking its notifications seen and archived. Only then
+does the host publish a runnable queue entry. Raw notifications use this durable
+queue even when the routine normally sends an immediate follow-up.
+
+Expiry before admission returns the raw alert to the user. A newer revision
+invalidates the old handoff before its prompt can run. Acceptance wins permanently once committed;
+the host recovers its saved prompt after a lost reply or restart without sending
+another copy. Worker leases require notification protocol 2, so older workers
+cannot hold new alerts. Explicit user reports and the Autopilot's own notifications
+(`vk notify send --ws autopilot`) remain user-facing and never wake Autopilot.
 
 The Drawer (notes the Autopilot writes for the user, `vk drawer ...`) feeds the
 same stream: a user comment on a note arrives as `drawer.comment` (its `data`

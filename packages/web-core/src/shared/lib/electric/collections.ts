@@ -41,6 +41,7 @@ type MutationFnParams = {
       original?: unknown;
       key?: string | number;
       changes?: unknown;
+      metadata?: unknown;
     }>;
   };
 };
@@ -1112,12 +1113,18 @@ function buildMutationHandlers(
         item: MutationFnParams['transaction']['mutations'][number]
       ) => {
         const changes = item.changes as Record<string, unknown>;
+        const revisions = (
+          item.metadata as
+            | { notificationRevisions?: Record<string, number | undefined> }
+            | undefined
+        )?.notificationRevisions;
         // Bind at transaction creation, before a delayed HTTP write can see a new revision.
         return mutation.name === NOTIFICATION_MUTATION.name
           ? {
               ...changes,
               expected_revision:
                 changes.expected_revision ??
+                revisions?.[String(item.key)] ??
                 (item.original as { revision?: number } | undefined)?.revision,
             }
           : changes;

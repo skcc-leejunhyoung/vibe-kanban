@@ -8,7 +8,7 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use db::models::{scratch::DraftFollowUpData, session_queued_messages::SessionQueuedMessages};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -63,6 +63,7 @@ pub struct QueuedMessageService {
     queue: Arc<DashMap<Uuid, VecDeque<QueuedMessage>>>,
     /// Messages awaiting their first durable write cannot be drained yet.
     pending_persistence: Arc<DashMap<Uuid, ()>>,
+    pub(super) notification_handoff_lock: Arc<Mutex<()>>,
     /// session id -> the queued message id the in-flight steer kill must drain.
     steering: Arc<DashMap<Uuid, Uuid>>,
     /// session id -> live [`DrainHold`]s: processes that will drain (or
@@ -75,6 +76,7 @@ pub struct QueuedMessageService {
 
 struct QueueWrite {
     session_id: Uuid,
+    handoff_key: Option<String>,
     acknowledgement: Option<oneshot::Sender<Result<(), String>>>,
 }
 
@@ -101,6 +103,7 @@ impl QueuedMessageService {
         Self {
             queue: Arc::new(DashMap::new()),
             pending_persistence: Arc::new(DashMap::new()),
+            notification_handoff_lock: Arc::new(Mutex::new(())),
             steering: Arc::new(DashMap::new()),
             drain_holds: Arc::new(DashMap::new()),
             persist: None,
@@ -116,6 +119,19 @@ impl QueuedMessageService {
             persist: Some(tx),
             ..Self::new()
         };
+        match sqlx::query_scalar::<_, Uuid>(
+            "SELECT message_id FROM notification_handoff_inbox WHERE status='pending'",
+        )
+        .fetch_all(&pool)
+        .await
+        {
+            Ok(ids) => {
+                for id in ids {
+                    svc.pending_persistence.insert(id, ());
+                }
+            }
+            Err(error) => tracing::error!(?error, "could not load pending notification handoffs"),
+        }
         match SessionQueuedMessages::find_all(&pool).await {
             Ok(rows) => {
                 for row in rows {
@@ -147,6 +163,7 @@ impl QueuedMessageService {
         if let Some(tx) = &self.persist {
             let _ = tx.send(QueueWrite {
                 session_id,
+                handoff_key: None,
                 acknowledgement: None,
             });
         }
@@ -162,6 +179,14 @@ impl QueuedMessageService {
 
     /// A queue HTTP acknowledgement must survive a crash, not just a JSON/cache write.
     pub async fn flush(&self, session_id: Uuid) -> std::io::Result<()> {
+        self.flush_write(session_id, None).await
+    }
+
+    async fn flush_write(
+        &self,
+        session_id: Uuid,
+        handoff_key: Option<String>,
+    ) -> std::io::Result<()> {
         let writer = self
             .persist
             .as_ref()
@@ -170,6 +195,7 @@ impl QueuedMessageService {
         writer
             .send(QueueWrite {
                 session_id,
+                handoff_key,
                 acknowledgement: Some(send),
             })
             .map_err(|_| std::io::Error::other("queue writer stopped"))?;
@@ -177,6 +203,28 @@ impl QueuedMessageService {
             .await
             .map_err(|_| std::io::Error::other("queue writer stopped before acknowledgement"))?
             .map_err(std::io::Error::other)
+    }
+
+    /// The inbox and queue commit together before this entry becomes runnable.
+    pub(super) async fn enqueue_notification_handoff(
+        &self,
+        message: QueuedMessage,
+        key: &str,
+    ) -> std::io::Result<()> {
+        self.pending_persistence.insert(message.id, ());
+        {
+            let mut messages = self.queue.entry(message.session_id).or_default();
+            if let Some(restored) = messages.iter_mut().find(|m| m.id == message.id) {
+                restored.start_error = None;
+            } else {
+                messages.push_back(message.clone());
+            }
+        }
+        self.flush_write(message.session_id, Some(key.to_owned()))
+            .await?;
+        self.pending_persistence.remove(&message.id);
+        self.changed(message.session_id);
+        Ok(())
     }
 
     async fn persist_cancellations(
@@ -592,7 +640,7 @@ impl QueuedMessageService {
             && !self.is_drain_held(session_id)
     }
 
-    fn new_message(session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
+    pub(super) fn new_message(session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
         QueuedMessage {
             id: Uuid::new_v4(),
             session_id,
@@ -620,7 +668,23 @@ async fn write_queues(
             .get(&session_id)
             .map(|q| q.iter().cloned().collect())
             .unwrap_or_default();
-        let result = if messages.is_empty() {
+        let result = if let Some(key) = write.handoff_key {
+            async {
+                let mut tx = pool.begin().await?;
+                if messages.is_empty() {
+                    SessionQueuedMessages::delete(&mut *tx, session_id).await?;
+                } else {
+                    let json = serde_json::to_string(&messages).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+                    SessionQueuedMessages::upsert(&mut *tx, session_id, &json).await?;
+                }
+                let updated = sqlx::query("UPDATE notification_handoff_inbox SET status='queued' WHERE handoff_key=? AND status='pending'")
+                    .bind(&key).execute(&mut *tx).await?;
+                if updated.rows_affected() != 1 { return Err(sqlx::Error::RowNotFound); }
+                sqlx::query("UPDATE automation_action_receipts SET status='succeeded',response='null',updated_at=CURRENT_TIMESTAMP WHERE idempotency_key=? AND action='notification_handoff'")
+                    .bind(key).execute(&mut *tx).await?;
+                tx.commit().await
+            }.await.map_err(|e: sqlx::Error| e.to_string())
+        } else if messages.is_empty() {
             SessionQueuedMessages::delete(&pool, session_id)
                 .await
                 .map_err(|e| e.to_string())

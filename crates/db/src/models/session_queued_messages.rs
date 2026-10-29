@@ -1,4 +1,4 @@
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{Executor, FromRow, Sqlite, SqlitePool};
 use uuid::Uuid;
 
 /// A session's queued follow-ups (front first), serialized as JSON by
@@ -16,8 +16,8 @@ impl SessionQueuedMessages {
             .await
     }
 
-    pub async fn upsert(
-        pool: &SqlitePool,
+    pub async fn upsert<'e>(
+        executor: impl Executor<'e, Database = Sqlite>,
         session_id: Uuid,
         messages: &str,
     ) -> Result<(), sqlx::Error> {
@@ -29,15 +29,18 @@ impl SessionQueuedMessages {
         )
         .bind(session_id)
         .bind(messages)
-        .execute(pool)
+        .execute(executor)
         .await?;
         Ok(())
     }
 
-    pub async fn delete(pool: &SqlitePool, session_id: Uuid) -> Result<(), sqlx::Error> {
+    pub async fn delete<'e>(
+        executor: impl Executor<'e, Database = Sqlite>,
+        session_id: Uuid,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM session_queued_messages WHERE session_id = ?")
             .bind(session_id)
-            .execute(pool)
+            .execute(executor)
             .await?;
         Ok(())
     }

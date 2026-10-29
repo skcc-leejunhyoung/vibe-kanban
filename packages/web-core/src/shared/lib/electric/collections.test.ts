@@ -47,7 +47,12 @@ vi.mock('@/shared/lib/remoteApi', () => ({
 type MutationHandler = (params: {
   transaction: {
     isPersisted: { promise: Promise<unknown> };
-    mutations: Array<{ key: string; changes: unknown; original?: unknown }>;
+    mutations: Array<{
+      key: string;
+      changes: unknown;
+      original?: unknown;
+      metadata?: Record<string, unknown>;
+    }>;
   };
 }) => Promise<unknown>;
 
@@ -121,6 +126,31 @@ describe('collection cache', () => {
       ],
     });
     expect(first.changes).toEqual({ seen: true });
+  });
+  it('uses the rendered notification revision as metadata without adding request fields to the row', async () => {
+    const collection = createShapeCollection(
+      NOTIFICATIONS_SHAPE,
+      { user_id: `synthetic-${++counter}` },
+      undefined,
+      NOTIFICATION_MUTATION
+    );
+    const onUpdate = collection.config.onUpdate as MutationHandler;
+    const change = {
+      key: 'synthetic-alert',
+      original: { revision: 3 },
+      changes: { seen: true },
+      metadata: { notificationRevisions: { 'synthetic-alert': 2 } },
+    };
+    await onUpdate({
+      transaction: {
+        isPersisted: { promise: Promise.resolve() },
+        mutations: [change],
+      },
+    });
+    expect(
+      JSON.parse(String(vi.mocked(makeRequest).mock.calls[0][1]?.body))
+    ).toEqual({ seen: true, expected_revision: 2 });
+    expect(change.changes).toEqual({ seen: true });
   });
   it('serves read-only and mutating callers from one collection', async () => {
     const p = params();

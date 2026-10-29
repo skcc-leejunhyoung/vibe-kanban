@@ -39,7 +39,19 @@ export function useNotifications() {
   const updateMany = useCallback<typeof result.updateMany>(
     (updates) => {
       const guarded = bindNotificationRevisions(updates, notificationRows);
-      const mutation = updateRows(updates);
+      const mutation = updateRows(
+        guarded.map(
+          ({ id, changes: { expected_revision: _revision, ...changes } }) => ({
+            id,
+            changes,
+          })
+        ),
+        {
+          notificationRevisions: Object.fromEntries(
+            guarded.map(({ id, changes }) => [id, changes.expected_revision])
+          ),
+        }
+      );
       const dismissIds = collectDismissiblePushIds(guarded);
       if (dismissIds.length > 0) {
         void mutation.persisted.then(

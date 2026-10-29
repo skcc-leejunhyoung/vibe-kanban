@@ -348,7 +348,7 @@ function reconcileNotificationRouting() {
         );
         autopilotPresence.delete(routine.action.targetHostId);
         enabled =
-          host?.notificationProtocol === 1 &&
+          host?.notificationProtocol === 2 &&
           host.hostId === routine.action.targetHostId &&
           (await autopilotActive(routine));
       }
@@ -363,7 +363,7 @@ function reconcileNotificationRouting() {
           await notificationRouting.release(routine, event);
           continue;
         }
-        await dispatchRoutineEvent(event);
+        await dispatchRoutineEvent(event, routine);
       }
     })().catch(error => log('warn', 'notification routing reconciliation failed', {
       routineId: routine.id, error: errorMessage(error),
@@ -1008,7 +1008,7 @@ async function runDueRoutines() {
   await processRetryQueue();
 }
 
-async function dispatchRoutineEvent(event) {
+async function dispatchRoutineEvent(event, onlyRoutine) {
   // Webhook events carry the execution id as `id`; journal events (`host:cursor`)
   // carry it as `executionId`.
   event = {
@@ -1016,7 +1016,7 @@ async function dispatchRoutineEvent(event) {
     ...(event.executionId ? state.routineOrigins[event.executionId] || {} : {}),
     ...event,
   };
-  for (const routine of state.routines || []) {
+  for (const routine of onlyRoutine ? [onlyRoutine] : state.routines || []) {
     if (!eventMatchesRoutine(routine,event)) {
       await notificationRouting.releasePending(routine,event);continue;
     }
@@ -1031,7 +1031,8 @@ async function dispatchRoutineEvent(event) {
       });
       continue;
     }
-    if (event.notificationIntent === 'user_report' || event.autopilot) continue;
+    if (event.notificationIntent === 'user_report') continue;
+    if (event.autopilot && deliversToAutopilot(routine)) continue;
     if (deliversToAutopilot(routine) && !await notificationRouting.claim(routine,event)) continue;
     if (routine.coalesce && event.type !== 'vk_event_batch') {
       await routineCoalescer.add(routine, event);

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { COALESCE_DEFAULTS, kindMatches, sanitizeNotificationEvent } from './vibe-events.mjs';
 
 const CRON_PARTS = [
@@ -236,7 +237,10 @@ export function eventMatchesRoutine(routine, event) {
 }
 
 export function routineEventKey(routineId, event) {
-  return `${routineId}:${event.source || 'unknown'}:${event.type}:${event.id}`;
+  const key = `${routineId}:${event.source || 'unknown'}:${event.type}:${event.id}`;
+  // HTTP action keys must be printable ASCII and fit 200 bytes.
+  if (Buffer.byteLength(key) <= 200 && /^[\x21-\x7e]+$/.test(key)) return key;
+  return `routine:${createHash('sha256').update(key).digest('hex')}`;
 }
 
 export function automationEventKey(event) {

@@ -61,7 +61,7 @@ pub(crate) async fn sweep_expired(pool: &PgPool) -> Result<(), sqlx::Error> {
         LEFT JOIN notification_host_capabilities c ON c.host_id=l.host_id
         LEFT JOIN hosts h ON h.id=l.host_id
         WHERE n.routing_state IN ('autopilot_pending','autopilot_claimed') AND
-          (d.notification_id IS NULL OR l.id IS NULL OR h.id IS NULL OR l.expires_at<=NOW() OR c.expires_at IS NULL OR c.expires_at<=NOW() OR h.owner_user_id<>n.user_id OR h.deleted_at IS NOT NULL
+          (d.notification_id IS NULL OR l.id IS NULL OR l.protocol<>2 OR h.id IS NULL OR l.expires_at<=NOW() OR c.expires_at IS NULL OR c.expires_at<=NOW() OR h.owner_user_id<>n.user_id OR h.deleted_at IS NOT NULL
            OR EXISTS(SELECT 1 FROM hosts other LEFT JOIN notification_host_capabilities supported ON supported.host_id=other.id AND supported.user_id=n.user_id AND supported.expires_at>NOW() WHERE other.owner_user_id=n.user_id AND other.deleted_at IS NULL AND other.status='online' AND supported.host_id IS NULL)
            OR d.handoff_deadline<=NOW() OR (n.routing_state='autopilot_pending' AND d.pending_deadline<=NOW())
            OR (n.routing_state='autopilot_claimed' AND d.claim_expires_at<=NOW()))

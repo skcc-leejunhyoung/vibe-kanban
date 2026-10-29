@@ -132,3 +132,15 @@ test('run history keeps batch events (routing fields and title, no payload)', ()
   // A run recovered from history renders the same prompt as the original.
   assert.equal(renderPromptTemplate('{{count}} {{hostIds}} {{cursor}}\n{{events}}', trigger), renderPromptTemplate('{{count}} {{hostIds}} {{cursor}}\n{{events}}', batch));
 });
+
+test('long recovery and batch keys fit the host limit without changing short keys', () => {
+  const event = { source: 'vibe', type: 'vk_event_batch', id: 'synthetic-recovery-'.repeat(24) };
+  for (const routine of ['r'.repeat(128), '합성'.repeat(64), '합성', 'synthetic\nline']) {
+    const key = routineEventKey(routine, event);
+    assert.ok(Buffer.byteLength(key) <= 200);
+    assert.match(key, /^[\x21-\x7e]+$/);
+    assert.equal(routineEventKey(routine, { ...event }), key);
+    assert.notEqual(routineEventKey(routine, { ...event, id: event.id + 'other' }), key);
+  }
+  assert.equal(routineEventKey('routine', { source: 'vibe', type: 'vk_event', id: 'synthetic' }), 'routine:vibe:vk_event:synthetic');
+});

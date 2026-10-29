@@ -139,3 +139,59 @@ describe('useShape result identity', () => {
     expect(data.find((row) => row.id === 'b')).toBe(rowB);
   });
 });
+
+it('carries rendered notification revisions in mutation metadata, outside optimistic rows', async () => {
+  const { NOTIFICATIONS_SHAPE, NOTIFICATION_MUTATION } = await import(
+    'shared/remote-types'
+  );
+  const { makeRequest } = await import('@/shared/lib/remoteApi');
+  const { createShapeCollection } = await import(
+    '@/shared/lib/electric/collections'
+  );
+  const userId = `synthetic-${++projectCounter}`;
+  let apply = () => Promise.resolve();
+  let resolveReply: (response: Response) => void = () => {};
+  const reply = new Promise<Response>((resolve) => {
+    resolveReply = resolve;
+  });
+  vi.mocked(makeRequest).mockReturnValue(reply);
+  function Probe() {
+    const result = useShape(
+      NOTIFICATIONS_SHAPE,
+      { user_id: userId },
+      { mutation: NOTIFICATION_MUTATION }
+    );
+    apply = () =>
+      result.updateMany([{ id: 'synthetic-alert', changes: { seen: true } }], {
+        notificationRevisions: { 'synthetic-alert': 2 },
+      }).persisted;
+    return null;
+  }
+  await dom.render(<Probe />);
+  await act(() =>
+    emitSnapshot(lastSessionFor(`notifications-${userId}`), [
+      { id: 'synthetic-alert', revision: 3, seen: false },
+    ])
+  );
+  const collection = createShapeCollection(NOTIFICATIONS_SHAPE, {
+    user_id: userId,
+  });
+  let persisted: Promise<void> = Promise.resolve();
+  await act(() => {
+    persisted = apply();
+  });
+  expect(collection.get('synthetic-alert')).not.toHaveProperty(
+    'expected_revision'
+  );
+  const request = vi
+    .mocked(makeRequest)
+    .mock.calls.find(([, options]) => options?.method === 'PATCH');
+  expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+    seen: true,
+    expected_revision: 2,
+  });
+  resolveReply(new Response(JSON.stringify({ txid: 7 }), { status: 200 }));
+  await act(async () => {
+    await persisted;
+  });
+});

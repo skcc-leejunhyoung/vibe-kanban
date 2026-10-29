@@ -155,7 +155,7 @@ async fn host_status(
     Ok(Json(serde_json::json!({
         "hostId": deployment.user_id(),
         "busy": !running.is_empty(),
-        "notificationProtocol": 1,
+        "notificationProtocol": 2,
     })))
 }
 

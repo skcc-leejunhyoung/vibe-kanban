@@ -225,3 +225,24 @@ fn issue_label(payload: &NotificationPayload) -> String {
         (None, None) => "Issue".to_string(),
     }
 }
+
+/// The host persists this exact frozen request before central admission.
+#[derive(Clone, Serialize, Deserialize, TS)]
+pub struct NotificationHandoff {
+    pub lease_id: Uuid,
+    pub handoff: serde_json::Value,
+}
+
+#[derive(Clone, Serialize, Deserialize, TS)]
+pub struct NotificationHandoffMember {
+    pub id: Uuid,
+    pub revision: i32,
+    pub claim_token: Uuid,
+}
+
+#[derive(Serialize, Deserialize, TS)]
+pub struct AcceptNotificationHandoff {
+    pub host_id: Uuid,
+    #[serde(flatten)]
+    pub request: NotificationHandoff,
+}

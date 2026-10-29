@@ -235,6 +235,13 @@ impl Deployment for LocalDeployment {
             remote_client.clone().ok(),
         )
         .await;
+        if let Ok(client) = remote_client.clone() {
+            services::services::notification_handoffs::spawn(
+                db.pool.clone(),
+                client,
+                container.clone(),
+            );
+        }
 
         let file_search_cache = Arc::new(FileSearchCache::new());
 

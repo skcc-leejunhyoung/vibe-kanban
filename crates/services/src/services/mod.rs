@@ -19,6 +19,7 @@ pub mod issue_gating;
 pub mod machine_id;
 pub mod normalized_replay_cache;
 pub mod notification;
+pub mod notification_handoffs;
 pub mod oauth_credentials;
 pub mod pr_monitor;
 
