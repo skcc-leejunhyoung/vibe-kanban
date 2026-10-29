@@ -59,6 +59,13 @@ Do not manually edit shared/remote-types.ts, instead edit crates/remote/src/bin/
 - Use `.env` for local overrides; never commit secrets. Key envs: `FRONTEND_PORT`, `BACKEND_PORT`, `HOST` 
 - Dev ports and assets are managed by `scripts/setup-dev-environment.js`.
 
+## Private Work and User Data
+- Never commit real work or user data: account identifiers, private repository/PR/issue relationships, incident details, conversations, usage snapshots, runtime databases, connector state, credentials, logs, or screenshots. This also applies to tests, fixtures, examples, documentation, filenames, and commit messages.
+- Keep local captures and work material under the Git-ignored `/.private/` or `/artifacts/` directories. Runtime data belongs in existing ignored data directories or outside the checkout. Add a precise shared `.gitignore` rule before creating a new local data path; never use `git add -f` to bypass it.
+- Tests and examples must use entirely synthetic accounts, repositories, identifiers, branches, timestamps, and payloads. Preserve the behavior being tested without copying live usage data or an identifiable real incident; changing only a title or SHA is insufficient.
+- Before committing, inspect `git diff --cached --name-status` and the staged content for private data. Before publication, inspect every outgoing commit, including files later deleted and commit messages; a clean final tree alone is insufficient.
+- `.gitignore` does not remove already tracked files or historical content. If private data is found, stop publication, preserve any needed local copy in an ignored location, remove or replace the tracked data, and sanitize all affected unpublished history and local refs. Rewriting published history requires explicit user authorization.
+
 ## Local Planning Documents & Preview Artifacts
 - Keep task-specific plans, design notes, verification reports, review write-ups, and preview artifacts local. Save file-based deliverables (HTML, SVG, Mermaid, screenshots, PDFs, etc.) under the Git-ignored `/artifacts/` directory.
 - Do not stage, commit, or include these temporary outputs in pull requests unless the user explicitly requests versioning the specific files. Creating or attaching a deliverable does not authorize adding it to Git. Never bypass ignore rules with `git add -f`.
