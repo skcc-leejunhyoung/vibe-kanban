@@ -4,7 +4,16 @@ export function createNotificationRouting({ api, instanceId }) {
   const known = new Map();
   const keyOf = (item) => `${item.notificationId}:${item.notificationRevision}`;
   const itemsOf = (event) =>
-    (event.events || [event]).filter((item) => item.notificationClaim);
+    (event.events || [event])
+      .filter((item) => item.notificationClaim)
+      .map((item) => {
+        const live = known.get(keyOf(item))?.notificationClaim;
+        // Retry snapshots redact tokens; hydrate only the request copy for this lease.
+        return live?.claim_token &&
+          live.lease_id === item.notificationClaim.lease_id
+          ? { ...item, notificationClaim: { ...live } }
+          : item;
+      });
   const body = (item, extra = {}) => ({
     revision: item.notificationRevision,
     ...item.notificationClaim,
@@ -165,6 +174,10 @@ export function createNotificationRouting({ api, instanceId }) {
           continue;
         }
         if (known.has(key)) {
+          known.set(key, {
+            ...known.get(key),
+            notificationClaim: event.notificationClaim,
+          });
           await request(routine, known.get(key), "renew-claim");
           continue;
         }

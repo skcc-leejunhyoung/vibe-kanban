@@ -488,7 +488,7 @@ mod tests {
         let mut prepare = f.request(&n, Some(token));
         prepare.handoff_key = Some("synthetic-race-handoff".into());
         prepare.handoff = Some(json!({"path":"/synthetic/queue"}));
-        mutate(f.pool.clone(), f.user, n.id, prepare, "handoff")
+        let _ = mutate(f.pool.clone(), f.user, n.id, prepare, "handoff")
             .await
             .unwrap();
         let mut accept = f.request(&n, Some(token));
@@ -584,11 +584,11 @@ mod tests {
             p.handoff = Some(json!({"path":"/synthetic/queue","payload":{"message":"original"}}));
             p
         };
-        mutate(f.pool.clone(), f.user, n.id, prepare(), "handoff")
+        let _ = mutate(f.pool.clone(), f.user, n.id, prepare(), "handoff")
             .await
             .unwrap();
         // A repeat is idempotent, but the same key cannot refer to another prompt.
-        mutate(f.pool.clone(), f.user, n.id, prepare(), "handoff")
+        let _ = mutate(f.pool.clone(), f.user, n.id, prepare(), "handoff")
             .await
             .unwrap();
         let mut changed = prepare();

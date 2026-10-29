@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createNotificationRouting } from "./notification-routing.mjs";
+import { redactEvent } from "./routines.mjs";
 
 const routine = { id: "test-routine", action: { targetHostId: "test-host" } };
 function fixture() {
@@ -12,7 +13,7 @@ function fixture() {
     calls.push({ method, path, payload, host, meta });
     if (path.startsWith("/v1/notifications/"))
       assert.match(path, /\/(claim|renew-claim|handoff|consume|release)$/);
-    if (failure?.(path))
+    if (failure?.(path, payload))
       throw Object.assign(new Error("expired"), { status: 409 });
     if (path === "/v1/autopilot-notification-leases") return { id: "lease" };
     if (path.startsWith("/v1/notification-claims?"))
@@ -204,6 +205,71 @@ test("restored local buffers renew their central claims without adding a duplica
   ]);
   assert.deepEqual(await f.routing.recover(routine), []);
   assert.ok(f.calls.some((c) => c.path.endsWith("/renew-claim")));
+});
+
+test("a redacted restored buffer refreshes its token from the central claim", async () => {
+  const f = fixture();
+  await f.routing.register(routine, [], true);
+  const restored = redactEvent({
+    ...f.event(),
+    notificationClaim: { lease_id: "lease", claim_token: "saved-claim" },
+  });
+  assert.equal(restored.notificationClaim.claim_token, undefined);
+  f.routing.restore(restored);
+  f.setRecovered([{ id: "alert", revision: 1, claim_token: "saved-claim" }]);
+  f.setFailure(
+    (path, payload) =>
+      path.endsWith("/renew-claim") && payload.claim_token !== "saved-claim",
+  );
+  assert.deepEqual(await f.routing.recover(routine), []);
+  assert.equal(f.calls.at(-1).payload.claim_token, "saved-claim");
+  assert.equal(restored.notificationClaim.claim_token, undefined);
+});
+
+test("a redacted retry uses its matching live claim without persisting the token", async () => {
+  const f = fixture();
+  await f.routing.register(routine, [], true);
+  const original = f.event();
+  await f.routing.claim(routine, original);
+  const retry = redactEvent(original);
+  assert.equal(retry.notificationClaim.claim_token, undefined);
+  f.setFailure(
+    (path, payload) =>
+      path.endsWith("/renew-claim") && payload.claim_token !== "claim",
+  );
+  await f.routing.deliver(routine, retry, {
+    path: "/queue",
+    payload: {},
+    meta: { idempotencyKey: "synthetic-retry" },
+  });
+  assert.ok(f.calls.some((c) => c.path === "/queue"));
+  assert.equal(retry.notificationClaim.claim_token, undefined);
+});
+
+test("a redacted retry cannot borrow a token from another revision or lease", async () => {
+  for (const mismatch of ["revision", "lease"]) {
+    const f = fixture();
+    await f.routing.register(routine, [], true);
+    const original = f.event();
+    await f.routing.claim(routine, original);
+    const retry = redactEvent(original);
+    if (mismatch === "revision") retry.notificationRevision++;
+    else retry.notificationClaim.lease_id = "another-lease";
+    f.setFailure(
+      (path, payload) => path.endsWith("/renew-claim") && !payload.claim_token,
+    );
+    await assert.rejects(
+      f.routing.deliver(routine, retry, {
+        path: "/queue",
+        meta: { idempotencyKey: "synthetic-stale-retry" },
+      }),
+    );
+    assert.equal(
+      f.calls.some((c) => c.path === "/queue"),
+      false,
+    );
+    assert.equal(f.calls.at(-1).payload.claim_token, undefined);
+  }
 });
 
 test("a false condition releases a pending alert immediately, without claiming reports", async () => {
