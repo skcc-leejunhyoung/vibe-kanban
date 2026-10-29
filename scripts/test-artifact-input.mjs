@@ -198,6 +198,14 @@ try {
     choice: "review",
   });
   inner = await loadInput(
+    `<form data-vibe-form><input name="elements" value="example">${choices}</form>`,
+  );
+  await inner.locator("input").press("Enter");
+  assert.deepEqual(await submittedInput(), {
+    elements: "example",
+    choice: "review",
+  });
+  inner = await loadInput(
     '<form data-vibe-form><button name="choice" value="review">Review</button><input type="submit" name="choice" value="Run"></form>',
   );
   await inner.locator('input[type="submit"]').press("Enter");
@@ -210,6 +218,16 @@ try {
       .getByRole("button", { name: "Blocked", exact: true })
       .isDisabled(),
     true,
+  );
+  await inner.locator("input").press("Enter");
+  assert.equal(
+    await page.evaluate(
+      () => window.inputMessages.filter((m) => m.event === "submit").length,
+    ),
+    0,
+  );
+  inner = await loadInput(
+    '<form data-vibe-form><input name="title"><fieldset disabled><button name="choice" value="blocked">Blocked</button></fieldset><button type="button">Other</button></form>',
   );
   await inner.locator("input").press("Enter");
   assert.equal(
@@ -288,6 +306,38 @@ try {
   );
   console.log(
     "Artifact input passed: named submit buttons, keyboard defaults, numbers/arrays/booleans, custom submit, gesture checks and cancellation.",
+  );
+  inner = await loadInput(
+    '<form data-vibe-form><input name="title"><button data-vibe-cancel>Cancel</button></form>',
+  );
+  await inner.locator("input").press("Enter");
+  await page.waitForFunction(() =>
+    window.inputMessages.some((m) => ["cancel", "submit"].includes(m.event)),
+  );
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.inputMessages
+        .filter((m) => ["cancel", "submit"].includes(m.event))
+        .map((m) => m.event),
+    ),
+    ["cancel"],
+  );
+  inner = await loadInput(
+    '<form data-vibe-form><input name="note"><button data-vibe-request="refresh">Refresh</button></form>',
+    [],
+    ["refresh"],
+  );
+  await inner.locator("input").press("Enter");
+  await page.waitForFunction(() =>
+    window.inputMessages.some((m) => ["request", "submit"].includes(m.event)),
+  );
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.inputMessages
+        .filter((m) => ["request", "submit"].includes(m.event))
+        .map((m) => m.event),
+    ),
+    ["request"],
   );
   inner = await loadInput(
     `<input name="note"><output id="count"></output>

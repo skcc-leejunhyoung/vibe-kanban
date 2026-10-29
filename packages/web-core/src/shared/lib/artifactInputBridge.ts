@@ -277,7 +277,7 @@ export function installArtifactInput(
         targetOf(event),
         'button,input[type="submit"],[data-vibe-submit],[data-vibe-cancel],[data-vibe-request]'
       );
-      if (!button || button.disabled) return;
+      if (!button || button.matches(':disabled')) return;
       const form =
         button instanceof Button
           ? buttonForm(button)
@@ -334,12 +334,24 @@ export function installArtifactInput(
         const submitter =
           target.type === 'submit'
             ? target
-            : Array.from(form.elements).find(
+            : Array.from(formElements(form) as HTMLFormControlsCollection).find(
                 (element): element is HTMLButtonElement | HTMLInputElement =>
                   (element instanceof Button || element instanceof Input) &&
                   element.type === 'submit'
               );
-        if (!submitter?.disabled) arm(form, submitter);
+        if (submitter?.matches(':disabled')) return;
+        const action = submitter
+          ? attribute(submitter, 'data-vibe-request')
+          : null;
+        if (action !== null) {
+          if (config.actions?.includes(action)) arm(null, undefined, action);
+        } else if (
+          submitter &&
+          attribute(submitter, 'data-vibe-cancel') !== null
+        ) {
+          arm();
+          send('cancel');
+        } else arm(form, submitter);
       }
     },
     true
