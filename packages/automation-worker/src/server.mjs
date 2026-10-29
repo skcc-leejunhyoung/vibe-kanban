@@ -316,12 +316,11 @@ const notificationRouting = createNotificationRouting({
     );
   },
 });
-let notificationRoutingTick;
-async function reconcileNotificationRouting() {
-  if (notificationRoutingTick) return notificationRoutingTick;
-  notificationRoutingTick = (async () => {
-    for (const routine of state.routines || []) {
-      if (!deliversToAutopilot(routine)) continue;
+const notificationRoutingTicks = new Map();
+function reconcileNotificationRouting() {
+  return Promise.all((state.routines || []).filter(deliversToAutopilot).map((routine) => {
+    if (notificationRoutingTicks.has(routine.id)) return notificationRoutingTicks.get(routine.id);
+    const tick = (async () => {
       const { connector, bridge } = autopilotTarget(routine);
       const eventConnector = state.connectors.find(
         (c) =>
@@ -354,7 +353,7 @@ async function reconcileNotificationRouting() {
           (await autopilotActive(routine));
       }
       await notificationRouting.register(routine, ['cloud.notification'], enabled);
-      if (!enabled) continue;
+      if (!enabled) return;
       for (const event of await notificationRouting.recover(routine)) {
         event.connectorId = eventConnector.id;
         if (
@@ -366,11 +365,12 @@ async function reconcileNotificationRouting() {
         }
         await dispatchRoutineEvent(event);
       }
-    }
-  })().finally(() => {
-    notificationRoutingTick = null;
-  });
-  return notificationRoutingTick;
+    })().catch(error => log('warn', 'notification routing reconciliation failed', {
+      routineId: routine.id, error: errorMessage(error),
+    })).finally(() => notificationRoutingTicks.delete(routine.id));
+    notificationRoutingTicks.set(routine.id, tick);
+    return tick;
+  }));
 }
 
 const routineCoalescer = createCoalescer({

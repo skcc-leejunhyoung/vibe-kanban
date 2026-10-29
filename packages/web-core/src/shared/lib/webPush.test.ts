@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { collectDismissiblePushIds } from './webPush';
 
 describe('collectDismissiblePushIds', () => {
+  it('closes only the accepted revision and its legacy tag', () => {
+    expect(
+      collectDismissiblePushIds([
+        { id: 'alert', changes: { seen: true, expected_revision: 2 } },
+      ])
+    ).toEqual(['alert', 'alert:2']);
+  });
   it('seen === true 업데이트의 id만 모은다', () => {
     expect(
       collectDismissiblePushIds([

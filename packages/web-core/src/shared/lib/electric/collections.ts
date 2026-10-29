@@ -9,6 +9,7 @@ import { getAuthRuntime } from '@/shared/lib/auth/runtime';
 import { getRemoteApiUrl, makeRequest } from '@/shared/lib/remoteApi';
 import {
   PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
+  NOTIFICATION_MUTATION,
   type GithubIssueLink,
   type MutationDefinition,
   type ShapeDefinition,
@@ -1107,6 +1108,20 @@ function buildMutationHandlers(
     onUpdate: persist(async ({ transaction }) => {
       const mutation = requireMutation();
       let txids: number[] = [];
+      const changesFor = (
+        item: MutationFnParams['transaction']['mutations'][number]
+      ) => {
+        const changes = item.changes as Record<string, unknown>;
+        // Bind at transaction creation, before a delayed HTTP write can see a new revision.
+        return mutation.name === NOTIFICATION_MUTATION.name
+          ? {
+              ...changes,
+              expected_revision:
+                changes.expected_revision ??
+                (item.original as { revision?: number } | undefined)?.revision,
+            }
+          : changes;
+      };
 
       if (transaction.mutations.length > 1) {
         const updates = transaction.mutations.map((mutationItem) => {
@@ -1116,7 +1131,7 @@ function buildMutationHandlers(
 
           return {
             id: String(mutationItem.key),
-            ...(mutationItem.changes as Record<string, unknown>),
+            ...changesFor(mutationItem),
           };
         });
 
@@ -1145,7 +1160,7 @@ function buildMutationHandlers(
           `${mutation.url}/${mutationItem.key}`,
           {
             method: 'PATCH',
-            body: JSON.stringify(mutationItem.changes),
+            body: JSON.stringify(changesFor(mutationItem)),
           }
         );
 

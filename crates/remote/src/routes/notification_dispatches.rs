@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post, put},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
@@ -133,7 +133,7 @@ async fn recover(
         .bind(ctx.user.id).bind(p.lease_id).bind(p.instance_id).fetch_all(state.pool()).await.map_err(internal)?;
     Ok(Json(json!({"claims":rows})))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct HandoffMember {
     id: Uuid,
     revision: i32,
@@ -157,6 +157,7 @@ async fn mutate(
     p: Claim,
     operation: &str,
 ) -> Result<Json<MutationResponse<Value>>, ErrorResponse> {
+    let started = std::time::Instant::now();
     if p.members.len() > 500 {
         return Err(conflict());
     }
@@ -187,13 +188,13 @@ async fn mutate(
         ));
     }
     // Fence registration before locking any notification, including a batch.
-    let active:Option<Uuid>=sqlx::query_scalar("SELECT l.id FROM autopilot_notification_leases l JOIN hosts h ON h.id=l.host_id AND h.owner_user_id=$1 AND h.deleted_at IS NULL WHERE l.id=$2 AND l.user_id=$1 AND l.instance_id=$3 AND l.expires_at>NOW() FOR UPDATE OF l")
+    let active:Option<Uuid>=sqlx::query_scalar("SELECT l.id FROM autopilot_notification_leases l JOIN hosts h ON h.id=l.host_id AND h.owner_user_id=$1 AND h.deleted_at IS NULL WHERE l.id=$2 AND l.user_id=$1 AND l.instance_id=$3 AND l.expires_at>NOW() FOR SHARE OF l")
         .bind(user).bind(p.lease_id).bind(p.instance_id).fetch_optional(&mut *tx).await.map_err(internal)?;
     if active.is_none() {
         return Err(conflict());
     }
     // Lock the notification before dispatch everywhere, including watchdog and delivery.
-    let row=sqlx::query("SELECT n.routing_state,d.claim_token,d.handoff_key FROM notifications n JOIN notification_dispatches d ON d.notification_id=n.id AND d.revision=n.revision JOIN autopilot_notification_leases l ON l.id=d.lease_id JOIN hosts h ON h.id=l.host_id AND h.owner_user_id=$2 AND h.deleted_at IS NULL WHERE n.id=$1 AND n.user_id=$2 AND n.revision=$3 AND l.id=$4 AND l.instance_id=$5 AND l.expires_at>NOW() AND d.handoff_deadline>NOW() AND ((n.routing_state='autopilot_pending' AND d.pending_deadline>NOW()) OR (n.routing_state='autopilot_claimed' AND d.claim_expires_at>NOW())) FOR UPDATE OF n,d")
+    let row=sqlx::query("SELECT n.routing_state,d.claim_token,d.handoff_key,d.handoff FROM notifications n JOIN notification_dispatches d ON d.notification_id=n.id AND d.revision=n.revision JOIN autopilot_notification_leases l ON l.id=d.lease_id JOIN hosts h ON h.id=l.host_id AND h.owner_user_id=$2 AND h.deleted_at IS NULL WHERE n.id=$1 AND n.user_id=$2 AND n.revision=$3 AND l.id=$4 AND l.instance_id=$5 AND l.expires_at>NOW() AND d.handoff_deadline>NOW() AND ((n.routing_state='autopilot_pending' AND d.pending_deadline>NOW()) OR (n.routing_state='autopilot_claimed' AND d.claim_expires_at>NOW())) FOR UPDATE OF n,d")
         .bind(id).bind(user).bind(p.revision).bind(p.lease_id).bind(p.instance_id).fetch_optional(&mut *tx).await.map_err(internal)?.ok_or_else(conflict)?;
     let route: String = row.get("routing_state");
     let token: Option<Uuid> = row.get("claim_token");
@@ -206,7 +207,7 @@ async fn mutate(
     let token = token.unwrap_or_else(Uuid::new_v4);
     match operation {
         "claim" | "renew" => {
-            sqlx::query("UPDATE notification_dispatches SET claim_token=$2,claim_expires_at=LEAST(NOW()+INTERVAL '90 seconds',handoff_deadline),reason='claimed' WHERE notification_id=$1").bind(id).bind(token).execute(&mut *tx).await.map_err(internal)?;
+            sqlx::query("UPDATE notification_dispatches SET claim_token=$2,claim_expires_at=LEAST(NOW()+INTERVAL '90 seconds',handoff_deadline),reason='claimed' WHERE notification_id=$1 AND revision=$3").bind(id).bind(token).bind(p.revision).execute(&mut *tx).await.map_err(internal)?;
             sqlx::query("UPDATE notifications SET routing_state='autopilot_claimed' WHERE id=$1")
                 .bind(id)
                 .execute(&mut *tx)
@@ -220,21 +221,36 @@ async fn mutate(
                 return Err(conflict());
             }
             let mut members = p.members;
+            if !members.iter().any(|m| m.id == id) {
+                members.push(HandoffMember {
+                    id,
+                    revision: p.revision,
+                    claim_token: token,
+                });
+            }
             members.sort_by_key(|m| m.id);
-            if members.iter().any(|m| m.id < id) {
+            if members[0].id != id || members.windows(2).any(|pair| pair[0].id == pair[1].id) {
+                return Err(conflict());
+            }
+            let mut frozen = p.handoff.ok_or_else(conflict)?;
+            if !frozen.is_object() {
+                return Err(conflict());
+            }
+            frozen["members"] = json!(members);
+            let old: Option<Value> = row.get("handoff");
+            if old.as_ref().is_some_and(|old| old != &frozen) {
                 return Err(conflict());
             }
             for member in &members {
-                let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM notifications n JOIN notification_dispatches d ON d.notification_id=n.id AND d.revision=n.revision WHERE n.id=$1 AND n.user_id=$2 AND n.revision=$3 AND n.routing_state='autopilot_claimed' AND d.lease_id=$4 AND d.claim_token=$5 AND d.claim_expires_at>NOW() AND d.handoff_deadline>NOW() AND (d.handoff_key IS NULL OR d.handoff_key=$6) FOR UPDATE OF n,d)")
-                    .bind(member.id).bind(user).bind(member.revision).bind(p.lease_id).bind(member.claim_token).bind(key).fetch_one(&mut *tx).await.map_err(internal)?;
-                if !valid {
+                let valid=sqlx::query("SELECT d.handoff FROM notifications n JOIN notification_dispatches d ON d.notification_id=n.id AND d.revision=n.revision WHERE n.id=$1 AND n.user_id=$2 AND n.revision=$3 AND n.routing_state='autopilot_claimed' AND d.lease_id=$4 AND d.claim_token=$5 AND d.claim_expires_at>NOW() AND d.handoff_deadline>NOW() AND (d.handoff_key IS NULL OR d.handoff_key=$6) FOR UPDATE OF n,d")
+                    .bind(member.id).bind(user).bind(member.revision).bind(p.lease_id).bind(member.claim_token).bind(key).fetch_optional(&mut *tx).await.map_err(internal)?.ok_or_else(conflict)?;
+                let previous: Option<Value> = valid.get("handoff");
+                if previous.as_ref().is_some_and(|old| old != &frozen) {
                     return Err(conflict());
                 }
             }
-            for member_id in
-                std::iter::once(id).chain(members.iter().map(|m| m.id).filter(|m| *m != id))
-            {
-                sqlx::query("UPDATE notification_dispatches SET handoff_key=$2,handoff=COALESCE(handoff,$3),reason='handoff_prepared' WHERE notification_id=$1").bind(member_id).bind(key).bind(&p.handoff).execute(&mut *tx).await.map_err(internal)?;
+            for member in &members {
+                sqlx::query("UPDATE notification_dispatches SET handoff_key=$2,handoff=COALESCE(handoff,$3),reason='handoff_prepared' WHERE notification_id=$1 AND revision=$4").bind(member.id).bind(key).bind(&frozen).bind(member.revision).execute(&mut *tx).await.map_err(internal)?;
             }
         }
         "consume" => {
@@ -243,14 +259,15 @@ async fn mutate(
                 return Err(conflict());
             }
             sqlx::query("UPDATE notifications SET routing_state='autopilot_consumed',seen=true,dismissed_at=NOW() WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(internal)?;
-            sqlx::query("UPDATE notification_dispatches SET reason='queue_accepted' WHERE notification_id=$1").bind(id).execute(&mut *tx).await.map_err(internal)?;
+            sqlx::query("UPDATE notification_dispatches SET reason='queue_accepted' WHERE notification_id=$1 AND revision=$2").bind(id).bind(p.revision).execute(&mut *tx).await.map_err(internal)?;
         }
         "release" => {
             sqlx::query("UPDATE notifications SET routing_state='user',seen=false,dismissed_at=NULL WHERE id=$1").bind(id).execute(&mut *tx).await.map_err(internal)?;
             sqlx::query(
-                "UPDATE notification_dispatches SET reason='released' WHERE notification_id=$1",
+                "UPDATE notification_dispatches SET reason='released' WHERE notification_id=$1 AND revision=$2",
             )
             .bind(id)
+            .bind(p.revision)
             .execute(&mut *tx)
             .await
             .map_err(internal)?;
@@ -259,6 +276,15 @@ async fn mutate(
     }
     let txid = get_txid(&mut *tx).await.map_err(internal)?;
     tx.commit().await.map_err(internal)?;
+    let next_state = match operation {
+        "consume" => "autopilot_consumed",
+        "release" => "user",
+        _ => "autopilot_claimed",
+    };
+    tracing::info!(notification_id=%id, revision=p.revision, previous_state=%route,
+        next_state, operation, lease_id=%p.lease_id, worker_instance=%p.instance_id,
+        elapsed_ms=started.elapsed().as_millis() as u64,
+        "notification routing transition committed");
     Ok(Json(MutationResponse {
         data: json!({"claim_token":token}),
         txid,
@@ -431,6 +457,219 @@ mod tests {
             )
             .unwrap()
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires NOTIFICATION_ROUTING_TEST_DATABASE_URL (disposable PostgreSQL)"]
+    async fn fallback_races_leave_exactly_one_terminal_route() {
+        let expired = Fixture::new().await;
+        let raw = expired
+            .create(NotificationIntent::RawEvent, false, None)
+            .await;
+        sqlx::query("UPDATE notification_dispatches SET pending_deadline=NOW()-INTERVAL '1 second' WHERE notification_id=$1").bind(raw.id).execute(&expired.pool).await.unwrap();
+        let (claim, sweep) = tokio::join!(
+            expired.act(&raw, None, "claim"),
+            crate::web_push_notifications::sweep_expired(&expired.pool)
+        );
+        assert_eq!(
+            claim.unwrap_err().into_response().status(),
+            StatusCode::CONFLICT
+        );
+        sweep.unwrap();
+        assert_eq!(
+            expired.load(&raw).await.routing_state,
+            NotificationRoutingState::User
+        );
+        assert_eq!(expired.jobs(&raw).await, 2);
+
+        let f = Fixture::new().await;
+        let n = f.create(NotificationIntent::RawEvent, false, None).await;
+        let token = f.token(&n).await;
+        let mut prepare = f.request(&n, Some(token));
+        prepare.handoff_key = Some("synthetic-race-handoff".into());
+        prepare.handoff = Some(json!({"path":"/synthetic/queue"}));
+        mutate(f.pool.clone(), f.user, n.id, prepare, "handoff")
+            .await
+            .unwrap();
+        let mut accept = f.request(&n, Some(token));
+        accept.handoff_key = Some("synthetic-race-handoff".into());
+        let revoke = async {
+            sqlx::query("UPDATE autopilot_notification_leases SET expires_at=NOW() WHERE id=$1")
+                .bind(f.lease)
+                .execute(&f.pool)
+                .await
+                .unwrap();
+            crate::web_push_notifications::sweep_expired(&f.pool)
+                .await
+                .unwrap();
+        };
+        let (consume, ()) = tokio::join!(
+            mutate(f.pool.clone(), f.user, n.id, accept, "consume"),
+            revoke
+        );
+        let final_row = f.load(&n).await;
+        if consume.is_ok() {
+            assert_eq!(
+                final_row.routing_state,
+                NotificationRoutingState::AutopilotConsumed
+            );
+            assert!(final_row.seen);
+            assert_eq!(f.jobs(&n).await, 0);
+        } else {
+            assert_eq!(final_row.routing_state, NotificationRoutingState::User);
+            assert!(!final_row.seen);
+            assert_eq!(f.jobs(&n).await, 2);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires NOTIFICATION_ROUTING_TEST_DATABASE_URL (disposable PostgreSQL)"]
+    async fn claim_and_reraise_do_not_deadlock_on_the_lease_foreign_key() {
+        use std::{str::FromStr, time::Duration};
+
+        use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+        let f = Fixture::new().await;
+        let n = f.create(NotificationIntent::RawEvent, false, None).await;
+        let mut reraising = f.pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM notifications WHERE id=$1 FOR UPDATE")
+            .bind(n.id)
+            .execute(&mut *reraising)
+            .await
+            .unwrap();
+        let application = format!("synthetic-claim-{}", Uuid::new_v4());
+        let options = PgConnectOptions::from_str(
+            &std::env::var("NOTIFICATION_ROUTING_TEST_DATABASE_URL").unwrap(),
+        )
+        .unwrap()
+        .application_name(&application);
+        let claimant = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let request = f.request(&n, None);
+        let user = f.user;
+        let id = n.id;
+        let task = tokio::spawn(async move { mutate(claimant, user, id, request, "claim").await });
+        // Wait until the real handler holds its lease lock and waits for this row.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock')").bind(&application).fetch_one(&f.pool).await.unwrap();
+                if waiting { break; }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        sqlx::query("UPDATE notifications SET created_at=clock_timestamp() WHERE id=$1")
+            .bind(n.id)
+            .execute(&mut *reraising)
+            .await
+            .unwrap();
+        reraising.commit().await.unwrap();
+        assert_eq!(
+            task.await.unwrap().unwrap_err().into_response().status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(f.load(&n).await.revision, 2);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires NOTIFICATION_ROUTING_TEST_DATABASE_URL (disposable PostgreSQL)"]
+    async fn handoff_body_and_members_are_frozen_and_prior_revisions_survive() {
+        let f = Fixture::new().await;
+        let n = f.create(NotificationIntent::RawEvent, false, None).await;
+        let token = f.token(&n).await;
+        let prepare = || {
+            let mut p = f.request(&n, Some(token));
+            p.handoff_key = Some("synthetic-fixed-handoff".into());
+            p.handoff = Some(json!({"path":"/synthetic/queue","payload":{"message":"original"}}));
+            p
+        };
+        mutate(f.pool.clone(), f.user, n.id, prepare(), "handoff")
+            .await
+            .unwrap();
+        // A repeat is idempotent, but the same key cannot refer to another prompt.
+        mutate(f.pool.clone(), f.user, n.id, prepare(), "handoff")
+            .await
+            .unwrap();
+        let mut changed = prepare();
+        changed.handoff.as_mut().unwrap()["payload"]["message"] = json!("changed");
+        assert_eq!(
+            mutate(f.pool.clone(), f.user, n.id, changed, "handoff")
+                .await
+                .unwrap_err()
+                .into_response()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        let another = f.create(NotificationIntent::RawEvent, false, None).await;
+        let another_token = f.token(&another).await;
+        let mut changed = prepare();
+        changed.members = vec![HandoffMember {
+            id: another.id,
+            revision: another.revision,
+            claim_token: another_token,
+        }];
+        assert_eq!(
+            mutate(f.pool.clone(), f.user, n.id, changed, "handoff")
+                .await
+                .unwrap_err()
+                .into_response()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        sqlx::query("UPDATE notifications SET created_at=clock_timestamp(),seen=false,dismissed_at=NULL WHERE id=$1").bind(n.id).execute(&f.pool).await.unwrap();
+        let current = f.load(&n).await;
+        assert_eq!(current.revision, 2);
+        let history: Vec<(i32,String,Option<String>)> = sqlx::query_as("SELECT revision,reason,handoff_key FROM notification_dispatches WHERE notification_id=$1 ORDER BY revision").bind(n.id).fetch_all(&f.pool).await.unwrap();
+        assert_eq!(
+            history,
+            vec![
+                (
+                    1,
+                    "superseded".into(),
+                    Some("synthetic-fixed-handoff".into())
+                ),
+                (2, "created".into(), None)
+            ]
+        );
+        f.token(&current).await;
+        let old_reason: String = sqlx::query_scalar(
+            "SELECT reason FROM notification_dispatches WHERE notification_id=$1 AND revision=1",
+        )
+        .bind(n.id)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+        assert_eq!(old_reason, "superseded");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires NOTIFICATION_ROUTING_TEST_DATABASE_URL (disposable PostgreSQL)"]
+    async fn source_keys_are_scoped_to_the_origin_host() {
+        let f = Fixture::new().await;
+        let mut alerts = Vec::new();
+        for host in [f.host, Uuid::new_v4(), f.host] {
+            alerts.push(
+                NotificationRepository::create_with_intent(
+                    &f.pool,
+                    f.org,
+                    f.user,
+                    NotificationType::WorkspaceTaskCompleted,
+                    NotificationPayload {
+                        host_id: Some(host),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                    NotificationIntent::UserReport,
+                    Some("synthetic-host-source"),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        assert_ne!(alerts[0].id, alerts[1].id);
+        assert_eq!(alerts[0].id, alerts[2].id);
     }
 
     #[tokio::test]

@@ -339,7 +339,7 @@ id?: string, organization_id: string, name: string, color: string, };
 
 export type UpdateProjectRequest = { name: string | null, color: string | null, sort_order: number | null, };
 
-export type UpdateNotificationRequest = { seen: boolean | null, archived: boolean | null, };
+export type UpdateNotificationRequest = { expected_revision?: number, seen: boolean | null, archived: boolean | null, };
 
 export type CreateTagRequest = {
 /**

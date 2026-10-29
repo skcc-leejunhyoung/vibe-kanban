@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildNotificationTabUrl,
+  bindNotificationRevisions,
   getPullRequestDetailsNavigationTarget,
   groupNotifications,
   isUserVisibleNotification,
@@ -32,6 +33,22 @@ function createNotification(
     ...overrides,
   };
 }
+
+it('binds dismissal to the observed revision and preserves an explicit older revision', () => {
+  const updates = [
+    { id: 'n1', changes: { seen: true } },
+    { id: 'n2', changes: { archived: true, expected_revision: 1 } },
+  ];
+  expect(
+    bindNotificationRevisions(updates, [
+      createNotification({ revision: 2 }),
+      createNotification({ id: 'n2', revision: 3 }),
+    ])
+  ).toEqual([
+    { id: 'n1', changes: { seen: true, expected_revision: 2 } },
+    { id: 'n2', changes: { archived: true, expected_revision: 1 } },
+  ]);
+});
 
 describe('selectUnseenNotificationIdsForView', () => {
   it('returns ids of unseen notifications matching the viewed issue', () => {

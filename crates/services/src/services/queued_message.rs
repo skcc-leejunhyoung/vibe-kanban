@@ -61,6 +61,8 @@ pub enum QueueStatus {
 #[derive(Clone)]
 pub struct QueuedMessageService {
     queue: Arc<DashMap<Uuid, VecDeque<QueuedMessage>>>,
+    /// Messages awaiting their first durable write cannot be drained yet.
+    pending_persistence: Arc<DashMap<Uuid, ()>>,
     /// session id -> the queued message id the in-flight steer kill must drain.
     steering: Arc<DashMap<Uuid, Uuid>>,
     /// session id -> live [`DrainHold`]s: processes that will drain (or
@@ -98,6 +100,7 @@ impl QueuedMessageService {
     pub fn new() -> Self {
         Self {
             queue: Arc::new(DashMap::new()),
+            pending_persistence: Arc::new(DashMap::new()),
             steering: Arc::new(DashMap::new()),
             drain_holds: Arc::new(DashMap::new()),
             persist: None,
@@ -196,7 +199,37 @@ impl QueuedMessageService {
 
     /// Append a message to the back of a session's queue.
     pub fn enqueue(&self, session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
+        self.enqueue_inner(session_id, data, false)
+    }
+
+    pub async fn enqueue_durable(
+        &self,
+        session_id: Uuid,
+        data: DraftFollowUpData,
+    ) -> std::io::Result<QueuedMessage> {
+        let queued = self.enqueue_inner(session_id, data, true);
+        let result = self.flush(session_id).await;
+        if let Err(error) = &result
+            && let Some(mut messages) = self.queue.get_mut(&session_id)
+            && let Some(message) = messages.iter_mut().find(|m| m.id == queued.id)
+        {
+            message.start_error = Some(format!("Could not save queued message: {error}"));
+        }
+        self.pending_persistence.remove(&queued.id);
+        self.changed(session_id);
+        result.map(|()| queued)
+    }
+
+    fn enqueue_inner(
+        &self,
+        session_id: Uuid,
+        data: DraftFollowUpData,
+        durable: bool,
+    ) -> QueuedMessage {
         let queued = Self::new_message(session_id, data);
+        if durable {
+            self.pending_persistence.insert(queued.id, ());
+        }
         self.queue
             .entry(session_id)
             .or_default()
@@ -283,8 +316,9 @@ impl QueuedMessageService {
 
     /// Pop the front message unless it failed to start (see
     /// [`Self::restore_failed`]); that one waits for an explicit retry.
-    fn pop_ready(q: &mut VecDeque<QueuedMessage>) -> Option<QueuedMessage> {
-        if q.front()?.start_error.is_some() {
+    fn pop_ready(&self, q: &mut VecDeque<QueuedMessage>) -> Option<QueuedMessage> {
+        if q.front()?.start_error.is_some() || self.pending_persistence.contains_key(&q.front()?.id)
+        {
             return None;
         }
         q.pop_front()
@@ -296,7 +330,7 @@ impl QueuedMessageService {
         let msg = self
             .queue
             .get_mut(&session_id)
-            .and_then(|mut q| Self::pop_ready(&mut q));
+            .and_then(|mut q| self.pop_ready(&mut q));
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
         if msg.is_some() {
             self.changed(session_id);
@@ -318,8 +352,9 @@ impl QueuedMessageService {
     ) -> Option<QueuedMessage> {
         let msg = self.queue.get_mut(&session_id).and_then(|mut q| {
             match q.iter().position(|m| m.id == message_id) {
+                Some(pos) if self.pending_persistence.contains_key(&q[pos].id) => None,
                 Some(pos) => q.remove(pos),
-                None => Self::pop_ready(&mut q),
+                None => self.pop_ready(&mut q),
             }
         });
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
@@ -549,10 +584,11 @@ impl QueuedMessageService {
     /// no steer is in flight, and no process holds the drain. The caller still
     /// has to check for running processes.
     pub fn can_drain_now(&self, session_id: Uuid) -> bool {
-        self.queue
-            .get(&session_id)
-            .is_some_and(|q| q.front().is_some_and(|m| m.start_error.is_none()))
-            && !self.is_steering(session_id)
+        self.queue.get(&session_id).is_some_and(|q| {
+            q.front().is_some_and(|m| {
+                m.start_error.is_none() && !self.pending_persistence.contains_key(&m.id)
+            })
+        }) && !self.is_steering(session_id)
             && !self.is_drain_held(session_id)
     }
 
@@ -1066,13 +1102,38 @@ mod tests {
             .await
             .unwrap();
         let service = QueuedMessageService::load(pool.clone()).await;
-        let message = service.enqueue(session, sample_data("synthetic durable message"));
-        service.flush(session).await.unwrap();
-        // No polling or sleep: the successful acknowledgement already includes DB storage.
+        let blocked_writer = pool.acquire().await.unwrap();
+        let accepting = service.clone();
+        let acceptance = tokio::spawn(async move {
+            accepting
+                .enqueue_durable(session, sample_data("synthetic durable message"))
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while service.get_queued(session).is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let id = service.get_queued(session)[0].id;
+        assert!(!service.can_drain_now(session));
+        assert!(service.take_next(session).is_none());
+        assert!(service.take_steered_or_front(session, id).is_none());
+        drop(blocked_writer);
+        let message = acceptance.await.unwrap().unwrap();
+        assert!(service.can_drain_now(session));
+        // Readback needs no delay after the durable acknowledgement.
         let restored = QueuedMessageService::load(pool.clone()).await;
         assert_eq!(restored.get_queued(session)[0].id, message.id);
         pool.close().await;
         assert!(service.flush(session).await.is_err());
+        assert!(
+            service
+                .enqueue_durable(Uuid::new_v4(), sample_data("failed acceptance"))
+                .await
+                .is_err()
+        );
         assert!(QueuedMessageService::new().flush(session).await.is_err());
     }
 }

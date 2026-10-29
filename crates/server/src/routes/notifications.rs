@@ -43,13 +43,13 @@ async fn send_notification(
     if let Some(note_id) = request.drawer_note_id {
         service
             .notify_drawer_note(title, message, request.workspace_id, note_id)
-            .await;
+            .await?;
     } else if request.local_only {
         service
             .notify_local_only(title, message, request.workspace_id)
             .await;
     } else {
-        service.notify(title, message, request.workspace_id).await;
+        service.notify(title, message, request.workspace_id).await?;
     }
     Ok(ResponseJson(ApiResponse::success(())))
 }

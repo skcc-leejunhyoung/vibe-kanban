@@ -179,7 +179,7 @@ async fn notification(
         .container()
         .notification_service()
         .notify(&action.title, &action.message, action.workspace_id)
-        .await;
+        .await?;
     complete_action(&deployment.db().pool, key.as_deref(), &()).await?;
     Ok(StatusCode::NO_CONTENT)
 }

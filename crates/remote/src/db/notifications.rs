@@ -105,7 +105,7 @@ impl NotificationRepository {
         source_key: Option<&str>,
     ) -> Result<Notification, NotificationError> {
         Ok(sqlx::query_as::<_, NotificationRow>(
-            "INSERT INTO notifications (organization_id, user_id, notification_type, payload, issue_id, comment_id, intent, source_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (user_id, source_key) WHERE source_key IS NOT NULL DO UPDATE SET source_key = EXCLUDED.source_key RETURNING *")
+            "INSERT INTO notifications (organization_id, user_id, notification_type, payload, issue_id, comment_id, intent, source_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (user_id, (COALESCE(payload->>'host_id','')), source_key) WHERE source_key IS NOT NULL DO UPDATE SET source_key = EXCLUDED.source_key RETURNING *")
             .bind(organization_id).bind(user_id).bind(notification_type).bind(sqlx::types::Json(payload)).bind(issue_id).bind(comment_id).bind(intent).bind(source_key)
             .fetch_one(executor).await?.into())
     }

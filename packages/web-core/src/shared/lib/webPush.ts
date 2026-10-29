@@ -99,21 +99,28 @@ export async function disableWebPush(runtime: AppRuntime): Promise<void> {
 export function collectDismissiblePushIds(
   updates: ReadonlyArray<{
     id: string;
-    changes: { seen?: boolean | null; archived?: boolean | null };
+    changes: {
+      seen?: boolean | null;
+      archived?: boolean | null;
+      expected_revision?: number | null;
+    };
   }>
 ): string[] {
   return updates
     .filter(({ changes }) => changes.seen === true || changes.archived === true)
-    .map(({ id }) => id);
+    .flatMap(({ id, changes }) =>
+      changes.expected_revision != null
+        ? [id, `${id}:${changes.expected_revision}`]
+        : [id]
+    );
 }
 
 /**
  * 이미 단말에 표시된(잠금화면/알림센터) 웹 푸시 알림 중, 전달된 알림 id와
  * 일치하는 것을 닫는다.
  *
- * 서비스 워커는 푸시를 표시할 때 notification `tag`를 알림 id로 설정하므로
- * (packages/public/sw.js: `tag: payload.notification_id`), "알림 id == 표시된
- * 알림의 tag"가 성립한다. 사용자가 앱에서 해당 워크스페이스/이슈를 직접 확인해
+ * 서비스 워커의 새 태그는 ID:개정이며, 기존 ID 태그도 함께 닫는다.
+ * 사용자가 앱에서 해당 워크스페이스/이슈를 직접 확인해
  * 알림이 읽음 처리될 때 이 함수를 호출하면, 같은 단말에 떠 있던 푸시 배너도
  * 함께 사라진다.
  *

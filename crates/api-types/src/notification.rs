@@ -161,6 +161,9 @@ pub struct CreatePullRequestCommentNotificationRequest {
 
 #[derive(Debug, Clone, Deserialize, TS)]
 pub struct UpdateNotificationRequest {
+    #[serde(default)]
+    #[ts(optional)]
+    pub expected_revision: Option<i32>,
     #[serde(default, deserialize_with = "some_if_present")]
     pub seen: Option<bool>,
     #[serde(default, deserialize_with = "some_if_present")]

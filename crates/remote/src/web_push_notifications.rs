@@ -45,11 +45,18 @@ pub fn spawn_delivery(pool: PgPool) {
 }
 
 pub(crate) async fn sweep_expired(pool: &PgPool) -> Result<(), sqlx::Error> {
+    use sqlx::Row;
     // A lost provider response is uncertain; replay could create another banner.
-    sqlx::query("UPDATE notification_delivery_jobs SET status='uncertain',updated_at=NOW() WHERE status='sending' AND updated_at<NOW()-INTERVAL '90 seconds'").execute(pool).await?;
+    let uncertain = sqlx::query("UPDATE notification_delivery_jobs SET status='uncertain',updated_at=NOW() WHERE status='sending' AND updated_at<NOW()-INTERVAL '90 seconds'").execute(pool).await?.rows_affected();
+    if uncertain > 0 {
+        tracing::warn!(
+            count = uncertain,
+            "notification deliveries became uncertain"
+        );
+    }
     let mut tx = pool.begin().await?;
-    let ids=sqlx::query_scalar::<_,Uuid>(r#"
-        SELECT n.id FROM notifications n LEFT JOIN notification_dispatches d ON d.notification_id=n.id AND d.revision=n.revision
+    let rows=sqlx::query(r#"
+        SELECT n.id,n.revision,n.routing_state,d.lease_id,l.instance_id FROM notifications n LEFT JOIN notification_dispatches d ON d.notification_id=n.id AND d.revision=n.revision
         LEFT JOIN autopilot_notification_leases l ON l.id=d.lease_id
         LEFT JOIN notification_host_capabilities c ON c.host_id=l.host_id
         LEFT JOIN hosts h ON h.id=l.host_id
@@ -59,9 +66,15 @@ pub(crate) async fn sweep_expired(pool: &PgPool) -> Result<(), sqlx::Error> {
            OR d.handoff_deadline<=NOW() OR (n.routing_state='autopilot_pending' AND d.pending_deadline<=NOW())
            OR (n.routing_state='autopilot_claimed' AND d.claim_expires_at<=NOW()))
         ORDER BY n.id LIMIT 500 FOR UPDATE OF n SKIP LOCKED"#).fetch_all(&mut *tx).await?;
-    for id in ids {
+    for row in rows {
+        let id: Uuid = row.get("id");
+        let revision: i32 = row.get("revision");
         sqlx::query("UPDATE notifications SET routing_state='user',seen=false,dismissed_at=NULL WHERE id=$1").bind(id).execute(&mut *tx).await?;
-        sqlx::query("UPDATE notification_dispatches SET reason='deadline_or_lease_expired' WHERE notification_id=$1").bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE notification_dispatches SET reason='deadline_or_lease_expired' WHERE notification_id=$1 AND revision=$2").bind(id).bind(revision).execute(&mut *tx).await?;
+        tracing::info!(notification_id=%id, revision,
+            previous_state=%row.get::<String,_>("routing_state"), next_state="user",
+            lease_id=?row.get::<Option<Uuid>,_>("lease_id"), worker_instance=?row.get::<Option<Uuid>,_>("instance_id"),
+            reason="deadline_or_lease_expired", "notification fallback prepared");
     }
     tx.commit().await
 }
@@ -130,6 +143,8 @@ async fn drain_delivery(pool: &PgPool) -> Result<(), sqlx::Error> {
             _ => "uncertain",
         };
         sqlx::query("UPDATE notification_delivery_jobs SET status=$5,updated_at=NOW() WHERE notification_id=$1 AND revision=$2 AND channel='web_push' AND target_id=$3 AND attempt_token=$4").bind(id).bind(revision).bind(target).bind(attempt).bind(status).execute(pool).await?;
+        tracing::info!(notification_id=%id, revision, target_id=%target, channel="web_push", status,
+            "notification delivery completed");
     }
     Ok(())
 }

@@ -3,9 +3,24 @@ import type {
   NotificationGroupKind,
   NotificationPayload,
   NotificationType,
+  UpdateNotificationRequest,
 } from 'shared/remote-types';
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
+
+export function bindNotificationRevisions(
+  updates: Array<{ id: string; changes: Partial<UpdateNotificationRequest> }>,
+  notifications: readonly Pick<Notification, 'id' | 'revision'>[]
+) {
+  const revisions = new Map(notifications.map((n) => [n.id, n.revision]));
+  return updates.map(({ id, changes }) => ({
+    id,
+    changes: {
+      ...changes,
+      expected_revision: changes.expected_revision ?? revisions.get(id),
+    },
+  }));
+}
 
 export function getPayload(n: Notification): NotificationPayload {
   return n.payload ?? {};

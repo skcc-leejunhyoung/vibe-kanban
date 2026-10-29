@@ -1,5 +1,8 @@
 import { useCallback, useMemo } from 'react';
-import { isUserVisibleNotification } from '@/shared/lib/notifications';
+import {
+  bindNotificationRevisions,
+  isUserVisibleNotification,
+} from '@/shared/lib/notifications';
 import { useShape } from '@/shared/integrations/electric/hooks';
 import {
   NOTIFICATIONS_SHAPE,
@@ -27,19 +30,26 @@ export function useNotifications() {
       mutation: NOTIFICATION_MUTATION,
     }
   );
+  const notificationRows = result.data;
+  const updateRows = result.updateMany;
 
   // 알림을 읽음/보관 처리하는 모든 경로(자동 읽음, 수동 읽음, 전체 읽음)는
   // 이 updateMany를 거친다. 읽음/보관으로 바뀌는 알림에 대해 같은 단말에 이미
   // 표시된 OS 푸시 알림(배너)도 함께 닫는다.
   const updateMany = useCallback<typeof result.updateMany>(
     (updates) => {
-      const dismissIds = collectDismissiblePushIds(updates);
+      const guarded = bindNotificationRevisions(updates, notificationRows);
+      const mutation = updateRows(updates);
+      const dismissIds = collectDismissiblePushIds(guarded);
       if (dismissIds.length > 0) {
-        void dismissDeliveredPushNotifications(dismissIds);
+        void mutation.persisted.then(
+          () => dismissDeliveredPushNotifications(dismissIds),
+          () => {}
+        );
       }
-      return result.updateMany(updates);
+      return mutation;
     },
-    [result.updateMany]
+    [updateRows, notificationRows]
   );
 
   // Filter before grouping: a mixed group must never reveal a held alert's text.

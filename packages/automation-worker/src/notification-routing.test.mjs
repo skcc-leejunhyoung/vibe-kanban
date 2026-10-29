@@ -10,6 +10,8 @@ function fixture() {
   let failure;
   const api = async (_routine, method, path, payload, host, meta) => {
     calls.push({ method, path, payload, host, meta });
+    if (path.startsWith("/v1/notifications/"))
+      assert.match(path, /\/(claim|renew-claim|handoff|consume|release)$/);
     if (failure?.(path))
       throw Object.assign(new Error("expired"), { status: 409 });
     if (path === "/v1/autopilot-notification-leases") return { id: "lease" };
@@ -86,7 +88,7 @@ test("expired revision prevents any queue side effect", async () => {
   await f.routing.register(routine, [], true);
   const event = f.event();
   await f.routing.claim(routine, event);
-  f.setFailure((path) => path.endsWith("/renew"));
+  f.setFailure((path) => path.endsWith("/renew-claim"));
   await assert.rejects(
     f.routing.deliver(routine, event, {
       path: "/queue",
@@ -201,7 +203,7 @@ test("restored local buffers renew their central claims without adding a duplica
     },
   ]);
   assert.deepEqual(await f.routing.recover(routine), []);
-  assert.ok(f.calls.some((c) => c.path.endsWith("/renew")));
+  assert.ok(f.calls.some((c) => c.path.endsWith("/renew-claim")));
 });
 
 test("a false condition releases a pending alert immediately, without claiming reports", async () => {

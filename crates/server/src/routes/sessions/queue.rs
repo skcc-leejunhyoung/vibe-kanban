@@ -83,12 +83,7 @@ async fn queue_message_inner(
 
     deployment
         .queued_message_service()
-        .enqueue(session.id, data);
-
-    // Only a durable queue/execution acceptance may consume an Autopilot alert.
-    deployment
-        .queued_message_service()
-        .flush(session.id)
+        .enqueue_durable(session.id, data)
         .await?;
 
     if let Err(e) = drain_idle_queue(&deployment, &session).await {

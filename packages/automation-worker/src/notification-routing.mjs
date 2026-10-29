@@ -117,7 +117,7 @@ export function createNotificationRouting({ api, instanceId }) {
         };
         const key = keyOf(event);
         if (row.handoff_key) {
-          await request(routine, event, "renew");
+          await request(routine, event, "renew-claim");
           // The queue receipt is authoritative even if its HTTP response was lost.
           const receipt = await api(
             routine,
@@ -165,7 +165,7 @@ export function createNotificationRouting({ api, instanceId }) {
           continue;
         }
         if (known.has(key)) {
-          await request(routine, known.get(key), "renew");
+          await request(routine, known.get(key), "renew-claim");
           continue;
         }
         recovered.push(event);
@@ -174,7 +174,7 @@ export function createNotificationRouting({ api, instanceId }) {
     },
     async deliver(routine, event, delivery) {
       const items = itemsOf(event);
-      for (const item of items) await request(routine, item, "renew");
+      for (const item of items) await request(routine, item, "renew-claim");
       items.sort((a, b) => a.notificationId.localeCompare(b.notificationId));
       delivery = {
         ...delivery,

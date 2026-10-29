@@ -90,9 +90,13 @@ impl ExecutorApprovalBridge {
             )
         };
 
-        self.notification_service
+        if let Err(error) = self
+            .notification_service
             .notify(&title, &message, workspace_id)
-            .await;
+            .await
+        {
+            tracing::warn!(?error, "could not persist approval notification");
+        }
 
         Ok(approval_id)
     }

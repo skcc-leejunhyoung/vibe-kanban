@@ -71,6 +71,21 @@ pub fn router() -> Router<AppState> {
         )
 }
 
+fn ensure_mutable_notification(
+    notification: &Notification,
+    expected_revision: Option<i32>,
+) -> Result<(), ErrorResponse> {
+    if notification.routing_state.is_held()
+        || expected_revision.is_some_and(|revision| revision != notification.revision)
+    {
+        return Err(ErrorResponse::new(
+            StatusCode::CONFLICT,
+            "notification is held or its revision changed",
+        ));
+    }
+    Ok(())
+}
+
 async fn create_pull_request_comment_notification(
     State(state): State<AppState>,
     Extension(ctx): Extension<RequestContext>,
@@ -282,12 +297,7 @@ async fn update_notification(
         ));
     }
 
-    if existing.routing_state.is_held() {
-        return Err(ErrorResponse::new(
-            StatusCode::CONFLICT,
-            "notification is held for Autopilot",
-        ));
-    }
+    ensure_mutable_notification(&existing, payload.expected_revision)?;
 
     let data =
         NotificationRepository::update(&mut *tx, notification_id, payload.seen, payload.archived)
@@ -434,12 +444,7 @@ async fn bulk_update_notifications(
             ));
         }
 
-        if existing.routing_state.is_held() {
-            return Err(ErrorResponse::new(
-                StatusCode::CONFLICT,
-                "notification is held for Autopilot",
-            ));
-        }
+        ensure_mutable_notification(&existing, item.changes.expected_revision)?;
         let updated = NotificationRepository::update(
             &mut *tx,
             item.id,
@@ -478,6 +483,23 @@ mod tests {
     use sqlx::PgPool;
 
     use super::*;
+
+    #[test]
+    fn delayed_read_cannot_mutate_a_newer_or_held_revision() {
+        let mut notification: Notification = serde_json::from_value(serde_json::json!({
+            "id":Uuid::new_v4(),"organization_id":Uuid::new_v4(),"user_id":Uuid::new_v4(),
+            "notification_type":"workspace_task_completed","payload":{},"issue_id":null,
+            "comment_id":null,"seen":false,"dismissed_at":null,"created_at":"2026-01-01T00:00:00Z",
+            "revision":2,"routing_state":"user"
+        }))
+        .unwrap();
+        assert!(ensure_mutable_notification(&notification, Some(1)).is_err());
+        assert!(ensure_mutable_notification(&notification, Some(2)).is_ok());
+        assert!(ensure_mutable_notification(&notification, None).is_ok());
+        notification.routing_state = api_types::NotificationRoutingState::AutopilotPending;
+        assert!(ensure_mutable_notification(&notification, Some(2)).is_err());
+        assert!(ensure_mutable_notification(&notification, None).is_err());
+    }
 
     #[tokio::test]
     #[ignore = "requires AGENT_EVENTS_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]

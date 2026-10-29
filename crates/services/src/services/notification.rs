@@ -132,7 +132,12 @@ impl NotificationService {
     }
 
     /// Explicit agent/CLI/automation reports remain user-facing regardless of destination.
-    pub async fn notify(&self, title: &str, message: &str, workspace_id: Option<Uuid>) {
+    pub async fn notify(
+        &self,
+        title: &str,
+        message: &str,
+        workspace_id: Option<Uuid>,
+    ) -> Result<(), sqlx::Error> {
         self.dispatch(
             title,
             message,
@@ -142,7 +147,7 @@ impl NotificationService {
             Uuid::new_v4().to_string(),
             false,
         )
-        .await;
+        .await
     }
 
     pub async fn notify_drawer_note(
@@ -151,7 +156,7 @@ impl NotificationService {
         message: &str,
         workspace_id: Option<Uuid>,
         note_id: Uuid,
-    ) {
+    ) -> Result<(), sqlx::Error> {
         self.dispatch(
             title,
             message,
@@ -161,7 +166,7 @@ impl NotificationService {
             Uuid::new_v4().to_string(),
             false,
         )
-        .await;
+        .await
     }
 
     pub async fn notify_raw(
@@ -172,16 +177,20 @@ impl NotificationService {
         source_key: String,
         local_only: bool,
     ) {
-        self.dispatch(
-            title,
-            message,
-            Some(workspace_id),
-            None,
-            NotificationIntent::RawEvent,
-            source_key,
-            local_only,
-        )
-        .await;
+        if let Err(error) = self
+            .dispatch(
+                title,
+                message,
+                Some(workspace_id),
+                None,
+                NotificationIntent::RawEvent,
+                source_key,
+                local_only,
+            )
+            .await
+        {
+            tracing::error!(?error, "could not persist raw notification dispatch");
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -194,7 +203,7 @@ impl NotificationService {
         intent: NotificationIntent,
         source_key: String,
         local_only: bool,
-    ) {
+    ) -> Result<(), sqlx::Error> {
         let owner = match &self.remote_client {
             Some(client) => client.notification_account().await,
             None => None,
@@ -202,7 +211,7 @@ impl NotificationService {
         if owner.is_none() {
             self.display_local(title, message, workspace_id, note_id, None)
                 .await;
-            return;
+            return Ok(());
         }
         let autopilot = note_id.is_some()
             || match workspace_id {
@@ -215,17 +224,13 @@ impl NotificationService {
             };
         let config = self.config.read().await.notifications.clone();
         let payload = json!({"title":title,"body":message,"workspace_id":workspace_id,"drawer_note_id":note_id,"intent":intent,"autopilot":autopilot,"source_key":source_key,"remote_push_enabled":config.push_enabled&&!local_only,"owner_user_id":owner,"local_only":local_only});
-        if let Err(error) = sqlx::query(
+        sqlx::query(
             "INSERT OR IGNORE INTO notification_dispatch_outbox(source_key,payload) VALUES(?,?)",
         )
         .bind(&source_key)
         .bind(payload.to_string())
         .execute(&self.pool)
-        .await
-        {
-            tracing::error!(?error, "could not persist notification dispatch");
-            return;
-        }
+        .await?;
         // Explicit reports can alert locally offline. Raw events stay silent until
         // the central routing decision; an unknown response is retried by source key.
         if intent == NotificationIntent::UserReport {
@@ -239,6 +244,7 @@ impl NotificationService {
             )
             .await;
         }
+        Ok(())
     }
 
     async fn display_local(
@@ -1169,7 +1175,8 @@ mod tests {
         );
         service
             .notify("User report", "Synthetic report", None)
-            .await;
+            .await
+            .unwrap();
         assert_eq!(notifier.0.load(Ordering::SeqCst), 1);
         service
             .display_once("synthetic-display", "Synthetic", "Body", None, None, None)
@@ -1232,6 +1239,15 @@ mod tests {
                 .unwrap();
         assert_eq!(remaining, 1);
         server.abort();
+        pool.close().await;
+        let displayed = notifier.0.load(Ordering::SeqCst);
+        assert!(
+            service
+                .notify("Synthetic report", "Storage unavailable", None)
+                .await
+                .is_err()
+        );
+        assert_eq!(notifier.0.load(Ordering::SeqCst), displayed);
     }
 
     #[test]

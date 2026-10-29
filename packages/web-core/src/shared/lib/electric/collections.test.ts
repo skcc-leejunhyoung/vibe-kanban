@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Collection } from '@tanstack/react-db';
 import {
   ISSUE_MUTATION,
+  NOTIFICATION_MUTATION,
+  NOTIFICATIONS_SHAPE,
   PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
   PROJECT_ISSUES_SHAPE,
 } from 'shared/remote-types';
@@ -45,7 +47,7 @@ vi.mock('@/shared/lib/remoteApi', () => ({
 type MutationHandler = (params: {
   transaction: {
     isPersisted: { promise: Promise<unknown> };
-    mutations: Array<{ key: string; changes: unknown }>;
+    mutations: Array<{ key: string; changes: unknown; original?: unknown }>;
   };
 }) => Promise<unknown>;
 
@@ -84,6 +86,42 @@ function params() {
 }
 
 describe('collection cache', () => {
+  it('sends the original notification revision for single and bulk writes without adding it to the row', async () => {
+    const collection = createShapeCollection(
+      NOTIFICATIONS_SHAPE,
+      { user_id: `synthetic-${++counter}` },
+      undefined,
+      NOTIFICATION_MUTATION
+    );
+    const onUpdate = collection.config.onUpdate as MutationHandler;
+    const first = {
+      key: 'alert-a',
+      original: { revision: 2 },
+      changes: { seen: true },
+    };
+    const second = {
+      key: 'alert-b',
+      original: { revision: 3 },
+      changes: { archived: true },
+    };
+    for (const mutations of [[first], [first, second]]) {
+      await onUpdate({
+        transaction: { isPersisted: { promise: Promise.resolve() }, mutations },
+      });
+    }
+    const calls = vi.mocked(makeRequest).mock.calls;
+    expect(JSON.parse(String(calls[0][1]?.body))).toEqual({
+      seen: true,
+      expected_revision: 2,
+    });
+    expect(JSON.parse(String(calls[1][1]?.body))).toEqual({
+      updates: [
+        { id: 'alert-a', seen: true, expected_revision: 2 },
+        { id: 'alert-b', archived: true, expected_revision: 3 },
+      ],
+    });
+    expect(first.changes).toEqual({ seen: true });
+  });
   it('serves read-only and mutating callers from one collection', async () => {
     const p = params();
     const readOnly = createShapeCollection(PROJECT_ISSUES_SHAPE, p);
