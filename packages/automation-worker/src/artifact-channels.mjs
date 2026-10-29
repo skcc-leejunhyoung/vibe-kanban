@@ -403,6 +403,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
         if (!name(input.action) || !own(channel.actions, input.action))
           fail("Unregistered artifact action", 403);
         const action = channel.actions[input.action];
+        const rule = structuredClone(ruleFor(action.rule_id));
         validateArtifactSchema(action.schema, input.data);
         const fingerprint = hash([
           id,
@@ -452,7 +453,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
           throw error;
         }
         dispatch = {
-          rule: structuredClone(ruleFor(action.rule_id)),
+          rule,
           event: {
             source: "artifact",
             type: "request",

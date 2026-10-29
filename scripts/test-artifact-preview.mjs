@@ -56,7 +56,7 @@ const components = await build({
       setLocalApiTransport({request: async path => {
         window.hostRequests.push(path);
         if (path.includes('/content?')) return new Response(window.artifactSource);
-        const data = path.includes('/bundle?')
+        const data = path.includes('/artifacts/interactions?') ? [] : path.includes('/bundle?')
           ? {artifact: window.artifact, resources: [], warnings: []}
           : {content: 'Child report', entries: [], artifacts: [window.artifact]};
         return new Response(JSON.stringify({success: true, data}), {headers: {'Content-Type': 'application/json'}});
@@ -396,13 +396,13 @@ try {
   for (const host of ["pane-host", null]) {
     await page.evaluate((hostId) => window.openTranscript(hostId), host);
     const card = page
-      .locator("div.my-half")
+      .locator("figure.my-half, div.my-half")
       .filter({ has: page.getByText("child.html", { exact: true }) });
     await card.waitFor();
-    assert.equal(await card.getByRole("button").count(), 2);
+    assert.equal(await card.getByRole("button").count(), 3);
     assert.equal(
       await card.getByRole("button", { name: "artifacts.download" }).count(),
-      0,
+      1,
     );
     assert.equal(
       await card.getByRole("button", { name: "artifacts.source" }).count(),
@@ -411,13 +411,14 @@ try {
     assert.deepEqual(await card.getByRole("button").allTextContents(), [
       "",
       "",
+      "",
     ]);
     if (process.env.ARTIFACT_PREVIEW_CSS) {
       const title = await card
         .getByText("child.html", { exact: true })
         .boundingBox();
       const action = await card
-        .getByRole("button", { name: "artifacts.preview", exact: true })
+        .getByRole("button", { name: "artifacts.expand", exact: true })
         .boundingBox();
       assert(
         action.x >= title.x + title.width,
@@ -427,7 +428,7 @@ try {
     if (process.env.ARTIFACT_PREVIEW_SCREENSHOT && host) {
       await page.evaluate(() => window.setArtifactLanguage("ko"));
       await card
-        .getByRole("button", { name: "미리보기", exact: true })
+        .getByRole("button", { name: "전체 보기", exact: true })
         .waitFor();
       await page.screenshot({
         path: process.env.ARTIFACT_PREVIEW_SCREENSHOT.replace(
@@ -439,10 +440,11 @@ try {
     }
     await page.evaluate(() => window.setDocumentHost("another-document-host"));
     await card
-      .getByRole("button", { name: "artifacts.preview", exact: true })
+      .getByRole("button", { name: "artifacts.expand", exact: true })
       .click();
-    const preview = page.getByRole("dialog").filter({
-      has: page.getByRole("heading", { name: "child.html", exact: true }),
+    const preview = page.getByRole("dialog", {
+      name: "child.html",
+      exact: true,
     });
     const document = preview.frameLocator("iframe").frameLocator("iframe");
     await document.getByRole("button", { name: "saved report" }).click();
@@ -489,7 +491,7 @@ try {
     await page.keyboard.press("Escape");
     await preview.waitFor({ state: "hidden" });
     await card
-      .getByRole("button", { name: "artifacts.preview", exact: true })
+      .getByRole("button", { name: "artifacts.expand", exact: true })
       .click();
     assert.equal(
       await preview.getByRole("switch").isChecked(),
@@ -519,17 +521,20 @@ try {
   await page.evaluate(() => {
     window.artifact = {
       ...window.artifact,
-      name: "sample.pdf",
-      mime: "application/pdf",
+      id: "binary",
+      content_hash: "binary-hash",
+      name: "sample.bin",
+      mime: "application/octet-stream",
     };
-    window.artifactSource = "%PDF-download-fixture";
+    window.artifactSource = "binary-download-fixture";
     window.openTranscript("pane-host");
   });
   await page
     .getByRole("button", { name: "artifacts.preview", exact: true })
     .click();
-  const binaryPreview = page.getByRole("dialog").filter({
-    has: page.getByRole("heading", { name: "sample.pdf", exact: true }),
+  const binaryPreview = page.getByRole("dialog", {
+    name: "sample.bin",
+    exact: true,
   });
   await binaryPreview.getByText("artifacts.binary", { exact: true }).waitFor();
   assert.equal(await binaryPreview.getByRole("switch").count(), 0);
@@ -538,16 +543,18 @@ try {
     .getByRole("button", { name: "artifacts.download", exact: true })
     .click();
   const binaryFile = await binaryDownload;
-  assert.equal(binaryFile.suggestedFilename(), "sample.pdf");
+  assert.equal(binaryFile.suggestedFilename(), "sample.bin");
   assert.equal(
     await readFile(await binaryFile.path(), "utf8"),
-    "%PDF-download-fixture",
+    "binary-download-fixture",
   );
   await page.keyboard.press("Escape");
   await page.evaluate(() => window.removeTranscript());
   await page.evaluate(() => {
     window.artifact = {
       ...window.artifact,
+      id: "invalid-svg",
+      content_hash: "invalid-svg-hash",
       name: "invalid.svg",
       mime: "image/svg+xml",
     };
@@ -557,8 +564,9 @@ try {
   await page
     .getByRole("button", { name: "artifacts.preview", exact: true })
     .click();
-  const invalidPreview = page.getByRole("dialog").filter({
-    has: page.getByRole("heading", { name: "invalid.svg", exact: true }),
+  const invalidPreview = page.getByRole("dialog", {
+    name: "invalid.svg",
+    exact: true,
   });
   await invalidPreview.getByRole("alert").waitFor();
   await invalidPreview
@@ -631,7 +639,7 @@ try {
         `${process.env.ARTIFACT_WEB_URL}/workspaces/${scopes[executor].workspace_id}`,
       );
       const findCard = async (name) => {
-        const card = chat.locator("div.my-half").filter({
+        const card = chat.locator("figure.my-half, div.my-half").filter({
           has: chat.getByText(name, { exact: true }),
         });
         await chat
@@ -660,14 +668,18 @@ try {
       };
       const card = await findCard(/(?:reports\/)?overview\.html/);
       assert.equal(await card.count(), 1);
-      await card.getByRole("button", { name: "Preview", exact: true }).click();
+      await card
+        .getByRole("button", { name: "Open full view", exact: true })
+        .click();
       const dialog = chat.getByRole("dialog");
       const document = dialog.frameLocator("iframe").frameLocator("iframe");
       await document.getByRole("button").first().click();
       assert.match(await document.locator("body").innerText(), /\b1\b/);
       await chat.keyboard.press("Escape");
       await dialog.waitFor({ state: "hidden" });
-      await card.getByRole("button", { name: "Preview", exact: true }).click();
+      await card
+        .getByRole("button", { name: "Open full view", exact: true })
+        .click();
       await dialog
         .getByRole("switch", { name: "View source", exact: true })
         .check();

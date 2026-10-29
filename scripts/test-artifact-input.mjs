@@ -152,7 +152,7 @@ try {
         );
     });
   });
-  const loadInput = async (html, arrayFields = []) => {
+  const loadInput = async (html, arrayFields = [], actions) => {
     await page.evaluate(() => {
       window.inputMessages = [];
     });
@@ -160,6 +160,7 @@ try {
       channel: "browser-input-test",
       initial: { status: "loading", message: "Loading", editable: false },
       arrayFields,
+      actions,
     });
     await frame.getByRole("button").first().waitFor();
     await page.waitForFunction(() =>
@@ -228,6 +229,23 @@ try {
     enabled: false,
   });
   inner = await loadInput(
+    '<form data-vibe-form><input type="number" name="counts" value="2"><input type="number" name="counts" value="3"><input name="mixed" value="text"><input type="number" name="mixed" value="4"><button>Submit</button></form>',
+    ["counts", "mixed"],
+  );
+  await inner.getByRole("button", { name: "Submit", exact: true }).click();
+  assert.deepEqual(await submittedInput(), {
+    counts: [2, 3],
+    mixed: ["text", 4],
+  });
+  inner = await loadInput(
+    '<form data-vibe-form><input name="elements" value="example"><input name="reportValidity" value="valid"><input type="checkbox" name="disabled" data-vibe-boolean disabled checked><button>Submit</button></form>',
+  );
+  await inner.getByRole("button", { name: "Submit", exact: true }).click();
+  assert.deepEqual(await submittedInput(), {
+    elements: "example",
+    reportValidity: "valid",
+  });
+  inner = await loadInput(
     '<button type="button" data-vibe-submit onclick="window.vibe.submit({choice: \'custom\'})">Custom</button>',
   );
   await inner.getByRole("button", { name: "Custom", exact: true }).click();
@@ -270,6 +288,62 @@ try {
   );
   console.log(
     "Artifact input passed: named submit buttons, keyboard defaults, numbers/arrays/booleans, custom submit, gesture checks and cancellation.",
+  );
+  inner = await loadInput(
+    `<input name="note"><output id="count"></output>
+    <button type="button" data-vibe-request="refresh" onclick="window.vibe.request('refresh', {count: 2})">Refresh</button>
+    <script>addEventListener('vibe:data', event => document.getElementById('count').textContent = event.detail.data?.count ?? 'Waiting');</script>`,
+    [],
+    ["refresh"],
+  );
+  await inner.locator("input").fill("한글 초안");
+  await inner.locator("button").evaluate((button) => {
+    try {
+      window.vibe.request("refresh", { count: 99 });
+    } catch {
+      /* A page script cannot dispatch without a real gesture. */
+    }
+    button.click();
+  });
+  assert.equal(
+    await page.evaluate(
+      () => window.inputMessages.filter((m) => m.event === "request").length,
+    ),
+    0,
+  );
+  await page.evaluate(() => {
+    document.querySelector("iframe").contentWindow.postMessage(
+      {
+        type: "vibe:artifact:state",
+        channel: "browser-input-test",
+        value: {
+          status: "input_required",
+          message: "Ready",
+          editable: true,
+          data: { count: 7 },
+          revision: 2,
+          updatedAt: null,
+        },
+      },
+      "*",
+    );
+  });
+  await inner.locator("output").getByText("7", { exact: true }).waitFor();
+  assert.equal(await inner.locator("input").inputValue(), "한글 초안");
+  await inner.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.waitForFunction(() =>
+    window.inputMessages.some((m) => m.event === "request"),
+  );
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.inputMessages
+        .filter((m) => m.event === "request")
+        .map((m) => m.data),
+    ),
+    [{ action: "refresh", data: { count: 2 } }],
+  );
+  console.log(
+    "Automation bridge passed: live data preserves drafts and only a real click sends one registered action.",
   );
   for (const lostReply of [false, true]) {
     await page.goto(`http://127.0.0.1:${server.address().port}/`);

@@ -62,6 +62,12 @@ export function installArtifactInput(
   const inputForm = Function.prototype.call.bind(
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'form')!.get!
   );
+  const formElements = Function.prototype.call.bind(
+    Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements')!.get!
+  );
+  const reportValidity = Function.prototype.call.bind(
+    HTMLFormElement.prototype.reportValidity
+  );
   const emit = (event: string, data?: unknown) => {
     const serialized = stringify(data ?? null);
     if (serialized.length > 32768) throw new Error('Input is too large');
@@ -165,11 +171,39 @@ export function installArtifactInput(
     form: HTMLFormElement,
     submitter?: HTMLButtonElement | HTMLInputElement
   ) => {
-    if (!form.reportValidity()) return;
+    if (!reportValidity(form)) return;
+    const controls = new Map<string, Element[]>();
+    for (const element of formElements(form) as HTMLFormControlsCollection) {
+      if (
+        !(
+          element instanceof Input ||
+          element instanceof Button ||
+          element instanceof HTMLTextAreaElement ||
+          element instanceof HTMLSelectElement
+        ) ||
+        !element.name ||
+        element.matches(':disabled') ||
+        (['submit', 'image', 'button', 'reset'].includes(element.type) &&
+          element !== submitter) ||
+        (element instanceof Input &&
+          ['checkbox', 'radio'].includes(element.type) &&
+          !element.checked)
+      )
+        continue;
+      const values =
+        element instanceof HTMLSelectElement
+          ? Array.from(element.selectedOptions).filter(
+              (option) => !option.matches(':disabled')
+            )
+          : [element];
+      const named = controls.get(element.name) ?? [];
+      named.push(...values.map(() => element));
+      controls.set(element.name, named);
+    }
     const entries: [string, unknown][] = [];
     for (const [name, value] of new NativeFormData(form, submitter)) {
+      const element = controls.get(name)?.shift();
       if (typeof value !== 'string') continue;
-      const element = form.elements.namedItem(name);
       if (element instanceof HTMLInputElement && !safe(element)) continue;
       const converted =
         element instanceof HTMLInputElement &&
@@ -180,13 +214,16 @@ export function installArtifactInput(
       entries.push([name, converted]);
     }
     const data = collectValues(entries, config.arrayFields);
-    form
-      .querySelectorAll<HTMLInputElement>(
-        'input[type="checkbox"][data-vibe-boolean]'
+    for (const input of formElements(form) as HTMLFormControlsCollection) {
+      if (
+        input instanceof Input &&
+        input.type === 'checkbox' &&
+        input.hasAttribute('data-vibe-boolean') &&
+        input.name &&
+        !input.matches(':disabled')
       )
-      .forEach((input) => {
-        if (input.name) data[input.name] = input.checked;
-      });
+        data[input.name] = input.checked;
+    }
     send('submit', data);
   };
   const arm = (

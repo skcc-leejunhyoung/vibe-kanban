@@ -237,6 +237,26 @@ test("request claim must be durable before rule execution", async () => {
   );
 });
 
+test("a rule edit during claim persistence cannot change the validated action", async () => {
+  let executed;
+  const t = await setup(async (rule) => {
+    executed = rule;
+    return { status: "completed" };
+  });
+  const original = structuredClone(t.state.rules[0]);
+  t.beforeSave(() => {
+    t.state.rules[0].script = "replacement";
+    t.state.rules[0].enabled = false;
+  });
+  assert.equal(
+    (await t.channels.request(t.config.id, t.request)).status,
+    "completed",
+  );
+  assert.deepEqual(executed, original);
+  assert.equal(t.calls(), 1);
+  await assert.rejects(t.channels.describe(t.config.id, scope), /Enabled/);
+});
+
 test("acceptance is separate from completion; a registered publisher can finish the request", async () => {
   const t = await setup(async () => ({ status: "accepted" }));
   assert.equal(
