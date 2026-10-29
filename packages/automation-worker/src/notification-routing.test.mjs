@@ -61,6 +61,64 @@ test("raw alerts require a lease; user reports do not become claims", async () =
   assert.equal(f.calls.filter((c) => c.path.endsWith("/claim")).length, 1);
 });
 
+test("a rejected routine claim cannot reuse its lease in the next routine", async () => {
+  const first = {
+    id: "synthetic-first",
+    action: { targetHostId: "synthetic-host-a" },
+  };
+  const second = {
+    id: "synthetic-second",
+    action: { targetHostId: "synthetic-host-b" },
+  };
+  const claims = [];
+  const routing = createNotificationRouting({
+    instanceId: "synthetic-instance",
+    async api(routine, _method, path, payload) {
+      if (path === "/v1/autopilot-notification-leases")
+        return { id: `lease-${routine.id}`, protocol: 2 };
+      claims.push(payload);
+      if (payload.lease_id !== `lease-${second.id}`)
+        throw Object.assign(new Error("Wrong lease"), { status: 409 });
+      assert.equal(payload.claim_token, undefined);
+      return { data: { claim_token: "synthetic-claim" } };
+    },
+  });
+  for (const routine of [first, second])
+    await routing.register(routine, ["cloud.notification"], true);
+  const event = {
+    notificationId: "synthetic-alert",
+    notificationRevision: 1,
+    notificationIntent: "raw_event",
+  };
+  assert.equal(await routing.claim(first, event), false);
+  assert.equal(await routing.claim(second, event), true);
+  assert.deepEqual(
+    claims.map((claim) => claim.lease_id),
+    [`lease-${first.id}`, `lease-${second.id}`],
+  );
+  assert.equal(event.notificationClaim.claim_token, "synthetic-claim");
+  assert.equal(await routing.claim(second, event), false);
+  assert.equal(claims.length, 2);
+});
+
+test("claim retries preserve a recovery token only for the matching lease", async () => {
+  for (const lease of ["lease", "synthetic-other-lease"]) {
+    const f = fixture();
+    await f.routing.register(routine, [], true);
+    const event = f.event();
+    event.notificationClaim = {
+      lease_id: lease,
+      claim_token: "synthetic-recovery-token",
+    };
+    assert.equal(await f.routing.claim(routine, event), true);
+    assert.equal(f.calls.at(-1).payload.lease_id, "lease");
+    assert.equal(
+      f.calls.at(-1).payload.claim_token,
+      lease === "lease" ? "synthetic-recovery-token" : undefined,
+    );
+  }
+});
+
 test("batch is frozen before the host stages and admits it", async () => {
   const f = fixture();
   await f.routing.register(routine, [], true);

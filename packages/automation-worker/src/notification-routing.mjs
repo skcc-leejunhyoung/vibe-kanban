@@ -73,7 +73,8 @@ export function createNotificationRouting({ api, instanceId }) {
       if (!lease) return false;
       const key = keyOf(event);
       if (known.has(key)) return false;
-      event.notificationClaim ||= { lease_id: lease };
+      if (event.notificationClaim?.lease_id !== lease)
+        event.notificationClaim = { lease_id: lease };
       try {
         const result = await request(routine, event, "claim");
         event.notificationClaim.claim_token = result.data.claim_token;
