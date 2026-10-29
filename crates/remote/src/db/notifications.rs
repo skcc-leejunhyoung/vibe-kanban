@@ -1,4 +1,7 @@
-use api_types::{Notification, NotificationPayload, NotificationType};
+use api_types::{
+    Notification, NotificationIntent, NotificationPayload, NotificationRoutingState,
+    NotificationType,
+};
 use chrono::{DateTime, Utc};
 use sqlx::{Executor, FromRow, Postgres};
 use thiserror::Error;
@@ -12,6 +15,10 @@ pub enum NotificationError {
 
 #[derive(Debug, FromRow)]
 struct NotificationRow {
+    source_key: Option<String>,
+    intent: NotificationIntent,
+    routing_state: NotificationRoutingState,
+    revision: i32,
     id: Uuid,
     organization_id: Uuid,
     user_id: Uuid,
@@ -27,6 +34,10 @@ struct NotificationRow {
 impl From<NotificationRow> for Notification {
     fn from(row: NotificationRow) -> Self {
         Self {
+            source_key: row.source_key,
+            intent: row.intent,
+            routing_state: row.routing_state,
+            revision: row.revision,
             id: row.id,
             organization_id: row.organization_id,
             user_id: row.user_id,
@@ -44,39 +55,21 @@ impl From<NotificationRow> for Notification {
 pub struct NotificationRepository;
 
 impl NotificationRepository {
-    pub async fn find_by_id<'e, E>(
+    pub async fn find_by_id<'e, E: Executor<'e, Database = Postgres>>(
         executor: E,
         id: Uuid,
-    ) -> Result<Option<Notification>, NotificationError>
-    where
-        E: Executor<'e, Database = Postgres>,
-    {
-        let record = sqlx::query_as!(
-            NotificationRow,
-            r#"
-            SELECT
-                id,
-                organization_id,
-                user_id,
-                notification_type as "notification_type!: NotificationType",
-                payload as "payload!: sqlx::types::Json<NotificationPayload>",
-                issue_id,
-                comment_id,
-                seen,
-                dismissed_at,
-                created_at
-            FROM notifications
-            WHERE id = $1
-            "#,
-            id
+    ) -> Result<Option<Notification>, NotificationError> {
+        Ok(
+            sqlx::query_as::<_, NotificationRow>("SELECT * FROM notifications WHERE id = $1")
+                .bind(id)
+                .fetch_optional(executor)
+                .await?
+                .map(Into::into),
         )
-        .fetch_optional(executor)
-        .await?;
-
-        Ok(record.map(Into::into))
     }
 
-    pub async fn create<'e, E>(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create<'e, E: Executor<'e, Database = Postgres>>(
         executor: E,
         organization_id: Uuid,
         user_id: Uuid,
@@ -84,148 +77,60 @@ impl NotificationRepository {
         payload: NotificationPayload,
         issue_id: Option<Uuid>,
         comment_id: Option<Uuid>,
-    ) -> Result<Notification, NotificationError>
-    where
-        E: Executor<'e, Database = Postgres>,
-    {
-        let id = Uuid::new_v4();
-        let now = Utc::now();
-        let payload = sqlx::types::Json(payload);
-        let record = sqlx::query_as!(
-            NotificationRow,
-            r#"
-            INSERT INTO notifications (id, organization_id, user_id, notification_type, payload, issue_id, comment_id, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING
-                id,
-                organization_id,
-                user_id,
-                notification_type as "notification_type!: NotificationType",
-                payload as "payload!: sqlx::types::Json<NotificationPayload>",
-                issue_id,
-                comment_id,
-                seen,
-                dismissed_at,
-                created_at
-            "#,
-            id,
+    ) -> Result<Notification, NotificationError> {
+        Self::create_with_intent(
+            executor,
             organization_id,
             user_id,
-            notification_type as NotificationType,
-            payload as sqlx::types::Json<NotificationPayload>,
+            notification_type,
+            payload,
             issue_id,
             comment_id,
-            now
+            NotificationIntent::RawEvent,
+            None,
         )
-        .fetch_one(executor)
-        .await?;
-
-        Ok(record.into())
+        .await
     }
 
-    pub async fn list_by_user<'e, E>(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_with_intent<'e, E: Executor<'e, Database = Postgres>>(
+        executor: E,
+        organization_id: Uuid,
+        user_id: Uuid,
+        notification_type: NotificationType,
+        payload: NotificationPayload,
+        issue_id: Option<Uuid>,
+        comment_id: Option<Uuid>,
+        intent: NotificationIntent,
+        source_key: Option<&str>,
+    ) -> Result<Notification, NotificationError> {
+        Ok(sqlx::query_as::<_, NotificationRow>(
+            "INSERT INTO notifications (organization_id, user_id, notification_type, payload, issue_id, comment_id, intent, source_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (user_id, source_key) WHERE source_key IS NOT NULL DO UPDATE SET source_key = EXCLUDED.source_key RETURNING *")
+            .bind(organization_id).bind(user_id).bind(notification_type).bind(sqlx::types::Json(payload)).bind(issue_id).bind(comment_id).bind(intent).bind(source_key)
+            .fetch_one(executor).await?.into())
+    }
+
+    pub async fn list_by_user<'e, E: Executor<'e, Database = Postgres>>(
         executor: E,
         user_id: Uuid,
         include_dismissed: bool,
-    ) -> Result<Vec<Notification>, NotificationError>
-    where
-        E: Executor<'e, Database = Postgres>,
-    {
-        let records = if include_dismissed {
-            sqlx::query_as!(
-                NotificationRow,
-                r#"
-                SELECT
-                    id,
-                    organization_id,
-                    user_id,
-                    notification_type as "notification_type!: NotificationType",
-                    payload as "payload!: sqlx::types::Json<NotificationPayload>",
-                    issue_id,
-                    comment_id,
-                    seen,
-                    dismissed_at,
-                    created_at
-                FROM notifications
-                WHERE user_id = $1
-                ORDER BY created_at DESC
-                "#,
-                user_id
-            )
-            .fetch_all(executor)
-            .await?
-        } else {
-            sqlx::query_as!(
-                NotificationRow,
-                r#"
-                SELECT
-                    id,
-                    organization_id,
-                    user_id,
-                    notification_type as "notification_type!: NotificationType",
-                    payload as "payload!: sqlx::types::Json<NotificationPayload>",
-                    issue_id,
-                    comment_id,
-                    seen,
-                    dismissed_at,
-                    created_at
-                FROM notifications
-                WHERE user_id = $1 AND dismissed_at IS NULL
-                ORDER BY created_at DESC
-                "#,
-                user_id
-            )
-            .fetch_all(executor)
-            .await?
-        };
-
-        Ok(records.into_iter().map(Into::into).collect())
+    ) -> Result<Vec<Notification>, NotificationError> {
+        Ok(sqlx::query_as::<_, NotificationRow>("SELECT * FROM notifications WHERE user_id = $1 AND routing_state IN ('user','autopilot_consumed') AND ($2 OR dismissed_at IS NULL) ORDER BY created_at DESC")
+            .bind(user_id).bind(include_dismissed).fetch_all(executor).await?.into_iter().map(Into::into).collect())
     }
 
-    pub async fn update<'e, E>(
+    pub async fn update<'e, E: Executor<'e, Database = Postgres>>(
         executor: E,
         id: Uuid,
         seen: Option<bool>,
         archived: Option<bool>,
-    ) -> Result<Notification, NotificationError>
-    where
-        E: Executor<'e, Database = Postgres>,
-    {
-        let record = sqlx::query_as!(
-            NotificationRow,
-            r#"
-            UPDATE notifications
-            SET seen = COALESCE($1, seen),
-                dismissed_at = CASE
-                    WHEN $3 = true AND dismissed_at IS NULL THEN NOW()
-                    WHEN $3 = false THEN NULL
-                    WHEN $3 IS NULL AND $1 = true AND dismissed_at IS NULL THEN NOW()
-                    ELSE dismissed_at
-                END
-            WHERE id = $2
-            RETURNING
-                id,
-                organization_id,
-                user_id,
-                notification_type as "notification_type!: NotificationType",
-                payload as "payload!: sqlx::types::Json<NotificationPayload>",
-                issue_id,
-                comment_id,
-                seen,
-                dismissed_at,
-                created_at
-            "#,
-            seen,
-            id,
-            archived
-        )
-        .fetch_one(executor)
-        .await?;
-
-        Ok(record.into())
+    ) -> Result<Notification, NotificationError> {
+        Ok(sqlx::query_as::<_, NotificationRow>("UPDATE notifications SET seen = COALESCE($2,seen), dismissed_at = CASE WHEN $3 = false THEN NULL WHEN ($3 = true OR ($3 IS NULL AND $2 = true)) THEN COALESCE(dismissed_at,NOW()) ELSE dismissed_at END WHERE id=$1 AND routing_state NOT IN ('autopilot_pending','autopilot_claimed') RETURNING *")
+            .bind(id).bind(seen).bind(archived).fetch_one(executor).await?.into())
     }
 
-    pub async fn upsert_recent<'e, E>(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_recent<'e, E: Executor<'e, Database = Postgres>>(
         executor: E,
         organization_id: Uuid,
         user_id: Uuid,
@@ -233,107 +138,21 @@ impl NotificationRepository {
         payload: NotificationPayload,
         issue_id: Option<Uuid>,
         comment_id: Option<Uuid>,
-    ) -> Result<Notification, NotificationError>
-    where
-        E: Executor<'e, Database = Postgres>,
-    {
-        let id = Uuid::new_v4();
-        let now = Utc::now();
-        let payload = sqlx::types::Json(payload);
-        let record: NotificationRow = sqlx::query_as!(
-            NotificationRow,
-            r#"
-            WITH existing AS (
-                SELECT id FROM notifications
-                WHERE user_id = $3
-                  AND notification_type = $4
-                  AND issue_id IS NOT DISTINCT FROM $6
-                  AND comment_id IS NOT DISTINCT FROM $7
-                  AND created_at > NOW() - INTERVAL '1 minute'
-                ORDER BY created_at DESC
-                LIMIT 1
-            ),
-            updated AS (
-                UPDATE notifications
-                SET payload = $5,
-                    seen = FALSE,
-                    dismissed_at = NULL,
-                    created_at = $8
-                WHERE id = (SELECT id FROM existing)
-                RETURNING
-                    id,
-                    organization_id,
-                    user_id,
-                    notification_type,
-                    payload,
-                    issue_id,
-                    comment_id,
-                    seen,
-                    dismissed_at,
-                    created_at
-            ),
-            inserted AS (
-                INSERT INTO notifications (id, organization_id, user_id, notification_type, payload, issue_id, comment_id, created_at)
-                SELECT $1, $2, $3, $4, $5, $6, $7, $8
-                WHERE NOT EXISTS (SELECT 1 FROM existing)
-                RETURNING
-                    id,
-                    organization_id,
-                    user_id,
-                    notification_type,
-                    payload,
-                    issue_id,
-                    comment_id,
-                    seen,
-                    dismissed_at,
-                    created_at
-            )
-            SELECT
-                id as "id!",
-                organization_id as "organization_id!",
-                user_id as "user_id!",
-                notification_type as "notification_type!: NotificationType",
-                payload as "payload!: sqlx::types::Json<NotificationPayload>",
-                issue_id,
-                comment_id,
-                seen as "seen!",
-                dismissed_at,
-                created_at as "created_at!"
-            FROM updated
-            UNION ALL
-            SELECT
-                id as "id!",
-                organization_id as "organization_id!",
-                user_id as "user_id!",
-                notification_type as "notification_type!: NotificationType",
-                payload as "payload!: sqlx::types::Json<NotificationPayload>",
-                issue_id,
-                comment_id,
-                seen as "seen!",
-                dismissed_at,
-                created_at as "created_at!"
-            FROM inserted
-            "#,
-            id,
-            organization_id,
-            user_id,
-            notification_type as NotificationType,
-            payload as sqlx::types::Json<NotificationPayload>,
-            issue_id,
-            comment_id,
-            now
-        )
-        .fetch_one(executor)
-        .await?;
-
-        Ok(record.into())
+    ) -> Result<Notification, NotificationError> {
+        Ok(sqlx::query_as::<_, NotificationRow>(r#"
+            WITH existing AS (SELECT id FROM notifications WHERE user_id=$2 AND notification_type=$3 AND issue_id IS NOT DISTINCT FROM $5 AND comment_id IS NOT DISTINCT FROM $6 AND created_at > NOW()-INTERVAL '1 minute' ORDER BY created_at DESC LIMIT 1 FOR UPDATE),
+            updated AS (UPDATE notifications SET payload=$4, seen=false, dismissed_at=NULL, created_at=clock_timestamp(), intent='raw_event' WHERE id=(SELECT id FROM existing) RETURNING *),
+            inserted AS (INSERT INTO notifications (organization_id,user_id,notification_type,payload,issue_id,comment_id,intent) SELECT $1,$2,$3,$4,$5,$6,'raw_event' WHERE NOT EXISTS (SELECT 1 FROM existing) RETURNING *)
+            SELECT * FROM updated UNION ALL SELECT * FROM inserted"#)
+            .bind(organization_id).bind(user_id).bind(notification_type).bind(sqlx::types::Json(payload)).bind(issue_id).bind(comment_id).fetch_one(executor).await?.into())
     }
 
-    pub async fn delete<'e, E>(executor: E, id: Uuid) -> Result<(), NotificationError>
-    where
-        E: Executor<'e, Database = Postgres>,
-    {
-        sqlx::query!("DELETE FROM notifications WHERE id = $1", id)
+    pub async fn delete<'e, E: Executor<'e, Database = Postgres>>(
+        executor: E,
+        id: Uuid,
+    ) -> Result<(), NotificationError> {
+        sqlx::query("DELETE FROM notifications WHERE id=$1")
+            .bind(id)
             .execute(executor)
             .await?;
         Ok(())

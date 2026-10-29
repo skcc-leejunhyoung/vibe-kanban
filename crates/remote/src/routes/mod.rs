@@ -36,6 +36,7 @@ pub mod issue_relationships;
 pub mod issue_tags;
 pub mod issues;
 pub mod milestones;
+mod notification_dispatches;
 pub mod notifications;
 mod oauth;
 pub(crate) mod organization_members;
@@ -136,6 +137,7 @@ pub fn router(state: AppState) -> Router {
         .merge(pull_request_issues::router())
         .merge(pull_requests::router())
         .merge(notifications::router())
+        .merge(notification_dispatches::router())
         .merge(user_notification_preferences::router())
         .merge(user_web_settings::router())
         .merge(web_push::router())

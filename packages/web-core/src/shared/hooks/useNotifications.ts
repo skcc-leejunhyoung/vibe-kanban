@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from 'react';
+import { isUserVisibleNotification } from '@/shared/lib/notifications';
 import { useShape } from '@/shared/integrations/electric/hooks';
 import {
   NOTIFICATIONS_SHAPE,
@@ -41,14 +42,19 @@ export function useNotifications() {
     [result.updateMany]
   );
 
-  const activeNotifications = useMemo(
-    () => result.data.filter((notification) => !notification.dismissed_at),
+  // Filter before grouping: a mixed group must never reveal a held alert's text.
+  const data = useMemo(
+    () => result.data.filter(isUserVisibleNotification),
     [result.data]
+  );
+  const activeNotifications = useMemo(
+    () => data.filter((notification) => !notification.dismissed_at),
+    [data]
   );
 
   const archivedNotifications = useMemo(
-    () => result.data.filter((notification) => notification.dismissed_at),
-    [result.data]
+    () => data.filter((notification) => notification.dismissed_at),
+    [data]
   );
 
   const groupedNotifications = useMemo(
@@ -68,6 +74,7 @@ export function useNotifications() {
 
   return {
     ...result,
+    data,
     updateMany,
     enabled,
     activeNotifications,

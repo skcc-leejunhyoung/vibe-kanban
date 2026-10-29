@@ -3238,3 +3238,16 @@ export const searchApi = {
     return handleApiResponse<SearchResult[]>(response);
   },
 };
+
+export async function displayCanonicalNotification(
+  id: string,
+  revision: number
+): Promise<void> {
+  const response = await makeLocalApiRequest('/api/notifications/display', {
+    hostScope: 'none',
+    method: 'POST',
+    body: JSON.stringify({ id, revision }),
+  });
+  if (!response.ok)
+    throw new Error(`Notification display failed: ${response.status}`);
+}

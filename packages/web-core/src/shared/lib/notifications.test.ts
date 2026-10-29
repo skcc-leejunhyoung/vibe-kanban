@@ -3,6 +3,7 @@ import {
   buildNotificationTabUrl,
   getPullRequestDetailsNavigationTarget,
   groupNotifications,
+  isUserVisibleNotification,
   selectUnseenPullRequestCommentNotificationIds,
   selectUnseenNotificationIdsForView,
 } from './notifications';
@@ -15,6 +16,10 @@ function createNotification(
   const payload: NotificationPayload = overrides.payload ?? {};
   return {
     id: 'n1',
+    intent: 'legacy',
+    routing_state: 'user',
+    revision: 1,
+    source_key: null,
     organization_id: 'org1',
     user_id: 'user1',
     notification_type: 'issue_comment_added',
@@ -327,5 +332,25 @@ describe('buildNotificationTabUrl', () => {
   it('returns null when there is no navigation target', () => {
     const group = createGroup(createNotification(), null);
     expect(buildNotificationTabUrl(group)).toBeNull();
+  });
+});
+
+describe('notification routing visibility', () => {
+  it('filters held rows before grouping and preserves legacy and archive rows', () => {
+    const rows = [
+      createNotification({ id: 'user' }),
+      createNotification({ id: 'pending', routing_state: 'autopilot_pending' }),
+      createNotification({ id: 'claimed', routing_state: 'autopilot_claimed' }),
+      createNotification({
+        id: 'consumed',
+        routing_state: 'autopilot_consumed',
+        seen: true,
+      }),
+    ];
+    expect(rows.filter(isUserVisibleNotification).map((n) => n.id)).toEqual([
+      'user',
+      'consumed',
+    ]);
+    expect(isUserVisibleNotification({})).toBe(true);
   });
 });

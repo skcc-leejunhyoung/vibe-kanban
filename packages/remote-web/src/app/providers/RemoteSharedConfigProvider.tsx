@@ -23,12 +23,19 @@ interface RemoteSharedConfigProviderProps {
   children: ReactNode;
 }
 
-type NotificationVersion = Pick<Notification, "id" | "seen" | "created_at">;
+type NotificationVersion = Pick<Notification, "id" | "seen" | "created_at"> &
+  Partial<Pick<Notification, "routing_state" | "dismissed_at" | "payload">>;
 
 export function advanceNotificationSoundState(
   previous: ReadonlyMap<string, string> | null,
   notifications: readonly NotificationVersion[],
 ) {
+  notifications = notifications.filter(
+    (n) =>
+      (!n.routing_state || n.routing_state === "user") &&
+      !n.dismissed_at &&
+      !n.payload?.local_only,
+  );
   const next = new Map(
     notifications.map(({ id, created_at }) => [id, created_at]),
   );

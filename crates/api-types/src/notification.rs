@@ -36,8 +36,43 @@ pub enum NotificationGroupKind {
     WorkspaceTask,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, TS)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+pub enum NotificationIntent {
+    RawEvent,
+    UserReport,
+    #[default]
+    Legacy,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, TS)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+pub enum NotificationRoutingState {
+    #[default]
+    User,
+    AutopilotPending,
+    AutopilotClaimed,
+    AutopilotConsumed,
+}
+
+impl NotificationRoutingState {
+    pub fn is_held(self) -> bool {
+        matches!(self, Self::AutopilotPending | Self::AutopilotClaimed)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct Notification {
+    #[serde(default)]
+    pub source_key: Option<String>,
+    #[serde(default)]
+    pub intent: NotificationIntent,
+    #[serde(default)]
+    pub routing_state: NotificationRoutingState,
+    #[serde(default = "notification_revision")]
+    pub revision: i32,
     pub id: Uuid,
     pub organization_id: Uuid,
     pub user_id: Uuid,
@@ -52,6 +87,10 @@ pub struct Notification {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 pub struct NotificationPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_push_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deeplink_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,4 +165,60 @@ pub struct UpdateNotificationRequest {
     pub seen: Option<bool>,
     #[serde(default, deserialize_with = "some_if_present")]
     pub archived: Option<bool>,
+}
+
+fn notification_revision() -> i32 {
+    1
+}
+
+pub fn notification_body(
+    notification_type: NotificationType,
+    payload: &NotificationPayload,
+) -> String {
+    let issue = issue_label(payload);
+    match notification_type {
+        NotificationType::IssueCommentAdded => format!("{issue}: new comment"),
+        NotificationType::IssueStatusChanged => {
+            if let Some(status) = payload.new_status_name.as_deref() {
+                format!("{issue}: moved to {status}")
+            } else {
+                format!("{issue}: status changed")
+            }
+        }
+        NotificationType::IssueAssigneeChanged => format!("{issue}: assignee changed"),
+        NotificationType::IssuePriorityChanged => format!("{issue}: priority changed"),
+        NotificationType::IssueUnassigned => format!("{issue}: unassigned"),
+        NotificationType::IssueCommentReaction => {
+            if let Some(emoji) = payload.emoji.as_deref() {
+                format!("{issue}: reacted with {emoji}")
+            } else {
+                format!("{issue}: new reaction")
+            }
+        }
+        NotificationType::IssueDeleted => format!("{issue}: issue deleted"),
+        NotificationType::IssueTitleChanged => format!("{issue}: title changed"),
+        NotificationType::IssueDescriptionChanged => format!("{issue}: description changed"),
+        NotificationType::IssueReviewRequested => format!("{issue}: ready for review"),
+        NotificationType::WorkspaceTaskCompleted => payload
+            .body
+            .clone()
+            .unwrap_or_else(|| "workspace task completed".to_string()),
+        NotificationType::PullRequestCommentAdded => format!(
+            "PR #{}: new comment from {}",
+            payload.pull_request_number.unwrap_or_default(),
+            payload.actor_name.as_deref().unwrap_or("Someone")
+        ),
+    }
+}
+
+fn issue_label(payload: &NotificationPayload) -> String {
+    match (
+        payload.issue_simple_id.as_deref(),
+        payload.issue_title.as_deref(),
+    ) {
+        (Some(simple_id), Some(title)) => format!("{simple_id} {title}"),
+        (Some(simple_id), None) => simple_id.to_string(),
+        (None, Some(title)) => title.to_string(),
+        (None, None) => "Issue".to_string(),
+    }
 }

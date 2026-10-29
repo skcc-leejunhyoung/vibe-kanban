@@ -2902,7 +2902,12 @@ impl LocalContainerService {
                         &vibe_orchestrator::merge_blocked_comment(detail, Some(ctx.session.id)),
                     )
                     .await;
-                    self.vibe_notify_merge_failed(&ctx.workspace, detail).await;
+                    self.vibe_notify_merge_failed(
+                        &ctx.workspace,
+                        detail,
+                        format!("merge-failed:{}", ctx.execution_process.id),
+                    )
+                    .await;
                 }
             }
 
@@ -2982,7 +2987,14 @@ impl LocalContainerService {
                 }
                 let _ = VibeRun::finish_merge(pool, workspace_id).await;
                 tracing::info!("vibe: workspace {} merged → In review", workspace_id);
-                self.vibe_notify_ready_for_review(workspace).await;
+                self.vibe_notify_ready_for_review(
+                    workspace,
+                    format!(
+                        "review-ready:{workspace_id}:{}",
+                        vibe_run.updated_at.timestamp_micros()
+                    ),
+                )
+                .await;
             }
             PostMergeAction::ResolveConflict { retry } => {
                 let _ = VibeRun::set_merge_retries(pool, workspace_id, retry as i64).await;
@@ -3062,33 +3074,43 @@ impl LocalContainerService {
                     retry,
                     detail
                 );
-                self.vibe_notify_merge_failed(workspace, &detail).await;
+                self.vibe_notify_merge_failed(
+                    workspace,
+                    &detail,
+                    format!(
+                        "merge-failed:{workspace_id}:{}",
+                        vibe_run.updated_at.timestamp_micros()
+                    ),
+                )
+                .await;
             }
         }
         Ok(())
     }
 
-    /// Notify this host's LOCAL push subscriptions that the workspace's issue
-    /// moved to "In review". The remote already pushes an
-    /// `issue_review_requested` notification to the user's remote subscriptions
-    /// (phone), so this covers only the disjoint local subscriptions (e.g. a
-    /// desktop browser paired via the local server) the remote push never
-    /// reaches. Best-effort, local delivery only to avoid double-notifying.
-    async fn vibe_notify_ready_for_review(&self, workspace: &Workspace) {
+    /// Automatic workflow events use the same central routing as task completion.
+    async fn vibe_notify_ready_for_review(&self, workspace: &Workspace, source_key: String) {
         let name = workspace.name.as_deref().unwrap_or(&workspace.branch);
         self.notification_service
-            .notify_local_only(
+            .notify_raw(
                 "Ready for review",
                 &format!("'{name}' is ready for review"),
-                Some(workspace.id),
+                workspace.id,
+                source_key,
+                true,
             )
             .await;
     }
 
-    /// Local-only push saying the auto-merge gave up and why. The issue still
+    /// Raw workflow alert saying the auto-merge gave up and why. The issue still
     /// moves to "In review" for a human, but reusing the "ready for review"
     /// notice here hid the failure (e.g. a dirty base checkout) entirely.
-    async fn vibe_notify_merge_failed(&self, workspace: &Workspace, detail: &str) {
+    async fn vibe_notify_merge_failed(
+        &self,
+        workspace: &Workspace,
+        detail: &str,
+        source_key: String,
+    ) {
         let name = workspace.name.as_deref().unwrap_or(&workspace.branch);
         // Git stderr dumps are multi-line and long; flatten and cap for a push body.
         let mut detail: String = detail.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -3098,10 +3120,12 @@ impl LocalContainerService {
             detail = format!("{}…", detail.chars().take(300).collect::<String>());
         }
         self.notification_service
-            .notify_local_only(
+            .notify_raw(
                 "Auto-merge failed",
                 &format!("'{name}': {detail}"),
-                Some(workspace.id),
+                workspace.id,
+                source_key,
+                true,
             )
             .await;
     }

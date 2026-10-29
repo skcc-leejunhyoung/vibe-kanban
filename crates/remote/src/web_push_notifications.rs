@@ -1,4 +1,4 @@
-use api_types::{Notification, NotificationPayload, NotificationType};
+use api_types::{Notification, NotificationType, notification_body};
 use secrecy::ExposeSecret;
 use serde::Serialize;
 use sqlx::PgPool;
@@ -19,70 +19,119 @@ struct PushPayload<'a> {
     body: String,
     deeplink_path: Option<&'a str>,
     notification_id: String,
+    revision: i32,
 }
 
-pub async fn send_notification(pool: PgPool, notification: Notification) {
+pub fn spawn_delivery(pool: PgPool) {
+    let watchdog = pool.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            if let Err(error) = sweep_expired(&watchdog).await {
+                tracing::warn!(?error, "notification deadline sweep failed");
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            if let Err(error) = drain_delivery(&pool).await {
+                tracing::warn!(?error, "notification delivery sweep failed");
+            }
+        }
+    });
+}
+
+pub(crate) async fn sweep_expired(pool: &PgPool) -> Result<(), sqlx::Error> {
+    // A lost provider response is uncertain; replay could create another banner.
+    sqlx::query("UPDATE notification_delivery_jobs SET status='uncertain',updated_at=NOW() WHERE status='sending' AND updated_at<NOW()-INTERVAL '90 seconds'").execute(pool).await?;
+    let mut tx = pool.begin().await?;
+    let ids=sqlx::query_scalar::<_,Uuid>(r#"
+        SELECT n.id FROM notifications n LEFT JOIN notification_dispatches d ON d.notification_id=n.id AND d.revision=n.revision
+        LEFT JOIN autopilot_notification_leases l ON l.id=d.lease_id
+        LEFT JOIN notification_host_capabilities c ON c.host_id=l.host_id
+        LEFT JOIN hosts h ON h.id=l.host_id
+        WHERE n.routing_state IN ('autopilot_pending','autopilot_claimed') AND
+          (d.notification_id IS NULL OR l.id IS NULL OR h.id IS NULL OR l.expires_at<=NOW() OR c.expires_at IS NULL OR c.expires_at<=NOW() OR h.owner_user_id<>n.user_id OR h.deleted_at IS NOT NULL
+           OR EXISTS(SELECT 1 FROM hosts other LEFT JOIN notification_host_capabilities supported ON supported.host_id=other.id AND supported.user_id=n.user_id AND supported.expires_at>NOW() WHERE other.owner_user_id=n.user_id AND other.deleted_at IS NULL AND other.status='online' AND supported.host_id IS NULL)
+           OR d.handoff_deadline<=NOW() OR (n.routing_state='autopilot_pending' AND d.pending_deadline<=NOW())
+           OR (n.routing_state='autopilot_claimed' AND d.claim_expires_at<=NOW()))
+        ORDER BY n.id LIMIT 500 FOR UPDATE OF n SKIP LOCKED"#).fetch_all(&mut *tx).await?;
+    for id in ids {
+        sqlx::query("UPDATE notifications SET routing_state='user',seen=false,dismissed_at=NULL WHERE id=$1").bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE notification_dispatches SET reason='deadline_or_lease_expired' WHERE notification_id=$1").bind(id).execute(&mut *tx).await?;
+    }
+    tx.commit().await
+}
+
+async fn drain_delivery(pool: &PgPool) -> Result<(), sqlx::Error> {
+    use sqlx::Row;
     let Some(config) = WebPushConfig::from_env().ok().flatten() else {
-        return;
+        return Ok(());
     };
-
-    let subscriptions =
-        match WebPushSubscriptionRepository::list_by_user(&pool, notification.user_id).await {
-            Ok(subscriptions) => subscriptions,
-            Err(error) => {
-                tracing::warn!(
-                    ?error,
-                    user_id = %notification.user_id,
-                    "failed to list web push subscriptions"
-                );
-                return;
-            }
-        };
-
-    if subscriptions.is_empty() {
-        return;
-    }
-
-    let client = match IsahcWebPushClient::new() {
-        Ok(client) => client,
-        Err(error) => {
-            tracing::warn!(?error, "failed to initialize web push client");
-            return;
-        }
+    let Ok(client) = IsahcWebPushClient::new() else {
+        return Ok(());
     };
-    let deeplink_path = remote_web_push_click_url(&pool, &config, &notification).await;
-
-    for subscription in subscriptions {
-        if let Err(error) = send_to_subscription(
-            &client,
-            &config,
-            &subscription,
-            &notification,
-            deeplink_path.as_deref(),
+    for _ in 0..100 {
+        let mut tx = pool.begin().await?;
+        let job=sqlx::query("SELECT j.notification_id,j.revision,j.target_id FROM notification_delivery_jobs j JOIN notifications n ON n.id=j.notification_id AND n.revision=j.revision WHERE j.status='pending' AND j.updated_at<=NOW()-INTERVAL '5 seconds' AND j.channel='web_push' AND n.routing_state='user' AND NOT n.seen AND n.dismissed_at IS NULL ORDER BY j.updated_at LIMIT 1 FOR UPDATE OF n,j SKIP LOCKED").fetch_optional(&mut *tx).await?;
+        let Some(job) = job else { break };
+        let id: Uuid = job.get("notification_id");
+        let revision: i32 = job.get("revision");
+        let target: Uuid = job.get("target_id");
+        let notification =
+            crate::db::notifications::NotificationRepository::find_by_id(&mut *tx, id)
+                .await
+                .map_err(|e| match e {
+                    crate::db::notifications::NotificationError::Database(e) => e,
+                })?
+                .ok_or(sqlx::Error::RowNotFound)?;
+        let subscription = sqlx::query_as::<_, WebPushSubscription>(
+            "SELECT * FROM web_push_subscriptions WHERE id=$1 AND user_id=$2",
         )
-        .await
-        {
-            tracing::warn!(
-                error = %error,
-                error_kind = error.short_description(),
-                subscription_id = %subscription.id,
-                user_id = %subscription.user_id,
-                "failed to send web push notification"
-            );
-
-            if is_expired_subscription_error(&error)
-                && let Err(delete_error) =
-                    WebPushSubscriptionRepository::delete_by_endpoint(&pool, &subscription.endpoint)
-                        .await
-            {
-                tracing::warn!(
-                    ?delete_error,
-                    subscription_id = %subscription.id,
-                    "failed to delete expired web push subscription"
-                );
-            }
+        .bind(target)
+        .bind(notification.user_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if subscription.is_none() {
+            sqlx::query("UPDATE notification_delivery_jobs SET status='cancelled',updated_at=NOW() WHERE notification_id=$1 AND revision=$2 AND channel='web_push' AND target_id=$3").bind(id).bind(revision).bind(target).execute(&mut *tx).await?;
+            tx.commit().await?;
+            continue;
         }
+        let attempt = Uuid::new_v4();
+        sqlx::query("UPDATE notification_delivery_jobs SET status='sending',attempt_token=$4,updated_at=NOW() WHERE notification_id=$1 AND revision=$2 AND channel='web_push' AND target_id=$3").bind(id).bind(revision).bind(target).bind(attempt).execute(&mut *tx).await?;
+        tx.commit().await?;
+        let subscription = subscription.unwrap();
+        let url = remote_web_push_click_url(pool, &config, &notification).await;
+        // The durable sending transition is the cancellation boundary. A crash here
+        // stays uncertain rather than repeating an irreversible native alert.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            send_to_subscription(
+                &client,
+                &config,
+                &subscription,
+                &notification,
+                url.as_deref(),
+            ),
+        )
+        .await;
+        let status = match result {
+            Ok(Ok(())) => "sent",
+            Ok(Err((ref e, _))) if is_expired_subscription_error(e) => {
+                let _ =
+                    WebPushSubscriptionRepository::delete_by_endpoint(pool, &subscription.endpoint)
+                        .await;
+                "cancelled"
+            }
+            Ok(Err((_, false))) => "pending",
+            _ => "uncertain",
+        };
+        sqlx::query("UPDATE notification_delivery_jobs SET status=$5,updated_at=NOW() WHERE notification_id=$1 AND revision=$2 AND channel='web_push' AND target_id=$3 AND attempt_token=$4").bind(id).bind(revision).bind(target).bind(attempt).bind(status).execute(pool).await?;
     }
+    Ok(())
 }
 
 async fn send_to_subscription(
@@ -91,159 +140,44 @@ async fn send_to_subscription(
     subscription: &WebPushSubscription,
     notification: &Notification,
     deeplink_path: Option<&str>,
-) -> Result<(), WebPushError> {
-    let subscription_info = SubscriptionInfo::new(
-        subscription.endpoint.as_str(),
-        subscription.p256dh.as_str(),
-        subscription.auth.as_str(),
-    );
+) -> Result<(), (WebPushError, bool)> {
+    let message = (|| -> Result<_, WebPushError> {
+        let subscription_info = SubscriptionInfo::new(
+            subscription.endpoint.as_str(),
+            subscription.p256dh.as_str(),
+            subscription.auth.as_str(),
+        );
 
-    let mut signature =
-        VapidSignatureBuilder::from_base64(config.private_key.expose_secret(), &subscription_info)?;
-    signature.add_claim("sub", config.subject.as_str());
-    let signature = signature.build()?;
+        let mut signature = VapidSignatureBuilder::from_base64(
+            config.private_key.expose_secret(),
+            &subscription_info,
+        )?;
+        signature.add_claim("sub", config.subject.as_str());
+        let signature = signature.build()?;
 
-    let payload = PushPayload {
-        title: "Vibe Kanban",
-        body: notification_body(notification.notification_type, &notification.payload),
-        deeplink_path,
-        notification_id: notification.id.to_string(),
-    };
-    let payload = serde_json::to_vec(&payload).map_err(|_| WebPushError::InvalidResponse)?;
+        let payload = PushPayload {
+            title: notification
+                .payload
+                .title
+                .as_deref()
+                .unwrap_or("Vibe Kanban"),
+            body: notification_body(notification.notification_type, &notification.payload),
+            deeplink_path,
+            notification_id: notification.id.to_string(),
+            revision: notification.revision,
+        };
+        let payload = serde_json::to_vec(&payload).map_err(|_| WebPushError::InvalidResponse)?;
 
-    let mut message = WebPushMessageBuilder::new(&subscription_info);
-    message.set_payload(ContentEncoding::Aes128Gcm, &payload);
-    message.set_vapid_signature(signature);
-    message.set_ttl(60 * 60 * 24);
-    message.set_urgency(Urgency::Normal);
+        let mut message = WebPushMessageBuilder::new(&subscription_info);
+        message.set_payload(ContentEncoding::Aes128Gcm, &payload);
+        message.set_vapid_signature(signature);
+        message.set_ttl(60 * 60 * 24);
+        message.set_urgency(Urgency::Normal);
 
-    client.send(message.build()?).await
-}
-
-/// Send an arbitrary push to all of a user's web push subscriptions.
-///
-/// Used to forward a local host event (e.g. a coding-agent workspace/task
-/// completion) to the user's remote devices (phone, etc.) via the authenticated
-/// `POST /v1/web-push/self` endpoint.
-pub async fn send_custom_notification(
-    pool: PgPool,
-    user_id: Uuid,
-    title: String,
-    body: String,
-    workspace_id: Option<Uuid>,
-    notification_id: Option<Uuid>,
-    // An app-relative path that wins over the workspace link (Drawer notes).
-    deeplink_override: Option<String>,
-) {
-    let Some(config) = WebPushConfig::from_env().ok().flatten() else {
-        return;
-    };
-
-    let subscriptions = match WebPushSubscriptionRepository::list_by_user(&pool, user_id).await {
-        Ok(subscriptions) => subscriptions,
-        Err(error) => {
-            tracing::warn!(?error, %user_id, "failed to list web push subscriptions");
-            return;
-        }
-    };
-
-    if subscriptions.is_empty() {
-        return;
-    }
-
-    let client = match IsahcWebPushClient::new() {
-        Ok(client) => client,
-        Err(error) => {
-            tracing::warn!(?error, "failed to initialize web push client");
-            return;
-        }
-    };
-
-    let deeplink_path = match (workspace_id, config.remote_base_url.as_deref()) {
-        _ if deeplink_override.is_some() => deeplink_override
-            .zip(config.remote_base_url.as_deref())
-            .map(|(path, base_url)| format!("{base_url}{path}")),
-        (Some(workspace_id), Some(base_url)) => {
-            // Direct link to the workspace on its host. This is the canonical
-            // route (`/hosts/{host}/workspaces/{ws}`); the `/workspace/{ws}`
-            // alias requires client-side host resolution which is unreliable.
-            resolve_workspace_host_id(&pool, user_id, workspace_id)
-                .await
-                .map(|host_id| format!("{base_url}/hosts/{host_id}/workspaces/{workspace_id}"))
-        }
-        _ => None,
-    };
-
-    for subscription in subscriptions {
-        if let Err(error) = send_custom_to_subscription(
-            &client,
-            &config,
-            &subscription,
-            &title,
-            &body,
-            deeplink_path.as_deref(),
-            notification_id,
-        )
-        .await
-        {
-            tracing::warn!(
-                error = %error,
-                error_kind = error.short_description(),
-                subscription_id = %subscription.id,
-                user_id = %subscription.user_id,
-                "failed to send custom web push notification"
-            );
-
-            if is_expired_subscription_error(&error)
-                && let Err(delete_error) =
-                    WebPushSubscriptionRepository::delete_by_endpoint(&pool, &subscription.endpoint)
-                        .await
-            {
-                tracing::warn!(
-                    ?delete_error,
-                    subscription_id = %subscription.id,
-                    "failed to delete expired web push subscription"
-                );
-            }
-        }
-    }
-}
-
-async fn send_custom_to_subscription(
-    client: &IsahcWebPushClient,
-    config: &WebPushConfig,
-    subscription: &WebPushSubscription,
-    title: &str,
-    body: &str,
-    deeplink_path: Option<&str>,
-    notification_id: Option<Uuid>,
-) -> Result<(), WebPushError> {
-    let subscription_info = SubscriptionInfo::new(
-        subscription.endpoint.as_str(),
-        subscription.p256dh.as_str(),
-        subscription.auth.as_str(),
-    );
-
-    let mut signature =
-        VapidSignatureBuilder::from_base64(config.private_key.expose_secret(), &subscription_info)?;
-    signature.add_claim("sub", config.subject.as_str());
-    let signature = signature.build()?;
-
-    let payload = PushPayload {
-        title,
-        body: body.to_string(),
-        deeplink_path,
-        notification_id: notification_id.unwrap_or_else(Uuid::new_v4).to_string(),
-    };
-    let payload = serde_json::to_vec(&payload).map_err(|_| WebPushError::InvalidResponse)?;
-
-    let mut message = WebPushMessageBuilder::new(&subscription_info);
-    message.set_payload(ContentEncoding::Aes128Gcm, &payload);
-    message.set_vapid_signature(signature);
-    message.set_ttl(60 * 60 * 24);
-    message.set_urgency(Urgency::Normal);
-
-    client.send(message.build()?).await
+        message.build()
+    })()
+    .map_err(|error| (error, false))?;
+    client.send(message).await.map_err(|error| (error, true))
 }
 
 async fn remote_web_push_click_url(
@@ -252,6 +186,14 @@ async fn remote_web_push_click_url(
     notification: &Notification,
 ) -> Option<String> {
     let base_url = config.remote_base_url.as_deref()?;
+    if notification.payload.workspace_id.is_some() || notification.payload.drawer_note_id.is_some()
+    {
+        return notification
+            .payload
+            .deeplink_path
+            .as_deref()
+            .map(|path| remote_path(base_url, path));
+    }
     let workspace_id = notification_workspace_id(pool, notification).await;
     remote_web_push_click_url_from_parts(
         base_url,
@@ -326,27 +268,6 @@ async fn notification_workspace_id(pool: &PgPool, notification: &Notification) -
     }
 }
 
-/// Resolve the host that owns a workspace. Never substitute another host.
-async fn resolve_workspace_host_id(
-    pool: &PgPool,
-    user_id: Uuid,
-    workspace_id: Uuid,
-) -> Option<Uuid> {
-    sqlx::query_scalar::<_, Uuid>(
-        r#"
-        SELECT host_id
-        FROM workspaces
-        WHERE owner_user_id = $1 AND local_workspace_id = $2
-        "#,
-    )
-    .bind(user_id)
-    .bind(workspace_id)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten()
-}
-
 fn workspace_path(template: &str, workspace_id: Uuid) -> String {
     const DEFAULT_WORKSPACE_PATH_TEMPLATE: &str = "/workspace/{workspace_id}";
 
@@ -380,55 +301,6 @@ fn is_expired_subscription_error(error: &WebPushError) -> bool {
         error,
         WebPushError::EndpointNotFound(_) | WebPushError::EndpointNotValid(_)
     )
-}
-
-fn notification_body(notification_type: NotificationType, payload: &NotificationPayload) -> String {
-    let issue = issue_label(payload);
-    match notification_type {
-        NotificationType::IssueCommentAdded => format!("{issue}: new comment"),
-        NotificationType::IssueStatusChanged => {
-            if let Some(status) = payload.new_status_name.as_deref() {
-                format!("{issue}: moved to {status}")
-            } else {
-                format!("{issue}: status changed")
-            }
-        }
-        NotificationType::IssueAssigneeChanged => format!("{issue}: assignee changed"),
-        NotificationType::IssuePriorityChanged => format!("{issue}: priority changed"),
-        NotificationType::IssueUnassigned => format!("{issue}: unassigned"),
-        NotificationType::IssueCommentReaction => {
-            if let Some(emoji) = payload.emoji.as_deref() {
-                format!("{issue}: reacted with {emoji}")
-            } else {
-                format!("{issue}: new reaction")
-            }
-        }
-        NotificationType::IssueDeleted => format!("{issue}: issue deleted"),
-        NotificationType::IssueTitleChanged => format!("{issue}: title changed"),
-        NotificationType::IssueDescriptionChanged => format!("{issue}: description changed"),
-        NotificationType::IssueReviewRequested => format!("{issue}: ready for review"),
-        NotificationType::WorkspaceTaskCompleted => payload
-            .body
-            .clone()
-            .unwrap_or_else(|| "workspace task completed".to_string()),
-        NotificationType::PullRequestCommentAdded => format!(
-            "PR #{}: new comment from {}",
-            payload.pull_request_number.unwrap_or_default(),
-            payload.actor_name.as_deref().unwrap_or("Someone")
-        ),
-    }
-}
-
-fn issue_label(payload: &NotificationPayload) -> String {
-    match (
-        payload.issue_simple_id.as_deref(),
-        payload.issue_title.as_deref(),
-    ) {
-        (Some(simple_id), Some(title)) => format!("{simple_id} {title}"),
-        (Some(simple_id), None) => simple_id.to_string(),
-        (None, Some(title)) => title.to_string(),
-        (None, None) => "Issue".to_string(),
-    }
 }
 
 #[cfg(test)]

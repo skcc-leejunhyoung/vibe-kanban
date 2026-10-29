@@ -22,7 +22,6 @@ use crate::{
         workspaces::WorkspaceRepository,
     },
     mutation_definition::{MutationBuilder, NoCreate},
-    web_push_notifications,
 };
 
 #[derive(Debug, Serialize)]
@@ -186,10 +185,6 @@ async fn create_pull_request_comment_notification(
         ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
     })?;
 
-    tokio::spawn(web_push_notifications::send_notification(
-        state.pool().clone(),
-        notification.clone(),
-    ));
     Ok(Json(notification))
 }
 
@@ -264,6 +259,11 @@ async fn update_notification(
         ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
     })?;
 
+    sqlx::query("SELECT id FROM notifications WHERE id=$1 FOR UPDATE")
+        .bind(notification_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| super::error::db_error(e, "notification lock failed"))?;
     let existing = NotificationRepository::find_by_id(&mut *tx, notification_id)
         .await
         .map_err(|error| {
@@ -279,6 +279,13 @@ async fn update_notification(
         return Err(ErrorResponse::new(
             StatusCode::NOT_FOUND,
             "notification not found",
+        ));
+    }
+
+    if existing.routing_state.is_held() {
+        return Err(ErrorResponse::new(
+            StatusCode::CONFLICT,
+            "notification is held for Autopilot",
         ));
     }
 
@@ -378,6 +385,15 @@ async fn bulk_update_notifications(
         ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
     })?;
 
+    let mut ids: Vec<Uuid> = payload.updates.iter().map(|u| u.id).collect();
+    ids.sort();
+    ids.dedup();
+    sqlx::query("SELECT id FROM notifications WHERE id=ANY($1) ORDER BY id FOR UPDATE")
+        .bind(ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| super::error::db_error(e, "notification lock failed"))?;
+
     let first_notification = NotificationRepository::find_by_id(&mut *tx, payload.updates[0].id)
         .await
         .map_err(|error| {
@@ -418,6 +434,12 @@ async fn bulk_update_notifications(
             ));
         }
 
+        if existing.routing_state.is_held() {
+            return Err(ErrorResponse::new(
+                StatusCode::CONFLICT,
+                "notification is held for Autopilot",
+            ));
+        }
         let updated = NotificationRepository::update(
             &mut *tx,
             item.id,

@@ -9,7 +9,7 @@ pub enum WebPushSubscriptionError {
     Database(#[from] sqlx::Error),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct WebPushSubscription {
     pub id: Uuid,
     pub user_id: Uuid,

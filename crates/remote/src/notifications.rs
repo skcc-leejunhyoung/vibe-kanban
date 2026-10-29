@@ -75,12 +75,7 @@ pub async fn send_issue_notifications(
         )
         .await
         {
-            Ok(notification) => {
-                tokio::spawn(crate::web_push_notifications::send_notification(
-                    pool.clone(),
-                    notification,
-                ));
-            }
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!(?e, %recipient_id, issue_id = %issue.id, "failed to create notification");
             }
@@ -118,12 +113,7 @@ pub async fn send_debounced_issue_notifications(
         )
         .await
         {
-            Ok(notification) => {
-                tokio::spawn(crate::web_push_notifications::send_notification(
-                    pool.clone(),
-                    notification,
-                ));
-            }
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!(?e, %recipient_id, issue_id = %issue.id, "failed to upsert notification");
             }

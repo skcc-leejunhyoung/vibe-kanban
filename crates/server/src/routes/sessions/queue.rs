@@ -85,6 +85,12 @@ async fn queue_message_inner(
         .queued_message_service()
         .enqueue(session.id, data);
 
+    // Only a durable queue/execution acceptance may consume an Autopilot alert.
+    deployment
+        .queued_message_service()
+        .flush(session.id)
+        .await?;
+
     if let Err(e) = drain_idle_queue(&deployment, &session).await {
         // The message stays queued; the next turn's finish or "send now" runs it.
         tracing::error!(

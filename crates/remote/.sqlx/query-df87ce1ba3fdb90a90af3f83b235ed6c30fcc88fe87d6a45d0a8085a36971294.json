@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT 1 AS v FROM notifications WHERE \"user_id\" = $1 AND \"routing_state\" IN ('user', 'autopilot_consumed')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "v",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "df87ce1ba3fdb90a90af3f83b235ed6c30fcc88fe87d6a45d0a8085a36971294"
+}

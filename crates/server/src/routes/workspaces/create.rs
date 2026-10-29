@@ -786,31 +786,9 @@ async fn create_and_start_workspace_inner(
         && let Ok(client) = deployment.remote_client()
     {
         match client.mark_issue_for_review(linked.issue_id).await {
-            Ok(()) => {
-                // The remote pushes an `issue_review_requested` notification to
-                // the user's remote subscriptions (phone). Mirror that to this
-                // host's LOCAL subscriptions (e.g. a desktop browser paired via
-                // the local server), which the remote push never reaches. Local
-                // only, to avoid double-notifying remote devices.
-                // An unnamed review workspace: the PR head branch is what the
-                // user knows it by.
-                let name = workspace.name.as_deref().unwrap_or_else(|| {
-                    pr_review
-                        .as_ref()
-                        .map_or(workspace.branch.as_str(), |review| {
-                            review.head_branch.as_str()
-                        })
-                });
-                deployment
-                    .container()
-                    .notification_service()
-                    .notify_local_only(
-                        "Ready for review",
-                        &format!("'{name}' is ready for review"),
-                        Some(workspace.id),
-                    )
-                    .await;
-            }
+            // This status transition creates no notification. The review-tag
+            // producer owns the canonical alert and its routing/preferences.
+            Ok(()) => {}
             Err(e) => {
                 tracing::warn!(
                     "Failed to mark issue {} In review after review-mode workspace creation: {}",

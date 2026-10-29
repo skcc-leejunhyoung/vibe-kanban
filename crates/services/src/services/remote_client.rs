@@ -223,16 +223,18 @@ impl RemoteClient {
         // Host registrations and authenticated accounts can change while the
         // local backend stays alive. Resolve against the current account on
         // every host-scoped operation instead of retaining a stale UUID.
-        self.list_relay_hosts()
+        self.registered_host_id().await?.ok_or_else(|| {
+            RemoteClientError::Transport("this computer is not registered as a remote host".into())
+        })
+    }
+
+    pub async fn registered_host_id(&self) -> Result<Option<Uuid>, RemoteClientError> {
+        Ok(self
+            .list_relay_hosts()
             .await?
             .into_iter()
             .find(|host| host.machine_id == self.machine_id)
-            .map(|host| host.id)
-            .ok_or_else(|| {
-                RemoteClientError::Transport(
-                    "this computer is not registered as a remote host".to_string(),
-                )
-            })
+            .map(|host| host.id))
     }
 
     /// Returns a valid access token, refreshing when it's about to expire.
@@ -404,41 +406,37 @@ impl RemoteClient {
         self.require_token().await
     }
 
-    /// Forwards a local notification (e.g. coding-agent task completion) to the
-    /// authenticated user's remote web push subscriptions (phone, etc.).
-    pub async fn send_self_web_push(
-        &self,
-        title: &str,
-        body: &str,
-        workspace_id: Option<Uuid>,
-        autopilot: bool,
-        drawer_note_id: Option<Uuid>,
-    ) -> Result<(), RemoteClientError> {
-        #[derive(Serialize)]
-        struct Request<'a> {
-            title: &'a str,
-            body: &'a str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            workspace_id: Option<Uuid>,
-            autopilot: bool,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            drawer_note_id: Option<Uuid>,
-        }
+    /// Local correlation only; the remote still authenticates every request.
+    pub async fn notification_account(&self) -> Option<Uuid> {
+        let credentials = self.auth_context.get_credentials().await?;
+        utils::jwt::extract_subject(&credentials.refresh_token).ok()
+    }
 
-        self.send(
-            reqwest::Method::POST,
-            "/v1/web-push/self",
-            true,
-            Some(&Request {
-                title,
-                body,
-                workspace_id,
-                autopilot,
-                drawer_note_id,
-            }),
-        )
-        .await?;
-        Ok(())
+    pub async fn dispatch_notification(
+        &self,
+        payload: &serde_json::Value,
+    ) -> Result<api_types::Notification, RemoteClientError> {
+        self.post_authed("/v1/web-push/self", Some(payload)).await
+    }
+
+    pub async fn notification_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        payload: &serde_json::Value,
+    ) -> Result<serde_json::Value, RemoteClientError> {
+        let response = self.send(method, path, true, Some(payload)).await?;
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
+            return Ok(serde_json::Value::Null);
+        }
+        response.json().await.map_err(map_reqwest_error)
+    }
+
+    pub async fn get_notification(
+        &self,
+        id: Uuid,
+    ) -> Result<api_types::Notification, RemoteClientError> {
+        self.get_authed(&format!("/v1/notifications/{id}")).await
     }
 
     /// Pushes a batch of this host's journal events to the central stream.

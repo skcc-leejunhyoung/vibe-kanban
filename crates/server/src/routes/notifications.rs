@@ -54,6 +54,26 @@ async fn send_notification(
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
+#[derive(Deserialize)]
+struct DisplayNotification {
+    id: Uuid,
+    revision: i32,
+}
+async fn display_notification(
+    State(deployment): State<DeploymentImpl>,
+    Json(p): Json<DisplayNotification>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    deployment
+        .container()
+        .notification_service()
+        .display_notification(p.id, p.revision)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(Json(ApiResponse::success(())))
+}
+
 pub fn router() -> Router<DeploymentImpl> {
-    Router::new().route("/notifications/send", post(send_notification))
+    Router::new()
+        .route("/notifications/send", post(send_notification))
+        .route("/notifications/display", post(display_notification))
 }

@@ -51,7 +51,8 @@ export function AppSystemNotifications() {
       displayedNotificationIdsRef.current.add(group.id);
       const prTarget = getPullRequestDetailsNavigationTarget(group.latest);
       void showSystemNotification({
-        id: group.id,
+        id: group.latest.id,
+        revision: group.latest.revision,
         title: 'Vibe Kanban',
         body: getGroupedNotificationText(group, membersByUserId),
         deeplinkPath: prTarget

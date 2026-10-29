@@ -30,3 +30,42 @@ describe("advanceNotificationSoundState", () => {
     expect(added.shouldPlay).toBe(true);
   });
 });
+
+it("does not sound for held, consumed or archived alerts", () => {
+  const previous = new Map<string, string>();
+  for (const routing_state of [
+    "autopilot_pending",
+    "autopilot_claimed",
+    "autopilot_consumed",
+  ] as const) {
+    const result = advanceNotificationSoundState(previous, [
+      {
+        id: "synthetic",
+        seen: false,
+        created_at: "2026-01-01T00:00:00Z",
+        routing_state,
+      },
+    ]);
+    expect(result.shouldPlay).toBe(false);
+  }
+  expect(
+    advanceNotificationSoundState(previous, [
+      {
+        id: "synthetic",
+        seen: false,
+        created_at: "2026-01-01T00:00:00Z",
+        dismissed_at: "2026-01-01T00:01:00Z",
+      },
+    ]).shouldPlay,
+  ).toBe(false);
+  expect(
+    advanceNotificationSoundState(previous, [
+      {
+        id: "synthetic-local",
+        seen: false,
+        created_at: "2026-01-01T00:00:00Z",
+        payload: { local_only: true },
+      },
+    ]).shouldPlay,
+  ).toBe(false);
+});

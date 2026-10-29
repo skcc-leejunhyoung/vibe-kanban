@@ -29,6 +29,7 @@ impl Server {
             .await
             .context("failed to run database migrations")?;
         crate::automation::spawn_outbox(pool.clone());
+        crate::web_push_notifications::spawn_delivery(pool.clone());
         crate::db::host_connections::spawn_retention(pool.clone());
         crate::db::agent_events::spawn_retention(pool.clone());
         crate::db::drawer::spawn_retention(pool.clone());

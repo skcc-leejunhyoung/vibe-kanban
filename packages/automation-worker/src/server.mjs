@@ -1,3 +1,4 @@
+import { createNotificationRouting } from './notification-routing.mjs';
 import {
   githubReviewRepositories,
   githubReviewIssueId,
@@ -75,10 +76,10 @@ import { fetchWithRetry } from './fetch-retry.mjs';
 import { createArtifactChannels } from './artifact-channels.mjs';
 import {
   DEFAULT_KINDS,
+  kindMatches,
   createCoalescer,
   deliversToAutopilot,
   journalEventToWorkerEvent,
-  notificationIdsOf,
   renderPromptTemplate,
   sanitizeNotificationEvent,
 } from './vibe-events.mjs';
@@ -301,6 +302,77 @@ const routineInFlight = new Set();
 const routineHostInFlight = new Set();
 // Routines with `coalesce` buffer their matching events here and run once per
 // flush (see flushCoalescedRoutine). Declared before bootstrap like the caches.
+const notificationRouting = createNotificationRouting({
+  instanceId: randomUUID(),
+  api(routine, method, path, input, onHost, meta) {
+    const { connector, bridge } = autopilotTarget(routine);
+    return vibeApi(
+      connector,
+      method,
+      path,
+      input,
+      onHost ? bridge.baseUrl : undefined,
+      meta,
+    );
+  },
+});
+let notificationRoutingTick;
+async function reconcileNotificationRouting() {
+  if (notificationRoutingTick) return notificationRoutingTick;
+  notificationRoutingTick = (async () => {
+    for (const routine of state.routines || []) {
+      if (!deliversToAutopilot(routine)) continue;
+      const { connector, bridge } = autopilotTarget(routine);
+      const eventConnector = state.connectors.find(
+        (c) =>
+          c.enabled &&
+          c.type === 'vibe_events' &&
+          String(c.config?.vibeConnectorId || 'vibe-default') === connector.id &&
+          (!routine.trigger.connectorId || c.id === routine.trigger.connectorId),
+      );
+      let enabled =
+        state.enabled !== false &&
+        routine.enabled &&
+        connector.enabled &&
+        Boolean(eventConnector) &&
+        Boolean(bridge?.baseUrl) &&
+        routine.trigger?.type === 'vk_event' &&
+        kindMatches('cloud.notification', routine.trigger.kinds) &&
+        kindMatches('cloud.notification', eventConnector?.config?.kinds);
+      if (enabled) {
+        const host = await vibeApi(
+          connector,
+          'GET',
+          '/api/automation-actions/status',
+          undefined,
+          bridge.baseUrl,
+        );
+        autopilotPresence.delete(routine.action.targetHostId);
+        enabled =
+          host?.notificationProtocol === 1 &&
+          host.hostId === routine.action.targetHostId &&
+          (await autopilotActive(routine));
+      }
+      await notificationRouting.register(routine, ['cloud.notification'], enabled);
+      if (!enabled) continue;
+      for (const event of await notificationRouting.recover(routine)) {
+        event.connectorId = eventConnector.id;
+        if (
+          !eventMatchesRoutine(routine, event) ||
+          !(await routineConditionMatches(routine, event))
+        ) {
+          await notificationRouting.release(routine, event);
+          continue;
+        }
+        await dispatchRoutineEvent(event);
+      }
+    }
+  })().finally(() => {
+    notificationRoutingTick = null;
+  });
+  return notificationRoutingTick;
+}
+
 const routineCoalescer = createCoalescer({
   onFlush: (routineId, batch) => flushCoalescedRoutine(routineId, batch),
   onChange: async (routineId, snapshot) => {
@@ -351,6 +423,8 @@ async function bootstrap() {
   logs = await readJson(LOG_PATH, []);
   ensureDefaults();
   artifactChannels = createArtifactChannels({ state, persist: () => persistState(true), runRule });
+  for (const snapshot of Object.values(state.routineBuffers)) for (const event of snapshot.events || []) notificationRouting.restore(event);
+  for (const item of [...state.pendingRoutineEvents,...state.retryQueue]) notificationRouting.restore(item.event || {});
   restoreRoutineBuffers();
   await persistState();
   scheduleAll();
@@ -849,7 +923,10 @@ function scheduleAll() {
   for (const timer of timers.values()) clearInterval(timer);
   timers.clear();
 
-  // Master switch off: leave every timer cleared so the worker idles.
+  const routingTimer=setInterval(()=>reconcileNotificationRouting().catch(error=>log('warn','notification routing reconciliation failed',{error:errorMessage(error)})),20000);
+  timers.set('notification-routing',routingTimer);
+  reconcileNotificationRouting().catch(error=>log('warn','notification routing reconciliation failed',{error:errorMessage(error)}));
+  // Master switch off: leave every automation poll timer cleared.
   if (state.enabled === false) return;
 
   const routineTimer = setInterval(() => {
@@ -940,9 +1017,13 @@ async function dispatchRoutineEvent(event) {
     ...event,
   };
   for (const routine of state.routines || []) {
-    if (!eventMatchesRoutine(routine, event)) continue;
+    if (!eventMatchesRoutine(routine,event)) {
+      await notificationRouting.releasePending(routine,event);continue;
+    }
     try {
-      if (!(await routineConditionMatches(routine, event))) continue;
+      if (!(await routineConditionMatches(routine,event))) {
+        await notificationRouting.releasePending(routine,event);continue;
+      }
     } catch (error) {
       await log('error', 'routine condition failed', {
         routineId: routine.id,
@@ -950,7 +1031,8 @@ async function dispatchRoutineEvent(event) {
       });
       continue;
     }
-    await claimNotificationForAutopilot(routine, event);
+    if (event.notificationIntent === 'user_report' || event.autopilot) continue;
+    if (deliversToAutopilot(routine) && !await notificationRouting.claim(routine,event)) continue;
     if (routine.coalesce && event.type !== 'vk_event_batch') {
       await routineCoalescer.add(routine, event);
       continue;
@@ -994,63 +1076,8 @@ async function autopilotActive(routine) {
   return active;
 }
 
-// The user's inbox lives on the remote server; the Vibe connector holds its
-// credentials. `archived` is the inbox's dismissed_at, so an archived
-// notification only moves to the Archive tab. A deleted one is skipped.
-async function setNotificationsArchived(routine, ids, archived) {
-  if (!ids.length) return;
-  const { connector } = autopilotTarget(routine);
-  await Promise.all(
-    ids.map((id) =>
-      vibeApi(connector, 'PATCH', `/v1/notifications/${encodeURIComponent(id)}`, {
-        seen: archived,
-        archived,
-      }).catch((error) => {
-        if (error?.status !== 404) throw error;
-      })
-    )
-  );
-}
-
-// A notification an active Autopilot will be woken for leaves the user's inbox
-// right away (not after the coalesce window): the user gets the Autopilot's
-// summary instead of the raw notification first. A paused Autopilot leaves the
-// inbox untouched, and a failure here never blocks the event.
-async function claimNotificationForAutopilot(routine, event) {
-  if (event.autopilotClaimed || Array.isArray(event.events) || !deliversToAutopilot(routine))
-    return;
-  const ids = notificationIdsOf(event);
-  if (!ids.length) return;
-  try {
-    if (!(await autopilotActive(routine))) return;
-    await setNotificationsArchived(routine, ids, true);
-    event.autopilotClaimed = true;
-  } catch (error) {
-    await log('warn', 'could not archive notification for autopilot', {
-      routineId: routine.id,
-      notificationId: event.notificationId,
-      error: errorMessage(error),
-    });
-  }
-}
-
-// The Autopilot never got these (paused, or delivery gave up): put the claimed
-// notifications back in the inbox, unseen.
-async function releaseClaimedNotifications(routine, event) {
-  const ids = notificationIdsOf(event, (item) => item.autopilotClaimed);
-  if (!ids.length) return;
-  try {
-    await setNotificationsArchived(routine, ids, false);
-    await log('info', 'notifications returned to inbox (autopilot did not take them)', {
-      routineId: routine.id,
-      count: ids.length,
-    });
-  } catch (error) {
-    await log('warn', 'could not return notifications to inbox', {
-      routineId: routine.id,
-      error: errorMessage(error),
-    });
-  }
+async function releaseClaimedNotifications(routine,event) {
+  await notificationRouting.release(routine,event);
 }
 
 // Events buffered when the worker stopped (quiet window, interval or hourly
@@ -1268,39 +1295,15 @@ async function executeRoutineAction(routine, event) {
         throw new Error('autopilot executor config is unavailable; set input.executor_config');
     }
     const message = renderPromptTemplate(prompt, event);
-    const result = queue
-      ? await vibeApi(
-          connector,
-          'POST',
-          `/api/sessions/${encodeURIComponent(sessionId)}/queue`,
-          { message, executor_config: executorConfig },
-          bridge.baseUrl,
-          meta
-        )
-      : await vibeApi(
-          connector,
-          'POST',
-          `/api/sessions/${encodeURIComponent(sessionId)}/follow-up`,
-          { ...payload, prompt: message, executor_config: executorConfig },
-          bridge.baseUrl,
-          meta
-        );
+    const delivery={
+      path:`/api/sessions/${encodeURIComponent(sessionId)}/${queue?'queue':'follow-up'}`,
+      payload:queue?{message,executor_config:executorConfig}:{...payload,prompt:message,executor_config:executorConfig},
+      meta,
+    };
+    const result = !explicitSessionId
+      ? await notificationRouting.deliver(routine,event,delivery)
+      : await vibeApi(connector,'POST',delivery.path,delivery.payload,bridge.baseUrl,meta);
     await rememberRoutineOrigin(result?.data?.id, meta);
-    // Delivered: notifications that were not claimed on arrival (Autopilot was
-    // paused or unreachable then) leave the inbox now. Never fail the run over
-    // this — the prompt is already queued, a retry would send it twice.
-    if (!explicitSessionId) {
-      await setNotificationsArchived(
-        routine,
-        notificationIdsOf(event, (item) => !item.autopilotClaimed),
-        true
-      ).catch((error) =>
-        log('warn', 'could not archive notifications after autopilot delivery', {
-          routineId: routine.id,
-          error: errorMessage(error),
-        })
-      );
-    }
     return result;
   }
   if (action.type === 'notification')
@@ -1433,6 +1436,7 @@ async function pollVibeEvents(connector) {
     const page = await vibeApi(vibe, 'GET', eventsPath(config.cursor, limit));
     const events = Array.isArray(page?.events) ? page.events : [];
     for (const raw of events) {
+      if (raw.data?.intent === 'user_report') continue;
       if (raw.autopilot && config.excludeAutopilot !== false) continue;
       const event = { ...journalEventToWorkerEvent(raw), connectorId: connector.id };
       const key = automationEventKey(event);

@@ -411,7 +411,16 @@ pub trait ContainerService {
             }
         };
         self.notification_service()
-            .notify(&title, &message, Some(ctx.workspace.id))
+            .notify_raw(
+                &title,
+                &message,
+                ctx.workspace.id,
+                format!(
+                    "execution:{}:{:?}",
+                    ctx.execution_process.id, ctx.execution_process.status
+                ),
+                false,
+            )
             .await;
     }
 

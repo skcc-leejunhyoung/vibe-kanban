@@ -8,7 +8,7 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use db::models::{scratch::DraftFollowUpData, session_queued_messages::SessionQueuedMessages};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -68,7 +68,12 @@ pub struct QueuedMessageService {
     drain_holds: Arc<DashMap<Uuid, usize>>,
     /// Sessions whose queue changed, for the DB writer. `None` keeps the
     /// queue in memory only.
-    persist: Option<mpsc::UnboundedSender<Uuid>>,
+    persist: Option<mpsc::UnboundedSender<QueueWrite>>,
+}
+
+struct QueueWrite {
+    session_id: Uuid,
+    acknowledgement: Option<oneshot::Sender<Result<(), String>>>,
 }
 
 /// While alive, an enqueue for the session leaves its message to the holder
@@ -137,7 +142,10 @@ impl QueuedMessageService {
     /// Tell the DB writer `session_id`'s queue changed. Call after the change.
     fn changed(&self, session_id: Uuid) {
         if let Some(tx) = &self.persist {
-            let _ = tx.send(session_id);
+            let _ = tx.send(QueueWrite {
+                session_id,
+                acknowledgement: None,
+            });
         }
         let size = self.queue.get(&session_id).map(|q| q.len()).unwrap_or(0);
         crate::services::agent_journal::publish(
@@ -147,6 +155,25 @@ impl QueuedMessageService {
             None,
             serde_json::json!({ "size": size }),
         );
+    }
+
+    /// A queue HTTP acknowledgement must survive a crash, not just a JSON/cache write.
+    pub async fn flush(&self, session_id: Uuid) -> std::io::Result<()> {
+        let writer = self
+            .persist
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("durable queue is not configured"))?;
+        let (send, receive) = oneshot::channel();
+        writer
+            .send(QueueWrite {
+                session_id,
+                acknowledgement: Some(send),
+            })
+            .map_err(|_| std::io::Error::other("queue writer stopped"))?;
+        receive
+            .await
+            .map_err(|_| std::io::Error::other("queue writer stopped before acknowledgement"))?
+            .map_err(std::io::Error::other)
     }
 
     async fn persist_cancellations(
@@ -544,14 +571,15 @@ impl QueuedMessageService {
 /// Write each changed session's queue as it is *now*, not as it was when it
 /// changed, so the stored copy converges on the latest state whatever order
 /// the notifications arrive in.
-// ponytail: a change in the last moment before the process dies may not be
-// written yet; flush on graceful shutdown if that window ever matters.
+// shortcut: background edits still converge asynchronously; HTTP queue acceptance
+// uses flush, and any other caller promising durable acceptance must do the same.
 async fn write_queues(
     queue: Arc<DashMap<Uuid, VecDeque<QueuedMessage>>>,
     pool: SqlitePool,
-    mut changed: mpsc::UnboundedReceiver<Uuid>,
+    mut changed: mpsc::UnboundedReceiver<QueueWrite>,
 ) {
-    while let Some(session_id) = changed.recv().await {
+    while let Some(write) = changed.recv().await {
+        let session_id = write.session_id;
         let messages: Vec<QueuedMessage> = queue
             .get(&session_id)
             .map(|q| q.iter().cloned().collect())
@@ -568,8 +596,11 @@ async fn write_queues(
                 Err(e) => Err(e.to_string()),
             }
         };
-        if let Err(error) = result {
+        if let Err(error) = &result {
             tracing::warn!(%session_id, %error, "Failed to persist queued messages");
+        }
+        if let Some(acknowledgement) = write.acknowledgement {
+            let _ = acknowledgement.send(result);
         }
     }
 }
@@ -1012,5 +1043,36 @@ mod tests {
         let taken = svc.take_next(session).unwrap();
         svc.restore_failed(taken, "spawn failed".to_string());
         assert!(!svc.can_drain_now(session));
+    }
+    #[tokio::test]
+    async fn flush_acknowledges_storage_and_rejects_a_failed_writer() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let workspace = Uuid::new_v4();
+        let session = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces(id,branch) VALUES(?,'vk/synthetic-queue')")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions(id,workspace_id) VALUES(?,?)")
+            .bind(session)
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let service = QueuedMessageService::load(pool.clone()).await;
+        let message = service.enqueue(session, sample_data("synthetic durable message"));
+        service.flush(session).await.unwrap();
+        // No polling or sleep: the successful acknowledgement already includes DB storage.
+        let restored = QueuedMessageService::load(pool.clone()).await;
+        assert_eq!(restored.get_queued(session)[0].id, message.id);
+        pool.close().await;
+        assert!(service.flush(session).await.is_err());
+        assert!(QueuedMessageService::new().flush(session).await.is_err());
     }
 }

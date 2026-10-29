@@ -122,6 +122,8 @@ fn export_shapes() -> String {
         serde_json::Value::decl(),
         Project::decl(),
         Notification::decl(),
+        api_types::NotificationIntent::decl(),
+        api_types::NotificationRoutingState::decl(),
         api_types::DrawerNote::decl(),
         api_types::DrawerComment::decl(),
         api_types::DrawerCommentAuthor::decl(),

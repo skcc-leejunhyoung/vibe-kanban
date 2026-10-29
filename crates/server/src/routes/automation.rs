@@ -123,7 +123,27 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/automation/{*tail}", any(proxy))
         .route("/automation-actions/status", get(host_status))
+        .route("/automation-actions/receipts/{key}", get(action_receipt))
         .route("/automation-actions/notification", post(notification))
+}
+
+async fn action_receipt(
+    axum::extract::State(deployment): axum::extract::State<DeploymentImpl>,
+    Path(key): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let row = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT status,response FROM automation_action_receipts WHERE idempotency_key=?",
+    )
+    .bind(key)
+    .fetch_optional(&deployment.db().pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(match row {
+        Some((status, response)) => {
+            serde_json::json!({"status":status,"response":response.and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok())})
+        }
+        None => serde_json::json!({"status":"missing"}),
+    }))
 }
 
 async fn host_status(
@@ -135,6 +155,7 @@ async fn host_status(
     Ok(Json(serde_json::json!({
         "hostId": deployment.user_id(),
         "busy": !running.is_empty(),
+        "notificationProtocol": 1,
     })))
 }
 

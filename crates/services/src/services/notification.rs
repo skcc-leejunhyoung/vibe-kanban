@@ -1,5 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
+use api_types::{Notification, NotificationIntent};
 use async_trait::async_trait;
 use db::models::{
     web_push_subscription::{WebPushSubscription, WebPushSubscriptionModel},
@@ -7,6 +8,7 @@ use db::models::{
 };
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
+use serde_json::json;
 use sqlx::SqlitePool;
 use tokio::sync::RwLock;
 use utils::{self, command_ext::NoWindowExt};
@@ -108,48 +110,41 @@ impl NotificationService {
         pool: SqlitePool,
         remote_client: Option<RemoteClient>,
     ) -> Self {
-        Self {
+        let service = Self {
             config,
             pool,
             push_notifier: get_global_push_notifier(),
             remote_client,
+        };
+        if service.remote_client.is_some() {
+            let background = service.clone();
+            tokio::spawn(async move {
+                let mut timer = tokio::time::interval(std::time::Duration::from_secs(5));
+                loop {
+                    timer.tick().await;
+                    if let Err(error) = background.drain_dispatches().await {
+                        tracing::warn!(?error, "notification dispatch reconciliation failed");
+                    }
+                }
+            });
         }
+        service
     }
 
-    /// Send both sound and push notifications if enabled.
-    /// `workspace_id` is forwarded to the push notifier so Tauri can emit a
-    /// navigation event when the notification is clicked.
+    /// Explicit agent/CLI/automation reports remain user-facing regardless of destination.
     pub async fn notify(&self, title: &str, message: &str, workspace_id: Option<Uuid>) {
-        let config = self.config.read().await.notifications.clone();
-
-        if config.sound_enabled {
-            Self::play_sound_notification(&config.sound_file).await;
-        }
-
-        if config.push_enabled {
-            // Forward to the user's remote web push subscriptions (phone, etc.)
-            // regardless of how the notification is delivered locally.
-            self.forward_to_remote_web_push(title, message, workspace_id);
-
-            let web_push_active = self
-                .send_web_push(title, message, workspace_id)
-                .await
-                .unwrap_or_else(|error| {
-                    tracing::warn!(?error, "failed to send local web push notifications");
-                    false
-                });
-            if web_push_active {
-                return;
-            }
-
-            self.push_notifier.send(title, message, workspace_id).await;
-        }
+        self.dispatch(
+            title,
+            message,
+            workspace_id,
+            None,
+            NotificationIntent::UserReport,
+            Uuid::new_v4().to_string(),
+            false,
+        )
+        .await;
     }
 
-    /// A Drawer note's one notification (`vk drawer create --notify`): like
-    /// `notify`, but every click target opens the note, and the cloud copy is
-    /// tagged like the Autopilot's own alerts — it is a report *for* the user,
-    /// never automation input, whichever workspace sent it.
     pub async fn notify_drawer_note(
         &self,
         title: &str,
@@ -157,39 +152,286 @@ impl NotificationService {
         workspace_id: Option<Uuid>,
         note_id: Uuid,
     ) {
-        let config = self.config.read().await.notifications.clone();
+        self.dispatch(
+            title,
+            message,
+            workspace_id,
+            Some(note_id),
+            NotificationIntent::UserReport,
+            Uuid::new_v4().to_string(),
+            false,
+        )
+        .await;
+    }
 
+    pub async fn notify_raw(
+        &self,
+        title: &str,
+        message: &str,
+        workspace_id: Uuid,
+        source_key: String,
+        local_only: bool,
+    ) {
+        self.dispatch(
+            title,
+            message,
+            Some(workspace_id),
+            None,
+            NotificationIntent::RawEvent,
+            source_key,
+            local_only,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch(
+        &self,
+        title: &str,
+        message: &str,
+        workspace_id: Option<Uuid>,
+        note_id: Option<Uuid>,
+        intent: NotificationIntent,
+        source_key: String,
+        local_only: bool,
+    ) {
+        let owner = match &self.remote_client {
+            Some(client) => client.notification_account().await,
+            None => None,
+        };
+        if owner.is_none() {
+            self.display_local(title, message, workspace_id, note_id, None)
+                .await;
+            return;
+        }
+        let autopilot = note_id.is_some()
+            || match workspace_id {
+                Some(id) => Workspace::find_by_id(&self.pool, id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_none_or(|ws| ws.autopilot),
+                None => false,
+            };
+        let config = self.config.read().await.notifications.clone();
+        let payload = json!({"title":title,"body":message,"workspace_id":workspace_id,"drawer_note_id":note_id,"intent":intent,"autopilot":autopilot,"source_key":source_key,"remote_push_enabled":config.push_enabled&&!local_only,"owner_user_id":owner,"local_only":local_only});
+        if let Err(error) = sqlx::query(
+            "INSERT OR IGNORE INTO notification_dispatch_outbox(source_key,payload) VALUES(?,?)",
+        )
+        .bind(&source_key)
+        .bind(payload.to_string())
+        .execute(&self.pool)
+        .await
+        {
+            tracing::error!(?error, "could not persist notification dispatch");
+            return;
+        }
+        // Explicit reports can alert locally offline. Raw events stay silent until
+        // the central routing decision; an unknown response is retried by source key.
+        if intent == NotificationIntent::UserReport {
+            self.display_once(
+                &format!("notification:{source_key}"),
+                title,
+                message,
+                workspace_id,
+                note_id,
+                None,
+            )
+            .await;
+        }
+    }
+
+    async fn display_local(
+        &self,
+        title: &str,
+        message: &str,
+        workspace_id: Option<Uuid>,
+        note_id: Option<Uuid>,
+        deeplink: Option<&str>,
+    ) {
+        let config = self.config.read().await.notifications.clone();
         if config.sound_enabled {
             Self::play_sound_notification(&config.sound_file).await;
         }
-
-        if config.push_enabled {
-            self.forward_to_remote_web_push_for(title, message, workspace_id, Some(note_id));
-
-            let note_url = local_web_push_base_url()
-                .await
-                .map(|base_url| format!("{base_url}{}", drawer_note_path(note_id)));
-            let web_push_active = self
-                .send_web_push_with_deeplink(title, message, note_url.clone())
-                .await
-                .unwrap_or_else(|error| {
-                    tracing::warn!(?error, "failed to send local web push notifications");
-                    false
-                });
-            if web_push_active {
-                return;
-            }
-
-            // The OS banner opens the note too (the app root when the local
-            // URL is unknown), not the workspace that sent it.
-            let click_url = match note_url {
-                Some(url) => Some(url),
-                None => notification_click_url().await,
-            };
-            self.push_notifier
-                .send_to_url(title, message, click_url.as_deref())
-                .await;
+        if !config.push_enabled {
+            return;
         }
+        if let Some(path) = note_id
+            .map(drawer_note_path)
+            .or_else(|| deeplink.map(str::to_owned))
+        {
+            let url = local_web_push_base_url()
+                .await
+                .map(|base| format!("{base}{path}"));
+            if !self
+                .send_web_push_with_deeplink(title, message, url.clone())
+                .await
+                .unwrap_or(false)
+            {
+                self.push_notifier
+                    .send_to_url(title, message, url.as_deref())
+                    .await;
+            }
+        } else if !self
+            .send_web_push(title, message, workspace_id)
+            .await
+            .unwrap_or(false)
+        {
+            self.push_notifier.send(title, message, workspace_id).await;
+        }
+    }
+
+    async fn display_once(
+        &self,
+        key: &str,
+        title: &str,
+        message: &str,
+        workspace_id: Option<Uuid>,
+        note_id: Option<Uuid>,
+        deeplink: Option<&str>,
+    ) {
+        use crate::services::automation::{ActionReceipt, begin_action, complete_action};
+        match begin_action(&self.pool, key, "notification_display").await {
+            Ok(ActionReceipt::Claimed) => {
+                self.display_local(title, message, workspace_id, note_id, deeplink)
+                    .await;
+                if let Err(error) = complete_action(&self.pool, key, &()).await {
+                    tracing::warn!(?error, "notification display receipt incomplete");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(?error, "could not claim notification display"),
+        }
+    }
+
+    pub async fn display_notification(
+        &self,
+        id: Uuid,
+        revision: i32,
+    ) -> Result<(), crate::services::remote_client::RemoteClientError> {
+        let Some(client) = &self.remote_client else {
+            return Ok(());
+        };
+        let notification = client.get_notification(id).await?;
+        if notification.revision != revision
+            || notification.routing_state != api_types::NotificationRoutingState::User
+            || notification.seen
+            || notification.dismissed_at.is_some()
+        {
+            return Ok(());
+        }
+        if notification.payload.local_only == Some(true)
+            && (notification.payload.host_id.is_none()
+                || notification.payload.host_id != client.registered_host_id().await?)
+        {
+            return Ok(());
+        }
+        self.display_canonical(&notification).await;
+        Ok(())
+    }
+
+    async fn display_canonical(&self, n: &Notification) {
+        let key = n
+            .source_key
+            .clone()
+            .unwrap_or_else(|| format!("{}:{}", n.id, n.revision));
+        let title = n.payload.title.as_deref().unwrap_or("Vibe Kanban");
+        let message = api_types::notification_body(n.notification_type, &n.payload);
+        let deeplink =
+            if n.notification_type == api_types::NotificationType::PullRequestCommentAdded {
+                n.payload.pull_request_url.as_ref().map(|pr| {
+                    format!(
+                        "/pull-requests?{}",
+                        url::form_urlencoded::Serializer::new(String::new())
+                            .append_pair("prUrl", pr)
+                            .finish()
+                    )
+                })
+            } else {
+                n.payload.deeplink_path.clone()
+            };
+        self.display_once(
+            &format!("notification:{key}"),
+            title,
+            &message,
+            n.payload.workspace_id,
+            n.payload.drawer_note_id,
+            deeplink.as_deref(),
+        )
+        .await;
+    }
+
+    async fn drain_dispatches(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(client) = &self.remote_client else {
+            return Ok(());
+        };
+        let Some(owner) = client.notification_account().await else {
+            return Ok(());
+        };
+        let host_id = client.registered_host_id().await?;
+        if let Some(host_id) = host_id {
+            client
+                .notification_request(
+                    reqwest::Method::PUT,
+                    "/v1/notification-host-capabilities",
+                    &json!({"host_id":host_id,"protocol":1}),
+                )
+                .await?;
+        }
+        let payloads=sqlx::query_as::<_,(String,String)>("SELECT source_key,payload FROM notification_dispatch_outbox WHERE json_extract(payload,'$.owner_user_id')=? AND next_attempt_at<=unixepoch() ORDER BY created_at LIMIT 100").bind(owner.to_string()).fetch_all(&self.pool).await?;
+        for (key, payload) in payloads {
+            let mut payload: serde_json::Value = serde_json::from_str(&payload)?;
+            if payload["owner_user_id"] != json!(owner) {
+                continue;
+            }
+            payload["host_id"] = json!(host_id);
+            // Signed-in standalone clients have no host delivery worker. Keep
+            // their legacy local alerts instead of silently retaining an outbox.
+            if host_id.is_none() && payload["intent"] == json!("raw_event") {
+                payload["intent"] = json!("legacy");
+            }
+            let notification = match client.dispatch_notification(&payload).await {
+                Ok(notification) => notification,
+                Err(crate::services::remote_client::RemoteClientError::Http {
+                    status: 400..=499,
+                    ..
+                }) => {
+                    // A deleted Drawer target must not block unrelated later alerts.
+                    sqlx::query("UPDATE notification_dispatch_outbox SET next_attempt_at=unixepoch()+60 WHERE source_key=?").bind(&key).execute(&self.pool).await?;
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if host_id.is_none() {
+                self.display_canonical(&notification).await;
+            }
+            sqlx::query("DELETE FROM notification_dispatch_outbox WHERE source_key=?")
+                .bind(key)
+                .execute(&self.pool)
+                .await?;
+        }
+        let Some(host_id) = host_id else {
+            return Ok(());
+        };
+        let deliveries = client
+            .notification_request(
+                reqwest::Method::POST,
+                "/v1/notification-host-deliveries",
+                &json!({"host_id":host_id}),
+            )
+            .await?;
+        for delivery in deliveries["deliveries"].as_array().into_iter().flatten() {
+            let n: Notification = serde_json::from_value(delivery["notification"].clone())?;
+            self.display_notification(n.id, n.revision).await?;
+            client
+                .notification_request(
+                    reqwest::Method::POST,
+                    &format!("/v1/notification-host-deliveries/{}/complete", n.id),
+                    &json!({"host_id":host_id,"revision":n.revision,"token":delivery["token"]}),
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     /// Deliver a push to this host's LOCAL subscriptions only (and the OS
@@ -221,53 +463,6 @@ impl NotificationService {
         }
 
         self.push_notifier.send(title, message, workspace_id).await;
-    }
-
-    /// Fire-and-forget forward of a notification to the authenticated user's
-    /// remote web push subscriptions via the paired remote server.
-    fn forward_to_remote_web_push(&self, title: &str, message: &str, workspace_id: Option<Uuid>) {
-        self.forward_to_remote_web_push_for(title, message, workspace_id, None);
-    }
-
-    /// `drawer_note_id` makes the cloud notification open that note and marks
-    /// it as a report for the user (tagged like the Autopilot's own).
-    fn forward_to_remote_web_push_for(
-        &self,
-        title: &str,
-        message: &str,
-        workspace_id: Option<Uuid>,
-        drawer_note_id: Option<Uuid>,
-    ) {
-        let Some(client) = self.remote_client.clone() else {
-            return;
-        };
-        let title = title.to_string();
-        let message = message.to_string();
-        let pool = self.pool.clone();
-        tokio::spawn(async move {
-            let autopilot = drawer_note_id.is_some()
-                || match workspace_id {
-                    Some(id) => match Workspace::find_by_id(&pool, id).await {
-                        Ok(Some(workspace)) => workspace.autopilot,
-                        Ok(None) => true,
-                        Err(error) => {
-                            tracing::warn!(?error, "failed to classify workspace notification");
-                            true
-                        }
-                    },
-                    None => false,
-                };
-            if let Err(error) = client
-                .send_self_web_push(&title, &message, workspace_id, autopilot, drawer_note_id)
-                .await
-            {
-                // This is the only route by which a notification for a workspace
-                // running on THIS host reaches the user's other devices (phone,
-                // another PC) via the cloud. A failure here means those devices
-                // get nothing, so surface it at warn rather than swallowing it.
-                tracing::warn!(?error, "failed to forward notification to remote web push");
-            }
-        });
     }
 
     pub fn web_push_public_key(&self) -> Option<String> {
@@ -832,86 +1027,210 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn forwarded_notifications_capture_local_autopilot_without_journal_uploads() {
-        use std::{sync::Arc, time::Duration};
+    async fn raw_notifications_are_durable_and_silent_and_reports_display_once() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
 
-        use axum::{Json, Router, http::StatusCode, routing::post};
         use serde_json::{Value, json};
         use sqlx::sqlite::SqlitePoolOptions;
-        use tokio::sync::{RwLock, mpsc};
+        use tokio::sync::RwLock;
 
-        use super::{Config, NotificationService, RemoteClient};
+        use super::{Config, NotificationService, PushNotifier, RemoteClient};
         use crate::services::{
             auth::AuthContext,
             oauth_credentials::{Credentials, OAuthCredentials},
         };
-
-        let (sender, mut received) = mpsc::channel(2);
-        let router = Router::new().route(
-            "/v1/web-push/self",
-            post(move |Json(body): Json<Value>| {
-                let sender = sender.clone();
-                async move {
-                    sender.send(body).await.unwrap();
-                    StatusCode::ACCEPTED
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        struct CountingNotifier(AtomicUsize);
+        #[async_trait::async_trait]
+        impl PushNotifier for CountingNotifier {
+            async fn send(&self, _: &str, _: &str, _: Option<Uuid>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            async fn send_to_url(&self, _: &str, _: &str, _: Option<&str>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
         let dir = tempfile::tempdir().unwrap();
         let auth = AuthContext::new(
-            Arc::new(OAuthCredentials::new(dir.path().join("credentials.json"))),
+            Arc::new(OAuthCredentials::new(
+                dir.path().join("synthetic-credentials.json"),
+            )),
             Arc::new(RwLock::new(None)),
         );
+        // Unsigned synthetic token used only to correlate the local account.
+        let token = "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMTIzIiwgImV4cCI6IDQxMDI0NDQ4MDB9.c3ludGhldGlj";
         auth.save_credentials(&Credentials {
-            access_token: Some("test-access-token".into()),
-            refresh_token: "test-refresh-token".into(),
+            access_token: Some(token.into()),
+            refresh_token: token.into(),
             expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
         })
         .await
         .unwrap();
-        let client = RemoteClient::new(&format!("http://{address}"), auth, "test".into()).unwrap();
+        let client = RemoteClient::new(
+            "http://127.0.0.1:1",
+            auth.clone(),
+            "synthetic-machine".into(),
+        )
+        .unwrap();
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await
             .unwrap();
         sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
-        let service = NotificationService::new(
-            Arc::new(RwLock::new(Config::default())),
-            pool.clone(),
-            Some(client),
-        );
+        let notifier = Arc::new(CountingNotifier(AtomicUsize::new(0)));
+        let mut config = Config::default();
+        config.notifications.sound_enabled = false;
+        config.notifications.push_enabled = true;
+        let mut service = NotificationService {
+            config: Arc::new(RwLock::new(config)),
+            pool: pool.clone(),
+            push_notifier: notifier.clone(),
+            remote_client: Some(client),
+        };
         for autopilot in [true, false] {
             let workspace = Uuid::new_v4();
-            sqlx::query("INSERT INTO workspaces (id, branch, autopilot) VALUES (?, 'vk/test', ?)")
+            sqlx::query("INSERT INTO workspaces(id,branch,autopilot) VALUES(?,'vk/synthetic',?)")
                 .bind(workspace)
                 .bind(autopilot)
                 .execute(&pool)
                 .await
                 .unwrap();
-            service.forward_to_remote_web_push("title", "body", Some(workspace));
-            let payload = tokio::time::timeout(Duration::from_secs(5), received.recv())
-                .await
-                .unwrap()
-                .unwrap();
+            let key = format!("synthetic:{workspace}");
+            service
+                .notify_raw(
+                    "Synthetic title",
+                    "Synthetic body",
+                    workspace,
+                    key.clone(),
+                    false,
+                )
+                .await;
+            service
+                .notify_raw(
+                    "Synthetic title",
+                    "Synthetic body",
+                    workspace,
+                    key.clone(),
+                    false,
+                )
+                .await;
+            let payload: String = sqlx::query_scalar(
+                "SELECT payload FROM notification_dispatch_outbox WHERE source_key=?",
+            )
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let payload: Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(payload["intent"], "raw_event");
             assert_eq!(payload["workspace_id"], json!(workspace));
             assert_eq!(payload["autopilot"], json!(autopilot));
+            assert_eq!(
+                payload["owner_user_id"],
+                "00000000-0000-4000-8000-000000000123"
+            );
         }
-        // Unknown sources still deliver the alert, but never wake automation.
-        for close_pool in [false, true] {
-            if close_pool {
-                pool.close().await;
-            }
-            service.forward_to_remote_web_push("title", "body", Some(Uuid::new_v4()));
-            let payload = tokio::time::timeout(Duration::from_secs(5), received.recv())
+        assert_eq!(notifier.0.load(Ordering::SeqCst), 0);
+        service
+            .notify_raw(
+                "Synthetic",
+                "Unknown",
+                Uuid::new_v4(),
+                "synthetic-unknown".into(),
+                false,
+            )
+            .await;
+        let payload: String = sqlx::query_scalar(
+            "SELECT payload FROM notification_dispatch_outbox WHERE source_key='synthetic-unknown'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&payload).unwrap()["autopilot"],
+            true
+        );
+        service
+            .notify_raw(
+                "Synthetic local",
+                "Body",
+                Uuid::new_v4(),
+                "synthetic-local-only".into(),
+                true,
+            )
+            .await;
+        let local_payload: String = sqlx::query_scalar("SELECT payload FROM notification_dispatch_outbox WHERE source_key='synthetic-local-only'").fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&local_payload).unwrap()["remote_push_enabled"],
+            false
+        );
+        service
+            .notify("User report", "Synthetic report", None)
+            .await;
+        assert_eq!(notifier.0.load(Ordering::SeqCst), 1);
+        service
+            .display_once("synthetic-display", "Synthetic", "Body", None, None, None)
+            .await;
+        service
+            .display_once("synthetic-display", "Synthetic", "Body", None, None, None)
+            .await;
+        assert_eq!(notifier.0.load(Ordering::SeqCst), 2);
+        let payloads: Vec<String> =
+            sqlx::query_scalar("SELECT payload FROM notification_dispatch_outbox")
+                .fetch_all(&pool)
                 .await
-                .unwrap()
                 .unwrap();
-            assert_eq!(payload["autopilot"], json!(true));
-        }
+        assert_eq!(payloads.len(), 5);
+        assert!(
+            payloads
+                .iter()
+                .any(|p| serde_json::from_str::<Value>(p).unwrap()["intent"] == "user_report")
+        );
+        // An unavailable target is retained for retry without blocking later alerts.
+        // The signed-in standalone path also has to display accepted rows locally.
+        use axum::{
+            Json, Router,
+            http::StatusCode,
+            response::IntoResponse,
+            routing::{get, post},
+        };
+        let rejected = Arc::new(AtomicUsize::new(0));
+        let rejections = rejected.clone();
+        let router=Router::new().route("/v1/hosts",get(||async{Json(json!({"hosts":[]}))})).route("/v1/web-push/self",post(move|Json(body):Json<Value>|{
+            let rejections=rejections.clone();
+            async move {
+                if body["source_key"]=="synthetic-unknown" {
+                    rejections.fetch_add(1,Ordering::SeqCst);
+                    return (StatusCode::NOT_FOUND,Json(json!({"error":"synthetic target unavailable"}))).into_response();
+                }
+                Json(json!({"id":Uuid::new_v4(),"organization_id":Uuid::new_v4(),"user_id":body["owner_user_id"],"notification_type":"workspace_task_completed","payload":body,"issue_id":null,"comment_id":null,"seen":false,"dismissed_at":null,"created_at":"2026-01-01T00:00:00Z","intent":"legacy","routing_state":"user","revision":1,"source_key":body["source_key"]})).into_response()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        service.remote_client = Some(
+            RemoteClient::new(
+                &format!("http://{address}"),
+                auth,
+                "synthetic-machine".into(),
+            )
+            .unwrap(),
+        );
+        service.drain_dispatches().await.unwrap();
+        assert_eq!(notifier.0.load(Ordering::SeqCst), 5);
+        assert_eq!(rejected.load(Ordering::SeqCst), 1);
+        service.drain_dispatches().await.unwrap();
+        assert_eq!(rejected.load(Ordering::SeqCst), 1);
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notification_dispatch_outbox")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, 1);
         server.abort();
     }
 

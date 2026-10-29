@@ -396,3 +396,13 @@ export function selectUnseenPullRequestCommentNotificationIds(
     })
     .map((notification) => notification.id);
 }
+
+export function isUserVisibleNotification(notification: {
+  routing_state?: string;
+}): boolean {
+  return (
+    !notification.routing_state ||
+    notification.routing_state === 'user' ||
+    notification.routing_state === 'autopilot_consumed'
+  );
+}

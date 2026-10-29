@@ -85,7 +85,11 @@ export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in
 
 export type Project = { id: string, organization_id: string, name: string, color: string, sort_order: number, created_at: string, updated_at: string, };
 
-export type Notification = { id: string, organization_id: string, user_id: string, notification_type: NotificationType, payload: NotificationPayload, issue_id: string | null, comment_id: string | null, seen: boolean, dismissed_at: string | null, created_at: string, };
+export type Notification = { source_key: string | null, intent: NotificationIntent, routing_state: NotificationRoutingState, revision: number, id: string, organization_id: string, user_id: string, notification_type: NotificationType, payload: NotificationPayload, issue_id: string | null, comment_id: string | null, seen: boolean, dismissed_at: string | null, created_at: string, };
+
+export type NotificationIntent = "raw_event" | "user_report" | "legacy";
+
+export type NotificationRoutingState = "user" | "autopilot_pending" | "autopilot_claimed" | "autopilot_consumed";
 
 export type DrawerNote = { id: string, owner_user_id: string,
 /**
@@ -171,7 +175,7 @@ export type CreatePullRequestCommentNotificationRequest = { project_id: string, 
 
 export type NotificationGroupKind = "single" | "issue_changes" | "status_changes" | "comments" | "reactions" | "issue_deleted" | "workspace_task";
 
-export type NotificationPayload = { deeplink_path?: string | null, issue_id?: string | null, issue_simple_id?: string | null, issue_title?: string | null, actor_user_id?: string | null, comment_preview?: string | null, old_status_id?: string | null, new_status_id?: string | null, old_status_name?: string | null, new_status_name?: string | null, new_title?: string | null, old_priority?: IssuePriority | null, new_priority?: IssuePriority | null, assignee_user_id?: string | null, emoji?: string | null, tag_name?: string | null, title?: string | null, body?: string | null, workspace_id?: string | null,
+export type NotificationPayload = { local_only?: boolean | null, remote_push_enabled?: boolean | null, deeplink_path?: string | null, issue_id?: string | null, issue_simple_id?: string | null, issue_title?: string | null, actor_user_id?: string | null, comment_preview?: string | null, old_status_id?: string | null, new_status_id?: string | null, old_status_name?: string | null, new_status_name?: string | null, new_title?: string | null, old_priority?: IssuePriority | null, new_priority?: IssuePriority | null, assignee_user_id?: string | null, emoji?: string | null, tag_name?: string | null, title?: string | null, body?: string | null, workspace_id?: string | null,
 /**
  * Whether the sending host's workspace is an Autopilot. Captured at send
  * time so notification filtering never depends on journal upload order.

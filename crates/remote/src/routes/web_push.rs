@@ -65,6 +65,14 @@ struct SelfNotifyRequest {
     /// Points the notification at a Drawer note instead of a workspace.
     #[serde(default)]
     drawer_note_id: Option<Uuid>,
+    #[serde(default)]
+    intent: api_types::NotificationIntent,
+    source_key: Option<String>,
+    host_id: Option<Uuid>,
+    remote_push_enabled: Option<bool>,
+    owner_user_id: Option<Uuid>,
+    #[serde(default)]
+    local_only: bool,
 }
 
 async fn public_key() -> Json<PublicKeyResponse> {
@@ -146,7 +154,7 @@ async fn notify_self(
     State(state): State<AppState>,
     axum::extract::Extension(ctx): axum::extract::Extension<RequestContext>,
     Json(payload): Json<SelfNotifyRequest>,
-) -> Result<StatusCode, ErrorResponse> {
+) -> Result<Json<api_types::Notification>, ErrorResponse> {
     if payload.title.trim().is_empty() && payload.body.trim().is_empty() {
         return Err(ErrorResponse::new(
             StatusCode::BAD_REQUEST,
@@ -154,58 +162,73 @@ async fn notify_self(
         ));
     }
 
+    if payload.owner_user_id.is_some_and(|id| id != ctx.user.id) {
+        return Err(ErrorResponse::new(
+            StatusCode::CONFLICT,
+            "notification account changed",
+        ));
+    }
     let target = match payload.drawer_note_id {
         Some(note_id) => drawer_notification_target(&state, &ctx, note_id).await?,
         None => resolve_notification_target(&state, &ctx, payload.workspace_id).await?,
     };
-    let deeplink_path = target.as_ref().map(|target| target.deeplink_path.clone());
-    let notification_id = match target {
-        Some(target) => {
-            match NotificationRepository::create(
-                state.pool(),
-                target.organization_id,
-                ctx.user.id,
-                api_types::NotificationType::WorkspaceTaskCompleted,
-                api_types::NotificationPayload {
-                    deeplink_path: Some(target.deeplink_path),
-                    title: Some(payload.title.clone()),
-                    body: Some(payload.body.clone()),
-                    workspace_id: payload.workspace_id,
-                    drawer_note_id: payload.drawer_note_id,
-                    // Old hosts cannot identify their Autopilot. Deliver
-                    // the alert, but do not let an unknown source wake it.
-                    // A Drawer note is the Autopilot's own report, always.
-                    autopilot: Some(
-                        payload.drawer_note_id.is_some() || payload.autopilot.unwrap_or(true),
-                    ),
-                    ..Default::default()
-                },
-                target.issue_id,
-                None,
-            )
+    if let Some(host_id) = payload.host_id
+        && !crate::db::hosts::HostRepository::new(state.pool())
+            .is_owned_by(host_id, ctx.user.id)
             .await
-            {
-                Ok(notification) => Some(notification.id),
-                Err(error) => {
-                    tracing::warn!(?error, "failed to save workspace notification");
-                    None
-                }
-            }
-        }
-        None => None,
-    };
-
-    tokio::spawn(crate::web_push_notifications::send_custom_notification(
-        state.pool().clone(),
+            .map_err(|e| db_error(e, "host lookup failed"))?
+    {
+        return Err(ErrorResponse::new(StatusCode::NOT_FOUND, "host not found"));
+    }
+    if payload
+        .source_key
+        .as_ref()
+        .is_some_and(|k| k.is_empty() || k.len() > 512)
+    {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "invalid notification source key",
+        ));
+    }
+    let target = target.ok_or_else(|| {
+        ErrorResponse::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "notification target unavailable",
+        )
+    })?;
+    let notification = NotificationRepository::create_with_intent(
+        state.pool(),
+        target.organization_id,
         ctx.user.id,
-        payload.title,
-        payload.body,
-        payload.workspace_id,
-        notification_id,
-        payload.drawer_note_id.and(deeplink_path),
-    ));
-
-    Ok(StatusCode::ACCEPTED)
+        api_types::NotificationType::WorkspaceTaskCompleted,
+        api_types::NotificationPayload {
+            deeplink_path: Some(target.deeplink_path),
+            title: Some(payload.title),
+            body: Some(payload.body),
+            workspace_id: payload.workspace_id,
+            drawer_note_id: payload.drawer_note_id,
+            host_id: payload.host_id,
+            remote_push_enabled: Some(
+                payload.remote_push_enabled.unwrap_or(true) && !payload.local_only,
+            ),
+            local_only: Some(payload.local_only),
+            autopilot: Some(payload.drawer_note_id.is_some() || payload.autopilot.unwrap_or(true)),
+            ..Default::default()
+        },
+        target.issue_id,
+        None,
+        payload.intent,
+        payload.source_key.as_deref(),
+    )
+    .await
+    .map_err(|e| {
+        tracing::warn!(?e, "notification ingress failed");
+        ErrorResponse::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "notification ingress failed",
+        )
+    })?;
+    Ok(Json(notification))
 }
 
 /// A notification about a Drawer note hangs off the personal org and opens
@@ -259,7 +282,13 @@ async fn resolve_notification_target(
     workspace_id: Option<Uuid>,
 ) -> Result<Option<NotificationTarget>, ErrorResponse> {
     let Some(workspace_id) = workspace_id else {
-        return Ok(None);
+        return Ok(personal_organization_id(state, ctx.user.id)
+            .await
+            .map(|organization_id| NotificationTarget {
+                organization_id,
+                issue_id: None,
+                deeplink_path: "/notifications".into(),
+            }));
     };
 
     match WorkspaceRepository::find_by_local_id(state.pool(), workspace_id).await {
