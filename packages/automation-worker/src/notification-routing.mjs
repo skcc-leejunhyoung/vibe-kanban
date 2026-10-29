@@ -35,6 +35,7 @@ export function createNotificationRouting({ api, instanceId }) {
       for (const item of itemsOf(event)) known.set(keyOf(item), item);
     },
     async register(routine, kinds, enabled) {
+      const hostId = routine.action.targetHostId;
       const previous = leases.get(routine.id);
       if (!enabled && !previous) return;
       const response = await api(
@@ -42,19 +43,19 @@ export function createNotificationRouting({ api, instanceId }) {
         "PUT",
         "/v1/autopilot-notification-leases",
         {
-          host_id: routine.action.targetHostId,
+          host_id: hostId,
           routine_id: routine.id,
           instance_id: instanceId,
           kinds,
           protocol: 2,
-          register: !previous,
+          register: !previous || previous.hostId !== hostId,
           revoke: !enabled,
         },
       );
       if (enabled && response.protocol !== 2) {
         leases.delete(routine.id);
         await api(routine, 'PUT', '/v1/autopilot-notification-leases', {
-          host_id: routine.action.targetHostId,
+          host_id: hostId,
           routine_id: routine.id,
           instance_id: instanceId,
           kinds,
@@ -63,13 +64,13 @@ export function createNotificationRouting({ api, instanceId }) {
         });
         throw new Error('notification protocol 2 is required on the remote server');
       }
-      if (enabled) leases.set(routine.id, response.id);
+      if (enabled) leases.set(routine.id, { id: response.id, hostId });
       else leases.delete(routine.id);
     },
     async claim(routine, event) {
       if (event.notificationIntent !== "raw_event") return true;
       if (!event.notificationId || !event.notificationRevision) return false;
-      const lease = leases.get(routine.id);
+      const lease = leases.get(routine.id)?.id;
       if (!lease) return false;
       const key = keyOf(event);
       if (known.has(key)) return false;
@@ -86,7 +87,7 @@ export function createNotificationRouting({ api, instanceId }) {
       }
     },
     async releasePending(routine, event) {
-      const lease = leases.get(routine.id);
+      const lease = leases.get(routine.id)?.id;
       if (
         event.notificationIntent !== "raw_event" ||
         !event.notificationId ||
@@ -110,7 +111,7 @@ export function createNotificationRouting({ api, instanceId }) {
       }
     },
     async recover(routine) {
-      const lease = leases.get(routine.id);
+      const lease = leases.get(routine.id)?.id;
       if (!lease) return [];
       const page = await api(
         routine,

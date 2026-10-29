@@ -119,6 +119,49 @@ test("claim retries preserve a recovery token only for the matching lease", asyn
   }
 });
 
+test("a changed target registers its own lease without reclaiming a superseded worker", async () => {
+  const registrations = [];
+  const leasesByHost = new Map();
+  let superseded = false;
+  const routing = createNotificationRouting({
+    instanceId: "synthetic-instance",
+    async api(_routine, _method, path, payload) {
+      if (path === "/v1/autopilot-notification-leases") {
+        registrations.push(payload.register);
+        if (payload.register)
+          leasesByHost.set(payload.host_id, `lease-${payload.host_id}`);
+        if (superseded || !leasesByHost.has(payload.host_id))
+          throw Object.assign(new Error("Superseded registration"), {
+            status: 409,
+          });
+        return { id: leasesByHost.get(payload.host_id), protocol: 2 };
+      }
+      assert.equal(payload.lease_id, "lease-synthetic-host-b");
+      return { data: { claim_token: "synthetic-claim" } };
+    },
+  });
+  const current = {
+    id: "synthetic-routine",
+    action: { targetHostId: "synthetic-host-a" },
+  };
+  await routing.register(current, [], true);
+  await routing.register(current, [], true);
+  current.action.targetHostId = "synthetic-host-b";
+  await routing.register(current, [], true);
+  assert.equal(
+    await routing.claim(current, {
+      notificationId: "synthetic-alert",
+      notificationRevision: 1,
+      notificationIntent: "raw_event",
+    }),
+    true,
+  );
+  superseded = true;
+  await assert.rejects(routing.register(current, [], true), { status: 409 });
+  await assert.rejects(routing.register(current, [], true), { status: 409 });
+  assert.deepEqual(registrations, [true, false, true, false, false]);
+});
+
 test("batch is frozen before the host stages and admits it", async () => {
   const f = fixture();
   await f.routing.register(routine, [], true);
