@@ -167,7 +167,9 @@ impl CodexSlashCommand {
                     prompt: cmd.arguments.to_string(),
                 })
             }
-            "model" | "reasoning" | "plan" | "permissions" | "approvals" => Some(Self::Settings),
+            "model" | "models" | "reasoning" | "plan" | "permissions" | "approvals" => {
+                Some(Self::Settings)
+            }
             "diff" | "skills" => Some(Self::Invalid {
                 message: format!(
                     "Usage: `/{}`. Invoke skills with `$skill-name` followed by your request.",
@@ -546,6 +548,25 @@ pub async fn log_event_raw(log_writer: &LogWriter, message: String) -> Result<()
     .await
 }
 
+fn diff_git_command(path: &Path, env: &ExecutionEnv) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("git");
+    command.current_dir(path).args([
+        "--no-pager",
+        "-c",
+        "safe.bareRepository=explicit",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        if cfg!(windows) {
+            "core.hooksPath=NUL"
+        } else {
+            "core.hooksPath=/dev/null"
+        },
+    ]);
+    env.apply_to_command(&mut command);
+    command
+}
+
 async fn fetch_diff_message(current_dir: &Path, env: &ExecutionEnv) -> Result<String, String> {
     let mut paths = env.repo_context.repo_paths();
     if paths.is_empty() {
@@ -553,26 +574,58 @@ async fn fetch_diff_message(current_dir: &Path, env: &ExecutionEnv) -> Result<St
     }
     let mut sections = Vec::new();
     for path in paths {
-        let mut diff = tokio::process::Command::new("git");
-        diff.current_dir(&path).args([
-            "--no-pager",
+        // Diff still invokes clean/process filters even with --no-ext-diff and --no-textconv.
+        let config = diff_git_command(&path, env)
+            .args([
+                "config",
+                "--null",
+                "--name-only",
+                "--get-regexp",
+                r"^filter\..*\.(clean|process)$",
+            ])
+            .output()
+            .await
+            .map_err(|err| err.to_string())?;
+        if !matches!(config.status.code(), Some(0 | 1)) {
+            return Err(String::from_utf8_lossy(&config.stderr).to_string());
+        }
+        let keys = std::str::from_utf8(&config.stdout).map_err(|err| err.to_string())?;
+        let mut drivers: Vec<_> = keys
+            .split('\0')
+            .filter_map(|key| {
+                key.strip_suffix(".clean")
+                    .or_else(|| key.strip_suffix(".process"))
+            })
+            .collect();
+        drivers.sort_unstable();
+        drivers.dedup();
+        let mut diff = diff_git_command(&path, env);
+        for driver in drivers {
+            diff.args([
+                "-c",
+                &format!("{driver}.clean="),
+                "-c",
+                &format!("{driver}.process="),
+                "-c",
+                &format!("{driver}.required=false"),
+            ]);
+        }
+        diff.args([
             "diff",
             "--no-ext-diff",
             "--no-textconv",
+            "--submodule=short",
+            "--ignore-submodules=dirty",
             "--color=never",
             "HEAD",
             "--",
         ]);
-        env.apply_to_command(&mut diff);
         let output = diff.output().await.map_err(|err| err.to_string())?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).to_string());
         }
-        let mut untracked = tokio::process::Command::new("git");
-        untracked
-            .current_dir(&path)
-            .args(["ls-files", "--others", "--exclude-standard"]);
-        env.apply_to_command(&mut untracked);
+        let mut untracked = diff_git_command(&path, env);
+        untracked.args(["ls-files", "--others", "--exclude-standard"]);
         let files = untracked.output().await.map_err(|err| err.to_string())?;
         if !files.status.success() {
             return Err(String::from_utf8_lossy(&files.stderr).to_string());
@@ -932,6 +985,10 @@ mod tests {
 
     #[test]
     fn routes_reviews_and_plan_requests_to_native_actions() {
+        assert!(matches!(
+            CodexSlashCommand::parse("/models synthetic-model"),
+            Some(CodexSlashCommand::Settings)
+        ));
         assert!(
             matches!(CodexSlashCommand::parse("/compact preserve verification results"), Some(CodexSlashCommand::Compact { instructions: Some(instructions) }) if instructions == "preserve verification results")
         );
@@ -978,6 +1035,74 @@ mod tests {
         }
         assert!(CodexSlashCommand::parse("/custom-prompt value").is_none());
         assert!(CodexSlashCommand::parse("normal request").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn diff_does_not_execute_repository_helpers() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let run_git = |args: Vec<&str>| {
+            let mut command = tokio::process::Command::new("git");
+            command.current_dir(dir.path()).args(args);
+            async move { assert!(command.output().await.unwrap().status.success()) }
+        };
+        run_git(vec!["init"]).await;
+        std::fs::write(dir.path().join("tracked.txt"), "original\n").unwrap();
+        run_git(vec!["add", "tracked.txt"]).await;
+        run_git(vec![
+            "-c",
+            "user.name=Synthetic Tester",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Synthetic baseline",
+        ])
+        .await;
+        std::fs::write(dir.path().join("tracked.txt"), "modified\n").unwrap();
+        std::fs::write(
+            dir.path().join(".gitattributes"),
+            "tracked.txt filter=synthetic\n",
+        )
+        .unwrap();
+        run_git(vec![
+            "config",
+            "filter.synthetic.clean",
+            "touch .git/filter-executed; cat",
+        ])
+        .await;
+        run_git(vec!["config", "filter.synthetic.required", "true"]).await;
+        let monitor = dir.path().join(".git/synthetic-monitor");
+        std::fs::write(
+            &monitor,
+            "#!/bin/sh\ntouch .git/monitor-executed\nprintf 'synthetic\\0'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&monitor, std::fs::Permissions::from_mode(0o755)).unwrap();
+        run_git(vec!["config", "core.fsmonitor", monitor.to_str().unwrap()]).await;
+
+        let env = ExecutionEnv::new(Default::default(), false, String::new());
+        let diff = fetch_diff_message(dir.path(), &env).await.unwrap();
+        assert!(diff.contains("+modified"));
+        assert!(!dir.path().join(".git/filter-executed").exists());
+        assert!(!dir.path().join(".git/monitor-executed").exists());
+        run_git(vec![
+            "config",
+            "filter.synthetic.process",
+            "touch .git/process-executed; exit 1",
+        ])
+        .await;
+        assert!(
+            fetch_diff_message(dir.path(), &env)
+                .await
+                .unwrap()
+                .contains("+modified")
+        );
+        assert!(!dir.path().join(".git/process-executed").exists());
     }
 
     #[tokio::test]

@@ -5,7 +5,27 @@ import {
   type ExecutorConfig,
   type ModelSelectorConfig,
 } from 'shared/types';
-import { composerSlashCommandOverrides } from './composerSlashCommands';
+import {
+  composerSlashCommandOverrides,
+  splitComposerSettingsPrompt,
+} from './composerSlashCommands';
+
+it('separates only standalone uploaded files without swallowing other instructions', () => {
+  const image = '![Synthetic \\[diagram\\]](.vibe-attachments/synthetic.png)';
+  const file = '[Synthetic file](.vibe-attachments/synthetic.txt)';
+  expect(
+    splitComposerSettingsPrompt(`/model synthetic\n\n${image}\n\n${file}`)
+  ).toEqual({
+    commandPrompt: '/model synthetic',
+    remainingMessage: `${image}\n\n${file}`,
+  });
+  const instructions =
+    '/model synthetic\nadditional instructions\n[Link](https://example.invalid/file)';
+  expect(splitComposerSettingsPrompt(instructions)).toEqual({
+    commandPrompt: instructions,
+    remainingMessage: '',
+  });
+});
 
 describe('composer slash command settings', () => {
   const codex: ExecutorConfig = { executor: BaseCodingAgent.CODEX };
@@ -90,6 +110,9 @@ describe('composer slash command settings', () => {
   it('updates the same fields as the model selector and clears stale reasoning', () => {
     expect(
       composerSlashCommandOverrides(' /model provider/test-model ', codex)
+    ).toEqual({ model_id: 'provider/test-model', reasoning_id: null });
+    expect(
+      composerSlashCommandOverrides('/models provider/test-model', codex)
     ).toEqual({ model_id: 'provider/test-model', reasoning_id: null });
     expect(composerSlashCommandOverrides('/reasoning ultra', codex)).toEqual({
       reasoning_id: 'ultra',

@@ -10,6 +10,22 @@ import {
   parseModelId,
 } from './modelSelector';
 
+/** Keep uploaded files in the draft while applying a standalone setting. */
+export function splitComposerSettingsPrompt(prompt: string) {
+  const attachments: string[] = [];
+  const commandPrompt = prompt.replace(
+    /^!?\[(?:\\.|[^\]\\\r\n])*\]\(\.vibe-attachments\/[^\r\n)]+\)[ \t]*\r?$/gm,
+    (attachment) => {
+      attachments.push(attachment.trim());
+      return '';
+    }
+  );
+  return {
+    commandPrompt: commandPrompt.trim(),
+    remainingMessage: attachments.join('\n\n'),
+  };
+}
+
 /** Session settings belong to Vibe; changing the CLI's global config loses to its overrides. */
 export function composerSlashCommandOverrides(
   prompt: string,
@@ -23,7 +39,7 @@ export function composerSlashCommandOverrides(
     return null;
   }
   const match =
-    /^\/(model|reasoning|plan|permissions|approvals|fast)(?:\s+([^\n]*))?$/i.exec(
+    /^\/(models?|reasoning|plan|permissions|approvals|fast)(?:\s+([^\n]*))?$/i.exec(
       prompt.trim()
     );
   if (!match) return null;
@@ -76,7 +92,9 @@ export function composerSlashCommandOverrides(
     };
   }
   if (!argument) return null;
-  if (command === 'model') {
+  if (command === 'model' || command === 'models') {
+    if (command === 'models' && config.executor !== BaseCodingAgent.CODEX)
+      return null;
     if (/\s/.test(argument)) throw new Error('Usage: /model <model-id>');
     return { model_id: argument, reasoning_id: null };
   }

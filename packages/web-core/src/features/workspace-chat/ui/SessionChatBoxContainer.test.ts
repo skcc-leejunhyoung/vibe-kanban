@@ -1,8 +1,11 @@
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
-import { BaseCodingAgent } from 'shared/types';
-import { composerSlashCommandOverrides } from '@/shared/lib/composerSlashCommands';
+import { BaseCodingAgent, PermissionPolicy } from 'shared/types';
+import {
+  composerSlashCommandOverrides,
+  splitComposerSettingsPrompt,
+} from '@/shared/lib/composerSlashCommands';
 import { buildAgentPrompt } from '@/shared/lib/promptMessage';
 
 // Exercise the real action callbacks without mounting unrelated workspace providers.
@@ -59,6 +62,7 @@ describe('composer settings through every send action', () => {
           executorConfig: { executor: BaseCodingAgent.CODEX },
           modelSelectorConfig: null,
           composerSlashCommandOverrides,
+          splitComposerSettingsPrompt,
           cancelDebouncedSave: vi.fn(),
           clearDraft,
           setLocalMessage: vi.fn(),
@@ -87,10 +91,11 @@ describe('composer settings through every send action', () => {
           createPendingProcess: dispatch,
         });
         await run();
-        expect(setOverrides).toHaveBeenCalledExactlyOnceWith(
-          composerSlashCommandOverrides(command, bindings.executorConfig)
-        );
-        expect(clearDraft).toHaveBeenCalledOnce();
+        expect(setOverrides).toHaveBeenCalledExactlyOnceWith({
+          ...bindings.executorConfig,
+          ...composerSlashCommandOverrides(command, bindings.executorConfig),
+        });
+        expect(clearDraft).not.toHaveBeenCalled();
         expect(dispatch).not.toHaveBeenCalled();
         expect(clearAttachments).not.toHaveBeenCalled();
         expect(clearComments).not.toHaveBeenCalled();
@@ -106,6 +111,7 @@ describe('composer settings through every send action', () => {
       executorConfig: { executor: BaseCodingAgent.CODEX },
       modelSelectorConfig: null,
       composerSlashCommandOverrides,
+      splitComposerSettingsPrompt,
       setExecutorOverrides: overrides,
       clearDraft,
       ErrorDialog: { show: dialog },
@@ -116,5 +122,58 @@ describe('composer settings through every send action', () => {
     expect(clearDraft).not.toHaveBeenCalled();
     expect(overrides).not.toHaveBeenCalled();
     expect(await settings('ordinary prompt')).toBe(false);
+  });
+
+  it('retains all existing draft settings when changing only permissions', async () => {
+    const executorConfig = {
+      executor: BaseCodingAgent.CODEX,
+      variant: 'DEFAULT',
+      model_id: 'synthetic-draft-model',
+      reasoning_id: 'high',
+      permission_policy: PermissionPolicy.PLAN,
+    };
+    const persist = vi.fn();
+    const settings = callback('handleSettingsCommand', {
+      executorConfig,
+      modelSelectorConfig: null,
+      composerSlashCommandOverrides,
+      splitComposerSettingsPrompt,
+      cancelDebouncedSave: vi.fn(),
+      clearDraft: vi.fn().mockResolvedValue(undefined),
+      setLocalMessage: vi.fn(),
+      localMessageRef: { current: '/permissions supervised' },
+      setExecutorOverrides: persist,
+      ErrorDialog: { show: vi.fn() },
+      t: (key: string) => key,
+    });
+    await settings('/permissions supervised');
+    expect(persist).toHaveBeenCalledExactlyOnceWith({
+      ...executorConfig,
+      permission_policy: PermissionPolicy.SUPERVISED,
+    });
+  });
+
+  it('keeps uploaded attachment references in the next draft when applying settings', async () => {
+    const attachment = '![Synthetic diagram](.vibe-attachments/synthetic.png)';
+    const command = `/model synthetic-next\n\n${attachment}`;
+    const setLocalMessage = vi.fn();
+    const persist = vi.fn();
+    const settings = callback('handleSettingsCommand', {
+      executorConfig: { executor: BaseCodingAgent.CODEX },
+      modelSelectorConfig: null,
+      composerSlashCommandOverrides,
+      splitComposerSettingsPrompt,
+      cancelDebouncedSave: vi.fn(),
+      setLocalMessage,
+      localMessageRef: { current: command },
+      setExecutorOverrides: persist,
+      ErrorDialog: { show: vi.fn() },
+      t: (key: string) => key,
+    });
+    expect(await settings(command)).toBe(true);
+    expect(persist).toHaveBeenCalledWith(
+      expect.objectContaining({ model_id: 'synthetic-next' })
+    );
+    expect(setLocalMessage).toHaveBeenCalledWith(attachment);
   });
 });

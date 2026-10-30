@@ -65,7 +65,10 @@ import { useApprovals } from '@/shared/hooks/useApprovals';
 import { ResolveConflictsDialog } from '@/shared/dialogs/tasks/ResolveConflictsDialog';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { buildAgentPrompt } from '@/shared/lib/promptMessage';
-import { composerSlashCommandOverrides } from '@/shared/lib/composerSlashCommands';
+import {
+  composerSlashCommandOverrides,
+  splitComposerSettingsPrompt,
+} from '@/shared/lib/composerSlashCommands';
 import { publishChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import { toPrettyCase } from '@/shared/lib/string';
@@ -1374,17 +1377,18 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     async (prompt: string) => {
       if (!executorConfig) return false;
       try {
+        const { commandPrompt, remainingMessage } =
+          splitComposerSettingsPrompt(prompt);
         const overrides = composerSlashCommandOverrides(
-          prompt,
+          commandPrompt,
           executorConfig,
           modelSelectorConfig
         );
         if (!overrides) return false;
         cancelDebouncedSave();
-        await clearDraft();
-        setLocalMessage('');
-        localMessageRef.current = '';
-        setExecutorOverrides(overrides);
+        setLocalMessage(remainingMessage);
+        localMessageRef.current = remainingMessage;
+        setExecutorOverrides({ ...executorConfig, ...overrides });
       } catch (error) {
         void ErrorDialog.show({
           title: t('common:error'),
@@ -1397,7 +1401,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       executorConfig,
       modelSelectorConfig,
       cancelDebouncedSave,
-      clearDraft,
       setLocalMessage,
       setExecutorOverrides,
       t,
