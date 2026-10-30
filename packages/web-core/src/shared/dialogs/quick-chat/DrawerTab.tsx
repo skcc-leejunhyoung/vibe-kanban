@@ -703,7 +703,7 @@ function NoteDetail({
         tabIndex={0}
         role="region"
         aria-label={note.title}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="min-h-0 flex-1 overflow-y-auto [overflow-wrap:anywhere]"
       >
         <div className="p-base">
           <NoteBody note={note} />
