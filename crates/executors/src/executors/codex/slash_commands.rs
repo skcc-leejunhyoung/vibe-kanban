@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use codex_app_server_protocol::{ConfigEdit, JSONRPCNotification, MergeStrategy};
+use codex_app_server_protocol::{ConfigEdit, JSONRPCNotification, MergeStrategy, ReviewTarget};
 use codex_protocol::{
     config_types::ServiceTier,
     protocol::{AgentMessageEvent, ErrorEvent, EventMsg},
@@ -10,12 +10,12 @@ use serde_json::json;
 use super::{
     Codex,
     client::{AppServerClient, LogWriter},
-    codex_home, fork_params_from, resolve_model,
+    codex_home, collect_model_pages, fork_params_from, resolve_model,
 };
 use crate::{
     env::ExecutionEnv,
     executors::{
-        ExecutorError, ExecutorExitResult, SpawnedChild,
+        ExecutorError, ExecutorExitResult, SlashCommandDescription, SpawnedChild,
         utils::{SlashCommandCall, parse_slash_command},
     },
     stdout_dup::spawn_local_output_process,
@@ -24,12 +24,91 @@ use crate::{
 const CODEX_INIT_PROMPT: &str = include_str!("init_prompt.md");
 const DEFAULT_PROJECT_DOC_FILENAME: &str = "AGENTS.md";
 
+pub(super) fn hardcoded_slash_commands() -> Vec<SlashCommandDescription> {
+    [
+        (
+            "compact",
+            "summarize the conversation; optional compaction instructions",
+        ),
+        (
+            "review",
+            "review changes; optionally --base <branch>, --commit <sha>, or instructions",
+        ),
+        (
+            "diff",
+            "show staged and unstaged changes and untracked file names",
+        ),
+        (
+            "init",
+            "create an AGENTS.md file with instructions for Codex",
+        ),
+        (
+            "status",
+            "show session configuration, token usage, and rate limits",
+        ),
+        ("mcp", "list configured MCP tools"),
+        (
+            "skills",
+            "list available skills; invoke one with $skill-name in a message",
+        ),
+        (
+            "model",
+            "list models; /model <id> selects a model in the Vibe composer",
+        ),
+        (
+            "reasoning",
+            "set reasoning effort with /reasoning <level> in the Vibe composer",
+        ),
+        (
+            "plan",
+            "toggle Plan in the Vibe composer, or /plan <request> to plan a task",
+        ),
+        (
+            "permissions",
+            "view permissions; /permissions auto|supervised|plan|dont_ask in the Vibe composer",
+        ),
+        ("fast", "toggle fast mode; /fast on, off, or status"),
+        ("help", "show supported commands"),
+    ]
+    .into_iter()
+    .map(|(name, description)| SlashCommandDescription {
+        name: name.to_string(),
+        description: Some(description.to_string()),
+    })
+    .collect()
+}
+
+fn commands_message() -> String {
+    let commands = hardcoded_slash_commands()
+        .into_iter()
+        .map(|command| {
+            format!(
+                "- `/{}`: {}",
+                command.name,
+                command.description.unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "# Codex commands in Vibe Kanban\n\n{commands}\n\nTerminal-only commands such as `/resume`, `/new`, and `/quit` use Vibe Kanban's session controls instead."
+    )
+}
+
 #[derive(Debug, Clone)]
 pub enum CodexSlashCommand {
     Init,
     Compact { instructions: Option<String> },
     Status,
     Mcp,
+    Models,
+    Skills,
+    Diff,
+    Review { target: ReviewTarget },
+    Plan { prompt: String },
+    Help,
+    Settings,
+    Invalid { message: String },
     Fast { enable: Option<bool>, status: bool },
 }
 
@@ -47,6 +126,81 @@ impl CodexSlashCommand {
             }),
             "status" => Some(Self::Status),
             "mcp" => Some(Self::Mcp),
+            "help" | "commands" => Some(Self::Help),
+            "diff" if cmd.arguments.is_empty() => Some(Self::Diff),
+            "skills" if cmd.arguments.is_empty() => Some(Self::Skills),
+            "model" | "models" if cmd.arguments.is_empty() => Some(Self::Models),
+            "review" => Some(Self::Review {
+                target: if cmd.arguments.is_empty() {
+                    ReviewTarget::UncommittedChanges
+                } else if let Some(branch) = cmd
+                    .arguments
+                    .strip_prefix("--base ")
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    ReviewTarget::BaseBranch {
+                        branch: branch.to_string(),
+                    }
+                } else if let Some(sha) = cmd
+                    .arguments
+                    .strip_prefix("--commit ")
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    ReviewTarget::Commit {
+                        sha: sha.to_string(),
+                        title: None,
+                    }
+                } else if cmd.arguments == "--uncommitted" {
+                    ReviewTarget::UncommittedChanges
+                } else if cmd.arguments.starts_with("--") {
+                    return Some(Self::Invalid { message: "Usage: `/review [--uncommitted | --base <branch> | --commit <sha> | instructions]`".to_string() });
+                } else {
+                    ReviewTarget::Custom {
+                        instructions: cmd.arguments.to_string(),
+                    }
+                },
+            }),
+            "plan" if !cmd.arguments.is_empty() && !matches!(cmd.arguments, "on" | "off") => {
+                Some(Self::Plan {
+                    prompt: cmd.arguments.to_string(),
+                })
+            }
+            "model" | "reasoning" | "plan" | "permissions" | "approvals" => Some(Self::Settings),
+            "diff" | "skills" => Some(Self::Invalid {
+                message: format!(
+                    "Usage: `/{}`. Invoke skills with `$skill-name` followed by your request.",
+                    cmd.name
+                ),
+            }),
+            "new" | "clear" | "resume" | "fork" | "quit" | "exit" | "logout" | "login" | "undo"
+            | "archive" | "delete" => Some(Self::Invalid {
+                message: format!(
+                    "`/{}` is a Codex terminal command. Use Vibe Kanban's session controls; `/help` lists supported commands.",
+                    cmd.name
+                ),
+            }),
+            "fast"
+                if !matches!(
+                    cmd.arguments,
+                    "" | "status"
+                        | "on"
+                        | "true"
+                        | "1"
+                        | "yes"
+                        | "enable"
+                        | "off"
+                        | "false"
+                        | "0"
+                        | "no"
+                        | "disable"
+                ) =>
+            {
+                Some(Self::Invalid {
+                    message: "Usage: `/fast [on|off|status]`".to_string(),
+                })
+            }
             "fast" => Some(Self::Fast {
                 status: matches!(cmd.arguments.trim(), "status"),
                 enable: match cmd.arguments.trim() {
@@ -70,6 +224,19 @@ impl Codex {
     ) -> Result<SpawnedChild, ExecutorError> {
         if let Some(command) = CodexSlashCommand::parse(prompt) {
             return match command {
+                CodexSlashCommand::Help => self.return_static_reply(current_dir, Ok(commands_message())).await,
+                CodexSlashCommand::Settings => self.return_static_reply(current_dir, Ok("Use the model, reasoning, and permission selectors in the Vibe Kanban composer to change session settings. `/model <id>`, `/reasoning <level>`, `/plan [on|off]`, and `/permissions <policy>` also update these selectors when sent from the composer.".to_string())).await,
+                CodexSlashCommand::Invalid { message } => self.return_static_reply(current_dir, Err(message)).await,
+                CodexSlashCommand::Review { target } => {
+                    let parts = self.build_command_builder()?.build_initial()?;
+                    self.spawn_inner(current_dir, parts, super::CodexSessionAction::Review { target }, session_id, env).await
+                }
+                CodexSlashCommand::Plan { prompt } => {
+                    let mut config = self.clone();
+                    config.plan = true;
+                    config.spawn_agent_with_prompt(current_dir, &prompt, session_id, env).await
+                }
+                CodexSlashCommand::Diff => self.return_static_reply(current_dir, fetch_diff_message(current_dir, env).await).await,
                 CodexSlashCommand::Init => {
                     let init_target = current_dir.join(DEFAULT_PROJECT_DOC_FILENAME);
                     if init_target.exists() {
@@ -104,7 +271,7 @@ impl Codex {
                     self.handle_app_server_slash_command(current_dir, command, session_id, env)
                         .await
                 }
-                CodexSlashCommand::Mcp => {
+                CodexSlashCommand::Mcp | CodexSlashCommand::Models | CodexSlashCommand::Skills => {
                     self.handle_app_server_slash_command(current_dir, command, None, env)
                         .await
                 }
@@ -149,7 +316,8 @@ impl Codex {
         let command_parts = self.build_command_builder()?.build_initial()?;
         let session_id = session_id.map(|s| s.to_string());
         let (_, session_fast) = resolve_model(self.model.as_deref());
-        let thread_start_params = self.build_thread_start_params(current_dir, env);
+        let mut thread_start_params = self.build_thread_start_params(current_dir, env);
+        let cwd = current_dir.to_path_buf();
 
         self.spawn_app_server(
             current_dir,
@@ -157,7 +325,13 @@ impl Codex {
             env,
             move |client, exit_signal_tx| async move {
                 match command {
-                    CodexSlashCommand::Compact { .. } => {
+                    CodexSlashCommand::Compact { instructions } => {
+                        if let Some(instructions) = instructions {
+                            let config = thread_start_params.config.get_or_insert_with(Default::default);
+                            let prompt = config.get("compact_prompt").and_then(serde_json::Value::as_str)
+                                .unwrap_or("Summarize the conversation so another agent can continue. Preserve requirements, decisions, changes made, verification, and remaining work.");
+                            config.insert("compact_prompt".to_string(), json!(format!("{prompt}\n\nAdditional instructions: {instructions}")));
+                        }
                         let old_thread_id = session_id.ok_or_else(|| {
                             ExecutorError::Io(std::io::Error::other("No active session to compact"))
                         })?;
@@ -185,13 +359,35 @@ impl Codex {
                             .send_exit_signal(ExecutorExitResult::Success)
                             .await;
                     }
+                    CodexSlashCommand::Models => {
+                        let mut lines = vec!["# Available models\n".to_string(), "Select a model using the Vibe composer model picker or `/model <id>`.\n".to_string()];
+                        for model in collect_model_pages(|cursor| client.model_list(cursor)).await? {
+                            lines.push(format!("- `{}` — {}", model.model, model.display_name));
+                        }
+                        log_event_raw(client.log_writer(), lines.join("\n")).await?;
+                        exit_signal_tx.send_exit_signal(ExecutorExitResult::Success).await;
+                    }
+                    CodexSlashCommand::Skills => {
+                        let response = client.skills_list(cwd).await?;
+                        let mut lines = vec!["# Available skills\n".to_string(), "Invoke a skill with `$skill-name` followed by your request.\n".to_string()];
+                        for entry in response.data {
+                            for skill in entry.skills.into_iter().filter(|skill| skill.enabled) {
+                                lines.push(format!("- `${}` — {}", skill.name, skill.description));
+                            }
+                            for error in entry.errors {
+                                lines.push(format!("- Skill load error: {}", error.message));
+                            }
+                        }
+                        if lines.len() == 2 { lines.push("_No enabled skills found._".to_string()); }
+                        log_event_raw(client.log_writer(), lines.join("\n")).await?;
+                        exit_signal_tx.send_exit_signal(ExecutorExitResult::Success).await;
+                    }
                     CodexSlashCommand::Fast { enable, status } => {
                         // Read current config to support toggle
                         let current_is_fast = client
                             .config_read(None)
-                            .await
-                            .ok()
-                            .and_then(|r| r.config.service_tier)
+                            .await?
+                            .config.service_tier
                             .and_then(|t| ServiceTier::from_request_value(&t))
                             .map(|t| matches!(t, ServiceTier::Fast))
                             .unwrap_or(false);
@@ -217,13 +413,13 @@ impl Codex {
                         } else {
                             json!(null)
                         };
-                        let _ = client
+                        client
                             .config_batch_write(vec![ConfigEdit {
                                 key_path: "service_tier".to_string(),
                                 value: config_value,
                                 merge_strategy: MergeStrategy::Replace,
                             }])
-                            .await;
+                            .await?;
                         // Fork current session with new tier if one is active
                         if let Some(old_thread_id) = session_id {
                             let service_tier = if want_fast {
@@ -234,7 +430,7 @@ impl Codex {
                             let mut fork_params =
                                 fork_params_from(old_thread_id, thread_start_params);
                             fork_params.service_tier = service_tier;
-                            let _ = client.thread_fork(fork_params).await;
+                            client.thread_fork(fork_params).await?;
                         }
                         let message = if want_fast {
                             "**Fast mode enabled.** Inference runs at higher speed (2× plan usage)."
@@ -344,6 +540,47 @@ pub async fn log_event_raw(log_writer: &LogWriter, message: String) -> Result<()
         }),
     )
     .await
+}
+
+async fn fetch_diff_message(current_dir: &Path, env: &ExecutionEnv) -> Result<String, String> {
+    let mut paths = env.repo_context.repo_paths();
+    if paths.is_empty() {
+        paths.push(current_dir.to_path_buf());
+    }
+    let mut sections = Vec::new();
+    for path in paths {
+        let mut diff = tokio::process::Command::new("git");
+        diff.current_dir(&path).args([
+            "--no-pager",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--color=never",
+            "HEAD",
+            "--",
+        ]);
+        env.apply_to_command(&mut diff);
+        let output = diff.output().await.map_err(|err| err.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+        let mut untracked = tokio::process::Command::new("git");
+        untracked
+            .current_dir(&path)
+            .args(["ls-files", "--others", "--exclude-standard"]);
+        env.apply_to_command(&mut untracked);
+        let files = untracked.output().await.map_err(|err| err.to_string())?;
+        if !files.status.success() {
+            return Err(String::from_utf8_lossy(&files.stderr).to_string());
+        }
+        sections.push(format!(
+            "## {}\n\n````diff\n{}\n````\n\nUntracked files:\n````text\n{}\n````",
+            path.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&files.stdout)
+        ));
+    }
+    Ok(sections.join("\n\n"))
 }
 
 async fn fetch_status_message(
@@ -676,7 +913,118 @@ fn format_mcp_auth_status(status: &codex_app_server_protocol::McpAuthStatus) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::CodexSlashCommand;
+    use super::*;
+
+    #[test]
+    fn every_advertised_command_has_a_handler() {
+        for command in hardcoded_slash_commands() {
+            assert!(
+                CodexSlashCommand::parse(&format!("/{}", command.name)).is_some(),
+                "{}",
+                command.name
+            );
+        }
+    }
+
+    #[test]
+    fn routes_reviews_and_plan_requests_to_native_actions() {
+        assert!(
+            matches!(CodexSlashCommand::parse("/compact preserve verification results"), Some(CodexSlashCommand::Compact { instructions: Some(instructions) }) if instructions == "preserve verification results")
+        );
+        assert!(matches!(
+            CodexSlashCommand::parse("/review"),
+            Some(CodexSlashCommand::Review {
+                target: ReviewTarget::UncommittedChanges
+            })
+        ));
+        assert!(
+            matches!(CodexSlashCommand::parse("/review --base synthetic-base"), Some(CodexSlashCommand::Review { target: ReviewTarget::BaseBranch { branch } }) if branch == "synthetic-base")
+        );
+        assert!(
+            matches!(CodexSlashCommand::parse("/review --commit abc123"), Some(CodexSlashCommand::Review { target: ReviewTarget::Commit { sha, .. } }) if sha == "abc123")
+        );
+        assert!(matches!(
+            CodexSlashCommand::parse("/review inspect error handling"),
+            Some(CodexSlashCommand::Review {
+                target: ReviewTarget::Custom { .. }
+            })
+        ));
+        assert!(
+            matches!(CodexSlashCommand::parse("/plan inspect the parser"), Some(CodexSlashCommand::Plan { prompt }) if prompt == "inspect the parser")
+        );
+    }
+
+    #[test]
+    fn invalid_builtin_arguments_do_not_toggle_or_reach_the_model() {
+        for prompt in [
+            "/fast typo",
+            "/review --base",
+            "/review --bad",
+            "/diff unexpected",
+            "/skills unexpected",
+            "/delete",
+        ] {
+            assert!(
+                matches!(
+                    CodexSlashCommand::parse(prompt),
+                    Some(CodexSlashCommand::Invalid { .. })
+                ),
+                "{prompt}"
+            );
+        }
+        assert!(CodexSlashCommand::parse("/custom-prompt value").is_none());
+        assert!(CodexSlashCommand::parse("normal request").is_none());
+    }
+
+    #[tokio::test]
+    async fn diff_includes_staged_unstaged_and_untracked_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init"],
+            vec![
+                "-c",
+                "user.name=Synthetic Tester",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Synthetic baseline",
+            ],
+        ] {
+            assert!(
+                tokio::process::Command::new("git")
+                    .current_dir(dir.path())
+                    .args(args)
+                    .output()
+                    .await
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+        std::fs::write(dir.path().join("staged.txt"), "staged content\n").unwrap();
+        std::fs::write(dir.path().join("only-staged.txt"), "staged-only content\n").unwrap();
+        assert!(
+            tokio::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(["add", "staged.txt", "only-staged.txt"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+        std::fs::write(dir.path().join("staged.txt"), "unstaged content\n").unwrap();
+        std::fs::write(dir.path().join("untracked.txt"), "synthetic content\n").unwrap();
+        let env = ExecutionEnv::new(Default::default(), false, String::new());
+        let diff = fetch_diff_message(dir.path(), &env).await.unwrap();
+        assert!(diff.contains("+unstaged content"));
+        assert!(diff.contains("+staged-only content"));
+        assert!(diff.contains("untracked.txt"));
+    }
 
     #[test]
     fn parses_fast_enable_and_disable() {

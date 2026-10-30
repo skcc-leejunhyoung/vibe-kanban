@@ -95,6 +95,8 @@ pub enum ControlRequestType {
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_use_id: Option<String>,
     },
+    #[serde(untagged)]
+    Unknown { subtype: String },
 }
 
 /// Result of permission check

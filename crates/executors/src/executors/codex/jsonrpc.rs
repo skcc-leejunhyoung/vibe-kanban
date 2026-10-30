@@ -254,7 +254,7 @@ where
     };
 
     match response {
-        Ok(PendingResponse::Result(value)) => serde_json::from_value(value).map_err(|err| {
+        Ok(PendingResponse::Result(value)) => super::compat::decode(value).map_err(|err| {
             ExecutorError::Io(io::Error::other(format!(
                 "failed to decode {label} response: {err}",
             )))

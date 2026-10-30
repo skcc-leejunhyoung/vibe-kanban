@@ -2212,7 +2212,9 @@ pub fn normalize_logs(
                 continue;
             }
 
-            if let Ok(server_notification) = serde_json::from_str::<ServerNotification>(&line) {
+            if let Ok(server_notification) = serde_json::from_str::<Value>(&line)
+                .and_then(super::compat::decode::<ServerNotification>)
+            {
                 if state.is_foreign_thread(direct_notification_thread_id(&server_notification)) {
                     match server_notification {
                         ServerNotification::ItemStarted(AppItemStartedNotification {
@@ -3040,7 +3042,7 @@ fn handle_jsonrpc_response(
     entry_index: &EntryIndexProvider,
     state: &mut LogState,
 ) {
-    if let Ok(resp) = serde_json::from_value::<ThreadStartResponse>(response.result.clone()) {
+    if let Ok(resp) = super::compat::decode::<ThreadStartResponse>(response.result.clone()) {
         if accept_root_thread(state, &resp.thread.id) {
             msg_store.push_session_id(resp.thread.id);
             handle_model_params(
@@ -3054,7 +3056,7 @@ fn handle_jsonrpc_response(
         return;
     }
 
-    if let Ok(resp) = serde_json::from_value::<ThreadForkResponse>(response.result.clone())
+    if let Ok(resp) = super::compat::decode::<ThreadForkResponse>(response.result.clone())
         && accept_root_thread(state, &resp.thread.id)
     {
         msg_store.push_session_id(resp.thread.id);

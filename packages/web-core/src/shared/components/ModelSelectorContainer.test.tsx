@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BaseCodingAgent,
+  PermissionPolicy,
   type ExecutorConfig,
   type ExecutorProfile,
   type ModelSelectorConfig,
@@ -13,6 +14,7 @@ import {
   profileToExecutorConfig,
 } from '@/shared/lib/profileModelConfig';
 import { ModelSelectorContainer } from './ModelSelectorContainer';
+import { composerSlashCommandOverrides } from '@/shared/lib/composerSlashCommands';
 
 const modelConfig: ModelSelectorConfig = {
   providers: [],
@@ -135,9 +137,22 @@ const click = (label: string) => act(() => menuItems.get(label)!());
 
 describe('ModelSelectorContainer with session overrides', () => {
   let current: ExecutorConfig | null = null;
+  let applyCommand: (prompt: string) => void;
+  const persisted: ExecutorConfig[] = [];
   function Chat({ lastUsed }: { lastUsed: ExecutorConfig }) {
-    const ec = useExecutorConfig({ profiles, lastUsedConfig: lastUsed });
+    const ec = useExecutorConfig({
+      profiles,
+      lastUsedConfig: lastUsed,
+      onPersist: (config) => persisted.push(config),
+    });
     current = ec.executorConfig;
+    applyCommand = (prompt) => {
+      const overrides = composerSlashCommandOverrides(
+        prompt,
+        ec.executorConfig!
+      );
+      if (overrides) ec.setOverrides(overrides);
+    };
     return (
       <ModelSelectorContainer
         agent={ec.effectiveExecutor}
@@ -157,6 +172,24 @@ describe('ModelSelectorContainer with session overrides', () => {
     model_id: 'gpt-5.5',
     reasoning_id: 'high',
   };
+
+  it('persists slash command settings and reflects them in the same selector state', async () => {
+    await act(() => root.render(<Chat lastUsed={lastUsed} />));
+    await act(() => applyCommand('/plan on'));
+    expect(current?.permission_policy).toBe(PermissionPolicy.PLAN);
+    await act(() => applyCommand('/reasoning low'));
+    expect(popover.selectedReasoningId).toBe('low');
+    await act(() => applyCommand('/model synthetic-model'));
+    expect(current).toMatchObject({
+      model_id: 'synthetic-model',
+      reasoning_id: null,
+    });
+    expect(persisted.at(-1)).toMatchObject({
+      model_id: 'synthetic-model',
+      reasoning_id: null,
+      permission_policy: PermissionPolicy.PLAN,
+    });
+  });
 
   it('keeps the effort when Fast is toggled on and off', async () => {
     await act(() => root.render(<Chat lastUsed={lastUsed} />));

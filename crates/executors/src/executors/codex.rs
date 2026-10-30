@@ -1,4 +1,5 @@
 pub mod client;
+mod compat;
 pub mod jsonrpc;
 pub mod normalize_logs;
 pub mod review;
@@ -409,7 +410,7 @@ use crate::{
     executor_discovery::ExecutorDiscoveredOptions,
     executors::{
         AppendPrompt, AvailabilityInfo, BaseCodingAgent, ExecutorError, ExecutorExitResult,
-        SlashCommandDescription, SpawnedChild, StandardCodingAgentExecutor,
+        SpawnedChild, StandardCodingAgentExecutor,
     },
     logs::utils::patch,
     model_selector::{
@@ -780,40 +781,7 @@ const THREAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 fn static_discovered_options() -> ExecutorDiscoveredOptions {
     ExecutorDiscoveredOptions {
         model_selector: static_model_selector(),
-        slash_commands: vec![
-                SlashCommandDescription {
-                    name: "compact".to_string(),
-                    description: Some(
-                        "summarize conversation to prevent hitting the context limit".to_string(),
-                    ),
-                },
-                SlashCommandDescription {
-                    name: "init".to_string(),
-                    description: Some(
-                        "create an AGENTS.md file with instructions for Codex".to_string(),
-                    ),
-                },
-                SlashCommandDescription {
-                    name: "status".to_string(),
-                    description: Some(
-                        "show current session configuration and token usage".to_string(),
-                    ),
-                },
-                SlashCommandDescription {
-                    name: "mcp".to_string(),
-                    description: Some("list configured MCP tools".to_string()),
-                },
-                SlashCommandDescription {
-                    name: "model".to_string(),
-                    description: Some("view or switch the active model".to_string()),
-                },
-                SlashCommandDescription {
-                    name: "fast".to_string(),
-                    description: Some(
-                        "toggle fast mode for highest speed inference (2× plan usage). Use `/fast on` or `/fast off` to set explicitly".to_string(),
-                    ),
-                },
-            ],
+        slash_commands: slash_commands::hardcoded_slash_commands(),
         ..Default::default()
     }
 }

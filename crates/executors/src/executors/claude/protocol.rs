@@ -124,6 +124,17 @@ impl ProtocolPeer {
         request: ControlRequestType,
     ) {
         match request {
+            ControlRequestType::Unknown { subtype } => {
+                if let Err(error) = self
+                    .send_error(
+                        request_id,
+                        format!("Unsupported Claude Code control request: {subtype}"),
+                    )
+                    .await
+                {
+                    tracing::error!("Failed to reject unsupported control request: {error}");
+                }
+            }
             ControlRequestType::CanUseTool {
                 tool_name,
                 input,
@@ -294,6 +305,42 @@ mod tests {
                 Err(ExecutorError::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn unknown_control_request_receives_error_and_the_turn_continues() {
+        let mut child = Command::new("sh")
+            .args(["-c", r#"printf '%s\n' '{"type":"control_request","request_id":"future-request","request":{"subtype":"future_permission_check"}}'; IFS= read -r reply; printf '%s\n' "$reply" >&2; printf '%s\n' '{"type":"result","subtype":"success","result":"done"}'; cat >/dev/null"#])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .kill_on_drop(true).spawn().unwrap();
+        let cancel = CancellationToken::new();
+        let client = ClaudeAgentClient::new(
+            LogWriter::new(tokio::io::sink()),
+            None,
+            RepoContext::default(),
+            false,
+            String::new(),
+            cancel.clone(),
+        );
+        let _peer = ProtocolPeer::spawn(
+            child.stdin.take().unwrap(),
+            child.stdout.take().unwrap(),
+            client,
+            cancel,
+        );
+        let output = tokio::time::timeout(Duration::from_secs(2), child.wait_with_output())
+            .await
+            .expect("unknown requests must not leave the CLI waiting")
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(response["response"]["subtype"], "error");
+        assert_eq!(response["response"]["request_id"], "future-request");
+        assert!(
+            response["response"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("future_permission_check")
+        );
     }
 
     /// A `--resume` with orphaned background tasks drains their

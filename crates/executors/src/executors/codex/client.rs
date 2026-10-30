@@ -16,10 +16,11 @@ use codex_app_server_protocol::{
     CurrentTimeReadResponse, DynamicToolCallOutputContentItem, DynamicToolCallResponse,
     FileChangeApprovalDecision, FileChangeRequestApprovalResponse, GetAccountParams,
     GetAccountRateLimitsResponse, GetAccountResponse, InitializeCapabilities, InitializeParams,
-    InitializeResponse, ItemCompletedNotification, JSONRPCError, JSONRPCNotification,
-    JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusParams, ListMcpServerStatusResponse,
-    McpServerStatusDetail, ModelListParams, ModelListResponse, RateLimitSnapshot, RateLimitWindow,
-    RequestId, ReviewStartParams, ReviewStartResponse, ReviewTarget, ServerRequest, SortDirection,
+    InitializeResponse, ItemCompletedNotification, JSONRPCError, JSONRPCErrorError,
+    JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusParams,
+    ListMcpServerStatusResponse, McpServerStatusDetail, ModelListParams, ModelListResponse,
+    RateLimitSnapshot, RateLimitWindow, RequestId, ReviewStartParams, ReviewStartResponse,
+    ReviewTarget, ServerRequest, SkillsListParams, SkillsListResponse, SortDirection,
     ThreadCompactStartParams, ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse,
     ThreadHistoryMode, ThreadItem, ThreadItemEntry, ThreadItemsListParams, ThreadItemsListResponse,
     ThreadReadParams, ThreadReadResponse, ThreadStartParams, ThreadStartResponse,
@@ -249,6 +250,20 @@ impl AppServerClient {
             },
         };
         self.send_request(request, "account/read").await
+    }
+
+    pub async fn skills_list(
+        &self,
+        cwd: std::path::PathBuf,
+    ) -> Result<SkillsListResponse, ExecutorError> {
+        let request = ClientRequest::SkillsList {
+            request_id: self.next_request_id(),
+            params: SkillsListParams {
+                cwds: vec![cwd],
+                force_reload: true,
+            },
+        };
+        self.send_request(request, "skills/list").await
     }
 
     pub async fn start_review(
@@ -662,10 +677,14 @@ impl AppServerClient {
             ServerRequest::ChatgptAuthTokensRefresh { .. }
             | ServerRequest::McpServerElicitationRequest { .. }
             | ServerRequest::PermissionsRequestApproval { .. } => {
-                tracing::warn!("received unhandled v2 server request: {:?}", request);
-                let response = JSONRPCResponse {
+                let response = JSONRPCError {
                     id: request.id().clone(),
-                    result: Value::Null,
+                    error: JSONRPCErrorError {
+                        code: -32601,
+                        message: "This Codex server request is not supported by Vibe Kanban"
+                            .to_string(),
+                        data: None,
+                    },
                 };
                 peer.send(&response).await
             }
@@ -1052,9 +1071,13 @@ impl JsonRpcCallbacks for AppServerClient {
             Ok(server_request) => self.handle_server_request(peer, server_request).await,
             Err(err) => {
                 tracing::debug!("Unhandled server request `{}`: {err}", request.method);
-                let response = JSONRPCResponse {
+                let response = JSONRPCError {
                     id: request.id,
-                    result: Value::Null,
+                    error: JSONRPCErrorError {
+                        code: -32601,
+                        message: format!("Unsupported Codex server request: {}", request.method),
+                        data: None,
+                    },
                 };
                 peer.send(&response).await
             }
@@ -1148,9 +1171,10 @@ impl JsonRpcCallbacks for AppServerClient {
 
             let mut keep_alive = false;
             let mut was_interrupted = false;
-            let completed = notification.params.clone().and_then(|params| {
-                serde_json::from_value::<TurnCompletedNotification>(params).ok()
-            });
+            let completed = notification
+                .params
+                .clone()
+                .and_then(|params| super::compat::decode::<TurnCompletedNotification>(params).ok());
 
             if let Some(completed) = completed
                 && completed.turn.status == TurnStatus::Interrupted
@@ -1315,6 +1339,7 @@ fn request_id(request: &ClientRequest) -> RequestId {
         | ClientRequest::ConfigRead { request_id, .. }
         | ClientRequest::ConfigBatchWrite { request_id, .. }
         | ClientRequest::GetAccountRateLimits { request_id, .. }
+        | ClientRequest::SkillsList { request_id, .. }
         | ClientRequest::ModelList { request_id, .. } => request_id.clone(),
         _ => unreachable!("request_id called for unsupported request variant"),
     }
@@ -1339,6 +1364,69 @@ mod tests {
     use codex_app_server_protocol::RateLimitReachedType;
 
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unsupported_server_requests_get_errors_instead_of_successful_nulls() {
+        use std::process::Stdio;
+
+        use super::super::jsonrpc::ExitSignalSender;
+
+        let known = serde_json::json!({"id": "test-request", "method": "account/chatgptAuthTokens/refresh", "params": {"reason": "unauthorized"}});
+        assert!(
+            ServerRequest::try_from(
+                serde_json::from_value::<JSONRPCRequest>(known.clone()).unwrap()
+            )
+            .is_ok()
+        );
+        for request in [
+            serde_json::json!({"id": "test-request", "method": "future/permission/request", "params": {}}),
+            known,
+        ] {
+            let cancel = CancellationToken::new();
+            let client = AppServerClient::new(
+                LogWriter::new(tokio::io::sink()),
+                None,
+                false,
+                false,
+                None,
+                RepoContext::default(),
+                false,
+                String::new(),
+                cancel.clone(),
+            );
+            let mut server = tokio::process::Command::new("sh")
+                .args([
+                    "-c",
+                    r#"printf '%s\n' "$1"; IFS= read -r reply; printf '%s\n' "$reply" >&2"#,
+                    "mock-app-server",
+                    &request.to_string(),
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            let peer = JsonRpcPeer::spawn(
+                server.stdin.take().unwrap(),
+                server.stdout.take().unwrap(),
+                client.clone(),
+                ExitSignalSender::new(tx),
+                cancel,
+            );
+            client.connect(peer);
+            let output = tokio::time::timeout(Duration::from_secs(2), server.wait_with_output())
+                .await
+                .expect("unsupported requests must receive a response")
+                .unwrap();
+            let response: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(response["id"], "test-request");
+            assert_eq!(response["error"]["code"], -32601);
+            assert!(response.get("result").is_none());
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]

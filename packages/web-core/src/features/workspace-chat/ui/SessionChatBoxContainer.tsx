@@ -65,6 +65,7 @@ import { useApprovals } from '@/shared/hooks/useApprovals';
 import { ResolveConflictsDialog } from '@/shared/dialogs/tasks/ResolveConflictsDialog';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { buildAgentPrompt } from '@/shared/lib/promptMessage';
+import { composerSlashCommandOverrides } from '@/shared/lib/composerSlashCommands';
 import { publishChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import { toPrettyCase } from '@/shared/lib/string';
@@ -1392,6 +1393,26 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       });
     };
 
+    if (executorConfig) {
+      try {
+        const overrides = composerSlashCommandOverrides(prompt, executorConfig);
+        if (overrides) {
+          cancelDebouncedSave();
+          setLocalMessage('');
+          localMessageRef.current = '';
+          await clearDraft();
+          setExecutorOverrides(overrides);
+          return;
+        }
+      } catch (error) {
+        void ErrorDialog.show({
+          title: t('common:error'),
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+    }
+
     if (!workspaceId || !executorConfig) {
       // Nothing to send into; the hook reports why.
       try {
@@ -1531,6 +1552,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     queryClient,
     onSelectSession,
     executorConfig,
+    setExecutorOverrides,
     localMessage,
     reviewMarkdown,
     cancelDebouncedSave,
