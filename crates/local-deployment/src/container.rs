@@ -205,14 +205,17 @@ fn cargo_debug_size(target_dir: &Path) -> io::Result<Option<u64>> {
 
 fn prune_cargo_debug_dir(target_dir: &Path) -> io::Result<CargoCachePruneStats> {
     let debug_dir = target_dir.join("debug");
-    match std::fs::symlink_metadata(&debug_dir) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-        Ok(_) => return Ok(CargoCachePruneStats::default()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(CargoCachePruneStats::default());
+    let incremental_dir = debug_dir.join("incremental");
+    for dir in [target_dir, &debug_dir, &incremental_dir] {
+        match std::fs::symlink_metadata(dir) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Ok(CargoCachePruneStats::default()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(CargoCachePruneStats::default());
+            }
+            Err(error) => return Err(error),
         }
-        Err(error) => return Err(error),
-    };
+    }
 
     let lock_path = debug_dir.join(".cargo-lock");
     match std::fs::symlink_metadata(&lock_path) {
@@ -239,28 +242,19 @@ fn prune_cargo_debug_dir(target_dir: &Path) -> io::Result<CargoCachePruneStats> 
         Err(std::fs::TryLockError::Error(error)) => return Err(error),
     }
 
-    let mut stats = CargoCachePruneStats::default();
-    for entry in std::fs::read_dir(&debug_dir)? {
-        let entry = entry?;
-        if entry.file_name() == ".cargo-lock" {
-            continue;
+    // Keep dependencies, build-script outputs and fingerprints warm for rebuilds.
+    let removed_bytes = path_size(&incremental_dir)?;
+    match std::fs::remove_dir_all(&incremental_dir) {
+        Ok(()) => Ok(CargoCachePruneStats {
+            removed_targets: 1,
+            removed_bytes,
+            ..CargoCachePruneStats::default()
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(CargoCachePruneStats::default())
         }
-        let path = entry.path();
-        stats.removed_bytes = stats.removed_bytes.saturating_add(path_size(&path)?);
-        let file_type = entry.file_type()?;
-        let result = if file_type.is_dir() && !file_type.is_symlink() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        if let Err(error) = result
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            return Err(error);
-        }
-        stats.removed_targets = 1;
+        Err(error) => Err(error),
     }
-    Ok(stats)
 }
 
 fn prune_stale_cargo_debug_caches(workspace_dir: &Path) -> io::Result<CargoCachePruneStats> {
@@ -1088,10 +1082,11 @@ impl LocalContainerService {
                     if stats.removed_targets > 0 || stats.busy_targets > 0 {
                         tracing::info!(
                             %workspace_id,
+                            cargo_cache_cleanup_scope = "incremental",
                             removed_debug_directories = stats.removed_targets,
                             busy_debug_directories = stats.busy_targets,
                             removed_bytes = stats.removed_bytes,
-                            "Processed stale Cargo debug outputs"
+                            "Processed stale Cargo incremental outputs"
                         );
                     }
                     workspace_cache_stats.merge(stats);
@@ -1099,7 +1094,7 @@ impl LocalContainerService {
                 Ok(Err(error)) => tracing::warn!(
                     %workspace_id,
                     %error,
-                    "Failed to remove stale Cargo debug outputs; will retry"
+                    "Failed to remove stale Cargo incremental outputs; will retry"
                 ),
                 Err(error) => tracing::warn!(
                     %workspace_id,
@@ -1183,6 +1178,7 @@ impl LocalContainerService {
         };
 
         tracing::info!(
+            cargo_cache_cleanup_scope = "incremental",
             worktree_candidates = expired_workspaces.len(),
             worktree_recheck_skips,
             worktree_cleanup_failures,
@@ -5150,7 +5146,7 @@ done
     }
 
     #[test]
-    fn stale_cargo_cleanup_keeps_source_release_and_busy_targets() {
+    fn stale_cargo_cleanup_keeps_dependencies_source_release_and_busy_targets() {
         let root = tempfile::tempdir().unwrap();
         let root_debug = root.path().join("target/debug");
         let nested_debug = root.path().join("crates/remote/target/debug");
@@ -5159,6 +5155,11 @@ done
             std::fs::create_dir_all(debug.join("incremental")).unwrap();
             std::fs::write(debug.join(".cargo-lock"), []).unwrap();
             std::fs::write(debug.join("incremental/artifact"), b"cache").unwrap();
+            for path in ["deps/dependency.rlib", "build/output", ".fingerprint/state"] {
+                std::fs::create_dir_all(debug.join(path).parent().unwrap()).unwrap();
+                std::fs::write(debug.join(path), b"keep").unwrap();
+            }
+            std::fs::write(debug.join("server"), b"binary").unwrap();
         }
         std::fs::create_dir_all(root.path().join("target/release")).unwrap();
         std::fs::write(root.path().join("target/release/keep"), b"release").unwrap();
@@ -5185,6 +5186,18 @@ done
         assert_eq!(second.removed_targets, 1);
         assert_eq!(second.busy_targets, 0);
         assert!(!busy_debug.join("incremental/artifact").exists());
+        for debug in [&root_debug, &nested_debug, &busy_debug] {
+            for path in ["deps/dependency.rlib", "build/output", ".fingerprint/state"] {
+                assert_eq!(std::fs::read(debug.join(path)).unwrap(), b"keep");
+            }
+            assert_eq!(std::fs::read(debug.join("server")).unwrap(), b"binary");
+        }
+        assert_eq!(
+            prune_stale_cargo_debug_caches(root.path())
+                .unwrap()
+                .removed_targets,
+            0
+        );
         assert_eq!(
             std::fs::read(root.path().join("target/release/keep")).unwrap(),
             b"release"
@@ -5200,9 +5213,11 @@ done
         fn target(root: &Path, name: &str, bytes: usize) -> PathBuf {
             let target = root.join(name);
             let debug = target.join("debug");
-            std::fs::create_dir_all(&debug).unwrap();
+            std::fs::create_dir_all(debug.join("incremental")).unwrap();
             std::fs::write(debug.join(".cargo-lock"), []).unwrap();
-            std::fs::write(debug.join("cache"), vec![0; bytes]).unwrap();
+            std::fs::write(debug.join("incremental/cache"), vec![0; bytes]).unwrap();
+            std::fs::create_dir_all(debug.join("deps")).unwrap();
+            std::fs::write(debug.join("deps/keep"), b"dependency").unwrap();
             target
         }
 
@@ -5213,16 +5228,22 @@ done
         let report = prune_extra_cargo_targets(
             vec![small.clone(), medium.clone(), large.clone()],
             100,
-            25,
+            55,
             0,
         )
         .unwrap();
-        assert_eq!(report.total_bytes_before, 60);
+        assert_eq!(report.total_bytes_before, 90);
         assert_eq!(report.stats.removed_targets, 2);
         assert_eq!(report.stats.removed_bytes, 50);
-        assert!(!large.join("debug/cache").exists());
-        assert!(!medium.join("debug/cache").exists());
-        assert!(small.join("debug/cache").exists());
+        assert!(!large.join("debug/incremental/cache").exists());
+        assert!(!medium.join("debug/incremental/cache").exists());
+        assert!(small.join("debug/incremental/cache").exists());
+        for target in [&large, &medium, &small] {
+            assert_eq!(
+                std::fs::read(target.join("debug/deps/keep")).unwrap(),
+                b"dependency"
+            );
+        }
 
         let free_root = tempfile::tempdir().unwrap();
         let larger = target(free_root.path(), "larger", 10);
@@ -5231,8 +5252,72 @@ done
             prune_extra_cargo_targets(vec![smaller.clone(), larger.clone()], 2, 100, 11).unwrap();
         assert_eq!(report.stats.removed_targets, 1);
         assert_eq!(report.stats.removed_bytes, 10);
-        assert!(!larger.join("debug/cache").exists());
-        assert!(smaller.join("debug/cache").exists());
+        assert!(!larger.join("debug/incremental/cache").exists());
+        assert!(smaller.join("debug/incremental/cache").exists());
+
+        // Pressure must never fall back to deleting expensive dependencies.
+        let report =
+            prune_extra_cargo_targets(vec![larger.clone(), smaller.clone()], 0, 0, 100).unwrap();
+        assert!(report.pressure_triggered);
+        assert_eq!(report.stats.removed_bytes, 8);
+        for target in [&larger, &smaller] {
+            assert_eq!(
+                std::fs::read(target.join("debug/deps/keep")).unwrap(),
+                b"dependency"
+            );
+        }
+        let report = prune_extra_cargo_targets(vec![larger, smaller], 0, 0, 100).unwrap();
+        assert!(report.pressure_triggered);
+        assert_eq!(report.stats.removed_targets, 0);
+        assert_eq!(report.stats.removed_bytes, 0);
+    }
+
+    #[test]
+    fn cargo_cache_cleanup_requires_an_existing_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        let incremental = target.join("debug/incremental");
+        std::fs::create_dir_all(&incremental).unwrap();
+        std::fs::write(incremental.join("artifact"), b"cache").unwrap();
+
+        assert_eq!(prune_cargo_debug_dir(&target).unwrap().removed_targets, 0);
+        assert_eq!(
+            std::fs::read(incremental.join("artifact")).unwrap(),
+            b"cache"
+        );
+        assert!(!target.join("debug/.cargo-lock").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_cache_cleanup_skips_symlinked_paths() {
+        for relative in [
+            "target",
+            "target/debug",
+            "target/debug/incremental",
+            "target/debug/.cargo-lock",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("target");
+            let debug = target.join("debug");
+            std::fs::create_dir_all(debug.join("incremental")).unwrap();
+            std::fs::write(debug.join(".cargo-lock"), []).unwrap();
+            std::fs::write(debug.join("incremental/artifact"), b"cache").unwrap();
+            let path = root.path().join(relative);
+            let outside = root.path().join("outside");
+            std::fs::rename(&path, &outside).unwrap();
+            std::os::unix::fs::symlink(&outside, &path).unwrap();
+
+            assert_eq!(
+                prune_cargo_debug_dir(&target).unwrap().removed_targets,
+                0,
+                "{relative}"
+            );
+            assert_eq!(
+                std::fs::read(debug.join("incremental/artifact")).unwrap(),
+                b"cache"
+            );
+        }
     }
 
     #[test]
