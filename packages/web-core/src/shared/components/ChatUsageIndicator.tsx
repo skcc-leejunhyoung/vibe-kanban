@@ -70,6 +70,12 @@ export function ChatUsageIndicator({
     if (value === 'Current week (Fable)') return t('agentUsage.fable');
     return value;
   };
+  const resetDescription = (value: string | null) => {
+    const utc = value?.match(/^resets (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC$/);
+    return utc
+      ? `${formatDateShortWithTime(`${utc[1]}T${utc[2]}:00Z`)} KST`
+      : value?.replace(/^resets (?:at )?/, '');
+  };
 
   const content = (context: ReactNode) => (
     <span className="flex w-64 flex-col gap-base text-base">
@@ -80,7 +86,7 @@ export function ChatUsageIndicator({
           key={window.label}
           label={label(window.label)}
           usedPercent={window.used_percent}
-          detail={window.reset_description?.replace(/^resets (?:at )?/, '')}
+          detail={resetDescription(window.reset_description)}
         />
       ))}
       {data?.reset_credits != null && (

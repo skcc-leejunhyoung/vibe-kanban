@@ -150,9 +150,50 @@ describe('ChatUsageIndicator', () => {
     expect(html.match(/role="progressbar"/g)).toHaveLength(2);
     expect(html).toContain('aria-label="주간"');
     expect(html).toContain('62%');
-    expect(html).toContain('2030-01-03 00:00 UTC');
+    expect(html).toContain(
+      `${formatDateShortWithTime('2030-01-03T09:00:00+09:00')} KST`
+    );
+    expect(html).not.toContain('UTC');
     expect(html).not.toContain('5시간');
     expect(html).not.toContain('리셋권');
+  });
+
+  it('converts UTC reset times across the KST date boundary alongside credit expiry', () => {
+    const kst = '2031-01-01T07:30:00+09:00';
+    const html = render(
+      {
+        ...usage,
+        windows: [
+          {
+            label: '7d',
+            used_percent: 37,
+            reset_description: 'resets 2030-12-31 22:30 UTC',
+          },
+        ],
+        reset_credits: 1,
+        reset_credit_expirations: ['2030-12-31T22:30:00Z'],
+      },
+      BaseCodingAgent.CODEX
+    );
+    const formatted = formatDateShortWithTime(kst);
+    expect(html).toContain(`${formatted} KST`);
+    expect(html).toContain(`1개 · ${formatted} 만료`);
+    expect(html).not.toContain('UTC');
+  });
+
+  it('preserves Claude reset text that already carries the host time zone', () => {
+    const html = render({
+      ...usage,
+      windows: [
+        {
+          label: 'Current session',
+          used_percent: 25,
+          reset_description: 'resets Jan 3 at 9:00am (Asia/Seoul)',
+        },
+      ],
+    });
+    expect(html).toContain('Jan 3 at 9:00am (Asia/Seoul)');
+    expect(html).not.toContain('Invalid Date');
   });
 
   it.each([null, { total_tokens: 0, model_context_window: 0 }])(
