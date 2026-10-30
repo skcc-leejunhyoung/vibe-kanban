@@ -34,11 +34,12 @@ export function ArtifactInputFrame({
   const { t } = useTranslation('common');
   const key = `${hostId ?? 'local'}:${interaction.workspace_id}:${interaction.reference.session_id}:${interaction.reference.request_id}`;
   const frame = useRef<HTMLIFrameElement>(null);
+  const focusTarget = useRef<HTMLSpanElement>(null);
   const busy = useRef(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
   const [uncertain, setUncertain] = useState(!!views.get(key)?.pending);
-  const [expanded, setExpanded] = useState(false);
+  const [height, setHeight] = useState(1);
   const automation = useArtifactAutomation(interaction, hostId);
   const live = !!interaction.automation;
   const displayError = error ?? (live ? automation.error : undefined);
@@ -145,8 +146,31 @@ export function ArtifactInputFrame({
   useEffect(() => {
     const listener = (event: MessageEvent) => {
       if (event.source !== frame.current?.contentWindow) return;
-      if (event.data === 'vibe:artifact:escape') {
-        setExpanded(false);
+      if (
+        event.data?.type === 'vibe:artifact:resize' &&
+        Number.isFinite(event.data.height)
+      ) {
+        setHeight(Math.max(1, Math.min(10000, Math.ceil(event.data.height))));
+        return;
+      }
+      if (
+        event.data?.type === 'vibe:artifact:focus' &&
+        Number.isFinite(event.data.top) &&
+        Number.isFinite(event.data.bottom) &&
+        event.data.top >= 0 &&
+        event.data.bottom >= event.data.top &&
+        event.data.bottom <= frame.current!.clientHeight &&
+        focusTarget.current
+      ) {
+        // A local anchor reveals keyboard focus across both sandbox boundaries.
+        focusTarget.current.style.top = `${event.data.top}px`;
+        focusTarget.current.style.height = `${event.data.bottom - event.data.top}px`;
+        focusTarget.current.scrollIntoView({
+          block: 'nearest',
+          inline: 'nearest',
+        });
+        focusTarget.current.style.top = '0';
+        focusTarget.current.style.height = '0';
         return;
       }
       if (
@@ -213,30 +237,21 @@ export function ArtifactInputFrame({
   };
   return (
     <figure className="my-half rounded-sm border border-border bg-panel text-base">
-      <div>
-        <div className="flex items-center gap-base border-b border-border p-base">
-          <span className="min-w-0 flex-1 truncate font-medium text-high">
-            {title}
-          </span>
-          <button
-            type="button"
-            className="rounded-sm px-base py-half text-normal hover:bg-secondary"
-            onClick={() => setExpanded(!expanded)}
-          >
-            {t(expanded ? 'artifacts.input.collapse' : 'artifacts.expand')}
-          </button>
-        </div>
+      <div className="relative">
+        <span
+          ref={focusTarget}
+          aria-hidden="true"
+          className="pointer-events-none absolute left-0 top-0 w-px opacity-0"
+        />
         <iframe
           ref={frame}
           title={title}
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
+          scrolling="no"
           srcDoc={srcDoc}
-          className={
-            expanded
-              ? 'h-[75vh] w-full border-0 bg-white'
-              : 'h-[420px] w-full border-0 bg-white'
-          }
+          className="w-full border-0 bg-white"
+          style={{ height }}
         />
         <figcaption className="space-y-half border-t border-border p-base">
           {interaction.automation && (

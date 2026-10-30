@@ -207,11 +207,16 @@ const ARTIFACT_INSTRUCTIONS: &str = "[Artifacts]\n\
              PDF and Office documents (docx, xlsx, pptx) also render as inline previews, \
              up to 90 MiB per file. The preview appears in place of the attachment line, \
              so attach each deliverable in the message where you present it, as soon as it is complete. \
+             Prefer one artifact per assistant turn; do not attach the same artifact again in commentary and the final reply. \
              When asked to create or render HTML, SVG or Mermaid, \
              attach that deliverable as the primary result. Screenshots can help verify your work; \
              use them as the deliverable when the user requests an image. \
              Save the final HTML inside the workspace, or attach a complete inline HTML document. \
              Prefer self-contained HTML; preview blocks external network requests and cannot run server code. \
+             Keep interactive HTML compact, ideally within one chat viewport. Registered input artifacts grow \
+             to fit their content without an internal page scrollbar, path header or collapse control. \
+             Avoid viewport-based heights (such as 100vh), fixed tall layouts and nested scrolling panels; \
+             use short steps, tabs or pagination for longer forms and dashboards. \
              For non-sensitive user input, use an HTML form with data-vibe-form and internal submit/cancel \
              controls (data-vibe-cancel), attach it, then register its schema with `vk session artifacts request --help`. \
              Only registered forms accept input in the chat. Use delivery=wait and read `vk session artifacts result` \
@@ -262,6 +267,11 @@ mod tests {
         assert!(prompt.contains("[Title](relative/path \"vibe-artifact\")"));
         assert!(prompt.contains("```mermaid vibe-artifact"));
         assert!(prompt.contains("create or render HTML, SVG or Mermaid"));
+        assert!(prompt.contains("Prefer one artifact per assistant turn"));
+        assert!(
+            prompt.contains("without an internal page scrollbar, path header or collapse control")
+        );
+        assert!(prompt.contains("Avoid viewport-based heights (such as 100vh)"));
         // The live-summary rules ride along in both the full text and the reminder.
         assert!(prompt.contains("\n\n[Status]\n"));
         assert!(prompt.contains("```vibe-status"));

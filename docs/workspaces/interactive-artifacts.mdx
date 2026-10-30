@@ -7,6 +7,13 @@ You can select options or edit a form directly in a registered HTML artifact. Us
 its **Submit** or **Cancel** button; you do not need a second chat submission.
 Unregistered artifacts keep their existing thumbnail and expanded preview.
 
+Registered input artifacts fit their content height without an internal page
+scrollbar, path header or collapse button. Use the chat to scroll. Keep each form
+or dashboard compact, ideally within one chat viewport, and show one artifact per
+assistant turn. Use short steps, tabs or pagination for longer content. Avoid
+viewport-based heights such as `100vh`, fixed tall layouts and nested scrolling
+panels. State messages and recovery controls remain visible below the artifact.
+
 ## Register a form
 
 1. Create and attach an HTML file with a `data-vibe-form` form, named controls and
@@ -122,8 +129,8 @@ Removing a queued artifact response also records cancellation before acknowledgi
 it. If that record cannot be saved, the response stays held with the error instead
 of being shown as successfully cancelled.
 
-Inputs stay in page memory during ordinary re-renders, chat row remounts and
-expansion. The complete rendered bundle stays fixed in page memory for the
+Inputs stay in page memory during ordinary re-renders, content height changes and
+chat row remounts. The complete rendered bundle stays fixed in page memory for the
 request, including when a virtual chat row is removed and mounted again. A first
 load whose registered version is unavailable is rejected. Reloading the page or
 restarting the app discards these drafts. Request
