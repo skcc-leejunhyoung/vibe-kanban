@@ -88,6 +88,36 @@ export function installArtifactInput(
   let composingEnter = false;
   let armedAction: string | undefined;
   const disabled = new WeakMap<Element, boolean>();
+  let observer: MutationObserver | undefined;
+  const rememberDisabled = (records: MutationRecord[]) => {
+    for (const record of records) {
+      if (
+        record.attributeName === 'disabled' &&
+        disabled.has(record.target as Element)
+      ) {
+        const element = record.target as Element & { disabled: boolean };
+        disabled.set(element, element.disabled);
+      }
+    }
+  };
+  const setDisabled = (
+    element: Element & { disabled: boolean },
+    value: boolean
+  ) => {
+    if (element.disabled === value) return;
+    element.disabled = value;
+    // Host writes must not replace the artifact's own validation state.
+    observer?.takeRecords();
+  };
+  const updateDisabled = (element: Element & { disabled: boolean }) => {
+    if (!state.editable) {
+      if (!disabled.has(element)) disabled.set(element, element.disabled);
+      setDisabled(element, true);
+    } else if (disabled.has(element)) {
+      setDisabled(element, disabled.get(element)!);
+      disabled.delete(element);
+    }
+  };
   const fields = () =>
     Array.from(
       document.querySelectorAll<
@@ -114,6 +144,7 @@ export function installArtifactInput(
             : undefined,
       }));
   const render = () => {
+    rememberDisabled(observer?.takeRecords() ?? []);
     const banner = document.querySelector('[data-vibe-status]');
     if (banner && banner.textContent !== state.message)
       banner.textContent = state.message;
@@ -121,19 +152,15 @@ export function installArtifactInput(
       .querySelectorAll<HTMLButtonElement>(
         'form[data-vibe-form] button,input[type="submit"],[data-vibe-submit],[data-vibe-cancel],[data-vibe-request]'
       )
-      .forEach((button) => {
-        if (!disabled.has(button)) disabled.set(button, button.disabled);
-        button.disabled = !state.editable || disabled.get(button)!;
-      });
+      .forEach(updateDisabled);
     // A password field cannot opt itself into the ordinary input path.
     fields().forEach((element) => {
-      if (!disabled.has(element)) disabled.set(element, element.disabled);
-      element.disabled = !state.editable || disabled.get(element)!;
+      updateDisabled(element);
       if (
         element.type === 'password' ||
         /password|one-time-code|cc-/i.test(element.autocomplete)
       ) {
-        element.disabled = true;
+        setDisabled(element, true);
         element.value = '';
       }
     });
@@ -366,6 +393,7 @@ export function installArtifactInput(
     if (event.source !== parent || event.data?.type !== 'vibe:artifact:state')
       return;
     state = event.data.value;
+    render();
     if (Array.isArray(event.data.draft)) {
       const elements = fields().filter(safe);
       for (const saved of event.data.draft) {
@@ -392,7 +420,6 @@ export function installArtifactInput(
         element.dispatchEvent(new Event('input', { bubbles: true }));
       }
     }
-    render();
     dispatchEvent(new CustomEvent('vibe:state', { detail: { ...state } }));
     if (config.actions)
       dispatchEvent(
@@ -413,10 +440,14 @@ export function installArtifactInput(
       document.body.prepend(banner);
     }
     render();
-    new MutationObserver(render).observe(document.body, {
+    observer = new MutationObserver((records) => {
+      rememberDisabled(records);
+      render();
+    });
+    observer.observe(document.body, {
       childList: true,
       subtree: true,
-      attributeFilter: ['type', 'autocomplete'],
+      attributeFilter: ['type', 'autocomplete', 'disabled'],
     });
     emit('ready');
   });

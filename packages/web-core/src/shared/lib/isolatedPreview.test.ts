@@ -44,7 +44,7 @@ describe('interactive artifact layout', () => {
     expect(html).toContain(ARTIFACT_CSP);
     expect(html).toContain('sandbox="allow-scripts"');
     expect(html).not.toContain('allow-same-origin');
-    expect(html).toContain('scrolling="no"');
+    expect(html).not.toContain('scrolling="no"');
     expect(html).toContain('html,body{overflow:clip}');
     expect(html).toContain('height:auto!important');
     expect(resize).toBeDefined();
@@ -61,9 +61,11 @@ describe('interactive artifact layout', () => {
     let frame: (() => void) | undefined;
     let height = 180;
     let overflow = 140;
+    const setProperty = vi.fn();
     const root = {
       getBoundingClientRect: () => ({ height }),
       scrollHeight: 900,
+      style: { setProperty },
     };
     const body = {
       getBoundingClientRect: () => ({ top: 20 }),
@@ -121,6 +123,24 @@ describe('interactive artifact layout', () => {
     callbacks.get('resize')!();
     flush();
     expect(postMessage).toHaveBeenCalledTimes(4);
+    height = 11200;
+    overflow = 11160;
+    measure!();
+    flush();
+    expect(setProperty).toHaveBeenLastCalledWith(
+      'overflow-y',
+      'auto',
+      'important'
+    );
+    height = 180;
+    overflow = 140;
+    measure!();
+    flush();
+    expect(setProperty).toHaveBeenLastCalledWith(
+      'overflow-y',
+      'clip',
+      'important'
+    );
   });
 
   it('relays bounded resize messages from the inner frame only', () => {

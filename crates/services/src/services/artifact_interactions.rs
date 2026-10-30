@@ -595,6 +595,26 @@ pub async fn claim_dispatch(
     Ok(true)
 }
 
+/// Keep lifecycle changes behind the worker handoff, and recheck after waiting.
+pub async fn automation_guard(
+    pool: &sqlx::SqlitePool,
+    reference: &ArtifactInteractionRef,
+) -> Result<(tokio::sync::MutexGuard<'static, ()>, Receipt)> {
+    let lifecycle = LIFECYCLE_LOCK.lock().await;
+    let _guard = LOCK.lock().await;
+    let mut receipt = load(reference).await?;
+    let ended = refresh_lifecycle(pool, &mut receipt).await?;
+    ensure!(
+        !ended
+            && receipt.interaction.delivery == ArtifactDelivery::Automation
+            && receipt.interaction.state == ArtifactInteractionState::InputRequired
+            && receipt.interaction.expires_at > Utc::now()
+            && receipt.boot_id == *BOOT_ID,
+        "Automation binding has ended; register a new request"
+    );
+    Ok((lifecycle, receipt))
+}
+
 pub async fn mark_started(reference: &ArtifactInteractionRef, execution: Uuid) -> Result<()> {
     let _guard = LOCK.lock().await;
     let mut receipt = load(reference).await?;
@@ -751,6 +771,91 @@ mod tests {
             .await
             .unwrap();
         pool
+    }
+
+    #[tokio::test]
+    async fn automation_handoff_serializes_archive_and_rechecks_revoked_bindings() {
+        let mut input = receipt();
+        input.interaction.delivery = ArtifactDelivery::Automation;
+        let pool = lifecycle_database(&input).await;
+        let reference = input.interaction.reference.clone();
+        {
+            let _guard = LOCK.lock().await;
+            save(&input).await.unwrap();
+        }
+        let (handoff, _) = automation_guard(&pool, &reference).await.unwrap();
+        let archive_pool = pool.clone();
+        let workspace = input.interaction.workspace_id;
+        let mut archive = tokio::spawn(async move {
+            let _guard = LIFECYCLE_LOCK.lock().await;
+            sqlx::query("UPDATE workspaces SET archived = 1 WHERE id = ?")
+                .bind(workspace)
+                .execute(&archive_pool)
+                .await
+                .unwrap();
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut archive)
+                .await
+                .is_err()
+        );
+        drop(handoff);
+        archive.await.unwrap();
+        assert!(automation_guard(&pool, &reference).await.is_err());
+
+        let lifecycle = LIFECYCLE_LOCK.lock().await;
+        sqlx::query("UPDATE workspaces SET archived = 0 WHERE id = ?")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let pending_pool = pool.clone();
+        let pending_reference = reference.clone();
+        let mut pending = tokio::spawn(async move {
+            automation_guard(&pending_pool, &pending_reference)
+                .await
+                .is_ok()
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
+                .await
+                .is_err()
+        );
+        drop(lifecycle);
+        assert!(
+            !pending.await.unwrap(),
+            "unarchiving must not revive the binding"
+        );
+        tokio::fs::remove_dir_all(directory(&reference))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn automation_handoff_rereads_cancellation_after_waiting_for_lifecycle_lock() {
+        let mut input = receipt();
+        input.interaction.delivery = ArtifactDelivery::Automation;
+        let pool = lifecycle_database(&input).await;
+        let reference = input.interaction.reference.clone();
+        {
+            let _guard = LOCK.lock().await;
+            save(&input).await.unwrap();
+        }
+        let lifecycle = LIFECYCLE_LOCK.lock().await;
+        let pending_reference = reference.clone();
+        let mut pending =
+            tokio::spawn(async move { automation_guard(&pool, &pending_reference).await.is_ok() });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
+                .await
+                .is_err()
+        );
+        mark_cancelled(&reference).await.unwrap();
+        drop(lifecycle);
+        assert!(!pending.await.unwrap());
+        tokio::fs::remove_dir_all(directory(&reference))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

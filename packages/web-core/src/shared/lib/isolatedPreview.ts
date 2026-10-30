@@ -42,6 +42,12 @@ function installArtifactAutoHeight() {
           );
           if (height === previous) return;
           previous = height;
+          // Oversized forms need a reachable fallback beyond the host height cap.
+          root.style.setProperty(
+            'overflow-y',
+            height > 10000 ? 'auto' : 'clip',
+            'important'
+          );
           parent.postMessage({ type: 'vibe:artifact:resize', height }, '*');
         });
       };
@@ -107,5 +113,5 @@ addEventListener('unhandledrejection', () => parent.postMessage({ type: 'vibe:ar
     input && !svg
       ? `const channel = ${JSON.stringify(input.channel)}; if (e.source === parent && e.data?.type === 'vibe:artifact:state' && e.data.channel === channel) { document.querySelector('iframe')?.contentWindow.postMessage({ type: e.data.type, value: e.data.value, draft: e.data.draft }, '*'); return; } if (e.source === document.querySelector('iframe')?.contentWindow) { if (e.data?.type === 'vibe:artifact:input' && e.data.channel === channel && ['ready', 'draft', 'submit', 'cancel', 'request'].includes(e.data.event)) { parent.postMessage(e.data, '*'); return; } if (e.data?.type === 'vibe:artifact:focus' && Number.isFinite(e.data.top) && Number.isFinite(e.data.bottom) && e.data.top >= 0 && e.data.bottom >= e.data.top && e.data.bottom <= 10000) { parent.postMessage({ type: e.data.type, top: e.data.top, bottom: e.data.bottom }, '*'); return; } }`
       : '';
-  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${escape(policy)}"><style>html,body,iframe{border:0;margin:0;width:100%;height:100%;display:block;background:white}${input && !svg ? 'html,body{overflow:clip}' : ''}</style><script nonce="${nonce}">addEventListener('message', e => { ${bridge} if (e.source !== document.querySelector('iframe')?.contentWindow) return; if (e.data === 'vibe:artifact:escape') parent.postMessage(e.data, '*'); else if (e.data?.type === 'vibe:artifact:error' && typeof e.data.message === 'string') parent.postMessage({ type: e.data.type, message: e.data.message.slice(0, 500) }, '*'); else if (e.data?.type === 'vibe:artifact:resize' && Number.isFinite(e.data.height)) parent.postMessage({ type: e.data.type, height: Math.max(0, Math.min(10000, e.data.height)) }, '*'); });</script><iframe title="Artifact document" sandbox="allow-scripts" referrerpolicy="no-referrer"${input && !svg ? ' scrolling="no"' : ''} srcdoc="${escape(inner)}"></iframe>`;
+  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${escape(policy)}"><style>html,body,iframe{border:0;margin:0;width:100%;height:100%;display:block;background:white}${input && !svg ? 'html,body{overflow:clip}' : ''}</style><script nonce="${nonce}">addEventListener('message', e => { ${bridge} if (e.source !== document.querySelector('iframe')?.contentWindow) return; if (e.data === 'vibe:artifact:escape') parent.postMessage(e.data, '*'); else if (e.data?.type === 'vibe:artifact:error' && typeof e.data.message === 'string') parent.postMessage({ type: e.data.type, message: e.data.message.slice(0, 500) }, '*'); else if (e.data?.type === 'vibe:artifact:resize' && Number.isFinite(e.data.height)) parent.postMessage({ type: e.data.type, height: Math.max(0, Math.min(10000, e.data.height)) }, '*'); });</script><iframe title="Artifact document" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escape(inner)}"></iframe>`;
 }

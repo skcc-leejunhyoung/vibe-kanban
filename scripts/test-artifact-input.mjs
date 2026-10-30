@@ -122,6 +122,8 @@ try {
         const frame = document.createElement("iframe");
         frame.sandbox = "allow-scripts";
         frame.referrerPolicy = "no-referrer";
+        frame.scrolling = "no";
+        frame.style.cssText = "display:block;width:100%";
         frame.srcdoc = preview.srcDoc;
         document.body.append(frame);
       },
@@ -135,6 +137,15 @@ try {
   await page.evaluate(() => {
     window.inputMessages = [];
     addEventListener("message", (event) => {
+      if (
+        event.data?.type === "vibe:artifact:resize" &&
+        Number.isFinite(event.data.height)
+      ) {
+        const frame = document.querySelector("iframe");
+        if (event.source === frame?.contentWindow)
+          frame.style.height = `${Math.max(1, Math.min(10000, event.data.height))}px`;
+        return;
+      }
       if (event.data?.type !== "vibe:artifact:input") return;
       window.inputMessages.push(event.data);
       if (event.data.event === "ready")
@@ -147,6 +158,7 @@ try {
               message: "Ready",
               editable: true,
             },
+            ...(window.restoredDraft ? { draft: window.restoredDraft } : {}),
           },
           "*",
         );
@@ -307,6 +319,150 @@ try {
   console.log(
     "Artifact input passed: named submit buttons, keyboard defaults, numbers/arrays/booleans, custom submit, gesture checks and cancellation.",
   );
+  inner = await loadInput(
+    '<form data-vibe-form><input name="title" oninput="this.form.querySelector(\'button\').disabled=!this.value"><button disabled>Submit</button><button type="button" data-vibe-cancel>Cancel</button></form>',
+  );
+  const updateState = async (editable = true) => {
+    await page.evaluate((editable) => {
+      document.querySelector("iframe").contentWindow.postMessage(
+        {
+          type: "vibe:artifact:state",
+          channel: "browser-input-test",
+          value: {
+            status: "input_required",
+            message: editable ? "Updated" : "Locked",
+            editable,
+          },
+        },
+        "*",
+      );
+    }, editable);
+    await inner
+      .getByText(editable ? "Updated" : "Locked", { exact: true })
+      .waitFor();
+  };
+  await inner.locator("input").fill("Valid draft");
+  await updateState();
+  assert.equal(
+    await inner
+      .getByRole("button", { name: "Submit", exact: true })
+      .isEnabled(),
+    true,
+  );
+  await updateState(false);
+  assert.equal(await inner.locator("input").isDisabled(), true);
+  await updateState();
+  assert.equal(
+    await inner
+      .getByRole("button", { name: "Submit", exact: true })
+      .isEnabled(),
+    true,
+  );
+  await updateState(false);
+  await inner
+    .locator("button")
+    .first()
+    .evaluate((button) => {
+      button.disabled = true;
+    });
+  await updateState();
+  assert.equal(await inner.locator("button").first().isDisabled(), true);
+  await updateState(false);
+  await inner
+    .locator("button")
+    .first()
+    .evaluate((button) => {
+      button.disabled = false;
+    });
+  await updateState();
+  assert.equal(await inner.locator("button").first().isEnabled(), true);
+  await inner.locator("input").fill("");
+  await updateState();
+  assert.equal(
+    await inner
+      .getByRole("button", { name: "Submit", exact: true })
+      .isDisabled(),
+    true,
+  );
+  console.log(
+    "Dynamic validation passed: editable updates preserve both enabled and disabled controls, including lock/unlock recovery.",
+  );
+  await page.evaluate(() => {
+    window.restoredDraft = [
+      { index: 0, name: "title", value: "Restored draft" },
+    ];
+  });
+  inner = await loadInput(
+    '<form data-vibe-form><input name="title" oninput="this.form.querySelector(\'button\').disabled=!this.value"><button disabled>Submit</button><button type="button" data-vibe-cancel>Cancel</button></form>',
+  );
+  assert.equal(await inner.locator("input").inputValue(), "Restored draft");
+  assert.equal(
+    await inner
+      .getByRole("button", { name: "Submit", exact: true })
+      .isEnabled(),
+    true,
+  );
+  await page.evaluate(() => {
+    delete window.restoredDraft;
+  });
+  console.log(
+    "Draft restoration passed: validation runs after host controls are unlocked.",
+  );
+  inner = await loadInput(
+    '<form data-vibe-form><input name="title" value="Initial draft"><button disabled>Submit</button><button type="button" data-vibe-cancel>Cancel</button></form><script>addEventListener("DOMContentLoaded",()=>document.querySelector("button").disabled=false);</script>',
+  );
+  assert.equal(await inner.locator("button").first().isEnabled(), true);
+
+  const rows = Array.from(
+    { length: 200 },
+    (_, index) =>
+      `<label style="display:block;padding:18px 0"><input type="checkbox" name="choices" value="${index}">Synthetic choice ${index}</label>`,
+  ).join("");
+  inner = await loadInput(
+    `<form data-vibe-form>${rows}<button>Submit</button></form>`,
+    ["choices"],
+  );
+  await page.waitForFunction(
+    () => document.querySelector("iframe").clientHeight === 10000,
+  );
+  assert.equal(
+    await inner
+      .locator("html")
+      .evaluate((element) => getComputedStyle(element).overflowY),
+    "auto",
+  );
+  await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));
+  await page.mouse.move(100, 200);
+  await page.mouse.wheel(0, 20000);
+  await page.waitForTimeout(250);
+  assert.equal(
+    await inner
+      .locator("button")
+      .evaluate(
+        (element) => element.getBoundingClientRect().bottom <= innerHeight,
+      ),
+    true,
+  );
+  await inner.getByRole("button", { name: "Submit", exact: true }).click();
+  assert.deepEqual(await submittedInput(), { choices: [] });
+  await inner
+    .locator("label")
+    .evaluateAll((elements) =>
+      elements.slice(2).forEach((element) => element.remove()),
+    );
+  await page.waitForFunction(
+    () => document.querySelector("iframe").clientHeight < 10000,
+  );
+  assert.equal(
+    await inner
+      .locator("html")
+      .evaluate((element) => getComputedStyle(element).overflowY),
+    "clip",
+  );
+  console.log(
+    "Oversized form passed: mouse scrolling reaches the submit button and compact layout returns after shrinkage.",
+  );
+
   inner = await loadInput(
     '<form data-vibe-form><input name="title"><button data-vibe-cancel>Cancel</button></form>',
   );

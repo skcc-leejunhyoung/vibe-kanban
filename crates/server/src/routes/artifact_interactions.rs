@@ -478,6 +478,10 @@ pub async fn automation_request(
         ));
     }
     let receipt = automation_receipt(&deployment, &process, &query, &path).await?;
+    let (_lifecycle, receipt) =
+        inputs::automation_guard(&deployment.db().pool, &receipt.interaction.reference)
+            .await
+            .map_err(bad)?;
     let i = &receipt.interaction;
     if request.owner_host != i.owner_host
         || request.artifact_id != i.artifact_id
