@@ -188,3 +188,50 @@ async fn codex_cli_slash_command_catalogs() {
         check_output(&executor, dir.path(), None, prompt, expected).await;
     }
 }
+
+#[tokio::test]
+#[ignore = "requires an authenticated Codex CLI; checks concurrent probes and catalog startup"]
+async fn codex_cli_concurrent_startup() {
+    let command = std::env::var("VK_TEST_CODEX_COMMAND").unwrap_or_else(|_| "codex".to_string());
+    let executor: Codex =
+        serde_json::from_value(json!({"base_command_override": command})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let (usage, _, _, _) = tokio::join!(
+        executor.read_account_usage(),
+        check_output(&executor, dir.path(), None, "/skills", "Available skills"),
+        check_output(&executor, dir.path(), None, "/skills", "Available skills"),
+        check_output(&executor, dir.path(), None, "/model", "Available models"),
+    );
+    usage.expect("concurrent account probe should complete");
+}
+
+#[tokio::test]
+#[ignore = "requires an installed Codex CLI; concurrently initializes a fresh, isolated skills cache"]
+async fn codex_cli_concurrent_cold_skills_cache() {
+    use futures::StreamExt;
+
+    let command = std::env::var("VK_TEST_CODEX_COMMAND").unwrap_or_else(|_| "codex".to_string());
+    let state = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let executor: Codex = serde_json::from_value(json!({
+        "base_command_override": command,
+        "env": {"CODEX_HOME": state.path()},
+    }))
+    .unwrap();
+    let discovery = async {
+        let patches: Vec<_> = executor
+            .discover_options(None, None)
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(!patches.is_empty());
+    };
+    tokio::join!(
+        discovery,
+        check_output(&executor, dir.path(), None, "/skills", "Available skills"),
+        check_output(&executor, dir.path(), None, "/skills", "Available skills"),
+        check_output(&executor, dir.path(), None, "/skills", "Available skills"),
+    );
+    assert!(state.path().join("skills/.system").is_dir());
+}

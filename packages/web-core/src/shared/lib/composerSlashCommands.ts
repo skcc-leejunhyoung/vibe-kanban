@@ -2,12 +2,19 @@ import {
   BaseCodingAgent,
   PermissionPolicy,
   type ExecutorConfig,
+  type ModelSelectorConfig,
 } from 'shared/types';
+import {
+  FAST_SUFFIX,
+  normalizeFastModelId,
+  parseModelId,
+} from './modelSelector';
 
 /** Session settings belong to Vibe; changing the CLI's global config loses to its overrides. */
 export function composerSlashCommandOverrides(
   prompt: string,
-  config: ExecutorConfig
+  config: ExecutorConfig,
+  models?: ModelSelectorConfig | null
 ): Partial<ExecutorConfig> | null {
   if (
     config.executor !== BaseCodingAgent.CODEX &&
@@ -16,12 +23,47 @@ export function composerSlashCommandOverrides(
     return null;
   }
   const match =
-    /^\/(model|reasoning|plan|permissions|approvals)(?:\s+([^\n]*))?$/i.exec(
+    /^\/(model|reasoning|plan|permissions|approvals|fast)(?:\s+([^\n]*))?$/i.exec(
       prompt.trim()
     );
   if (!match) return null;
   const command = match[1].toLowerCase();
   const argument = (match[2] ?? '').trim();
+  if (command === 'fast') {
+    if (config.executor !== BaseCodingAgent.CODEX || argument === 'status') {
+      return null;
+    }
+    if (!['', 'on', 'off'].includes(argument)) {
+      throw new Error('Usage: /fast [on|off|status]');
+    }
+    if (!models)
+      throw new Error('Wait for the model list before changing fast mode.');
+    const hasProviders = models.providers.length > 0;
+    const stored = config.model_id ?? models.default_model;
+    const { providerId } = parseModelId(stored, hasProviders);
+    const supportsFast = (id: string) =>
+      models.models.some(
+        (model) =>
+          model.id.toLowerCase() === id.toLowerCase() &&
+          (!providerId ||
+            model.provider_id?.toLowerCase() === providerId.toLowerCase()) &&
+          model.supports_fast
+      );
+    const { modelId, fast } = normalizeFastModelId(
+      stored,
+      hasProviders,
+      supportsFast
+    );
+    const { modelId: baseId } = parseModelId(modelId, hasProviders);
+    if (!modelId || !baseId || !supportsFast(baseId)) {
+      throw new Error('Select a model that supports fast mode first.');
+    }
+    const enabled = argument === 'on' || (!argument && !fast);
+    return {
+      model_id: enabled ? `${modelId}${FAST_SUFFIX}` : modelId,
+      reasoning_id: config.reasoning_id ?? null,
+    };
+  }
   if (command === 'plan') {
     if (!['', 'on', 'off'].includes(argument)) return null;
     const enabled =
@@ -42,7 +84,7 @@ export function composerSlashCommandOverrides(
     const levels =
       config.executor === BaseCodingAgent.CODEX
         ? ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
-        : ['low', 'medium', 'high', 'xhigh', 'max'];
+        : ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
     if (!levels.includes(argument)) {
       throw new Error(`Usage: /reasoning ${levels.join('|')}`);
     }

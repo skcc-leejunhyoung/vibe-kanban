@@ -26,10 +26,10 @@ Some commands accept optional arguments. For example, with Claude Code or Codex,
 
 ## Available Commands by Agent
 
-The available slash commands depend on which coding agent you're using. Vibe Kanban discovers and exposes the same commands you'd have in the agent's native CLI, so the experience matches what you're used to.
+The available slash commands depend on which coding agent you're using. Vibe Kanban discovers agent commands and adapts supported built-in commands to its chat interface.
 
 <Note>
-Some built-in commands that require TUI interaction (such as `/model` or `/theme`) are not currently supported in Vibe Kanban. Only non-interactive commands are available.
+Terminal-only interactions such as theme selection are unavailable. For Codex and Claude Code, `/model <id>`, `/reasoning <level>`, `/plan [on|off]`, and `/permissions auto|supervised|plan|dont_ask` update the composer settings for subsequent turns, including while a turn is running. These setting commands preserve attachments and do not interrupt or queue a turn. `/approvals` is an alias for `/permissions`.
 </Note>
 
 ### Claude Code
@@ -55,12 +55,21 @@ Vibe Kanban surfaces a curated subset of Codex built-in commands. For the full u
 
 | Command | Description |
 |---------|-------------|
-| `/compact` | Summarize the conversation to free tokens |
+| `/compact [instructions]` | Summarize the active conversation, optionally preserving specific details |
+| `/review [instructions]` | Review uncommitted changes; also accepts `--base <branch>` or `--commit <sha>` |
+| `/diff` | Show staged and unstaged changes and untracked file names |
 | `/init` | Generate an AGENTS.md scaffold in the current directory |
 | `/status` | Display session configuration and token usage |
 | `/mcp` | List configured MCP tools |
-| `/model` | View or switch the active model |
-| `/fast` | Toggle or inspect fast mode |
+| `/skills` | List enabled skills; invoke one with `$skill-name` in a message |
+| `/model [id]` | List models or select a model in the composer; `/models` is an alias |
+| `/reasoning <level>` | Select reasoning effort in the composer |
+| `/plan [on\|off\|request]` | Toggle the composer's Plan setting, or plan a specific request |
+| `/permissions <policy>` | Select `auto`, `supervised`, `plan`, or `dont_ask` |
+| `/fast [on\|off\|status]` | Persist Fast mode for the selected supported model, or inspect its status |
+| `/help` | List supported commands; `/commands` is an alias |
+
+Fast changes retain the selected reasoning effort and apply to subsequent turns. Wait for model discovery before changing Fast mode. Terminal session-management commands such as `/new`, `/resume`, `/fork`, and `/quit` are handled through Vibe Kanban's session controls. Unknown commands remain available for custom prompts.
 
 ### OpenCode
 

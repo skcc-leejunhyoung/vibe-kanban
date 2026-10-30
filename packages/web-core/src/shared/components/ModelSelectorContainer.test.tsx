@@ -149,7 +149,8 @@ describe('ModelSelectorContainer with session overrides', () => {
     applyCommand = (prompt) => {
       const overrides = composerSlashCommandOverrides(
         prompt,
-        ec.executorConfig!
+        ec.executorConfig!,
+        ec.modelSelectorConfig
       );
       if (overrides) ec.setOverrides(overrides);
     };
@@ -203,6 +204,24 @@ describe('ModelSelectorContainer with session overrides', () => {
     expect(popover.selectedReasoningId).toBe('high');
 
     await click('modelSelector.fastOff');
+    expect(current).toMatchObject({
+      model_id: 'gpt-5.5',
+      reasoning_id: 'high',
+    });
+  });
+
+  it('persists slash Fast changes and restores them when the composer remounts', async () => {
+    await act(() => root.render(<Chat lastUsed={lastUsed} />));
+    await act(() => applyCommand('/fast on'));
+    expect(current).toMatchObject({
+      model_id: 'gpt-5.5-fast',
+      reasoning_id: 'high',
+    });
+    await act(() => applyCommand('/fast off'));
+    const saved = persisted.at(-1)!;
+    expect(saved).toMatchObject({ model_id: 'gpt-5.5', reasoning_id: 'high' });
+    await act(() => root.render(null));
+    await act(() => root.render(<Chat lastUsed={saved} />));
     expect(current).toMatchObject({
       model_id: 'gpt-5.5',
       reasoning_id: 'high',

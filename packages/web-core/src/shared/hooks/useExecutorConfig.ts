@@ -4,6 +4,7 @@ import type {
   ExecutorConfig,
   ExecutorProfile,
   ExecutorProfileId,
+  ModelSelectorConfig,
 } from 'shared/types';
 import {
   getInitialExecutorConfig,
@@ -207,6 +208,7 @@ interface UseExecutorConfigOptions {
 
 interface UseExecutorConfigResult {
   executorConfig: ExecutorConfig | null;
+  modelSelectorConfig: ModelSelectorConfig | null | undefined;
   effectiveExecutor: BaseCodingAgent | null;
   selectedVariant: string | null;
   executorOptions: BaseCodingAgent[];
@@ -375,6 +377,7 @@ export function useExecutorConfig({
 
   return {
     executorConfig,
+    modelSelectorConfig,
     effectiveExecutor: executor.effective,
     selectedVariant: variant.resolved,
     executorOptions,

@@ -10,7 +10,7 @@ use serde_json::json;
 use super::{
     Codex,
     client::{AppServerClient, LogWriter},
-    codex_home, collect_model_pages, fork_params_from, resolve_model,
+    codex_home, collect_model_pages, fork_params_from,
 };
 use crate::{
     env::ExecutionEnv,
@@ -315,8 +315,11 @@ impl Codex {
     ) -> Result<SpawnedChild, ExecutorError> {
         let command_parts = self.build_command_builder()?.build_initial()?;
         let session_id = session_id.map(|s| s.to_string());
-        let (_, session_fast) = resolve_model(self.model.as_deref());
         let mut thread_start_params = self.build_thread_start_params(current_dir, env);
+        let session_fast = thread_start_params
+            .service_tier
+            .as_ref()
+            .map(|tier| tier.as_deref() == Some(ServiceTier::Fast.request_value()));
         let cwd = current_dir.to_path_buf();
 
         self.spawn_app_server(
@@ -391,8 +394,9 @@ impl Codex {
                             .and_then(|t| ServiceTier::from_request_value(&t))
                             .map(|t| matches!(t, ServiceTier::Fast))
                             .unwrap_or(false);
+                        let current_is_fast = session_fast.unwrap_or(current_is_fast);
                         if status {
-                            let message = if current_is_fast || session_fast {
+                            let message = if current_is_fast {
                                 "**Fast mode is enabled.**".to_string()
                             } else {
                                 "**Fast mode is disabled.**".to_string()
@@ -586,7 +590,7 @@ async fn fetch_diff_message(current_dir: &Path, env: &ExecutionEnv) -> Result<St
 async fn fetch_status_message(
     client: &AppServerClient,
     thread_id: Option<&str>,
-    session_fast: bool,
+    session_fast: Option<bool>,
 ) -> Result<String, ExecutorError> {
     let mut lines = vec!["# Session Status\n".to_string()];
 
@@ -648,7 +652,7 @@ async fn fetch_status_message(
         .and_then(|t| ServiceTier::from_request_value(t))
         .map(|t| matches!(t, ServiceTier::Fast))
         .unwrap_or(false);
-    if global_fast || session_fast {
+    if session_fast.unwrap_or(global_fast) {
         lines.push("- **Service Tier**: `fast ⚡`".to_string());
     }
 

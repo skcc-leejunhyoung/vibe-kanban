@@ -860,6 +860,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Unified executor + variant + model selector options resolution
   const {
     executorConfig,
+    modelSelectorConfig,
     effectiveExecutor,
     selectedVariant,
     executorOptions,
@@ -1369,6 +1370,40 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     ]
   );
 
+  const handleSettingsCommand = useCallback(
+    async (prompt: string) => {
+      if (!executorConfig) return false;
+      try {
+        const overrides = composerSlashCommandOverrides(
+          prompt,
+          executorConfig,
+          modelSelectorConfig
+        );
+        if (!overrides) return false;
+        cancelDebouncedSave();
+        await clearDraft();
+        setLocalMessage('');
+        localMessageRef.current = '';
+        setExecutorOverrides(overrides);
+      } catch (error) {
+        void ErrorDialog.show({
+          title: t('common:error'),
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return true;
+    },
+    [
+      executorConfig,
+      modelSelectorConfig,
+      cancelDebouncedSave,
+      clearDraft,
+      setLocalMessage,
+      setExecutorOverrides,
+      t,
+    ]
+  );
+
   const handleSend = useCallback(async () => {
     const { prompt, isSlashCommand } = buildAgentPrompt(localMessage, [
       reviewMarkdown,
@@ -1393,25 +1428,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       });
     };
 
-    if (executorConfig) {
-      try {
-        const overrides = composerSlashCommandOverrides(prompt, executorConfig);
-        if (overrides) {
-          cancelDebouncedSave();
-          setLocalMessage('');
-          localMessageRef.current = '';
-          await clearDraft();
-          setExecutorOverrides(overrides);
-          return;
-        }
-      } catch (error) {
-        void ErrorDialog.show({
-          title: t('common:error'),
-          message: error instanceof Error ? error.message : String(error),
-        });
-        return;
-      }
-    }
+    if (await handleSettingsCommand(prompt)) return;
 
     if (!workspaceId || !executorConfig) {
       // Nothing to send into; the hook reports why.
@@ -1552,7 +1569,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     queryClient,
     onSelectSession,
     executorConfig,
-    setExecutorOverrides,
+    handleSettingsCommand,
     localMessage,
     reviewMarkdown,
     cancelDebouncedSave,
@@ -1675,6 +1692,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if ((!localMessage.trim() && !reviewMarkdown) || !executorConfig) return;
 
     const { prompt } = buildAgentPrompt(localMessage, [reviewMarkdown]);
+    if (await handleSettingsCommand(prompt)) return;
 
     // The row is on the list at once (optimistic); free the composer now and
     // put the text back only if the server refuses it.
@@ -1708,6 +1726,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     reviewMarkdown,
     executorConfig,
     queueMessage,
+    handleSettingsCommand,
     cancelDebouncedSave,
     setLocalMessage,
     clearUploadedAttachments,
@@ -1732,6 +1751,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!sessionId || !workspaceId) return;
 
     const { prompt } = buildAgentPrompt(localMessage, [reviewMarkdown]);
+    if (await handleSettingsCommand(prompt)) return;
 
     cancelDebouncedSave();
     onScrollToBottom('auto');
@@ -1821,6 +1841,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isCodingAgentRunning,
     handleSend,
     handleQueueMessage,
+    handleSettingsCommand,
     sessionId,
     workspaceId,
     localMessage,

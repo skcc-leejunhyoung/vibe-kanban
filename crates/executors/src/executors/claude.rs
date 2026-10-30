@@ -147,6 +147,7 @@ pub enum ClaudeEffort {
     High,
     XHigh,
     Max,
+    Ultracode,
 }
 
 #[derive(Derivative, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -4284,7 +4285,13 @@ while :; do sleep 0.1; done
             .find(|m| m.id == "moonshotai/Kimi-K3")
             .expect("kimi listed");
         assert_eq!(kimi.provider_id.as_deref(), Some("sailresearch"));
-        assert_eq!(kimi.reasoning_options.len(), 5);
+        assert_eq!(
+            kimi.reasoning_options
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            slash_commands::CLAUDE_EFFORT_LEVELS.to_vec()
+        );
 
         // CCR's `provider,model` becomes the selector's `provider/model`, and a
         // model id containing slashes has to survive the round trip intact.

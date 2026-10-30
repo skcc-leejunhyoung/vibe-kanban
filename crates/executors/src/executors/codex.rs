@@ -13,6 +13,9 @@ use std::{
     sync::Arc,
 };
 
+// shortcut: serializes Vibe's startups only; remove when Codex locks its shared system-skills installer.
+static APP_SERVER_STARTUP: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Returns the Codex home directory.
 ///
 /// Checks the `CODEX_HOME` environment variable first, then falls back to `~/.codex`.
@@ -858,6 +861,7 @@ impl Codex {
     {
         let command_parts = self.build_command_builder()?.build_initial()?;
         let (program_path, args) = command_parts.into_resolved().await?;
+        let startup = APP_SERVER_STARTUP.lock().await;
 
         let mut process = Command::new(program_path);
         process
@@ -907,6 +911,7 @@ impl Codex {
 
         let result = tokio::time::timeout(timeout, async {
             client.initialize().await?;
+            drop(startup);
             task(client.clone()).await
         })
         .await;
@@ -1012,7 +1017,10 @@ impl Codex {
             Some(SelectedModel::Custom { model, .. }) => (Some(model.clone()), false),
             None => (None, false),
         };
-        let service_tier = is_fast.then(|| Some(ServiceTier::Fast.request_value().to_string()));
+        // An explicit model selection also explicitly disables an inherited fast tier.
+        let service_tier = selected
+            .as_ref()
+            .map(|_| is_fast.then(|| ServiceTier::Fast.request_value().to_string()));
 
         ThreadStartParams {
             model,
@@ -1152,6 +1160,7 @@ impl Codex {
         Fut: std::future::Future<Output = Result<(), ExecutorError>> + Send + 'static,
     {
         let (program_path, args) = command_parts.into_resolved().await?;
+        let startup = APP_SERVER_STARTUP.lock().await;
 
         let mut process = Command::new(program_path);
         process
@@ -1225,7 +1234,12 @@ impl Codex {
 
         tokio::spawn(async move {
             let result = async {
-                client.initialize().await?;
+                tokio::time::timeout(std::time::Duration::from_secs(30), client.initialize())
+                    .await
+                    .map_err(|_| {
+                        ExecutorError::Io(std::io::Error::other("Timed out initializing Codex"))
+                    })??;
+                drop(startup);
                 task(client, exit_signal_tx.clone()).await
             }
             .await;
@@ -1392,7 +1406,7 @@ base_url = "https://api.sailresearch.com/v1"
 
         assert_eq!(params.model.as_deref(), Some("moonshotai/Kimi-K3"));
         assert_eq!(params.model_provider.as_deref(), Some("sailresearch"));
-        assert_eq!(params.service_tier, None);
+        assert_eq!(params.service_tier, Some(None));
         let config = params.config.unwrap_or_default();
         // The app server rejects a `profile` override outright.
         assert!(!config.contains_key("profile"));
@@ -1419,6 +1433,25 @@ base_url = "https://api.sailresearch.com/v1"
                 .config
                 .and_then(|c| c.get("model_reasoning_effort").cloned()),
             Some(json!("high"))
+        );
+    }
+
+    #[test]
+    fn an_explicit_standard_model_clears_inherited_fast_mode() {
+        let codex: Codex = serde_json::from_value(json!({"model": "gpt-5.6-sol"})).unwrap();
+        let params =
+            codex.thread_start_params(std::path::Path::new("/tmp"), codex.selected_model());
+        assert_eq!(params.service_tier, Some(None));
+        assert_eq!(
+            serde_json::to_value(&params).unwrap()["serviceTier"],
+            serde_json::Value::Null
+        );
+        let defaults: Codex = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(
+            defaults
+                .thread_start_params(std::path::Path::new("/tmp"), None)
+                .service_tier,
+            None
         );
     }
 

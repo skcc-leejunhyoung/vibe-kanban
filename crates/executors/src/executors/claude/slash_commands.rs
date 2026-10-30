@@ -39,7 +39,8 @@ pub(super) struct DiscoveredCommandsAndModels {
 
 /// Effort levels the `--effort` CLI flag accepts; also the fallback offered
 /// when the CLI reports `supportsEffort` without an explicit level list.
-pub(super) const CLAUDE_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+pub(super) const CLAUDE_EFFORT_LEVELS: [&str; 6] =
+    ["low", "medium", "high", "xhigh", "max", "ultracode"];
 
 /// One entry of the `models` array in the control-protocol initialize
 /// response. Extra fields (resolvedModel, description, supportsFastMode, …)
@@ -536,7 +537,7 @@ mod tests {
                 "value": "opus[1m]",
                 "displayName": "Opus",
                 "supportsEffort": true,
-                "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]
+                "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max", "ultracode"]
             },
             {"value": "haiku", "displayName": "Haiku"},
             {"value": "haiku", "displayName": "Duplicate"},
