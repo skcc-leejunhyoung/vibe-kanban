@@ -2,6 +2,7 @@ import { useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
 import { Tooltip } from './Tooltip';
+import { UsageProgress } from './UsageProgress';
 
 export interface ContextUsageInfo {
   total_tokens: number;
@@ -65,13 +66,15 @@ export function ContextUsageGauge({
   const progress = clamp(percentage / 100, 0, 1);
 
   const tooltip =
-    status === 'empty'
-      ? t('contextUsage.emptyTooltip')
-      : t('contextUsage.tooltip', {
-          percentage: Math.round(percentage),
-          used: formattedUsed,
-          total: formattedTotal,
-        });
+    status === 'empty' ? (
+      t('contextUsage.emptyTooltip')
+    ) : (
+      <UsageProgress
+        label={t('contextUsage.label')}
+        usedPercent={percentage}
+        detail={`${formattedUsed} / ${formattedTotal}`}
+      />
+    );
 
   const progressColor =
     status === 'empty'

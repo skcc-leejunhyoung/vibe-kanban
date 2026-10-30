@@ -1,8 +1,9 @@
-import { useRef, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { BaseCodingAgent } from 'shared/types';
 import { Tooltip } from '@vibe/ui/components/Tooltip';
+import { UsageProgress } from '@vibe/ui/components/UsageProgress';
 import {
   ContextUsageGauge,
   type ContextUsageInfo,
@@ -33,6 +34,7 @@ export function ChatUsageIndicator({
 }) {
   const { t } = useTranslation('common');
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const supportsUsage =
     agent === BaseCodingAgent.CLAUDE_CODE || agent === BaseCodingAgent.CODEX;
   const contextHostId = useHostId();
@@ -74,35 +76,12 @@ export function ChatUsageIndicator({
       <span className="text-normal">{context}</span>
       {supportsUsage && isPending && <span>{t('states.loading')}</span>}
       {data?.windows.map((window) => (
-        <span key={window.label} className="flex flex-col gap-1">
-          <span className="flex justify-between gap-base">
-            <span>{label(window.label)}</span>
-            <span>
-              {window.used_percent.toLocaleString(undefined, {
-                maximumFractionDigits: 1,
-              })}
-              %
-            </span>
-          </span>
-          <span
-            role="progressbar"
-            aria-label={label(window.label)}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={window.used_percent}
-            className="h-1 overflow-hidden rounded-sm bg-secondary"
-          >
-            <span
-              className="block h-full bg-brand"
-              style={{ width: `${window.used_percent}%` }}
-            />
-          </span>
-          {window.reset_description && (
-            <span className="text-sm text-low">
-              {window.reset_description.replace(/^resets (?:at )?/, '')}
-            </span>
-          )}
-        </span>
+        <UsageProgress
+          key={window.label}
+          label={label(window.label)}
+          usedPercent={window.used_percent}
+          detail={window.reset_description?.replace(/^resets (?:at )?/, '')}
+        />
       ))}
       {data?.reset_credits != null && (
         <span className="flex flex-col gap-1 text-sm text-low">
@@ -142,8 +121,12 @@ export function ChatUsageIndicator({
     <ContextUsageGauge
       tokenUsageInfo={tokenUsageInfo}
       renderDetails={(trigger, context) => (
-        <Dialog>
-          <Tooltip side="top" content={content(context)}>
+        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <Tooltip
+            side="top"
+            content={content(context)}
+            className={dialogOpen ? 'hidden' : undefined}
+          >
             <DialogTrigger asChild ref={triggerRef}>
               {trigger}
             </DialogTrigger>

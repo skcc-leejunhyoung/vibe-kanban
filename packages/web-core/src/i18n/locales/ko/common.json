@@ -304,7 +304,6 @@
   "contextUsage": {
     "label": "컨텍스트 사용량",
     "emptyTooltip": "컨텍스트 사용량은 다음 응답 후에 표시됩니다",
-    "tooltip": "컨텍스트: {{percentage}}% · {{used}} / {{total}} 토큰",
     "ariaLabel": "컨텍스트 사용량: {{percentage}}%"
   },
   "shortcuts": {

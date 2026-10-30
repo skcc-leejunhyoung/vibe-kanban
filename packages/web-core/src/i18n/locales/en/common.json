@@ -318,7 +318,6 @@
   "contextUsage": {
     "label": "Context usage",
     "emptyTooltip": "Context usage appears after the next reply",
-    "tooltip": "Context: {{percentage}}% · {{used}} / {{total}} tokens",
     "ariaLabel": "Context usage: {{percentage}}%"
   },
   "shortcuts": {

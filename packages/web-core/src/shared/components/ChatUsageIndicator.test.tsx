@@ -5,6 +5,7 @@ import { I18nextProvider } from 'react-i18next';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { BaseCodingAgent, type AgentUsage } from 'shared/types';
+import type { ContextUsageInfo } from '@vibe/ui/components/ContextUsageGauge';
 import common from '@/i18n/locales/ko/common.json';
 import { formatDateShortWithTime } from '@/shared/lib/date';
 import { ChatUsageIndicator } from './ChatUsageIndicator';
@@ -60,7 +61,11 @@ const usage: AgentUsage = {
 function render(
   data = usage,
   agent = BaseCodingAgent.CLAUDE_CODE,
-  hostId: string | null = null
+  hostId: string | null = null,
+  tokenUsageInfo: ContextUsageInfo | null = {
+    total_tokens: 42000,
+    model_context_window: 200000,
+  }
 ) {
   const client = new QueryClient();
   client.setQueryData(['agentUsage', hostId ?? 'local', agent], data);
@@ -70,7 +75,7 @@ function render(
         <ChatUsageIndicator
           agent={agent}
           hostId={hostId}
-          tokenUsageInfo={{ total_tokens: 42000, model_context_window: 200000 }}
+          tokenUsageInfo={tokenUsageInfo}
         />
       </QueryClientProvider>
     </I18nextProvider>
@@ -88,12 +93,13 @@ describe('ChatUsageIndicator', () => {
       login_required: true,
     });
     expect(html).toContain('CLI 로그인 필요');
-    expect(html).toContain('컨텍스트: 21%');
+    expect(html).toContain('aria-label="컨텍스트 사용량"');
     expect(html).not.toContain('조회 불가');
   });
   it('shows all three independent Claude limits and their reset information', () => {
     const html = render();
     for (const [label, percent] of [
+      ['컨텍스트 사용량', 21],
       ['5시간', 25],
       ['주간', 60],
       ['Fable', 90],
@@ -102,7 +108,7 @@ describe('ChatUsageIndicator', () => {
       expect(html).toContain(`aria-valuenow="${percent}"`);
     }
     expect(html).toContain('18:00');
-    expect(html).toContain('컨텍스트: 21%');
+    expect(html.match(/role="progressbar"/g)).toHaveLength(4);
     expect(html).toContain('42K / 200K');
     expect(html).not.toContain('resets at');
     expect(html).not.toContain('기본 CLI 계정');
@@ -141,13 +147,29 @@ describe('ChatUsageIndicator', () => {
       },
       BaseCodingAgent.CODEX
     );
-    expect(html.match(/role="progressbar"/g)).toHaveLength(1);
+    expect(html.match(/role="progressbar"/g)).toHaveLength(2);
     expect(html).toContain('aria-label="주간"');
     expect(html).toContain('62%');
     expect(html).toContain('2030-01-03 00:00 UTC');
     expect(html).not.toContain('5시간');
     expect(html).not.toContain('리셋권');
   });
+
+  it.each([null, { total_tokens: 0, model_context_window: 0 }])(
+    'keeps unknown context usage as a placeholder without inventing a limit',
+    (tokenUsageInfo) => {
+      const html = render(
+        usage,
+        BaseCodingAgent.CLAUDE_CODE,
+        null,
+        tokenUsageInfo
+      );
+      expect(html).toContain('컨텍스트 사용량은 다음 응답 후에 표시됩니다');
+      expect(html.match(/role="progressbar"/g)).toHaveLength(3);
+      expect(html).not.toContain('aria-label="컨텍스트 사용량" aria-valuemin');
+      expect(html).not.toContain('0 / 0');
+    }
+  );
 
   it.each([0, 2])(
     'shows a known reset-credit count of %i without extra explanation',
