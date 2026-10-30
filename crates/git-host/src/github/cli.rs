@@ -1009,8 +1009,11 @@ impl GhCli {
         repo: &str,
         pr_number: i64,
         branch: &str,
+        remote_names: &[&str],
     ) -> Result<(), GhCliError> {
-        self.run(
+        let gh = resolve_executable_path_blocking("gh").ok_or(GhCliError::NotAvailable)?;
+        let mut command = Self::command(
+            &gh,
             [
                 "pr",
                 "checkout",
@@ -1022,6 +1025,37 @@ impl GhCli {
                 branch,
             ],
             Some(repo_path),
+            None,
+        );
+        let inherited_count = std::env::var("GIT_CONFIG_COUNT").unwrap_or_default();
+        let offset: usize = if inherited_count.is_empty() {
+            0
+        } else {
+            inherited_count.parse().map_err(|_| {
+                GhCliError::UnexpectedOutput("Invalid inherited Git config count".into())
+            })?
+        };
+        let count = offset.checked_add(remote_names.len()).ok_or_else(|| {
+            GhCliError::UnexpectedOutput("Too many inherited Git config entries".into())
+        })?;
+        // gh uses --track; let Git recognize the PR head even in a single-branch clone.
+        // Keep these mappings process-local so the clone's fetch scope stays unchanged.
+        for (index, remote) in remote_names.iter().enumerate() {
+            command
+                .env(
+                    format!("GIT_CONFIG_KEY_{}", offset + index),
+                    format!("remote.{remote}.fetch"),
+                )
+                .env(
+                    format!("GIT_CONFIG_VALUE_{}", offset + index),
+                    format!("+refs/heads/*:refs/remotes/{remote}/*"),
+                );
+        }
+        command.env("GIT_CONFIG_COUNT", count.to_string());
+        Self::read_output(
+            command
+                .output()
+                .map_err(|e| GhCliError::CommandFailed(e.to_string()))?,
         )?;
         Ok(())
     }

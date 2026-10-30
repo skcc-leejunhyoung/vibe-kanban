@@ -2069,6 +2069,9 @@ async fn checkout_pr_head(
     let repo_info = GhCli::new()
         .get_repo_info(&remote.url, worktree_path)
         .map_err(|e| format!("Failed to get repository info: {e}"))?;
+    let remotes = git::GitCli::new()
+        .git(worktree_path, ["remote"])
+        .map_err(|e| format!("Failed to list PR checkout remotes: {e}"))?;
     GhCli::new()
         .pr_checkout(
             worktree_path,
@@ -2076,6 +2079,7 @@ async fn checkout_pr_head(
             &repo_info.repo_name,
             pr.pr_number,
             &branch,
+            &remotes.lines().collect::<Vec<_>>(),
         )
         .map_err(|e| e.to_string())?;
     git::GitService::new()

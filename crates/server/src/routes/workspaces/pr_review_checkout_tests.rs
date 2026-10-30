@@ -21,6 +21,7 @@ use super::{checkout_pr_head, cleanup_failed_pr_workspace};
 // Replace only GitHub metadata/network access; checkout and reset use native Git.
 const GH_FIXTURE: &str = r#"#!/bin/sh
 set -eu
+[ "$("$VK_REVIEW_TEST_GIT" config --get vk.review-test)" = preserved ]
 if [ "$1" = repo ]; then
   printf '%s\n' '{"owner":{"login":"acme"},"name":"widgets","url":"https://github.com/acme/widgets"}'
   exit 0
@@ -81,6 +82,9 @@ async fn review_checkout_preserves_author_and_recreates_private_branch() {
                 utils::shell::resolve_executable_path_blocking("git").unwrap(),
             )
             .env("PATH", path)
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "vk.review-test")
+            .env("GIT_CONFIG_VALUE_0", "preserved")
             .output()
             .unwrap();
         assert!(
@@ -131,8 +135,13 @@ async fn review_checkout_preserves_author_and_recreates_private_branch() {
     let root = Path::new(&root);
     let cli = GitCli::new();
     let git = GitService::new();
-    for partial in [false, true] {
-        let case = root.join(if partial { "partial" } else { "ordinary" });
+    for (partial, clone_branch) in [
+        (false, "feature/review-fixture"),
+        (true, "feature/review-fixture"),
+        (false, "feature/author"),
+        (true, "feature/author"),
+    ] {
+        let case = root.join(format!("{partial}-{}", clone_branch.replace('/', "-")));
         fs::create_dir(&case).unwrap();
         let seed = case.join("seed");
         git.initialize_repo_with_main_branch(&seed).unwrap();
@@ -143,22 +152,21 @@ async fn review_checkout_preserves_author_and_recreates_private_branch() {
             .unwrap();
         fs::write(seed.join("tracked.txt"), "first head\n").unwrap();
         commit(&cli, &seed);
+        cli.git(&seed, ["branch", "feature/author"]).unwrap();
         cli.git(&seed, ["config", "uploadpack.allowFilter", "true"])
             .unwrap();
 
         let url = format!("file://{}", seed.display());
-        let mut args = vec![
-            "clone",
-            "--single-branch",
-            "--branch",
-            "feature/review-fixture",
-        ];
+        let mut args = vec!["clone", "--single-branch", "--branch", clone_branch];
         if partial {
             args.push("--filter=blob:none");
         }
         args.extend([&url, "source"]);
         cli.git(&case, args).unwrap();
         let source = case.join("source");
+        let fetch_config = cli
+            .git(&source, ["config", "--get-all", "remote.origin.fetch"])
+            .unwrap();
         let author_head = cli.git(&source, ["rev-parse", "HEAD"]).unwrap();
         fs::write(source.join("tracked.txt"), "author edits\n").unwrap();
         fs::write(source.join("untracked.txt"), "author notes\n").unwrap();
@@ -239,15 +247,40 @@ async fn review_checkout_preserves_author_and_recreates_private_branch() {
                 .unwrap();
             assert_eq!(ready.branch, review_branch);
             assert_eq!(
-                cli.git(&worktree, ["rev-parse", "--abbrev-ref", "@{upstream}"])
-                    .unwrap()
-                    .trim(),
-                "origin/feature/review-fixture"
+                cli.git(
+                    &worktree,
+                    ["config", &format!("branch.{review_branch}.remote")]
+                )
+                .unwrap()
+                .trim(),
+                "origin"
             );
+            assert_eq!(
+                cli.git(
+                    &worktree,
+                    ["config", &format!("branch.{review_branch}.merge")]
+                )
+                .unwrap()
+                .trim(),
+                "refs/heads/feature/review-fixture"
+            );
+            if clone_branch == pr.head_branch {
+                assert_eq!(
+                    cli.git(&worktree, ["rev-parse", "--abbrev-ref", "@{upstream}"])
+                        .unwrap()
+                        .trim(),
+                    "origin/feature/review-fixture"
+                );
+            }
             assert_eq!(
                 git.get_remote_tracking_status(&worktree, &ready.branch, "origin")
                     .unwrap(),
                 (true, 0, 0)
+            );
+            assert_eq!(
+                git.get_remote_branch_status(&worktree, &ready.branch, None)
+                    .unwrap(),
+                (0, 0)
             );
             assert!(ready.pr_head_is_work_branch(Some(&pr.head_branch)));
             let mut normal = ready.clone();
@@ -351,7 +384,12 @@ async fn review_checkout_preserves_author_and_recreates_private_branch() {
             cli.git(&source, ["branch", "--show-current"])
                 .unwrap()
                 .trim(),
-            "feature/review-fixture"
+            clone_branch
+        );
+        assert_eq!(
+            cli.git(&source, ["config", "--get-all", "remote.origin.fetch"])
+                .unwrap(),
+            fetch_config
         );
         assert_eq!(
             cli.git(&source, ["rev-parse", "HEAD"]).unwrap(),
