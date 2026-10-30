@@ -6671,7 +6671,15 @@ done
             self as inputs, ArtifactInteractionRef, Receipt,
         };
 
-        for failed_start in [false, true] {
+        for scenario in [
+            "completed",
+            "failed",
+            "archived",
+            "reopened",
+            "broken_receipt",
+        ] {
+            let failed_start = scenario == "failed";
+            let retired = matches!(scenario, "archived" | "reopened");
             let (mut container, session, workspace) = queue_test_container().await;
             add_test_repo(&container, &workspace).await;
             let _logs = SessionLogDir(session.id);
@@ -6704,7 +6712,65 @@ done
                 data.clone(),
                 reference.clone(),
             );
-            if failed_start {
+            if scenario == "broken_receipt" {
+                let mut other = receipt.clone();
+                other.interaction.reference.request_id = Uuid::new_v4();
+                inputs::save(&other).await.unwrap();
+                container.queued_message_service.enqueue_artifact(
+                    session.id,
+                    data.clone(),
+                    other.interaction.reference.clone(),
+                );
+                container.queued_message_service.enqueue(
+                    session.id,
+                    follow_up("ordinary message", BaseCodingAgent::ClaudeCode),
+                );
+                tokio::fs::remove_file(
+                    services::services::artifacts::directory(session.id, reference.execution_id)
+                        .join("interactions")
+                        .join(format!("{}.json", reference.request_id)),
+                )
+                .await
+                .unwrap();
+                assert!(container.archive_workspace(workspace.id).await.is_err());
+                assert!(
+                    Workspace::find_by_id(&container.db.pool, workspace.id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .archived
+                );
+                assert_eq!(
+                    inputs::load(&other.interaction.reference)
+                        .await
+                        .unwrap()
+                        .interaction
+                        .state,
+                    inputs::ArtifactInteractionState::Cancelled
+                );
+                let remaining = container.queued_message_service.get_queued(session.id);
+                assert_eq!(remaining.len(), 2);
+                assert!(
+                    remaining
+                        .iter()
+                        .any(|q| q.data.message == "ordinary message")
+                );
+                assert!(
+                    remaining
+                        .iter()
+                        .any(|q| q.id == message.id && q.start_error.is_some())
+                );
+                continue;
+            }
+            if retired {
+                container.archive_workspace(workspace.id).await.unwrap();
+                assert!(!container.queued_message_service.has_queued(session.id));
+                if scenario == "reopened" {
+                    Workspace::set_archived(&container.db.pool, workspace.id, false)
+                        .await
+                        .unwrap();
+                }
+            } else if failed_start {
                 // The execution row exists, but the absent worktree prevents spawning.
                 assert!(
                     container
@@ -6736,7 +6802,7 @@ done
                 .unwrap()
                 .interaction
                 .result_process_id;
-            assert!(first.is_some());
+            assert_eq!(first.is_some(), !retired);
             // Reproduce a failed durable queue deletion followed by a server restart.
             SessionQueuedMessages::upsert(
                 &container.db.pool,
@@ -6760,10 +6826,12 @@ done
                     .is_none()
             );
             assert!(!container.queued_message_service.has_queued(session.id));
-            assert_eq!(
-                turn_prompts(&container, session.id).await,
-                ["artifact response"]
-            );
+            let prompts = turn_prompts(&container, session.id).await;
+            if retired {
+                assert!(prompts.is_empty());
+            } else {
+                assert_eq!(prompts, ["artifact response"]);
+            }
             assert_eq!(
                 inputs::load(&reference)
                     .await

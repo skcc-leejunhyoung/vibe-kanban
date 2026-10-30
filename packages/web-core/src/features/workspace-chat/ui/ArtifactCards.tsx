@@ -26,6 +26,8 @@ import { canEmbedPdf } from '@/shared/lib/pdf-embed';
 import { shareFile } from '@/shared/lib/share-file';
 import { formatFileSize } from '@/shared/lib/utils';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { WorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
+import { releaseArtifactDocument } from '@/shared/lib/artifactInputMemory';
 import { isPendingProcessId } from '@/shared/providers/executionProcessScope';
 import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
@@ -237,6 +239,7 @@ function InteractiveArtifact({
   refresh,
   updated,
   disconnected,
+  readOnly,
 }: {
   artifact: ArtifactReference;
   scope: Scope;
@@ -244,9 +247,34 @@ function InteractiveArtifact({
   refresh: () => Promise<void>;
   updated: (interaction: ArtifactInteraction) => void;
   disconnected: boolean;
+  readOnly: boolean;
 }) {
   const { t } = useTranslation('common');
   const queryClient = useQueryClient();
+  useEffect(
+    () => () => {
+      if (readOnly)
+        queueMicrotask(() =>
+          releaseArtifactDocument(
+            queryClient,
+            {
+              hostId: scope.hostId,
+              workspaceId: scope.workspaceId,
+              sessionId: scope.sessionId,
+            },
+            interaction.reference.request_id
+          )
+        );
+    },
+    [
+      readOnly,
+      queryClient,
+      scope.hostId,
+      scope.workspaceId,
+      scope.sessionId,
+      interaction.reference.request_id,
+    ]
+  );
   useEffect(() => {
     if (
       interaction.handler === 'session.rename' &&
@@ -311,6 +339,7 @@ function InteractiveArtifact({
       refresh={refresh}
       updated={updated}
       disconnected={disconnected}
+      readOnly={readOnly}
     />
   );
 }
@@ -692,6 +721,14 @@ function ArtifactTile({
 }) {
   const { t } = useTranslation('common');
   const queryClient = useQueryClient();
+  const workspace = useContext(WorkspaceContext);
+  const readOnly =
+    workspace?.workspace?.id === scope.workspaceId
+      ? workspace.workspace.archived
+      : !!workspace?.archivedWorkspaces.some(
+          (item) =>
+            item.id === scope.workspaceId && item.hostId === scope.hostId
+        );
   const processes = useContext(ExecutionProcessesContext);
   const running = processes?.executionProcessesAll.some(
     (p) =>
@@ -729,6 +766,10 @@ function ArtifactTile({
           : false,
   });
   const interaction = inputs.data?.find((i) => i.artifact_id === artifact.id);
+  const closed =
+    readOnly ||
+    interaction?.state === 'expired' ||
+    interaction?.state === 'cancelled';
   const { refetch: refetchInputs } = inputs;
   useEffect(() => {
     // Capture a registration made just before the source execution finishes.
@@ -756,10 +797,11 @@ function ArtifactTile({
   if (interaction)
     return (
       <InteractiveArtifact
-        key={interaction.reference.request_id}
+        key={`${interaction.reference.request_id}:${closed}`}
         artifact={artifact}
         scope={scope}
         interaction={interaction}
+        readOnly={closed}
         disconnected={inputs.isError}
         refresh={async () => {
           const result = await inputs.refetch();

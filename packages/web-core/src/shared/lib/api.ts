@@ -146,6 +146,8 @@ import type {
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import { createWorkspaceWithSession } from '@/shared/types/attempt';
 import { resolveHostRequestScope } from '@/shared/lib/hostRequestScope';
+import { getCurrentHostId } from '@/shared/providers/HostIdProvider';
+import { endArtifactScope } from '@/shared/lib/artifactInputMemory';
 import { makeRequest as makeRemoteRequest } from '@/shared/lib/remoteApi';
 import { withRequestTimeout } from '@/shared/lib/withRequestTimeout';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
@@ -672,6 +674,7 @@ export const sessionsApi = {
   },
 
   delete: async (sessionId: string, hostId?: string | null): Promise<void> => {
+    const lifecycleHost = hostId === undefined ? getCurrentHostId() : hostId;
     const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}`,
       hostId,
@@ -679,7 +682,8 @@ export const sessionsApi = {
         method: 'DELETE',
       }
     );
-    return handleApiResponse<void>(response);
+    await handleApiResponse<void>(response);
+    endArtifactScope({ hostId: lifecycleHost, sessionId, deleted: true });
   },
 
   getAutoResume: async (
@@ -893,6 +897,7 @@ export const workspacesApi = {
     data: { archived?: boolean; pinned?: boolean; name?: string },
     hostId?: string | null
   ): Promise<Workspace> => {
+    const lifecycleHost = hostId === undefined ? getCurrentHostId() : hostId;
     const response = await makeHostAwareRequest(
       `/api/workspaces/${workspaceId}`,
       hostId,
@@ -901,7 +906,10 @@ export const workspacesApi = {
         body: JSON.stringify(data),
       }
     );
-    return handleApiResponse<Workspace>(response);
+    const workspace = await handleApiResponse<Workspace>(response);
+    if (data.archived === true && workspace.archived)
+      endArtifactScope({ hostId: lifecycleHost, workspaceId });
+    return workspace;
   },
 
   /** Get workspace with latest session */
@@ -937,6 +945,7 @@ export const workspacesApi = {
     deleteBranches?: boolean,
     hostId?: string | null
   ): Promise<void> => {
+    const lifecycleHost = hostId === undefined ? getCurrentHostId() : hostId;
     const params = new URLSearchParams();
     if (deleteBranches) {
       params.set('delete_branches', 'true');
@@ -946,7 +955,8 @@ export const workspacesApi = {
     const response = await makeHostAwareRequest(url, hostId, {
       method: 'DELETE',
     });
-    return handleApiResponse<void>(response);
+    await handleApiResponse<void>(response);
+    endArtifactScope({ hostId: lifecycleHost, workspaceId, deleted: true });
   },
 
   linkToIssue: async (

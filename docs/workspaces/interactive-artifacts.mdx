@@ -140,6 +140,34 @@ requests are read-only. Fresh requests expire after ten hours; waiting requests
 also expire when their execution ends. Unanswered requests expire after a server
 restart. A changed artifact or dependency requires a new request.
 
+## Archive and deletion
+
+Archiving a workspace ends its open input and dashboard bindings. You can still
+read the conversation and artifact snapshots, but old forms cannot submit,
+rename the session or start automation. Unarchiving does not revive these inputs;
+configure a new dashboard channel and register a new request. Queued artifact
+responses are cancelled before dispatch; ordinary queued messages are unchanged.
+
+The browser stops dashboard reads, clears drafts and retry payloads, and releases
+unused document caches and live data for the affected host and scope. A visible
+read-only document remains until you leave its view. It retains confirmed task
+results in the conversation. Deleting a session or workspace also uses the
+existing process-log cleanup path to remove artifact snapshots and input receipts.
+
+The host records revocation and a cleanup event in the same database write.
+Its existing automation outbox retries delivery every 15 seconds when the worker
+is available. If the worker is offline, the host still rejects new input immediately;
+worker data is removed after delivery recovers. Cleanup removes scoped channels,
+published data and finished request records, freeing channel capacity. Shared
+Rules and connectors remain configured. Later publications to ended channels
+are ignored, so shared publishers do not enter a retry loop.
+
+Cleanup does not cancel work already accepted by an external service. The worker
+retains only the minimum receipt for a processing, accepted or unknown operation
+until its Rule or registered publisher reports the actual result, then removes it.
+Minimal revocation markers remain to reject delayed configurations and replay.
+Delayed cleanup cannot delete a newly configured channel after unarchiving.
+
 ## Automation dashboards
 
 An automation dashboard receives data from an existing trusted automation Rule.

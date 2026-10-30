@@ -15,6 +15,7 @@ use super::artifacts;
 
 pub const MAX_RESPONSE_BYTES: usize = 32 * 1024;
 pub static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub static LIFECYCLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub static BOOT_ID: LazyLock<Uuid> = LazyLock::new(Uuid::new_v4);
 
 /// A bounded JSON Schema subset. Unknown keywords are rejected, not ignored.
@@ -379,6 +380,43 @@ pub struct Receipt {
     /// Persisted before dispatch, including before an execution row is created.
     #[serde(default)]
     pub dispatch_claimed: bool,
+    #[serde(default)]
+    pub workspace_epoch: i64,
+}
+
+pub async fn workspace_epoch(pool: &sqlx::SqlitePool, workspace: Uuid) -> Result<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT epoch FROM artifact_workspace_epochs WHERE workspace_id = ?")
+            .bind(workspace)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(0),
+    )
+}
+
+/// A durable epoch also rejects old inputs after unarchiving or a missed cleanup.
+pub async fn refresh_lifecycle(pool: &sqlx::SqlitePool, receipt: &mut Receipt) -> Result<bool> {
+    let i = &receipt.interaction;
+    let current: Option<(bool, i64)> = sqlx::query_as(
+        "SELECT w.archived, COALESCE(e.epoch, 0) FROM workspaces w JOIN sessions s ON s.workspace_id = w.id LEFT JOIN artifact_workspace_epochs e ON e.workspace_id = w.id WHERE w.id = ? AND s.id = ?")
+        .bind(i.workspace_id).bind(i.reference.session_id).fetch_optional(pool).await?;
+    let ended =
+        current.is_none_or(|(archived, epoch)| archived || epoch != receipt.workspace_epoch);
+    if ended && i.state == ArtifactInteractionState::InputRequired {
+        receipt.interaction.state = ArtifactInteractionState::Expired;
+    } else if ended
+        && !receipt.dispatch_claimed
+        && i.result_process_id.is_none()
+        && matches!(
+            i.state,
+            ArtifactInteractionState::Accepted
+                | ArtifactInteractionState::Failed
+                | ArtifactInteractionState::Unknown
+        )
+    {
+        receipt.interaction.state = ArtifactInteractionState::Cancelled;
+    }
+    Ok(ended)
 }
 
 pub fn bundle_version(bundle: &ArtifactBundle) -> Result<String> {
@@ -527,7 +565,10 @@ pub async fn list(session_id: Uuid, execution_id: Uuid) -> Result<Vec<Receipt>> 
 }
 
 /// A restored queue must not dispatch an accepted response a second time.
-pub async fn claim_dispatch(reference: &ArtifactInteractionRef) -> Result<bool> {
+pub async fn claim_dispatch(
+    pool: &sqlx::SqlitePool,
+    reference: &ArtifactInteractionRef,
+) -> Result<bool> {
     let _guard = LOCK.lock().await;
     let mut receipt = load(reference).await?;
     let eligible = match receipt.interaction.state {
@@ -543,6 +584,10 @@ pub async fn claim_dispatch(reference: &ArtifactInteractionRef) -> Result<bool> 
         || receipt.response.is_none()
         || !eligible
     {
+        return Ok(false);
+    }
+    if refresh_lifecycle(pool, &mut receipt).await? {
+        save(&receipt).await?;
         return Ok(false);
     }
     receipt.dispatch_claimed = true;
@@ -596,7 +641,8 @@ pub async fn dispatch_service(
     pool: &sqlx::SqlitePool,
     reference: &ArtifactInteractionRef,
 ) -> Result<ArtifactInteraction> {
-    if !claim_dispatch(reference).await? {
+    let _lifecycle = LIFECYCLE_LOCK.lock().await;
+    if !claim_dispatch(pool, reference).await? {
         return Ok(load(reference).await?.interaction);
     }
     let mut receipt = {
@@ -657,6 +703,7 @@ mod tests {
     }
     fn receipt() -> Receipt {
         Receipt {
+            workspace_epoch: 0,
             dispatch_claimed: false,
             boot_id: *BOOT_ID,
             response: None,
@@ -683,6 +730,182 @@ mod tests {
                 error: None,
             },
         }
+    }
+
+    async fn lifecycle_database(receipt: &Receipt) -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'synthetic/lifecycle')")
+            .bind(receipt.interaction.workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?, ?)")
+            .bind(receipt.interaction.reference.session_id)
+            .bind(receipt.interaction.workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn archive_revokes_inputs_even_after_unarchive_and_retains_running_results() {
+        let mut input = receipt();
+        let pool = lifecycle_database(&input).await;
+        let workspace = input.interaction.workspace_id;
+        let mut queued = input.clone();
+        queued
+            .accept(
+                "form",
+                "bundle-hash",
+                ArtifactResponse::Submit {
+                    data: json!({"choice":"run"}),
+                },
+            )
+            .unwrap();
+        let mut running = queued.clone();
+        running.dispatch_claimed = true;
+        running.interaction.result_process_id = Some(Uuid::new_v4());
+        running.interaction.state = ArtifactInteractionState::Processing;
+        sqlx::query("UPDATE workspaces SET archived = 1 WHERE id = ?")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE workspaces SET archived = 0 WHERE id = ?")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(workspace_epoch(&pool, workspace).await.unwrap(), 1);
+        assert!(refresh_lifecycle(&pool, &mut input).await.unwrap());
+        assert_eq!(input.interaction.state, ArtifactInteractionState::Expired);
+        assert!(refresh_lifecycle(&pool, &mut running).await.unwrap());
+        assert_eq!(
+            running.interaction.state,
+            ArtifactInteractionState::Processing
+        );
+        let reference = queued.interaction.reference.clone();
+        save(&queued).await.unwrap();
+        assert!(!claim_dispatch(&pool, &reference).await.unwrap());
+        assert_eq!(
+            load(&reference).await.unwrap().interaction.state,
+            ArtifactInteractionState::Cancelled
+        );
+        let mut fresh = receipt();
+        fresh.interaction.workspace_id = workspace;
+        fresh.interaction.reference.session_id = input.interaction.reference.session_id;
+        fresh.workspace_epoch = 1;
+        assert!(!refresh_lifecycle(&pool, &mut fresh).await.unwrap());
+        tokio::fs::remove_dir_all(directory(&reference))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lifecycle_outbox_is_atomic_repeatable_and_survives_scope_deletion() {
+        let mut input = receipt();
+        let pool = lifecycle_database(&input).await;
+        let workspace = input.interaction.workspace_id;
+        let mut transaction = pool.begin().await.unwrap();
+        sqlx::query("UPDATE workspaces SET archived = 1 WHERE id = ?")
+            .bind(workspace)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        transaction.rollback().await.unwrap();
+        assert_eq!(workspace_epoch(&pool, workspace).await.unwrap(), 0);
+        for _ in 0..2 {
+            sqlx::query("UPDATE workspaces SET archived = 1 WHERE id = ?")
+                .bind(workspace)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE workspaces SET archived = 0 WHERE id = ?")
+                .bind(workspace)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        assert_eq!(workspace_epoch(&pool, workspace).await.unwrap(), 2);
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(input.interaction.reference.session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(refresh_lifecycle(&pool, &mut input).await.unwrap());
+        sqlx::query("DELETE FROM workspaces WHERE id = ?")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let events: Vec<String> = sqlx::query_scalar("SELECT payload FROM automation_event_outbox WHERE json_extract(payload, '$.type') = 'artifact_scope_ended'").fetch_all(&pool).await.unwrap();
+        assert_eq!(events.len(), 4);
+        let events: Vec<Value> = events
+            .iter()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        assert!(
+            events
+                .iter()
+                .all(|e| e["workspaceId"] == workspace.to_string())
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e["epoch"] == 3 && e["deleted"] == true)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e["sessionId"] == input.interaction.reference.session_id.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_deletion_cascades_session_cleanup_and_invalidates_inputs() {
+        let mut input = receipt();
+        let pool = lifecycle_database(&input).await;
+        sqlx::query("DELETE FROM workspaces WHERE id = ?")
+            .bind(input.interaction.workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(refresh_lifecycle(&pool, &mut input).await.unwrap());
+        assert_eq!(input.interaction.state, ArtifactInteractionState::Expired);
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM automation_event_outbox WHERE json_extract(payload, '$.type') = 'artifact_scope_ended'").fetch_one(&pool).await.unwrap();
+        assert_eq!(events, 2);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_migration_also_revokes_existing_archives() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql("CREATE TABLE workspaces (id BLOB PRIMARY KEY, archived INTEGER); CREATE TABLE sessions (id BLOB PRIMARY KEY, workspace_id BLOB); CREATE TABLE automation_event_outbox (id TEXT PRIMARY KEY, payload TEXT);").execute(&pool).await.unwrap();
+        let workspace = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, archived) VALUES (?, 1)")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../../db/migrations/20261030000000_artifact_lifecycle.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(workspace_epoch(&pool, workspace).await.unwrap(), 1);
+        let payload: String = sqlx::query_scalar("SELECT payload FROM automation_event_outbox")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["workspaceId"], workspace.to_string());
+        assert_eq!(payload["type"], "artifact_scope_ended");
     }
 
     #[test]
@@ -903,6 +1126,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_submissions_claim_only_one_persisted_dispatch() {
         let initial = receipt();
+        let pool = lifecycle_database(&initial).await;
         let reference = initial.interaction.reference.clone();
         {
             let _guard = LOCK.lock().await;
@@ -929,7 +1153,10 @@ mod tests {
             load(&reference).await.unwrap().interaction.state,
             ArtifactInteractionState::Accepted
         );
-        let (a, b) = tokio::join!(claim_dispatch(&reference), claim_dispatch(&reference));
+        let (a, b) = tokio::join!(
+            claim_dispatch(&pool, &reference),
+            claim_dispatch(&pool, &reference)
+        );
         assert_eq!(usize::from(a.unwrap()) + usize::from(b.unwrap()), 1);
         mark_cancelled(&reference).await.unwrap();
         assert_eq!(
@@ -947,7 +1174,7 @@ mod tests {
                 .result_process_id,
             Some(first_execution)
         );
-        assert!(!claim_dispatch(&reference).await.unwrap());
+        assert!(!claim_dispatch(&pool, &reference).await.unwrap());
         assert_eq!(
             load(&reference).await.unwrap().interaction.state,
             ArtifactInteractionState::Processing
@@ -981,6 +1208,7 @@ mod tests {
 
     #[tokio::test]
     async fn restored_queue_cannot_dispatch_consumed_or_uncertain_receipts() {
+        let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap();
         for scenario in [
             "legacy_completed",
             "interrupted_before_record",
@@ -1017,9 +1245,12 @@ mod tests {
                 let _guard = LOCK.lock().await;
                 save(&receipt).await.unwrap();
             }
-            assert!(!claim_dispatch(&reference).await.unwrap(), "{scenario}");
             assert!(
-                !claim_dispatch(&reference).await.unwrap(),
+                !claim_dispatch(&pool, &reference).await.unwrap(),
+                "{scenario}"
+            );
+            assert!(
+                !claim_dispatch(&pool, &reference).await.unwrap(),
                 "manual retry: {scenario}"
             );
             tokio::fs::remove_dir_all(directory(&reference))
@@ -1030,6 +1261,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_cancellation_waits_for_its_receipt_and_holds_on_storage_failure() {
+        let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap();
         use db::models::scratch::DraftFollowUpData;
         use executors::{executors::BaseCodingAgent, profile::ExecutorConfig};
 
@@ -1067,7 +1299,7 @@ mod tests {
         let saved = load(&reference).await.unwrap();
         assert_eq!(saved.interaction.state, ArtifactInteractionState::Cancelled);
         assert!(saved.dispatch_claimed);
-        assert!(!claim_dispatch(&reference).await.unwrap());
+        assert!(!claim_dispatch(&pool, &reference).await.unwrap());
         // A lost/unreadable receipt must not be acknowledged as cancelled.
         tokio::fs::remove_dir_all(directory(&reference))
             .await
@@ -1172,7 +1404,7 @@ mod tests {
                 first.state,
                 match scenario {
                     "success" => ArtifactInteractionState::Completed,
-                    "cancel" => ArtifactInteractionState::Cancelled,
+                    "cancel" | "wrong_workspace" => ArtifactInteractionState::Cancelled,
                     _ => ArtifactInteractionState::Failed,
                 }
             );

@@ -31,8 +31,9 @@ let hook: ReturnType<typeof useArtifactAutomation>;
 let interaction: ArtifactInteraction;
 let latest: ArtifactAutomationSnapshot;
 let records: Map<string, ArtifactAutomationResult>;
+let readOnly: boolean;
 function Probe() {
-  hook = useArtifactAutomation(interaction, 'fixture-host');
+  hook = useArtifactAutomation(interaction, 'fixture-host', readOnly);
   return null;
 }
 async function flush() {
@@ -54,6 +55,7 @@ async function check() {
 }
 
 beforeEach(async () => {
+  readOnly = false;
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   const document = Object.assign(new EventTarget(), {
     nodeType: 9,
@@ -146,6 +148,44 @@ afterEach(async () => {
 });
 
 describe('artifact automation request state', () => {
+  it('does not refetch or restore dashboard data when an action returns after archival', async () => {
+    let finish: (result: unknown) => void;
+    api.artifactsApi.automationRequest.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    await request();
+    readOnly = true;
+    await act(async () => {
+      root.render(
+        createElement(QueryClientProvider, { client }, createElement(Probe))
+      );
+    });
+    const reads = api.artifactsApi.automationSnapshot.mock.calls.length;
+    await act(async () => {
+      finish!({ status: 'completed' });
+    });
+    await flush();
+    expect(api.artifactsApi.automationSnapshot).toHaveBeenCalledTimes(reads);
+    expect(api.artifactsApi.automationRequest).toHaveBeenCalledTimes(1);
+    expect(hook.snapshot).toBeUndefined();
+    expect(hook.retry).toBeUndefined();
+  });
+  it('stops reads and rejects further actions when the workspace becomes read-only', async () => {
+    readOnly = true;
+    await act(async () => {
+      root.render(
+        createElement(QueryClientProvider, { client }, createElement(Probe))
+      );
+    });
+    await request();
+    expect(hook.connected).toBe(false);
+    expect(hook.editable).toBe(false);
+    expect(hook.retry).toBeUndefined();
+    expect(api.artifactsApi.automationRequest).not.toHaveBeenCalled();
+  });
   it('reads the latest operation after a completed request, including work from another screen', async () => {
     expect(hook.connected).toBe(true);
     await request();

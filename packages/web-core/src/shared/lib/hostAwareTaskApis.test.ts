@@ -15,6 +15,12 @@ import {
   workspacesApi,
 } from './api';
 import { setLocalApiTransport } from './localApiTransport';
+import {
+  artifactDrafts,
+  artifactPendingRequests,
+  artifactMemoryKey,
+} from './artifactInputMemory';
+import type { ArtifactInteraction } from 'shared/types';
 
 function apiResponse<T>(data: T): Response {
   return new Response(JSON.stringify({ success: true, data }), {
@@ -27,6 +33,45 @@ describe('host-aware task APIs', () => {
   afterEach(() => {
     vi.useRealTimers();
     setLocalApiTransport(null);
+    artifactDrafts.clear();
+    artifactPendingRequests.clear();
+  });
+
+  it('clears only the owning host after a confirmed archive or deletion, never on failure', async () => {
+    const input = {
+      workspace_id: 'synthetic-workspace',
+      owner_id: 'synthetic-owner',
+      reference: {
+        session_id: 'synthetic-session',
+        request_id: 'synthetic-request',
+      },
+    } as ArtifactInteraction;
+    const key = artifactMemoryKey(input, 'host-a');
+    const other = artifactMemoryKey(input, 'host-b');
+    const request = vi.fn(async () => apiResponse({ archived: true }));
+    setLocalApiTransport({ request, openWebSocket: vi.fn() });
+    for (const item of [key, other])
+      artifactDrafts.set(item, { draft: 'synthetic input' });
+    await workspacesApi.update(
+      input.workspace_id,
+      { archived: true },
+      'host-a'
+    );
+    expect(artifactDrafts.has(key)).toBe(false);
+    expect(artifactDrafts.has(other)).toBe(true);
+    artifactDrafts.set(key, { draft: 'synthetic input' });
+    request.mockImplementationOnce(
+      async () => new Response('unavailable', { status: 503 })
+    );
+    await expect(
+      workspacesApi.update(input.workspace_id, { archived: true }, 'host-a')
+    ).rejects.toThrow();
+    expect(artifactDrafts.has(key)).toBe(true);
+    await workspacesApi.delete(input.workspace_id, false, 'host-a');
+    expect(artifactDrafts.has(key)).toBe(false);
+    expect(artifactDrafts.has(other)).toBe(true);
+    await sessionsApi.delete(input.reference.session_id, 'host-b');
+    expect(artifactDrafts.size).toBe(0);
   });
 
   it('routes artifact metadata and snapshot bytes through the selected host transport', async () => {

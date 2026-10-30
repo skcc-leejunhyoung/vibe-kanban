@@ -147,7 +147,7 @@ impl Deployment for LocalDeployment {
             );
             DBService::new_with_after_connect(hook).await?
         };
-        services::services::automation::spawn_outbox(db.pool.clone());
+        services::services::automation::spawn_outbox(db.pool.clone(), user_id.clone());
 
         let file = FileService::new(db.clone().pool)?;
         {

@@ -1,28 +1,54 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type {
   ArtifactAutomationRequest,
   ArtifactInteraction,
 } from 'shared/types';
 import { ApiError, artifactsApi } from '@/shared/lib/api';
+import {
+  artifactPendingRequests as pendingRequests,
+  artifactMemoryKey,
+} from '@/shared/lib/artifactInputMemory';
 
 // Page memory only. An uncertain request keeps its ID and payload for explicit retry.
-const pendingRequests = new Map<string, ArtifactAutomationRequest>();
 
 export function useArtifactAutomation(
   interaction: ArtifactInteraction,
-  hostId: string | null
+  hostId: string | null,
+  readOnly = false
 ) {
   const active =
-    !!interaction.automation && interaction.state === 'input_required';
-  const key = `${hostId}:${interaction.owner_id}:${interaction.reference.request_id}`;
+    !readOnly &&
+    !!interaction.automation &&
+    interaction.state === 'input_required';
+  const activeState = useRef(active);
+  activeState.current = active;
+  const key = artifactMemoryKey(interaction, hostId);
   const [pending, setPending] = useState(() => pendingRequests.get(key));
   const [error, setError] = useState<string>();
   const [uncertain, setUncertain] = useState(!!pending);
   const [sending, setSending] = useState(false);
+  useEffect(() => {
+    activeState.current = active;
+    if (!active) {
+      pendingRequests.delete(key);
+      setPending(undefined);
+      setUncertain(false);
+    }
+    return () => {
+      activeState.current = false;
+    };
+  }, [active, key]);
   const inFlight = useRef(false);
   const snapshot = useQuery({
-    queryKey: ['artifact-automation', key, interaction.automation?.version],
+    queryKey: [
+      'artifact-automation',
+      hostId,
+      interaction.workspace_id,
+      interaction.reference.session_id,
+      key,
+      interaction.automation?.version,
+    ],
     queryFn: ({ signal }) =>
       artifactsApi.automationSnapshot(interaction, hostId, undefined, signal),
     enabled: active,
@@ -32,12 +58,12 @@ export function useArtifactAutomation(
     refetchOnWindowFocus: false,
     refetchInterval: (query) => (active && !query.state.error ? 2000 : false),
   });
-  const current = snapshot.data?.request;
+  const current = active ? snapshot.data?.request : undefined;
   const busy =
     sending || ['processing', 'accepted'].includes(current?.status ?? '');
   const connected = active && snapshot.isSuccess && !snapshot.isError;
   const send = async (request: ArtifactAutomationRequest) => {
-    if (inFlight.current || !active) return;
+    if (inFlight.current || !activeState.current) return;
     inFlight.current = true;
     setSending(true);
     setError(undefined);
@@ -59,12 +85,13 @@ export function useArtifactAutomation(
         setPending(undefined);
       }
     } finally {
-      await snapshot.refetch();
+      if (activeState.current) await snapshot.refetch();
       inFlight.current = false;
       setSending(false);
     }
   };
   const check = async () => {
+    if (!activeState.current) return;
     if (pending) {
       const receipt = await artifactsApi.automationSnapshot(
         interaction,
@@ -77,12 +104,13 @@ export function useArtifactAutomation(
         setPending(undefined);
       }
     }
+    if (!activeState.current) return;
     const response = await snapshot.refetch();
     if (response.error) throw response.error;
     setError(undefined);
   };
   return {
-    snapshot: snapshot.data,
+    snapshot: active ? snapshot.data : undefined,
     current,
     error: active
       ? (error ??
@@ -95,6 +123,7 @@ export function useArtifactAutomation(
     editable: connected && !busy && !uncertain && current?.status !== 'unknown',
     request: (action: string, data: unknown) => {
       if (
+        !activeState.current ||
         !connected ||
         busy ||
         uncertain ||

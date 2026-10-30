@@ -506,3 +506,231 @@ test("channel deletion refuses every unresolved state and rolls back failed writ
   await assert.rejects(t.channels.remove(t.config.id), /disk/);
   assert.deepEqual(await t.channels.describe(t.config.id, scope), t.binding);
 });
+
+test("archive removes data and receipts, keeps Rules, and cannot revive old bindings", async () => {
+  const t = await setup();
+  await t.channels.publish("publisher", t.config.id, { count: 3 });
+  await t.channels.request(t.config.id, t.request);
+  const rules = structuredClone(t.state.rules);
+  const ended = {
+    hostId: scope.owner_host,
+    workspaceId: scope.workspace_id,
+    epoch: 1,
+    deleted: false,
+  };
+  await t.channels.cleanupScope(ended);
+  assert.deepEqual(t.state.artifactChannels, {});
+  assert.deepEqual(t.state.artifactRequests, {});
+  assert.deepEqual(t.state.rules, rules);
+  await t.channels.publish("publisher", t.config.id, { count: 9 });
+  await t.channels.complete(
+    "publisher",
+    t.config.id,
+    t.request.request_id,
+    "completed",
+  );
+  assert.deepEqual(t.state.artifactChannels, {});
+  await assert.rejects(t.channels.request(t.config.id, t.request), /Unknown/);
+  await assert.rejects(t.channels.configure(t.config), /scope ended/);
+  await t.channels.configure({ ...t.config, workspace_epoch: 1 });
+  const fresh = await t.channels.describe(t.config.id, scope, 1);
+  assert.notEqual(fresh.version, t.binding.version);
+  await t.channels.cleanupScope(ended);
+  assert.deepEqual(await t.channels.describe(t.config.id, scope, 1), fresh);
+  await assert.rejects(
+    t.channels.describe(t.config.id, scope, 0),
+    /scope ended/,
+  );
+  const restored = createArtifactChannels({
+    state: structuredClone(t.saved()),
+    persist: async () => {},
+    runRule: t.execute,
+  });
+  await assert.rejects(restored.configure(t.config), /scope ended/);
+});
+
+test("cleanup rolls back failed persistence and an explicit retry safely finishes it", async () => {
+  const t = await setup(async () => ({ status: "accepted" }));
+  await t.channels.request(t.config.id, t.request);
+  t.beforeSave(() => {
+    throw new Error("disk unavailable");
+  });
+  await assert.rejects(
+    t.channels.cleanupScope({
+      hostId: scope.owner_host,
+      workspaceId: scope.workspace_id,
+      epoch: 1,
+      deleted: false,
+    }),
+    /disk/,
+  );
+  t.beforeSave(undefined);
+  assert.deepEqual(await t.channels.describe(t.config.id, scope), t.binding);
+  assert.equal(
+    t.state.artifactRequests[t.request.request_id].retired,
+    undefined,
+  );
+  assert.deepEqual(t.state.artifactScopeEpochs, {});
+  await t.channels.cleanupScope({
+    hostId: scope.owner_host,
+    workspaceId: scope.workspace_id,
+    epoch: 1,
+    deleted: false,
+  });
+  const record = t.state.artifactRequests[t.request.request_id];
+  assert.equal(record.status, "accepted");
+  assert.equal(record.retired, true);
+  await assert.rejects(
+    t.channels.complete(
+      "wrong-rule",
+      t.config.id,
+      t.request.request_id,
+      "completed",
+    ),
+    /publisher/,
+  );
+  await t.channels.complete(
+    "publisher",
+    t.config.id,
+    t.request.request_id,
+    "completed",
+  );
+  assert.deepEqual(t.state.artifactRequests, {});
+});
+
+test("an in-flight action cannot repopulate a retired or newly configured dashboard", async () => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let entered;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const t = await setup(async () => {
+    entered();
+    await gate;
+    return { status: "completed" };
+  });
+  const running = t.channels.request(t.config.id, t.request);
+  await started;
+  await t.channels.cleanupScope({
+    hostId: scope.owner_host,
+    workspaceId: scope.workspace_id,
+    epoch: 1,
+    deleted: false,
+  });
+  assert.equal(
+    t.state.artifactRequests[t.request.request_id].status,
+    "processing",
+  );
+  await t.channels.configure({ ...t.config, workspace_epoch: 1 });
+  await t.channels.publish(
+    "publisher",
+    t.config.id,
+    { count: 99 },
+    t.request.request_id,
+  );
+  const fresh = await t.channels.describe(t.config.id, scope, 1);
+  assert.equal(
+    (await t.channels.snapshot(t.config.id, scope, fresh.version, randomUUID()))
+      .data,
+    null,
+  );
+  release();
+  assert.equal((await running).status, "completed");
+  assert.deepEqual(t.state.artifactRequests, {});
+  assert.equal(t.state.artifactChannels[t.config.id].data, null);
+});
+
+test("session and workspace deletion preserve unrelated scopes and reject delayed configuration", async () => {
+  const t = await setup();
+  const other = {
+    ...t.config,
+    id: "other-dashboard",
+    scope: { ...scope, session_id: "synthetic-other-session" },
+  };
+  await t.channels.configure(other);
+  await t.channels.cleanupScope({
+    hostId: scope.owner_host,
+    workspaceId: scope.workspace_id,
+    sessionId: scope.session_id,
+    deleted: true,
+  });
+  await assert.rejects(t.channels.configure(t.config), /scope ended/);
+  assert.ok(await t.channels.describe(other.id, other.scope));
+  await t.channels.cleanupScope({
+    hostId: scope.owner_host,
+    workspaceId: scope.workspace_id,
+    epoch: 2,
+    deleted: true,
+  });
+  await assert.rejects(
+    t.channels.configure({ ...other, workspace_epoch: 3 }),
+    /scope ended/,
+  );
+  assert.deepEqual(t.state.artifactChannels, {});
+});
+
+test("a new channel generation rejects late writes before its delayed cleanup event arrives", async () => {
+  const t = await setup(async () => ({ status: "accepted" }));
+  await t.channels.request(t.config.id, t.request);
+  await t.channels.configure({ ...t.config, workspace_epoch: 1 });
+  await t.channels.publish(
+    "publisher",
+    t.config.id,
+    { count: 99 },
+    t.request.request_id,
+  );
+  assert.equal(t.state.artifactChannels[t.config.id].data, null);
+  await t.channels.cleanupScope({
+    hostId: scope.owner_host,
+    workspaceId: scope.workspace_id,
+    epoch: 1,
+    deleted: false,
+  });
+  assert.equal(t.state.artifactChannels[t.config.id].workspace_epoch, 1);
+  assert.equal(t.state.artifactRequests[t.request.request_id].retired, true);
+  await t.channels.remove(t.config.id);
+  await t.channels.complete(
+    "publisher",
+    t.config.id,
+    t.request.request_id,
+    "failed",
+  );
+  assert.deepEqual(t.state.artifactRequests, {});
+});
+
+test("cleanup cannot cross hosts even when workspace and session identifiers match", async () => {
+  const t = await setup();
+  for (const input of [
+    null,
+    [],
+    {},
+    { workspaceId: scope.workspace_id, epoch: 1, deleted: false },
+  ]) {
+    await assert.rejects(t.channels.cleanupScope(input), /lifecycle/);
+  }
+  const other = {
+    ...t.config,
+    id: "other-host-dashboard",
+    scope: { ...scope, owner_host: "synthetic-other-host" },
+  };
+  await t.channels.configure(other);
+  await assert.rejects(
+    t.channels.cleanupScope({
+      workspaceId: scope.workspace_id,
+      epoch: 1,
+      deleted: false,
+    }),
+    /lifecycle/,
+  );
+  await t.channels.cleanupScope({
+    hostId: scope.owner_host,
+    workspaceId: scope.workspace_id,
+    epoch: 1,
+    deleted: true,
+  });
+  assert.deepEqual(Object.keys(t.state.artifactChannels), [other.id]);
+  await t.channels.configure(other);
+});

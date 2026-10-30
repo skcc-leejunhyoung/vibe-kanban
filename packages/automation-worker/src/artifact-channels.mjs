@@ -14,6 +14,8 @@ const name = (value) =>
 const uuid = (value) =>
   typeof value === "string" &&
   /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+const lifecycleKey = (kind, host, id) =>
+  `${kind}:${JSON.stringify([host, id])}`;
 const scopeKeys = ["owner_id", "owner_host", "workspace_id", "session_id"];
 const unresolved = (record) =>
   ["processing", "accepted", "unknown"].includes(record.status);
@@ -145,9 +147,18 @@ export function validateArtifactSchema(
 export function createArtifactChannels({ state, persist, runRule }) {
   state.artifactChannels ||= {};
   state.artifactRequests ||= {};
+  state.artifactScopeEpochs ||= {};
+  state.artifactClosedChannels ||= {};
   // An interrupted action is never automatically dispatched again.
   for (const record of Object.values(state.artifactRequests)) {
     if (record.status === "processing") record.status = "unknown";
+    const channel = state.artifactChannels[record.channel_id];
+    if (channel) {
+      record.scope ??= structuredClone(channel.scope);
+      record.workspace_epoch ??= channel.workspace_epoch ?? 0;
+      record.generation ??= channel.generation;
+      record.publishers ??= [...channel.publishers];
+    }
   }
   // Reads wait for persistence and rollback before exposing a changed state.
   let writes = Promise.resolve();
@@ -210,8 +221,96 @@ export function createArtifactChannels({ state, persist, runRule }) {
         }
       : null;
   return {
-    describe(id, scope) {
-      return locked(() => structuredClone(scoped(id, scope).binding));
+    describe(id, scope, epoch) {
+      return locked(() => {
+        const result = scoped(id, scope);
+        if (
+          epoch !== undefined &&
+          epoch !== (result.channel.workspace_epoch ?? 0)
+        )
+          fail("Artifact scope ended; configure a new channel", 409);
+        return structuredClone(result.binding);
+      });
+    },
+    async cleanupScope(input) {
+      return locked(async () => {
+        if (
+          !input ||
+          typeof input !== "object" ||
+          Array.isArray(input) ||
+          typeof input.hostId !== "string" ||
+          !input.hostId ||
+          input.hostId.length > 200 ||
+          typeof input.workspaceId !== "string" ||
+          !input.workspaceId ||
+          input.workspaceId.length > 200 ||
+          (input.sessionId !== undefined &&
+            (typeof input.sessionId !== "string" ||
+              !input.sessionId ||
+              input.sessionId.length > 200)) ||
+          (!input.sessionId &&
+            (!Number.isSafeInteger(input.epoch) || input.epoch < 1)) ||
+          typeof input.deleted !== "boolean"
+        )
+          fail("Invalid artifact lifecycle event");
+        const key = input.sessionId
+          ? lifecycleKey("session", input.hostId, input.sessionId)
+          : lifecycleKey("workspace", input.hostId, input.workspaceId);
+        const previousEpoch = state.artifactScopeEpochs[key];
+        const ended = {
+          epoch: Math.max(previousEpoch?.epoch ?? 0, input.epoch ?? 0),
+          deleted: !!previousEpoch?.deleted || input.deleted,
+        };
+        const matches = (scope, epoch = 0) =>
+          scope?.owner_host === input.hostId &&
+          scope.workspace_id === input.workspaceId &&
+          (input.sessionId
+            ? scope.session_id === input.sessionId
+            : ended.deleted || epoch < ended.epoch);
+        const channels = { ...state.artifactChannels };
+        const closedChannels = { ...state.artifactClosedChannels };
+        const requests = { ...state.artifactRequests };
+        const changed = [];
+        state.artifactScopeEpochs[key] = ended;
+        for (const [id, channel] of Object.entries(channels)) {
+          if (matches(channel.scope, channel.workspace_epoch)) {
+            delete state.artifactChannels[id];
+            state.artifactClosedChannels[id] = true;
+          }
+        }
+        for (const [id, record] of Object.entries(requests)) {
+          const channel = channels[record.channel_id];
+          if (
+            !matches(record.scope, record.workspace_epoch) &&
+            !(
+              channel &&
+              !state.artifactChannels[record.channel_id] &&
+              (!record.generation || record.generation === channel.generation)
+            )
+          )
+            continue;
+          if (!unresolved(record)) delete state.artifactRequests[id];
+          else {
+            changed.push([record, record.retired, record.publishers]);
+            record.retired = true;
+            record.publishers ??= channel?.publishers ?? [];
+          }
+        }
+        try {
+          await persist();
+        } catch (error) {
+          state.artifactChannels = channels;
+          state.artifactClosedChannels = closedChannels;
+          state.artifactRequests = requests;
+          if (previousEpoch) state.artifactScopeEpochs[key] = previousEpoch;
+          else delete state.artifactScopeEpochs[key];
+          for (const [record, retired, publishers] of changed) {
+            record.retired = retired;
+            record.publishers = publishers;
+          }
+          throw error;
+        }
+      });
     },
     async configure(input) {
       return locked(async () => {
@@ -227,6 +326,29 @@ export function createArtifactChannels({ state, persist, runRule }) {
           )
         )
           fail("Explicit non-sensitive channel and scope required");
+        const epoch = input.workspace_epoch ?? 0;
+        const ended =
+          state.artifactScopeEpochs[
+            lifecycleKey(
+              "workspace",
+              input.scope.owner_host,
+              input.scope.workspace_id,
+            )
+          ];
+        if (
+          !Number.isSafeInteger(epoch) ||
+          epoch < 0 ||
+          ended?.deleted ||
+          epoch < (ended?.epoch ?? 0) ||
+          state.artifactScopeEpochs[
+            lifecycleKey(
+              "session",
+              input.scope.owner_host,
+              input.scope.session_id,
+            )
+          ]
+        )
+          fail("Artifact scope ended; configure a new channel", 409);
         if (
           !input.actions ||
           typeof input.actions !== "object" ||
@@ -264,6 +386,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
         )
           fail("Too many artifact channels");
         const previous = state.artifactChannels[input.id];
+        const previouslyClosed = state.artifactClosedChannels[input.id];
         if (
           previous &&
           scopeKeys.some((key) => previous.scope[key] !== input.scope[key])
@@ -271,7 +394,11 @@ export function createArtifactChannels({ state, persist, runRule }) {
           fail("Channel scope is immutable; use a new channel ID", 409);
         const channel = {
           id: input.id,
-          generation: previous?.generation ?? randomUUID(),
+          generation:
+            previous && (previous.workspace_epoch ?? 0) === epoch
+              ? previous.generation
+              : randomUUID(),
+          workspace_epoch: epoch,
           scope: Object.fromEntries(
             scopeKeys.map((key) => [key, input.scope[key]]),
           ),
@@ -284,11 +411,13 @@ export function createArtifactChannels({ state, persist, runRule }) {
           data: null,
         };
         state.artifactChannels[input.id] = channel;
+        delete state.artifactClosedChannels[input.id];
         try {
           await persist();
         } catch (error) {
           if (previous) state.artifactChannels[input.id] = previous;
           else delete state.artifactChannels[input.id];
+          if (previouslyClosed) state.artifactClosedChannels[input.id] = true;
           throw error;
         }
         return { channel_id: channel.id };
@@ -300,7 +429,12 @@ export function createArtifactChannels({ state, persist, runRule }) {
           fail("Unknown artifact channel", 404);
         if (
           Object.values(state.artifactRequests).some(
-            (record) => record.channel_id === id && unresolved(record),
+            (record) =>
+              record.channel_id === id &&
+              !record.retired &&
+              (!record.generation ||
+                record.generation === state.artifactChannels[id].generation) &&
+              unresolved(record),
           )
         )
           fail(
@@ -339,8 +473,24 @@ export function createArtifactChannels({ state, persist, runRule }) {
         });
       });
     },
-    async publish(ruleId, id, data) {
+    async publish(ruleId, id, data, operationId) {
       return locked(async () => {
+        // Ending a dashboard must not put its shared publisher Rule on a retry loop.
+        if (
+          !own(state.artifactChannels, id) &&
+          own(state.artifactClosedChannels, id)
+        )
+          return;
+        if (operationId) {
+          const record = state.artifactRequests[operationId];
+          if (!record) return;
+          if (record.retired) return;
+          if (
+            record.generation &&
+            record.generation !== state.artifactChannels[id]?.generation
+          )
+            return;
+        }
         const channel = channelFor(id);
         if (!channel.publishers.includes(ruleId))
           fail("Rule is not a registered publisher", 403);
@@ -365,12 +515,13 @@ export function createArtifactChannels({ state, persist, runRule }) {
     },
     async complete(ruleId, id, requestId, status, message = null) {
       return locked(async () => {
-        const channel = channelFor(id);
-        if (!channel.publishers.includes(ruleId))
-          fail("Rule is not a registered publisher", 403);
         const record = state.artifactRequests[requestId];
+        if (!record && own(state.artifactClosedChannels, id)) return null;
         if (!record || record.channel_id !== id)
           fail("Unknown artifact request", 404);
+        const publishers = record.publishers ?? channelFor(id).publishers;
+        if (!publishers?.includes(ruleId))
+          fail("Rule is not a registered publisher", 403);
         if (!["completed", "failed", "cancelled"].includes(status))
           fail("Invalid completion state");
         if (!unresolved(record)) return publicRecord(record);
@@ -378,10 +529,12 @@ export function createArtifactChannels({ state, persist, runRule }) {
         record.status = status;
         record.message =
           typeof message === "string" ? message.slice(0, 500) : null;
+        if (record.retired) delete state.artifactRequests[requestId];
         try {
           await persist();
         } catch (error) {
           Object.assign(record, previous);
+          state.artifactRequests[requestId] = record;
           throw error;
         }
         return publicRecord(record);
@@ -442,6 +595,10 @@ export function createArtifactChannels({ state, persist, runRule }) {
           action: input.action,
           fingerprint,
           expires_at: input.expires_at,
+          scope: structuredClone(channel.scope),
+          workspace_epoch: channel.workspace_epoch ?? 0,
+          generation: channel.generation,
+          publishers: [...channel.publishers],
           status: "processing",
           message: null,
         };
@@ -485,10 +642,13 @@ export function createArtifactChannels({ state, persist, runRule }) {
             record.status === "unknown"
               ? "The rule did not confirm completion. Check the automation result."
               : null;
+          if (record.retired && !unresolved(record))
+            delete state.artifactRequests[record.request_id];
           try {
             await persist();
           } catch (error) {
             record.status = "unknown";
+            state.artifactRequests[record.request_id] = record;
             throw error;
           }
         });

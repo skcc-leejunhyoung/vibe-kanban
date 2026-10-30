@@ -4,13 +4,13 @@ import type { ArtifactInteraction, ArtifactResponse } from 'shared/types';
 import { ApiError, artifactsApi } from '@/shared/lib/api';
 import type { ArtifactViewState } from '@/shared/lib/artifactInputBridge';
 import { useArtifactAutomation } from './useArtifactAutomation';
+import {
+  artifactDrafts as views,
+  artifactMemoryKey,
+} from '@/shared/lib/artifactInputMemory';
 
 // Native form drafts only, scoped to this page and request. No browser storage,
 // backend writes, or model messages on input. Virtualized rows may unmount.
-const views = new Map<
-  string,
-  { draft?: unknown; pending?: ArtifactResponse }
->();
 
 export function ArtifactInputFrame({
   srcDoc,
@@ -21,6 +21,7 @@ export function ArtifactInputFrame({
   refresh,
   updated,
   disconnected,
+  readOnly = false,
 }: {
   srcDoc: string;
   channel: string;
@@ -30,23 +31,28 @@ export function ArtifactInputFrame({
   refresh: () => Promise<void>;
   updated: (interaction: ArtifactInteraction) => void;
   disconnected: boolean;
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation('common');
-  const key = `${hostId ?? 'local'}:${interaction.workspace_id}:${interaction.reference.session_id}:${interaction.reference.request_id}`;
+  const key = artifactMemoryKey(interaction, hostId);
   const frame = useRef<HTMLIFrameElement>(null);
   const focusTarget = useRef<HTMLSpanElement>(null);
   const busy = useRef(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
-  const [uncertain, setUncertain] = useState(!!views.get(key)?.pending);
+  const [uncertain, setUncertain] = useState(
+    !readOnly && !!views.get(key)?.pending
+  );
   const [height, setHeight] = useState(1);
-  const automation = useArtifactAutomation(interaction, hostId);
+  const automation = useArtifactAutomation(interaction, hostId, readOnly);
   const live = !!interaction.automation;
   const displayError = error ?? (live ? automation.error : undefined);
   const displayStatus =
-    live && interaction.state === 'input_required'
-      ? (automation.current?.status ?? interaction.state)
-      : interaction.state;
+    readOnly && interaction.state === 'input_required'
+      ? 'expired'
+      : live && interaction.state === 'input_required'
+        ? (automation.current?.status ?? interaction.state)
+        : interaction.state;
   const messageStatus =
     sending || (live && automation.sending)
       ? 'sending'
@@ -61,15 +67,18 @@ export function ArtifactInputFrame({
           ? 'disconnected'
           : displayStatus,
     message:
-      displayError ??
-      (disconnected || uncertain || (live && automation.uncertain)
-        ? t('artifacts.input.disconnected')
-        : ((live && interaction.state === 'input_required'
-            ? automation.current?.message
-            : undefined) ??
-          interaction.error ??
-          t(`artifacts.input.${messageStatus}`))),
+      readOnly && interaction.state === 'input_required'
+        ? t('artifacts.input.expired')
+        : (displayError ??
+          (disconnected || uncertain || (live && automation.uncertain)
+            ? t('artifacts.input.disconnected')
+            : ((live && interaction.state === 'input_required'
+                ? automation.current?.message
+                : undefined) ??
+              interaction.error ??
+              t(`artifacts.input.${messageStatus}`)))),
     editable:
+      !readOnly &&
       !sending &&
       !disconnected &&
       !uncertain &&
@@ -93,11 +102,11 @@ export function ArtifactInputFrame({
           type: 'vibe:artifact:state',
           channel,
           value: state.current,
-          ...(restore ? { draft: views.get(key)?.draft } : {}),
+          ...(restore && !readOnly ? { draft: views.get(key)?.draft } : {}),
         },
         '*'
       ),
-    [channel, key]
+    [channel, key, readOnly]
   );
 
   useEffect(() => {
@@ -119,10 +128,12 @@ export function ArtifactInputFrame({
     setSending(true);
     setError(undefined);
     const saved = views.get(key) ?? {};
-    views.set(key, { ...saved, pending: response });
+    const pendingEntry = { ...saved, pending: response };
+    views.set(key, pendingEntry);
     try {
       const result = await artifactsApi.respond(interaction, response, hostId);
-      views.set(key, { draft: saved.draft });
+      if (views.get(key) === pendingEntry)
+        views.set(key, { draft: saved.draft });
       setUncertain(false);
       updated(result);
     } catch (cause) {
@@ -130,7 +141,8 @@ export function ArtifactInputFrame({
         cause instanceof ApiError &&
         [400, 403, 409, 422].includes(cause.status ?? 0);
       setUncertain(!rejected);
-      if (rejected) views.set(key, { draft: saved.draft });
+      if (rejected && views.get(key) === pendingEntry)
+        views.set(key, { draft: saved.draft });
       setError(
         rejected && cause instanceof Error
           ? cause.message
@@ -200,7 +212,7 @@ export function ArtifactInputFrame({
           postState(true);
           break;
         case 'draft':
-          if (JSON.stringify(event.data.data).length <= 32768) {
+          if (!readOnly && JSON.stringify(event.data.data).length <= 32768) {
             if (!views.has(key) && views.size >= 128)
               views.delete(views.keys().next().value!);
             views.set(key, { ...views.get(key), draft: event.data.data });
@@ -221,7 +233,7 @@ export function ArtifactInputFrame({
     };
     window.addEventListener('message', listener);
     return () => window.removeEventListener('message', listener);
-  }, [channel, key, postState]);
+  }, [channel, key, postState, readOnly]);
 
   const check = async () => {
     try {
@@ -273,58 +285,62 @@ export function ArtifactInputFrame({
           {interaction.state === 'failed' && (
             <p className="text-low">{t('artifacts.input.failedRecovery')}</p>
           )}
-          {interaction.state === 'input_required' && (
+          {!readOnly && interaction.state === 'input_required' && (
             <p className="text-low">{t('artifacts.input.noDraftStorage')}</p>
           )}
-          {live && !view.editable && interaction.state === 'input_required' && (
-            <button
-              type="button"
-              className="rounded-sm bg-secondary px-base py-half"
-              disabled={sending}
-              onClick={() => void submit({ action: 'cancel' })}
-            >
-              {t('artifacts.input.automationClose')}
-            </button>
-          )}
-          {(disconnected ||
-            uncertain ||
-            displayError ||
-            (live &&
-              (automation.uncertain ||
-                automation.current?.status === 'unknown')) ||
-            interaction.state === 'unknown' ||
-            interaction.state === 'failed') && (
-            <div className="flex gap-base">
+          {!readOnly &&
+            live &&
+            !view.editable &&
+            interaction.state === 'input_required' && (
               <button
                 type="button"
                 className="rounded-sm bg-secondary px-base py-half"
-                disabled={sending || automation.sending}
-                onClick={() => void check()}
+                disabled={sending}
+                onClick={() => void submit({ action: 'cancel' })}
               >
-                {t('artifacts.input.check')}
+                {t('artifacts.input.automationClose')}
               </button>
-              {views.get(key)?.pending && (
+            )}
+          {!readOnly &&
+            (disconnected ||
+              uncertain ||
+              displayError ||
+              (live &&
+                (automation.uncertain ||
+                  automation.current?.status === 'unknown')) ||
+              interaction.state === 'unknown' ||
+              interaction.state === 'failed') && (
+              <div className="flex gap-base">
                 <button
                   type="button"
                   className="rounded-sm bg-secondary px-base py-half"
-                  disabled={sending}
-                  onClick={() => void submit(views.get(key)!.pending!)}
+                  disabled={sending || automation.sending}
+                  onClick={() => void check()}
                 >
-                  {t('artifacts.input.retry')}
+                  {t('artifacts.input.check')}
                 </button>
-              )}
-              {live && automation.retry && (
-                <button
-                  type="button"
-                  className="rounded-sm bg-secondary px-base py-half"
-                  disabled={automation.sending}
-                  onClick={() => void automation.retry?.()}
-                >
-                  {t('artifacts.input.retry')}
-                </button>
-              )}
-            </div>
-          )}
+                {views.get(key)?.pending && (
+                  <button
+                    type="button"
+                    className="rounded-sm bg-secondary px-base py-half"
+                    disabled={sending}
+                    onClick={() => void submit(views.get(key)!.pending!)}
+                  >
+                    {t('artifacts.input.retry')}
+                  </button>
+                )}
+                {live && automation.retry && (
+                  <button
+                    type="button"
+                    className="rounded-sm bg-secondary px-base py-half"
+                    disabled={automation.sending}
+                    onClick={() => void automation.retry?.()}
+                  >
+                    {t('artifacts.input.retry')}
+                  </button>
+                )}
+              </div>
+            )}
         </figcaption>
       </div>
     </figure>

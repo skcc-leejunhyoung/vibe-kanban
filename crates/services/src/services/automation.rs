@@ -57,20 +57,24 @@ pub async fn complete_action<T: serde::Serialize>(
     Ok(())
 }
 
-pub fn spawn_outbox(pool: SqlitePool) {
+pub fn spawn_outbox(pool: SqlitePool, host_id: String) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
         loop {
             interval.tick().await;
-            drain(&pool).await;
+            drain(&pool, &host_id).await;
         }
     });
 }
 
-async fn drain(pool: &SqlitePool) {
+async fn drain(pool: &SqlitePool, host_id: &str) {
     let Some((url, token)) = endpoint() else {
         return;
     };
+    drain_to(pool, &url, &token, host_id).await;
+}
+
+async fn drain_to(pool: &SqlitePool, url: &str, token: &str, host_id: &str) {
     let Ok(rows) = sqlx::query(
         "SELECT id, payload FROM automation_event_outbox ORDER BY created_at LIMIT 100",
     )
@@ -83,13 +87,21 @@ async fn drain(pool: &SqlitePool) {
     for row in rows {
         let id: String = row.get("id");
         let payload: String = row.get("payload");
-        let Ok(event) = serde_json::from_str::<Value>(&payload) else {
+        let Ok(mut event) = serde_json::from_str::<Value>(&payload) else {
             continue;
         };
+        if event["type"] == "artifact_scope_ended" {
+            event["hostId"] = Value::String(host_id.to_owned());
+        }
+        let path = if event["type"] == "artifact_scope_ended" {
+            "artifact-lifecycle"
+        } else {
+            "events"
+        };
         match client
-            .post(format!("{}/api/events", url.trim_end_matches('/')))
+            .post(format!("{}/api/{path}", url.trim_end_matches('/')))
             .timeout(std::time::Duration::from_secs(10))
-            .bearer_auth(&token)
+            .bearer_auth(token)
             .json(&event)
             .send()
             .await
@@ -123,6 +135,66 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    #[tokio::test]
+    async fn cleanup_outbox_retries_gateway_failure_without_losing_the_event() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+
+        use axum::{Router, http::StatusCode, routing::post};
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE automation_event_outbox (id TEXT PRIMARY KEY, payload TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO automation_event_outbox (id, payload) VALUES ('synthetic-cleanup', ?)")
+            .bind(serde_json::json!({"id":"synthetic-cleanup", "type":"artifact_scope_ended", "workspaceId":"synthetic-workspace", "epoch":1, "deleted":false}).to_string()).execute(&pool).await.unwrap();
+        let available = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_available = available.clone();
+        let handler_calls = calls.clone();
+        let app = Router::new().route(
+            "/api/artifact-lifecycle",
+            post(move |axum::Json(event): axum::Json<Value>| {
+                let available = handler_available.clone();
+                let calls = handler_calls.clone();
+                async move {
+                    assert_eq!(event["hostId"], "synthetic-host");
+                    assert_eq!(event["type"], "artifact_scope_ended");
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    if available.load(Ordering::SeqCst) {
+                        StatusCode::ACCEPTED
+                    } else {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        drain_to(&pool, &url, "synthetic-token", "synthetic-host").await;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM automation_event_outbox")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        available.store(true, Ordering::SeqCst);
+        drain_to(&pool, &url, "synthetic-token", "synthetic-host").await;
+        drain_to(&pool, &url, "synthetic-token", "synthetic-host").await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM automation_event_outbox")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        server.abort();
+    }
 
     #[tokio::test]
     async fn action_receipt_is_reused_after_success() {
@@ -208,7 +280,7 @@ mod tests {
             .unwrap();
 
         let payloads: Vec<String> =
-            sqlx::query_scalar("SELECT payload FROM automation_event_outbox ORDER BY id")
+            sqlx::query_scalar("SELECT payload FROM automation_event_outbox WHERE json_extract(payload, '$.type') != 'artifact_scope_ended' ORDER BY id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -284,7 +356,7 @@ mod tests {
             .await
             .unwrap();
         let manual_payload: serde_json::Value = sqlx::query_scalar::<_, String>(
-            "SELECT payload FROM automation_event_outbox WHERE payload LIKE ?",
+            "SELECT payload FROM automation_event_outbox WHERE payload LIKE ? AND json_extract(payload, '$.type') != 'artifact_scope_ended'",
         )
         .bind(format!("%{manual_workspace_id}%"))
         .fetch_one(&pool)

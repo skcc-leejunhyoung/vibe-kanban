@@ -511,7 +511,7 @@ async function route(req, res) {
       }
       else if (parts.length === 2) result = await artifactChannels.configure(input);
       else if (parts.length === 4 && parts[3] === 'describe')
-        result = await artifactChannels.describe(parts[2], input.scope);
+        result = await artifactChannels.describe(parts[2], input.scope, input.workspace_epoch);
       else if (parts.length === 4 && parts[3] === 'snapshot')
         result = await artifactChannels.snapshot(parts[2], input.scope, input.version, input.binding_id, input.request_id);
       else if (parts.length === 4 && parts[3] === 'request')
@@ -577,6 +577,13 @@ async function route(req, res) {
     delete state.routineOccurrences[id];
     await persistState();
     sendState(res);
+    return;
+  }
+
+  // A dedicated path makes older workers reject cleanup instead of acknowledging an unknown event.
+  if (url.pathname === '/api/artifact-lifecycle' && req.method === 'POST') {
+    await artifactChannels.cleanupScope(await readBodyJson(req));
+    sendJson(res, 202, { ok: true });
     return;
   }
 
@@ -812,6 +819,8 @@ function maskState(current) {
   const copy = cloneData(current);
   delete copy.artifactRequests;
   delete copy.artifactChannels;
+  delete copy.artifactScopeEpochs;
+  delete copy.artifactClosedChannels;
   // Incomplete operations can contain issue titles/descriptions. They are
   // internal recovery state, not automation settings, so never expose them.
   delete copy.githubIssueLinkOperations;
@@ -4366,7 +4375,7 @@ function createRuleContext(rule, event, conditionOnly = false) {
       log(level, message, { ruleId: rule.id, ...meta }),
     connectors: cloneData(state.connectors),
     artifacts: {
-      publish: (channelId, data) => artifactChannels.publish(rule.id, channelId, data),
+      publish: (channelId, data) => artifactChannels.publish(rule.id, channelId, data, event.source === 'artifact' ? event.request_id : undefined),
       complete: (channelId, requestId, status, message) => artifactChannels.complete(rule.id, channelId, requestId, status, message),
     },
     actions: {

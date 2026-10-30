@@ -74,6 +74,21 @@ pub async fn configure_automation_channel(
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
+    let _lifecycle = inputs::LIFECYCLE_LOCK.lock().await;
+    let (workspace, _) = process
+        .parent_workspace_and_session(&deployment.db().pool)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Workspace no longer exists".into()))?;
+    if workspace.archived {
+        return Err(ApiError::Conflict("Workspace is archived".into()));
+    }
+    config.insert(
+        "workspace_epoch".into(),
+        inputs::workspace_epoch(&deployment.db().pool, query.workspace_id)
+            .await
+            .map_err(bad)?
+            .into(),
+    );
     config.insert("scope".into(), serde_json::json!({"owner_id": owner_id(&deployment).await,
         "owner_host": deployment.user_id(), "workspace_id": query.workspace_id, "session_id": process.session_id}));
     let result = super::automation::artifact_channel(&channel, "configure", request.config).await?;
@@ -99,6 +114,7 @@ pub async fn register(
     Json(request): Json<RegisterInteraction>,
 ) -> Result<Json<ApiResponse<ArtifactInteraction>>, ApiError> {
     check_owner()?;
+    let _lifecycle = inputs::LIFECYCLE_LOCK.lock().await;
     if process.dropped {
         return Err(ApiError::BadRequest(
             "This execution is no longer active in the conversation".into(),
@@ -143,7 +159,7 @@ pub async fn register(
             let binding: ArtifactAutomationBinding = super::automation::artifact_channel(
                 channel,
                 "describe",
-                serde_json::json!({"scope": {"owner_id": owner, "owner_host": deployment.user_id(),
+                serde_json::json!({"workspace_epoch": inputs::workspace_epoch(&deployment.db().pool, query.workspace_id).await.map_err(bad)?, "scope": {"owner_id": owner, "owner_host": deployment.user_id(),
                     "workspace_id": query.workspace_id, "session_id": process.session_id}}),
             )
             .await?;
@@ -174,6 +190,13 @@ pub async fn register(
         ));
     }
     let _guard = inputs::LOCK.lock().await;
+    let (workspace, _) = process
+        .parent_workspace_and_session(&deployment.db().pool)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Workspace no longer exists".into()))?;
+    if workspace.archived {
+        return Err(ApiError::Conflict("Workspace is archived".into()));
+    }
     let existing = inputs::list(process.session_id, process.id)
         .await
         .map_err(bad)?;
@@ -229,6 +252,9 @@ pub async fn register(
         boot_id: *inputs::BOOT_ID,
         response: None,
         dispatch_claimed: false,
+        workspace_epoch: inputs::workspace_epoch(&deployment.db().pool, query.workspace_id)
+            .await
+            .map_err(bad)?,
     })
     .await
     .map_err(bad)?;
@@ -251,6 +277,9 @@ async fn refresh(
         )
         .map_err(bad)?;
     let old = receipt.interaction.state;
+    inputs::refresh_lifecycle(&deployment.db().pool, receipt)
+        .await
+        .map_err(bad)?;
     let i = &mut receipt.interaction;
     if i.state == Status::InputRequired
         && (i.expires_at <= Utc::now()

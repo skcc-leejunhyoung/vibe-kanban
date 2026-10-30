@@ -112,6 +112,9 @@ pub async fn update_workspace(
         request.pinned
     };
 
+    let lifecycle_guard = services::services::artifact_interactions::LIFECYCLE_LOCK
+        .lock()
+        .await;
     Workspace::update(
         pool,
         workspace.id,
@@ -133,6 +136,7 @@ pub async fn update_workspace(
     let updated = Workspace::find_by_id(pool, workspace.id)
         .await?
         .ok_or(WorkspaceError::WorkspaceNotFound)?;
+    drop(lifecycle_guard);
 
     if (request.archived.is_some() || request.name.is_some())
         && let Ok(client) = deployment.remote_client()
@@ -279,7 +283,18 @@ pub async fn delete_workspace(
 
     let managed_workspace = workspace_manager.load_managed_workspace(workspace).await?;
     let deletion_context = managed_workspace.prepare_deletion_context().await?;
+    let lifecycle_guard = services::services::artifact_interactions::LIFECYCLE_LOCK
+        .lock()
+        .await;
+    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace_id)
+        .await?
+    {
+        return Err(ApiError::Conflict(
+            "Workspace started work during deletion; stop it first".into(),
+        ));
+    }
     let rows_affected = managed_workspace.delete_record().await?;
+    drop(lifecycle_guard);
 
     if rows_affected == 0 {
         return Err(ApiError::Database(SqlxError::RowNotFound));

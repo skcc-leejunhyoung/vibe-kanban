@@ -31,7 +31,7 @@ import {
 } from '@/shared/lib/workspaceGitRefetch';
 import { useDiffStream } from '@/shared/hooks/useDiffStream';
 import { useCommitDiff } from '@/shared/hooks/useCommitDiff';
-import { workspacesApi } from '@/shared/lib/api';
+import { ApiError, workspacesApi } from '@/shared/lib/api';
 import {
   createWorkspaceDiffStore,
   WorkspaceDiffStoreProvider,
@@ -41,6 +41,13 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 import type { Diff, DiffStats, WorkspaceSummary } from 'shared/types';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
+import {
+  ARTIFACT_SCOPE_ENDED,
+  endArtifactScope,
+  clearArtifactQueries,
+  hasArtifactScopeData,
+  type ArtifactMemoryScope,
+} from '@/shared/lib/artifactInputMemory';
 
 import {
   WorkspaceContext,
@@ -81,6 +88,16 @@ function WorkspaceProviderContent({
   const currentDestination = useCurrentAppDestination();
   const queryClient = useQueryClient();
   const hostId = useHostId();
+  useEffect(() => {
+    const ended = (event: Event) => {
+      void clearArtifactQueries(
+        queryClient,
+        (event as CustomEvent<ArtifactMemoryScope>).detail
+      );
+    };
+    window.addEventListener(ARTIFACT_SCOPE_ENDED, ended);
+    return () => window.removeEventListener(ARTIFACT_SCOPE_ENDED, ended);
+  }, [queryClient]);
   // Derived from the destination (not router params) so split panes can scope
   // this provider by overriding the destination for their subtree.
   const workspaceId =
@@ -100,6 +117,43 @@ function WorkspaceProviderContent({
     isLoading: isLoadingList,
     isArchivedLoading: isArchivedLoadingList,
   } = lists;
+  const knownArtifactScopes = useRef(new Map<string, ArtifactMemoryScope>());
+  useEffect(() => {
+    if (isLoadingList || isArchivedLoadingList) return;
+    const current = new Map(
+      [...activeWorkspaces, ...archivedWorkspaces].map(
+        (item) =>
+          [
+            getHostWorkspaceKey(item.id, item.hostId),
+            { hostId: item.hostId, workspaceId: item.id },
+          ] as const
+      )
+    );
+    for (const [key, scope] of knownArtifactScopes.current) {
+      if (current.has(key)) continue;
+      // A host disconnect or the gap between two streams is not a deletion.
+      void workspacesApi
+        .get(scope.workspaceId!, scope.hostId)
+        .then((record) => {
+          if (!knownArtifactScopes.current.has(key) && record.archived)
+            endArtifactScope(scope);
+        })
+        .catch((error) => {
+          if (
+            !knownArtifactScopes.current.has(key) &&
+            error instanceof ApiError &&
+            error.status === 404
+          )
+            endArtifactScope({ ...scope, deleted: true });
+        });
+    }
+    knownArtifactScopes.current = current;
+  }, [
+    activeWorkspaces,
+    archivedWorkspaces,
+    isLoadingList,
+    isArchivedLoadingList,
+  ]);
 
   const {
     data: workspace,
@@ -114,6 +168,53 @@ function WorkspaceProviderContent({
       ? workspaceRecordsById[getHostWorkspaceKey(workspaceId, hostId)]
       : undefined,
   });
+
+  const endedWorkspaces = useRef(new Set<string>());
+  useEffect(() => {
+    let stopped = false;
+    const pending = new Set<string>();
+    const archived = new Set<string>();
+    for (const item of archivedWorkspaces) {
+      const key = getHostWorkspaceKey(item.id, item.hostId);
+      if (
+        activeWorkspaces.some(
+          (active) => getHostWorkspaceKey(active.id, active.hostId) === key
+        )
+      )
+        continue;
+      archived.add(key);
+      const scope = { hostId: item.hostId, workspaceId: item.id };
+      if (
+        !endedWorkspaces.current.has(key) &&
+        hasArtifactScopeData(queryClient, scope)
+      ) {
+        pending.add(key);
+        void workspacesApi
+          .get(item.id, item.hostId)
+          .then((record) => {
+            if (!stopped && record.archived) endArtifactScope(scope);
+          })
+          .catch((error) => {
+            if (!stopped && error instanceof ApiError && error.status === 404)
+              endArtifactScope({ ...scope, deleted: true });
+          })
+          .finally(() => {
+            pending.delete(key);
+          });
+      }
+    }
+    endedWorkspaces.current = archived;
+    return () => {
+      stopped = true;
+      for (const key of pending) endedWorkspaces.current.delete(key);
+    };
+  }, [
+    activeWorkspaces,
+    archivedWorkspaces,
+    queryClient,
+    workspace?.archived,
+    workspace?.updated_at,
+  ]);
 
   const {
     sessions,

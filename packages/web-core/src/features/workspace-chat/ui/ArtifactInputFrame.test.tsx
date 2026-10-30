@@ -34,7 +34,7 @@ const interaction: ArtifactInteraction = {
   automation: null,
 };
 
-function render(disconnected = false) {
+function render(disconnected = false, readOnly = false) {
   return renderToStaticMarkup(
     <ArtifactInputFrame
       srcDoc="<p>Form</p>"
@@ -45,6 +45,7 @@ function render(disconnected = false) {
       refresh={async () => {}}
       updated={() => {}}
       disconnected={disconnected}
+      readOnly={readOnly}
     />
   );
 }
@@ -67,5 +68,12 @@ describe('inline artifact controls', () => {
     expect(html).toContain('role="alert"');
     expect(html).toContain('artifacts.input.disconnected');
     expect(html).toContain('artifacts.input.check');
+  });
+
+  it('makes archived inputs read-only and removes retry controls even with stale input state', () => {
+    const html = render(true, true);
+    expect(html).toContain('artifacts.input.expired');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('artifacts.input.noDraftStorage');
   });
 });

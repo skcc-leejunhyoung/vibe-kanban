@@ -324,10 +324,45 @@ test(
       );
       assert.equal(saved.retryQueue.length, 0);
       assert.equal(saved.artifactChannels.dashboard.data.count, 5);
+      const lifecycle = {
+        id: "synthetic-archive",
+        type: "artifact_scope_ended",
+        hostId: scope.owner_host,
+        workspaceId: scope.workspace_id,
+        epoch: 1,
+        deleted: false,
+      };
+      assert.equal((await call("artifact-lifecycle", lifecycle)).status, 202);
+      assert.equal((await call("artifact-lifecycle", lifecycle)).status, 202);
+      assert.equal(
+        (
+          await call("events", {
+            id: randomUUID(),
+            source: "fixture",
+            type: "count",
+            count: 99,
+          })
+        ).status,
+        202,
+      );
+      assert.equal(
+        (await call("artifact-channels/dashboard/request", startRequest))
+          .status,
+        404,
+      );
+      const ended = JSON.parse(
+        await readFile(path.join(directory, "state.json"), "utf8"),
+      );
+      assert.equal(ended.artifactChannels.dashboard, undefined);
+      assert.deepEqual(ended.artifactRequests, {});
+      assert.equal(ended.retryQueue.length, 0);
+      assert.ok(ended.rules.find((rule) => rule.id === "publisher").enabled);
+      await stop();
+      await start();
       assert.equal(
         (await call("artifact-channels/dashboard", undefined, true, "DELETE"))
           .status,
-        200,
+        404,
       );
       assert.equal(
         (await call("artifact-channels/dashboard/snapshot", startRequest))

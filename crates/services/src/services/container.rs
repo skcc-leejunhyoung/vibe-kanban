@@ -697,7 +697,24 @@ pub trait ContainerService {
     async fn archive_workspace(&self, workspace_id: Uuid) -> Result<(), ContainerError> {
         let pool = &self.db().pool;
 
-        Workspace::set_archived(pool, workspace_id, true).await?;
+        {
+            let _guard = super::artifact_interactions::LIFECYCLE_LOCK.lock().await;
+            Workspace::set_archived(pool, workspace_id, true).await?;
+        }
+        let mut cancellation_error = None;
+        for session in Session::find_by_workspace_id(pool, workspace_id).await? {
+            for queued in self.queued_message_service().get_queued(session.id) {
+                if queued.artifact_request.is_some()
+                    && let Err(error) = self
+                        .queued_message_service()
+                        .cancel_message(session.id, queued.id)
+                        .await
+                {
+                    tracing::warn!(%workspace_id, session_id = %session.id, %error, "Could not cancel queued artifact input");
+                    cancellation_error = Some(error);
+                }
+            }
+        }
 
         // Stop running dev servers
         if let Ok(dev_servers) =
@@ -727,6 +744,9 @@ pub trait ContainerService {
             );
         }
 
+        if let Some(error) = cancellation_error {
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -1962,8 +1982,13 @@ pub trait ContainerService {
 
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
+        let _lifecycle = if artifact_request.is_some() {
+            Some(super::artifact_interactions::LIFECYCLE_LOCK.lock().await)
+        } else {
+            None
+        };
         if let Some(reference) = artifact_request
-            && !super::artifact_interactions::claim_dispatch(reference).await?
+            && !super::artifact_interactions::claim_dispatch(&self.db().pool, reference).await?
         {
             return Err(ContainerError::ArtifactAlreadyDispatched);
         }

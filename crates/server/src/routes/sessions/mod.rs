@@ -295,7 +295,16 @@ pub async fn delete_session(
     }
 
     // FK CASCADE removes execution_processes (and their children) for this session.
+    let lifecycle_guard = services::services::artifact_interactions::LIFECYCLE_LOCK
+        .lock()
+        .await;
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session_id).await? {
+        return Err(ApiError::Conflict(
+            "Session started work during deletion; stop it first".into(),
+        ));
+    }
     let rows_affected = Session::delete(pool, session_id).await?;
+    drop(lifecycle_guard);
     if rows_affected == 0 {
         return Err(ApiError::Session(SessionError::NotFound));
     }
