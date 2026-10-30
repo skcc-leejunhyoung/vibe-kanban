@@ -16,7 +16,7 @@ import {
   DialogTrigger,
 } from '@vibe/ui/components/Dialog';
 import { agentsApi } from '@/shared/lib/api';
-import { formatDateShortWithTime } from '@/shared/lib/date';
+import { formatBrowserDateTime } from '@/shared/lib/date';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { restoreDialogFocus } from '@vibe/ui/lib/dialog-keyboard';
@@ -70,10 +70,11 @@ export function ChatUsageIndicator({
     if (value === 'Current week (Fable)') return t('agentUsage.fable');
     return value;
   };
-  const resetDescription = (value: string | null) => {
+  const resetDescription = (value: string | null, resetsAt?: string | null) => {
+    if (resetsAt) return formatBrowserDateTime(resetsAt);
     const utc = value?.match(/^resets (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC$/);
     return utc
-      ? `${formatDateShortWithTime(`${utc[1]}T${utc[2]}:00Z`)} KST`
+      ? formatBrowserDateTime(`${utc[1]}T${utc[2]}:00Z`)
       : value?.replace(/^resets (?:at )?/, '');
   };
 
@@ -86,7 +87,7 @@ export function ChatUsageIndicator({
           key={window.label}
           label={label(window.label)}
           usedPercent={window.used_percent}
-          detail={resetDescription(window.reset_description)}
+          detail={resetDescription(window.reset_description, window.resets_at)}
         />
       ))}
       {data?.reset_credits != null && (
@@ -100,7 +101,7 @@ export function ChatUsageIndicator({
                 ? t('agentUsage.resetCreditsNeverExpire', { count })
                 : t('agentUsage.resetCreditsExpire', {
                     count,
-                    date: formatDateShortWithTime(expiration),
+                    date: formatBrowserDateTime(expiration),
                   })}
             </span>
           ))}

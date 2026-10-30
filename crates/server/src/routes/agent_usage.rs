@@ -163,6 +163,7 @@ mod tests {
                 label: "5h".into(),
                 used_percent: 25.0,
                 reset_description: None,
+                resets_at: None,
             }],
             reset_credits: Some(2),
             reset_credit_expirations: vec![DateTime::from_timestamp(1893456000, 0)],

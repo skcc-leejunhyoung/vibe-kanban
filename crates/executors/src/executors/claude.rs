@@ -269,6 +269,8 @@ impl ClaudeCode {
         ExecutionEnv::new(Default::default(), false, String::new())
             .with_profile(&self.cmd)
             .apply_to_command(&mut command);
+        // /usage's yearless wall times must have a known zone before normalization.
+        command.env("TZ", "UTC");
         command.env_remove("CLAUDECODE");
         if self.disable_api_key.unwrap_or(false) {
             command.env_remove("ANTHROPIC_API_KEY");
@@ -4143,7 +4145,7 @@ while :; do sleep 0.1; done
         let script = dir.path().join("usage.sh");
         std::fs::write(
             &script,
-            "printf ignored >&2\nprintf '%s' \"$USAGE_TEST_OUTPUT\"\nexit \"$USAGE_TEST_EXIT\"\n",
+            "[ \"$TZ\" = UTC ] || exit 2\nprintf ignored >&2\nprintf '%s' \"$USAGE_TEST_OUTPUT\"\nexit \"$USAGE_TEST_EXIT\"\n",
         )
         .unwrap();
         let valid = serde_json::json!({
@@ -4158,7 +4160,7 @@ while :; do sleep 0.1; done
         ] {
             let claude: ClaudeCode = serde_json::from_value(serde_json::json!({
                 "base_command_override": format!("sh {}", shlex::try_quote(script.to_str().unwrap()).unwrap()),
-                "env": { "USAGE_TEST_OUTPUT": output, "USAGE_TEST_EXIT": exit }
+                "env": { "USAGE_TEST_OUTPUT": output, "USAGE_TEST_EXIT": exit, "TZ": "America/Los_Angeles" }
             }))
             .unwrap();
             let result = claude

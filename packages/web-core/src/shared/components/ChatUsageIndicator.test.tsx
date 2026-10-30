@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { BaseCodingAgent, type AgentUsage } from 'shared/types';
 import type { ContextUsageInfo } from '@vibe/ui/components/ContextUsageGauge';
 import common from '@/i18n/locales/ko/common.json';
-import { formatDateShortWithTime } from '@/shared/lib/date';
+import { formatBrowserDateTime } from '@/shared/lib/date';
 import { ChatUsageIndicator } from './ChatUsageIndicator';
 
 vi.mock('@vibe/ui/components/Tooltip', () => ({
@@ -38,16 +38,19 @@ const usage: AgentUsage = {
       label: 'Current session',
       used_percent: 25,
       reset_description: 'resets at 18:00',
+      resets_at: null,
     },
     {
       label: 'Current week (all models)',
       used_percent: 60,
       reset_description: null,
+      resets_at: null,
     },
     {
       label: 'Current week (Fable)',
       used_percent: 90,
       reset_description: null,
+      resets_at: null,
     },
   ],
   updated_at: '2030-01-01T01:00:00Z',
@@ -142,6 +145,7 @@ describe('ChatUsageIndicator', () => {
             label: '7d',
             used_percent: 62,
             reset_description: 'resets 2030-01-03 00:00 UTC',
+            resets_at: null,
           },
         ],
       },
@@ -150,16 +154,14 @@ describe('ChatUsageIndicator', () => {
     expect(html.match(/role="progressbar"/g)).toHaveLength(2);
     expect(html).toContain('aria-label="주간"');
     expect(html).toContain('62%');
-    expect(html).toContain(
-      `${formatDateShortWithTime('2030-01-03T09:00:00+09:00')} KST`
-    );
-    expect(html).not.toContain('UTC');
+    expect(html).toContain(formatBrowserDateTime('2030-01-03T00:00:00Z'));
+    expect(html).not.toContain('2030-01-03 00:00 UTC');
     expect(html).not.toContain('5시간');
     expect(html).not.toContain('리셋권');
   });
 
-  it('converts UTC reset times across the KST date boundary alongside credit expiry', () => {
-    const kst = '2031-01-01T07:30:00+09:00';
+  it('converts reset and credit expiry times together across the browser date boundary', () => {
+    const instant = '2030-12-31T22:30:00Z';
     const html = render(
       {
         ...usage,
@@ -168,6 +170,7 @@ describe('ChatUsageIndicator', () => {
             label: '7d',
             used_percent: 37,
             reset_description: 'resets 2030-12-31 22:30 UTC',
+            resets_at: instant,
           },
         ],
         reset_credits: 1,
@@ -175,13 +178,13 @@ describe('ChatUsageIndicator', () => {
       },
       BaseCodingAgent.CODEX
     );
-    const formatted = formatDateShortWithTime(kst);
-    expect(html).toContain(`${formatted} KST`);
+    const formatted = formatBrowserDateTime(instant);
+    expect(html).toContain(formatted);
     expect(html).toContain(`1개 · ${formatted} 만료`);
-    expect(html).not.toContain('UTC');
+    expect(html).not.toContain('2030-12-31 22:30 UTC');
   });
 
-  it('preserves Claude reset text that already carries the host time zone', () => {
+  it('uses Claude UTC timestamps instead of the host wall-clock description', () => {
     const html = render({
       ...usage,
       windows: [
@@ -189,10 +192,12 @@ describe('ChatUsageIndicator', () => {
           label: 'Current session',
           used_percent: 25,
           reset_description: 'resets Jan 3 at 9:00am (Asia/Seoul)',
+          resets_at: '2030-01-03T00:00:00Z',
         },
       ],
     });
-    expect(html).toContain('Jan 3 at 9:00am (Asia/Seoul)');
+    expect(html).toContain(formatBrowserDateTime('2030-01-03T00:00:00Z'));
+    expect(html).not.toContain('Asia/Seoul');
     expect(html).not.toContain('Invalid Date');
   });
 
@@ -254,8 +259,8 @@ describe('ChatUsageIndicator', () => {
       BaseCodingAgent.CODEX
     );
     expect(html).toContain('리셋권 8개');
-    expect(html).toContain(`2개 · ${formatDateShortWithTime(first)} 만료`);
-    expect(html).toContain(`1개 · ${formatDateShortWithTime(second)} 만료`);
+    expect(html).toContain(`2개 · ${formatBrowserDateTime(first)} 만료`);
+    expect(html).toContain(`1개 · ${formatBrowserDateTime(second)} 만료`);
     expect(html).toContain('1개 · 만료 없음');
     expect(html.match(/2개 · /g)).toHaveLength(1);
   });

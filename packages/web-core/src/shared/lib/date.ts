@@ -16,6 +16,17 @@ export function formatDateShortWithTime(dateString: string): string {
   );
 }
 
+/** Usage times follow the viewer's zone, including daylight saving. */
+export function formatBrowserDateTime(dateString: string): string {
+  return new Date(dateString).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
 /**
  * Format a date string as a relative time (e.g., "just now", "5m ago", "2h ago", "3d ago").
  */

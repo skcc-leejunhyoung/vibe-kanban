@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { formatTurnTiming } from './date';
+import { formatBrowserDateTime, formatTurnTiming } from './date';
+
+describe('formatBrowserDateTime', () => {
+  it.each(['2031-01-01T00:30:00Z', '2030-07-01T00:30:00Z'])(
+    'uses the browser time zone and its seasonal offset for %s',
+    (instant) => {
+      const expected = new Intl.DateTimeFormat(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZoneName: 'short',
+      }).format(new Date(instant));
+      expect(formatBrowserDateTime(instant)).toBe(expected);
+    }
+  );
+});
 
 // 01:30Z is 10:30 in the pinned KST display zone.
 const START = '2026-09-28T01:30:00Z';
