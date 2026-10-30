@@ -1,3 +1,4 @@
+import { BaseCodingAgent } from 'shared/types';
 import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
@@ -6,6 +7,7 @@ import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
 import { validateBranchName } from '@/features/create-mode/model/workingBranch';
 import { targetBranchModeCreates } from '@/features/create-mode/model/targetBranch';
 import { AgentIcon } from '@/shared/components/AgentIcon';
+import { ChatUsageIndicator } from '@/shared/components/ChatUsageIndicator';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { useCreateWorkspace } from '@/shared/hooks/useCreateWorkspace';
@@ -20,7 +22,7 @@ import {
   toPrettyCase,
   splitMessageToTitleDescription,
 } from '@/shared/lib/string';
-import type { BaseCodingAgent, Repo } from 'shared/types';
+import type { Repo } from 'shared/types';
 import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateModeRepoPickerBar } from './CreateModeRepoPickerBar';
@@ -627,9 +629,14 @@ export function CreateChatBoxContainer({
                       sendShortcut={config?.send_message_shortcut}
                     />
                   )}
+                  contextUsage={
+                    effectiveExecutor === BaseCodingAgent.CLAUDE_CODE ||
+                    effectiveExecutor === BaseCodingAgent.CODEX ? (
+                      <ChatUsageIndicator agent={effectiveExecutor} />
+                    ) : undefined
+                  }
                   agentIcon={
                     <AgentIcon
-                      showUsage
                       agent={effectiveExecutor}
                       className="size-icon-base"
                     />

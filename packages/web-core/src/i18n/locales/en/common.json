@@ -1,5 +1,6 @@
 {
   "agentUsage": {
+    "loginRequired": "CLI login required",
     "resetCredits": "Resets: {{count}}",
     "resetCreditsExpire": "{{count}} · expires {{date}}",
     "resetCreditsNeverExpire": "{{count}} · no expiry",

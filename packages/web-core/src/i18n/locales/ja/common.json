@@ -1,5 +1,6 @@
 {
   "agentUsage": {
+    "loginRequired": "CLIへのログインが必要です",
     "resetCredits": "リセット {{count}}回",
     "resetCreditsExpire": "{{count}}回 · {{date}}まで",
     "resetCreditsNeverExpire": "{{count}}回 · 無期限",

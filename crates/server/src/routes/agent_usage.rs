@@ -7,7 +7,7 @@ use std::{
 use axum::{Json, Router, extract::Path, routing::get};
 use chrono::{DateTime, Utc};
 use executors::{
-    executors::{BaseCodingAgent, CodingAgent},
+    executors::{BaseCodingAgent, CodingAgent, ExecutorError},
     profile::{ExecutorConfigs, ExecutorProfileId},
     usage::{AgentUsageSnapshot, AgentUsageWindow},
 };
@@ -31,6 +31,7 @@ pub struct AgentUsage {
     pub updated_at: Option<DateTime<Utc>>,
     pub next_refresh_at: DateTime<Utc>,
     pub unavailable: bool,
+    pub login_required: bool,
 }
 
 #[derive(Default)]
@@ -62,8 +63,9 @@ async fn get_usage(
     // Discard cached values when that default CLI configuration changes.
     let fingerprint =
         Sha256::digest(serde_json::to_vec(&agent).map_err(std::io::Error::other)?).into();
+    // CLI diagnostics stay internal; the cache exposes only availability/login state.
     let value = cached_usage(cache, fingerprint, async {
-        let result = match agent {
+        match agent {
             Some(CodingAgent::ClaudeCode(claude))
                 if !claude.claude_code_router.unwrap_or(false) =>
             {
@@ -79,10 +81,10 @@ async fn get_usage(
             Some(CodingAgent::Codex(codex)) if !codex.oss.unwrap_or(false) => {
                 codex.read_account_usage().await
             }
-            _ => return Err(()),
-        };
-        // CLI output/errors can include account details; expose only availability.
-        result.map_err(|_| ())
+            _ => Err(ExecutorError::Io(std::io::Error::other(
+                "Usage unavailable",
+            ))),
+        }
     })
     .await;
     Ok(Json(ApiResponse::success(value)))
@@ -91,7 +93,7 @@ async fn get_usage(
 async fn cached_usage(
     cache: &Mutex<UsageCache>,
     fingerprint: [u8; 32],
-    fetch: impl Future<Output = Result<AgentUsageSnapshot, ()>>,
+    fetch: impl Future<Output = Result<AgentUsageSnapshot, ExecutorError>>,
 ) -> AgentUsage {
     // Hold the per-provider lock through refresh: tabs and tooltips share one probe.
     let mut cache = cache.lock().await;
@@ -116,7 +118,9 @@ async fn cached_usage(
         updated_at: None,
         next_refresh_at: now,
         unavailable: false,
+        login_required: false,
     });
+    value.login_required = matches!(&result, Err(ExecutorError::AuthRequired(_)));
     let delay = match result {
         Ok(usage) if !usage.windows.is_empty() || usage.reset_credits.is_some() => {
             value.windows = usage.windows;
@@ -128,9 +132,14 @@ async fn cached_usage(
             REFRESH
         }
         _ => {
-            cache.failures = (cache.failures + 1).min(3);
             value.unavailable = true;
-            Duration::from_secs(15 * 60 * 2_u64.pow(cache.failures - 1))
+            if value.login_required {
+                cache.failures = 0;
+                REFRESH
+            } else {
+                cache.failures = (cache.failures + 1).min(3);
+                Duration::from_secs(15 * 60 * 2_u64.pow(cache.failures - 1))
+            }
         }
     };
     value.next_refresh_at = now + chrono::Duration::from_std(delay).expect("bounded delay");
@@ -156,8 +165,34 @@ mod tests {
                 reset_description: None,
             }],
             reset_credits: Some(2),
-            reset_credit_expirations: vec![DateTime::from_timestamp(1793299994, 0)],
+            reset_credit_expirations: vec![DateTime::from_timestamp(1893456000, 0)],
         }
+    }
+
+    #[tokio::test]
+    async fn usage_login_required_is_safe_cached_and_cleared_after_recovery() {
+        let cache = Mutex::new(UsageCache::default());
+        let value = cached_usage(&cache, [0; 32], async {
+            Err(ExecutorError::AuthRequired(
+                "private diagnostic must not be exposed".into(),
+            ))
+        })
+        .await;
+        assert!(value.login_required && value.unavailable);
+        assert!(value.windows.is_empty());
+        assert!(
+            !serde_json::to_string(&value)
+                .unwrap()
+                .contains("private diagnostic")
+        );
+        assert!((298..=300).contains(&(value.next_refresh_at - Utc::now()).num_seconds()));
+        cached_usage(&cache, [0; 32], async {
+            panic!("login cooldown must suppress probes")
+        })
+        .await;
+        cache.lock().await.next_attempt = None;
+        let recovered = cached_usage(&cache, [0; 32], async { Ok(usage()) }).await;
+        assert!(!recovered.login_required && !recovered.unavailable);
     }
 
     #[tokio::test]
@@ -195,7 +230,10 @@ mod tests {
         let initial = cached_usage(&cache, [0; 32], async { Ok(usage()) }).await;
         for minutes in [15, 30, 60, 60] {
             cache.lock().await.next_attempt = None;
-            let value = cached_usage(&cache, [0; 32], async { Err(()) }).await;
+            let value = cached_usage(&cache, [0; 32], async {
+                Err(ExecutorError::Io(std::io::Error::other("test unavailable")))
+            })
+            .await;
             assert!(value.unavailable);
             assert_eq!(value.updated_at, initial.updated_at);
             assert_eq!(value.windows, initial.windows);
@@ -226,7 +264,10 @@ mod tests {
     async fn usage_profile_change_discards_previous_account_and_cooldown() {
         let cache = Mutex::new(UsageCache::default());
         cached_usage(&cache, [0; 32], async { Ok(usage()) }).await;
-        let changed = cached_usage(&cache, [1; 32], async { Err(()) }).await;
+        let changed = cached_usage(&cache, [1; 32], async {
+            Err(ExecutorError::Io(std::io::Error::other("test unavailable")))
+        })
+        .await;
         assert!(changed.unavailable);
         assert!(changed.windows.is_empty());
         assert!(changed.reset_credits.is_none());

@@ -1,3 +1,4 @@
+import { BaseCodingAgent } from 'shared/types';
 import {
   useCallback,
   useEffect,
@@ -25,12 +26,7 @@ import {
   DialogTitle,
 } from '@vibe/ui/components/KeyboardDialog';
 import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
-import type {
-  BaseCodingAgent,
-  ExecutorConfig,
-  Repo,
-  Session,
-} from 'shared/types';
+import type { ExecutorConfig, Repo, Session } from 'shared/types';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { selectWorkspaceSession } from '@/shared/hooks/useWorkspaceSessions';
 import { seedOptimisticProcess } from '@/shared/providers/executionProcessScope';
@@ -44,6 +40,7 @@ import { toPrettyCase } from '@/shared/lib/string';
 import { formatRelativeTime } from '@/shared/lib/date';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { AgentIcon } from '@/shared/components/AgentIcon';
+import { ChatUsageIndicator } from '@/shared/components/ChatUsageIndicator';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import { PaneWidthProvider } from '@/shared/components/workspace-panes/PaneWidthContext';
 import {
@@ -863,10 +860,17 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
                   sendShortcut="ModifierEnter"
                 />
               )}
+              contextUsage={
+                effectiveExecutor === BaseCodingAgent.CLAUDE_CODE ||
+                effectiveExecutor === BaseCodingAgent.CODEX ? (
+                  <ChatUsageIndicator
+                    agent={effectiveExecutor}
+                    hostId={selectedHostId}
+                  />
+                ) : undefined
+              }
               agentIcon={
                 <AgentIcon
-                  showUsage
-                  hostId={selectedHostId}
                   agent={effectiveExecutor}
                   className="size-icon-base"
                 />

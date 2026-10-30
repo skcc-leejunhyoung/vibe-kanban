@@ -70,6 +70,7 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
   editor: EditorProps;
   renderEditor: (props: CreateChatBoxEditorRenderProps<TExecutor>) => ReactNode;
   agentIcon?: ReactNode;
+  contextUsage?: ReactNode;
   onSend: () => void;
   isSending: boolean;
   /** While sending: stop the run being created (shown only when given). */
@@ -125,6 +126,7 @@ export function CreateChatBox<TExecutor extends string = string>({
   editor,
   renderEditor,
   agentIcon,
+  contextUsage,
   onSend,
   isSending,
   onStop,
@@ -230,6 +232,7 @@ export function CreateChatBox<TExecutor extends string = string>({
       headerLeft={
         <>
           {agentIcon}
+          {contextUsage}
           <ToolbarDropdown
             variant="ghost"
             label={executorLabel}

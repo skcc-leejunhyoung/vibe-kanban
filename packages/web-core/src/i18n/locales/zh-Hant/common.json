@@ -1,5 +1,6 @@
 {
   "agentUsage": {
+    "loginRequired": "請登入 CLI",
     "resetCredits": "重設次數 {{count}}",
     "resetCreditsExpire": "{{count}} 次 · {{date}}到期",
     "resetCreditsNeverExpire": "{{count}} 次 · 永不過期",

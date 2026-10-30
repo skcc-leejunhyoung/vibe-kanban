@@ -201,27 +201,60 @@ impl ClaudeCode {
         &self,
         timeout: Duration,
     ) -> Result<Vec<crate::usage::AgentUsageWindow>, ExecutorError> {
+        let (status, stdout) = self
+            .run_account_command(
+                &[
+                    "-p",
+                    "/usage",
+                    "--output-format",
+                    "json",
+                    "--safe-mode",
+                    "--tools",
+                    "",
+                    "--strict-mcp-config",
+                    "--mcp-config",
+                    "{\"mcpServers\":{}}",
+                    "--no-session-persistence",
+                    "--max-budget-usd",
+                    "0.000001",
+                ],
+                timeout,
+            )
+            .await?;
+        let usage = if status.success() {
+            crate::usage::parse_claude_usage(&stdout)
+        } else {
+            Err(ExecutorError::Io(std::io::Error::other(
+                "Claude /usage unavailable",
+            )))
+        };
+        // A signed-out CLI can return /cost text with a successful /usage envelope.
+        if usage.is_err()
+            && let Ok((_, auth)) = self
+                .run_account_command(&["auth", "status"], timeout.min(Duration::from_secs(5)))
+                .await
+            && let Ok(auth) = serde_json::from_slice::<serde_json::Value>(&auth)
+            && auth["loggedIn"] == false
+        {
+            return Err(ExecutorError::AuthRequired(
+                "Claude Code login required".into(),
+            ));
+        }
+        usage
+    }
+
+    async fn run_account_command(
+        &self,
+        args: &[&str],
+        timeout: Duration,
+    ) -> Result<(std::process::ExitStatus, Vec<u8>), ExecutorError> {
         let parts = CommandBuilder::new(
             self.cmd
                 .base_command_override
                 .as_deref()
                 .unwrap_or("claude"),
         )
-        .params([
-            "-p",
-            "/usage",
-            "--output-format",
-            "json",
-            "--safe-mode",
-            "--tools",
-            "",
-            "--strict-mcp-config",
-            "--mcp-config",
-            "{\"mcpServers\":{}}",
-            "--no-session-persistence",
-            "--max-budget-usd",
-            "0.000001",
-        ])
+        .params(args.iter().copied())
         .build_initial()?;
         let (program, args) = parts.into_resolved().await?;
         let mut command = Command::new(program);
@@ -254,14 +287,9 @@ impl ClaudeCode {
         .await;
         // Keep the group handle until cleanup, even if the wrapper has already exited.
         workspace_utils::process::kill_process_group(&mut child).await?;
-        let (status, stdout) = result
-            .map_err(|_| ExecutorError::Io(std::io::Error::other("Claude /usage timed out")))??;
-        if !status.success() {
-            return Err(ExecutorError::Io(std::io::Error::other(
-                "Claude /usage unavailable",
-            )));
-        }
-        crate::usage::parse_claude_usage(&stdout)
+        result
+            .map_err(|_| ExecutorError::Io(std::io::Error::other("Claude /usage timed out")))?
+            .map_err(ExecutorError::Io)
     }
 
     async fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
@@ -3994,6 +4022,60 @@ impl ClaudeToolData {
 mod tests {
     use super::*;
     use crate::logs::utils::{EntryIndexProvider, patch::extract_normalized_entry_from_patch};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn usage_cost_fallback_checks_auth_without_accepting_local_activity_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("synthetic-cli.sh");
+        std::fs::write(
+            &script,
+            r#"if [ "$1" = auth ]; then
+printf '%s' "$USAGE_TEST_AUTH"
+exit 1
+fi
+printf '%s' "$USAGE_TEST_OUTPUT"
+"#,
+        )
+        .unwrap();
+        let envelope = |result: &str| {
+            serde_json::json!({
+                "local_command":"usage", "is_error":false, "num_turns":0,
+                "total_cost_usd":0, "result":result
+            })
+            .to_string()
+        };
+        for (output, auth, expected_login) in [
+            (
+                envelope("Total cost: $0.00\nUsage: 0 input, 0 output"),
+                r#"{"loggedIn":false}"#,
+                true,
+            ),
+            (
+                envelope("Total cost: $0.00\nUsage: 0 input, 0 output"),
+                r#"{"loggedIn":true}"#,
+                false,
+            ),
+            (
+                envelope("Total cost: $0.00\nUsage: 0 input, 0 output"),
+                "unsupported auth command",
+                false,
+            ),
+        ] {
+            let claude: ClaudeCode = serde_json::from_value(serde_json::json!({
+                "base_command_override": format!("sh {}", shlex::try_quote(script.to_str().unwrap()).unwrap()),
+                "env": { "USAGE_TEST_AUTH": auth, "USAGE_TEST_OUTPUT": output }
+            })).unwrap();
+            let result = claude
+                .read_account_usage_with_timeout(Duration::from_secs(2))
+                .await;
+            assert!(result.is_err());
+            assert_eq!(
+                matches!(result, Err(ExecutorError::AuthRequired(_))),
+                expected_login
+            );
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]

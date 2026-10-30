@@ -122,10 +122,6 @@ mod tests {
         assert!(!claude.read_account_usage().await.unwrap().is_empty());
         let codex_usage = codex.read_account_usage().await.unwrap();
         assert!(!codex_usage.windows.is_empty());
-        eprintln!(
-            "Codex reset credits: {:?}, expirations: {:?}",
-            codex_usage.reset_credits, codex_usage.reset_credit_expirations
-        );
     }
 
     fn result(text: &str) -> serde_json::Value {
@@ -138,14 +134,14 @@ mod tests {
     #[test]
     fn codex_usage_preserves_the_authoritative_reset_count_and_weekly_only_window() {
         let response = serde_json::from_value(serde_json::json!({
-            "rateLimits": { "primary": { "usedPercent": 62, "windowDurationMins": 10080, "resetsAt": 1793599716 } },
+            "rateLimits": { "primary": { "usedPercent": 37, "windowDurationMins": 10080, "resetsAt": 1893628800 } },
             "rateLimitResetCredits": { "availableCount": 2, "credits": [] }
         })).unwrap();
         let usage = parse_codex_usage(response);
         assert_eq!(usage.reset_credits, Some(2));
         assert_eq!(usage.windows.len(), 1);
         assert_eq!(usage.windows[0].label, "7d");
-        assert_eq!(usage.windows[0].used_percent, 62.0);
+        assert_eq!(usage.windows[0].used_percent, 37.0);
     }
 
     #[test]
@@ -167,7 +163,7 @@ mod tests {
     fn credit(status: &str, expires_at: Option<i64>) -> serde_json::Value {
         serde_json::json!({
             "id": "test-credit", "resetType": "codexRateLimits", "status": status,
-            "grantedAt": 1793000000, "expiresAt": expires_at
+            "grantedAt": 1893283200, "expiresAt": expires_at
         })
     }
 
@@ -176,13 +172,13 @@ mod tests {
         let response = serde_json::from_value(serde_json::json!({
             "rateLimits": {},
             "rateLimitResetCredits": { "availableCount": 8, "credits": [
-                credit("available", Some(1794007459)),
-                credit("available", Some(1793299994)),
-                credit("available", Some(1793299994)),
+                credit("available", Some(1893542400)),
+                credit("available", Some(1893456000)),
+                credit("available", Some(1893456000)),
                 credit("available", None),
-                credit("redeemed", Some(1793100000)),
-                credit("redeeming", Some(1793100000)),
-                credit("expired", Some(1793100000)),
+                credit("redeemed", Some(1893369600)),
+                credit("redeeming", Some(1893369600)),
+                credit("expired", Some(1893369600)),
                 credit("available", Some(i64::MAX))
             ] }
         }))
@@ -192,9 +188,9 @@ mod tests {
         assert_eq!(
             usage.reset_credit_expirations,
             vec![
-                DateTime::from_timestamp(1793299994, 0),
-                DateTime::from_timestamp(1793299994, 0),
-                DateTime::from_timestamp(1794007459, 0),
+                DateTime::from_timestamp(1893456000, 0),
+                DateTime::from_timestamp(1893456000, 0),
+                DateTime::from_timestamp(1893542400, 0),
                 None,
             ]
         );
@@ -224,7 +220,7 @@ mod tests {
     #[test]
     fn usage_parses_subscription_windows_without_local_activity_stats() {
         let value = result(
-            "Current session: 0% used\nCurrent week (all models): 100% used · resets Oct 29 at 9:59am (Asia/Seoul)\nCurrent week (Fable): 60.5% used\nLast 7d · 100 requests\n  86% of your usage was at >150k context",
+            "Current session: 0% used\nCurrent week (all models): 100% used · resets Jan 3 at 9:00am (Asia/Seoul)\nCurrent week (Fable): 60.5% used\nLast 7d · 100 requests\n  86% of your usage was at >150k context",
         );
         let windows = parse_claude_usage(&serde_json::to_vec(&value).unwrap()).unwrap();
         assert_eq!(windows.len(), 3);
@@ -233,7 +229,7 @@ mod tests {
         assert_eq!(windows[2].used_percent, 60.5);
         assert_eq!(
             windows[1].reset_description.as_deref(),
-            Some("resets Oct 29 at 9:59am (Asia/Seoul)")
+            Some("resets Jan 3 at 9:00am (Asia/Seoul)")
         );
     }
 

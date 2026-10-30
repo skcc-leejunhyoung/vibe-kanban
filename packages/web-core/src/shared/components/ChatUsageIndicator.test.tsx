@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { BaseCodingAgent, type AgentUsage } from 'shared/types';
 import common from '@/i18n/locales/ko/common.json';
 import { formatDateShortWithTime } from '@/shared/lib/date';
-import { AgentUsageTooltip } from './AgentUsageTooltip';
+import { ChatUsageIndicator } from './ChatUsageIndicator';
 
 vi.mock('@vibe/ui/components/Tooltip', () => ({
   Tooltip: ({
@@ -49,11 +49,12 @@ const usage: AgentUsage = {
       reset_description: null,
     },
   ],
-  updated_at: '2026-10-28T01:00:00Z',
+  updated_at: '2030-01-01T01:00:00Z',
   reset_credits: null,
   reset_credit_expirations: [],
-  next_refresh_at: '2026-10-28T01:05:00Z',
+  next_refresh_at: '2030-01-01T01:05:00Z',
   unavailable: false,
+  login_required: false,
 };
 
 function render(
@@ -66,9 +67,11 @@ function render(
   const html = renderToStaticMarkup(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={client}>
-        <AgentUsageTooltip agent={agent} name="Agent" hostId={hostId}>
-          <span>icon</span>
-        </AgentUsageTooltip>
+        <ChatUsageIndicator
+          agent={agent}
+          hostId={hostId}
+          tokenUsageInfo={{ total_tokens: 42000, model_context_window: 200000 }}
+        />
       </QueryClientProvider>
     </I18nextProvider>
   );
@@ -76,7 +79,18 @@ function render(
   return html;
 }
 
-describe('AgentUsageTooltip', () => {
+describe('ChatUsageIndicator', () => {
+  it('identifies a signed-out host without showing raw CLI diagnostics', () => {
+    const html = render({
+      ...usage,
+      windows: [],
+      unavailable: true,
+      login_required: true,
+    });
+    expect(html).toContain('CLI 로그인 필요');
+    expect(html).toContain('컨텍스트: 21%');
+    expect(html).not.toContain('조회 불가');
+  });
   it('shows all three independent Claude limits and their reset information', () => {
     const html = render();
     for (const [label, percent] of [
@@ -88,6 +102,8 @@ describe('AgentUsageTooltip', () => {
       expect(html).toContain(`aria-valuenow="${percent}"`);
     }
     expect(html).toContain('18:00');
+    expect(html).toContain('컨텍스트: 21%');
+    expect(html).toContain('42K / 200K');
     expect(html).not.toContain('resets at');
     expect(html).not.toContain('기본 CLI 계정');
     expect(html).not.toContain('리셋권');
@@ -119,7 +135,7 @@ describe('AgentUsageTooltip', () => {
           {
             label: '7d',
             used_percent: 62,
-            reset_description: 'resets 2026-11-02 04:48 UTC',
+            reset_description: 'resets 2030-01-03 00:00 UTC',
           },
         ],
       },
@@ -128,7 +144,7 @@ describe('AgentUsageTooltip', () => {
     expect(html.match(/role="progressbar"/g)).toHaveLength(1);
     expect(html).toContain('aria-label="주간"');
     expect(html).toContain('62%');
-    expect(html).toContain('2026-11-02 04:48 UTC');
+    expect(html).toContain('2030-01-03 00:00 UTC');
     expect(html).not.toContain('5시간');
     expect(html).not.toContain('리셋권');
   });
@@ -152,7 +168,7 @@ describe('AgentUsageTooltip', () => {
         ...usage,
         windows: [],
         reset_credits: 2,
-        reset_credit_expirations: ['2026-10-30T05:00:00Z'],
+        reset_credit_expirations: ['2030-01-01T00:00:00Z'],
         unavailable: true,
       },
       BaseCodingAgent.CODEX
@@ -164,8 +180,8 @@ describe('AgentUsageTooltip', () => {
   });
 
   it('groups each supplied expiry without replacing the authoritative total', () => {
-    const first = '2026-10-30T05:00:00Z';
-    const second = '2026-11-07T05:00:00Z';
+    const first = '2030-01-01T00:00:00Z';
+    const second = '2030-01-02T00:00:00Z';
     const html = render(
       {
         ...usage,

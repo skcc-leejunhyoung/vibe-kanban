@@ -13,13 +13,14 @@ import {
   type AskUserQuestionItem,
   BaseAgentCapability,
   type Session,
-  type BaseCodingAgent,
+  BaseCodingAgent,
   type ExecutionProcess,
   ExecutionProcessStatus,
   type ExecutorConfig,
   type ReviewError,
 } from 'shared/types';
 import { AgentIcon } from '@/shared/components/AgentIcon';
+import { ChatUsageIndicator } from '@/shared/components/ChatUsageIndicator';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceExecution } from '@/shared/hooks/useWorkspaceExecution';
@@ -2285,7 +2286,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         }
         renderAgentIcon={(executor, className) => (
           <AgentIcon
-            showUsage
             agent={executor as BaseCodingAgent | null | undefined}
             className={className}
           />
@@ -2335,6 +2335,17 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       repoIds={repoIds}
       tokenUsageInfo={tokenUsageInfo}
       supportsContextUsage={supportsContextUsage}
+      contextUsage={
+        effectiveExecutor &&
+        (supportsContextUsage ||
+          effectiveExecutor === BaseCodingAgent.CLAUDE_CODE ||
+          effectiveExecutor === BaseCodingAgent.CODEX) ? (
+          <ChatUsageIndicator
+            agent={effectiveExecutor}
+            tokenUsageInfo={tokenUsageInfo}
+          />
+        ) : undefined
+      }
       autoResume={
         sessionId
           ? {
@@ -2353,7 +2364,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       }
       renderAgentIcon={(executor, className) => (
         <AgentIcon
-          showUsage
           agent={executor as BaseCodingAgent | null | undefined}
           className={className}
         />

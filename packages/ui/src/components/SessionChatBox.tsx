@@ -286,6 +286,7 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   getActiveTurnPatchKey?: () => string | null;
   tokenUsageInfo?: ContextUsageInfo | null;
   supportsContextUsage?: boolean;
+  contextUsage?: ReactNode;
   autoResume?: AutoResumeProps;
   dropzone?: DropzoneProps;
   /**
@@ -364,6 +365,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   getActiveTurnPatchKey,
   tokenUsageInfo,
   supportsContextUsage,
+  contextUsage,
   autoResume,
   dropzone,
   fillHeight,
@@ -1180,9 +1182,10 @@ export function SessionChatBox<TExecutor extends string = string>({
           {autoResume && !isNewSessionMode && (
             <AutoResumeControl {...autoResume} />
           )}
-          {supportsContextUsage && (
-            <ContextUsageGauge tokenUsageInfo={tokenUsageInfo} />
-          )}
+          {contextUsage ??
+            (supportsContextUsage && (
+              <ContextUsageGauge tokenUsageInfo={tokenUsageInfo} />
+            ))}
           <ToolbarDropdown
             variant="ghost"
             label={sessionLabel}

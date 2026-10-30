@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
 import { Tooltip } from './Tooltip';
@@ -15,11 +15,13 @@ function clamp(value: number, min: number, max: number) {
 export interface ContextUsageGaugeProps {
   tokenUsageInfo?: ContextUsageInfo | null;
   className?: string;
+  renderDetails?: (trigger: ReactNode, context: ReactNode) => ReactNode;
 }
 
 export function ContextUsageGauge({
   tokenUsageInfo,
   className,
+  renderDetails,
 }: ContextUsageGaugeProps) {
   const { t } = useTranslation('common');
   const { percentage, formattedUsed, formattedTotal, status } = useMemo(() => {
@@ -87,54 +89,56 @@ export function ContextUsageGauge({
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - progress);
 
-  return (
-    <Tooltip content={tooltip} side="bottom">
-      <div
-        className={cn(
-          'flex items-center justify-center rounded-sm p-half',
-          'hover:bg-panel transition-colors cursor-help',
-          className
-        )}
-        aria-label={
-          status === 'empty'
-            ? t('contextUsage.label')
-            : t('contextUsage.ariaLabel', {
-                percentage: Math.round(percentage),
-              })
-        }
-        role="img"
+  const trigger = (
+    <button
+      type="button"
+      className={cn(
+        'flex items-center justify-center rounded-sm p-half',
+        'hover:bg-panel transition-colors cursor-help',
+        className
+      )}
+      aria-label={
+        status === 'empty'
+          ? t('contextUsage.label')
+          : t('contextUsage.ariaLabel', {
+              percentage: Math.round(percentage),
+            })
+      }
+    >
+      <svg
+        viewBox="0 0 20 20"
+        className="size-icon-base -rotate-90"
+        aria-hidden="true"
       >
-        <svg
-          viewBox="0 0 20 20"
-          className="size-icon-base -rotate-90"
-          aria-hidden="true"
-        >
-          <circle
-            cx="10"
-            cy="10"
-            r={radius}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={strokeWidth}
-            className="text-border/60"
-          />
-          <circle
-            cx="10"
-            cy="10"
-            r={radius}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={strokeWidth}
-            strokeLinecap="round"
-            strokeDasharray={`${circumference} ${circumference}`}
-            strokeDashoffset={dashOffset}
-            className={cn(
-              progressColor,
-              'transition-all duration-500 ease-out'
-            )}
-          />
-        </svg>
-      </div>
+        <circle
+          cx="10"
+          cy="10"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={strokeWidth}
+          className="text-border/60"
+        />
+        <circle
+          cx="10"
+          cy="10"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={`${circumference} ${circumference}`}
+          strokeDashoffset={dashOffset}
+          className={cn(progressColor, 'transition-all duration-500 ease-out')}
+        />
+      </svg>
+    </button>
+  );
+  return renderDetails ? (
+    renderDetails(trigger, tooltip)
+  ) : (
+    <Tooltip content={tooltip} side="bottom">
+      {trigger}
     </Tooltip>
   );
 }

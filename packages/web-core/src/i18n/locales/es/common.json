@@ -1,5 +1,6 @@
 {
   "agentUsage": {
+    "loginRequired": "Inicia sesión en la CLI",
     "resetCredits": "Restablecimientos: {{count}}",
     "resetCreditsExpire": "{{count}} · caducan {{date}}",
     "resetCreditsNeverExpire": "{{count}} · sin caducidad",
