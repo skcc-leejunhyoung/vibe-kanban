@@ -242,3 +242,90 @@ fn missing_or_invalid_review_base_fails_without_creating_refs_or_switching_check
         "feature/review-fixture"
     );
 }
+
+#[test]
+fn publishing_from_single_branch_clone_tracks_only_the_published_head() {
+    for partial in [false, true] {
+        for branch in [
+            "review/00000000-0000-4000-8000-000000000003",
+            "feature/new-pr",
+        ] {
+            let temp = TempDir::new().unwrap();
+            let path = single_branch_clone(&temp, partial);
+            let repo = Repository::open(&path).unwrap();
+            let author_head = repo.head().unwrap().peel_to_commit().unwrap();
+            repo.branch(branch, &author_head, false).unwrap();
+            GitCli::new().git(&path, ["checkout", branch]).unwrap();
+            let mut config = repo.config().unwrap();
+            config
+                .set_str(&format!("branch.{branch}.remote"), "origin")
+                .unwrap();
+            config
+                .set_str(
+                    &format!("branch.{branch}.merge"),
+                    "refs/heads/feature/review-fixture",
+                )
+                .unwrap();
+            let original_fetch = config.get_string("remote.origin.fetch").unwrap();
+            let git = GitService::new();
+            let expected_fetch = vec![
+                original_fetch,
+                format!("+refs/heads/{branch}:refs/remotes/origin/{branch}"),
+            ];
+
+            // Both initial publication and retries must succeed without widening to '*'.
+            for _ in 0..2 {
+                git.push_branch_to_named_remote(&path, branch, "origin", false, false)
+                    .unwrap();
+                let fetch: Vec<_> = repo
+                    .find_remote("origin")
+                    .unwrap()
+                    .fetch_refspecs()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.unwrap().unwrap().to_string())
+                    .collect();
+                assert_eq!(fetch, expected_fetch);
+                assert_eq!(
+                    repo.find_branch(branch, git2::BranchType::Local)
+                        .unwrap()
+                        .upstream()
+                        .unwrap()
+                        .name()
+                        .unwrap(),
+                    Some(format!("origin/{branch}").as_str())
+                );
+            }
+
+            fs::write(path.join("tracked.txt"), "new PR fix\n").unwrap();
+            git.commit(&path, "new PR fix").unwrap();
+            git.push_to_remote(&path, branch, false, false).unwrap();
+            let upstream = Repository::open(temp.path().join("seed")).unwrap();
+            assert_eq!(
+                upstream
+                    .refname_to_id(&format!("refs/heads/{branch}"))
+                    .unwrap(),
+                repo.head().unwrap().target().unwrap()
+            );
+            assert_eq!(
+                upstream
+                    .refname_to_id("refs/heads/feature/review-fixture")
+                    .unwrap(),
+                author_head.id()
+            );
+            assert_eq!(
+                repo.refname_to_id("refs/heads/feature/review-fixture")
+                    .unwrap(),
+                author_head.id()
+            );
+            if partial {
+                assert_eq!(
+                    config
+                        .get_string("remote.origin.partialclonefilter")
+                        .unwrap(),
+                    "blob:none"
+                );
+            }
+        }
+    }
+}

@@ -2624,6 +2624,17 @@ impl GitService {
                 true,
                 "update remote tracking branch",
             )?;
+            let local_ref = format!("refs/heads/{branch_name}");
+            let tracks_head = repo.find_remote(remote_name)?.refspecs().any(|refspec| {
+                refspec.direction() == git2::Direction::Fetch
+                    && refspec
+                        .transform(&local_ref)
+                        .is_ok_and(|target| target.as_str().is_ok_and(|name| name == remote_ref))
+            });
+            if !tracks_head {
+                // A single-branch clone cannot resolve this upstream without a fetch mapping.
+                repo.remote_add_fetch(remote_name, &format!("+{local_ref}:{remote_ref}"))?;
+            }
             branch.set_upstream(Some(&format!("{remote_name}/{branch_name}")))?;
         }
 
