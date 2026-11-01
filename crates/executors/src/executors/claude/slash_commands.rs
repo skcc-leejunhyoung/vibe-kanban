@@ -222,6 +222,15 @@ impl ClaudeCode {
         static KNOWN_SLASH_COMMANDS: OnceLock<Vec<SlashCommandDescription>> = OnceLock::new();
         KNOWN_SLASH_COMMANDS.get_or_init(|| {
             vec![
+                SlashCommandDescription {name: "model".to_string(), description: Some("Select a Vibe session model with /model <id>".to_string())},
+                SlashCommandDescription {name: "effort".to_string(), description: Some("Persist session effort with /effort <level|auto>".to_string())},
+                SlashCommandDescription {name: "reasoning".to_string(), description: Some("Alias for /effort <level|auto>".to_string())},
+                SlashCommandDescription {name: "config".to_string(), description: Some("Set session model/effort with /config model=<id> effort=<level>".to_string())},
+                SlashCommandDescription {name: "plan".to_string(), description: Some("Toggle the Vibe session Plan policy; /plan [on|off]".to_string())},
+                SlashCommandDescription {name: "permissions".to_string(), description: Some("Set the Vibe session permission policy".to_string())},
+                SlashCommandDescription {name: "rename".to_string(), description: Some("Rename the Vibe session; /rename [name]".to_string())},
+                SlashCommandDescription {name: "ps".to_string(), description: Some("Show running Vibe executions in this session".to_string())},
+                SlashCommandDescription {name: "warnings".to_string(), description: Some("Show errors and warnings displayed in this conversation".to_string())},
                 SlashCommandDescription {
                     name: "compact".to_string(),
                     description: Some(

@@ -39,12 +39,41 @@ export function composerSlashCommandOverrides(
     return null;
   }
   const match =
-    /^\/(models?|reasoning|plan|permissions|approvals|fast)(?:\s+([^\n]*))?$/i.exec(
+    /^\/(models?|reasoning|effort|config|settings|plan|permissions|approvals|fast)(?:\s+([^\n]*))?$/i.exec(
       prompt.trim()
     );
   if (!match) return null;
   const command = match[1].toLowerCase();
   const argument = (match[2] ?? '').trim();
+  if (command === 'config' || command === 'settings') {
+    if (!argument || argument === '--help') return null;
+    const overrides: Partial<ExecutorConfig> = {};
+    let reasoningSet = false;
+    for (const setting of argument.split(/\s+/)) {
+      const [key, ...parts] = setting.split('=');
+      const value = parts.join('=');
+      const mapped =
+        key === 'model'
+          ? 'model'
+          : ['effort', 'effortLevel', 'reasoning'].includes(key)
+            ? 'reasoning'
+            : null;
+      if (!mapped || !value)
+        throw new Error(
+          'Usage: /config model=<id> effort=<level>; use Vibe Settings for other preferences.'
+        );
+      const partial = composerSlashCommandOverrides(
+        `/${mapped} ${value}`,
+        config,
+        models
+      );
+      if (!partial) throw new Error('Usage: /config model=<id> effort=<level>');
+      if (mapped === 'model' && reasoningSet) delete partial.reasoning_id;
+      if (mapped === 'reasoning') reasoningSet = true;
+      Object.assign(overrides, partial);
+    }
+    return overrides;
+  }
   if (command === 'fast') {
     if (config.executor !== BaseCodingAgent.CODEX || argument === 'status') {
       return null;
@@ -98,13 +127,18 @@ export function composerSlashCommandOverrides(
     if (/\s/.test(argument)) throw new Error('Usage: /model <model-id>');
     return { model_id: argument, reasoning_id: null };
   }
-  if (command === 'reasoning') {
+  if (command === 'reasoning' || command === 'effort') {
+    if (
+      argument === 'status' &&
+      config.executor === BaseCodingAgent.CLAUDE_CODE
+    )
+      return null;
     const levels =
       config.executor === BaseCodingAgent.CODEX
         ? ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
-        : ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+        : ['auto', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
     if (!levels.includes(argument)) {
-      throw new Error(`Usage: /reasoning ${levels.join('|')}`);
+      throw new Error(`Usage: /${command} ${levels.join('|')}`);
     }
     return { reasoning_id: argument };
   }
@@ -120,4 +154,25 @@ export function composerSlashCommandOverrides(
     default:
       throw new Error('Usage: /permissions auto|supervised|plan|dont_ask');
   }
+}
+
+export function composerSessionCommand(
+  prompt: string,
+  executor: BaseCodingAgent
+) {
+  if (![BaseCodingAgent.CODEX, BaseCodingAgent.CLAUDE_CODE].includes(executor))
+    return null;
+  const match =
+    /^\/(rename|ps|warnings|config|settings)(?:[ \t]+([^\r\n]*))?$/i.exec(
+      prompt.trim()
+    );
+  if (!match) return null;
+  const command = match[1].toLowerCase();
+  const argument = (match[2] ?? '').trim();
+  if (command === 'config' || command === 'settings') {
+    if (argument === '--help') return { command: 'config-help', argument: '' };
+    return argument ? null : { command: 'settings', argument: '' };
+  }
+  if (command !== 'rename' && argument) throw new Error(`Usage: /${command}`);
+  return { command, argument };
 }

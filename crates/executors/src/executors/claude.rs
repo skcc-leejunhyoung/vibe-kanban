@@ -142,6 +142,7 @@ use strum_macros::{AsRefStr, EnumString};
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
 pub enum ClaudeEffort {
+    Auto,
     Low,
     Medium,
     High,
@@ -340,7 +341,9 @@ impl ClaudeCode {
         }
         // Routed, the CLI still sends `output_config.effort`; CCR drops it unless
         // a provider transformer forwards it (e.g. as `reasoning_effort`).
-        if let Some(effort) = &self.effort {
+        if let Some(effort) = &self.effort
+            && effort != &ClaudeEffort::Auto
+        {
             builder = builder.extend_params(["--effort", effort.as_ref()]);
         }
         if let Some(agent) = &self.agent {
@@ -1020,6 +1023,10 @@ impl ClaudeCode {
         env.clone()
             .with_profile(&self.cmd)
             .apply_to_command(&mut command);
+
+        if self.effort == Some(ClaudeEffort::Auto) {
+            command.env("CLAUDE_CODE_EFFORT_LEVEL", "auto");
+        }
 
         // Remove ANTHROPIC_API_KEY if disable_api_key is enabled
         if self.disable_api_key.unwrap_or(false) {
@@ -4024,6 +4031,27 @@ impl ClaudeToolData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn auto_effort_clears_the_profile_flag_and_round_trips_as_a_session_selection() {
+        let mut claude: ClaudeCode =
+            serde_json::from_value(serde_json::json!({"effort":"high"})).unwrap();
+        let mut selection = claude.get_preset_options();
+        selection.reasoning_id = Some("auto".to_string());
+        claude.apply_overrides(&selection);
+        assert_eq!(claude.effort, Some(ClaudeEffort::Auto));
+        assert_eq!(
+            claude.get_preset_options().reasoning_id.as_deref(),
+            Some("auto")
+        );
+        let params = claude
+            .build_command_builder()
+            .await
+            .unwrap()
+            .params
+            .unwrap();
+        assert!(!params.iter().any(|arg| arg == "--effort"));
+    }
     use crate::logs::utils::{EntryIndexProvider, patch::extract_normalized_entry_from_patch};
 
     #[cfg(unix)]

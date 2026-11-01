@@ -135,6 +135,26 @@ async fn codex_cli_completes_and_resumes() {
     )
     .await
     .expect("native session ID for resume");
+    assert!(
+        check_output(
+            &executor,
+            dir.path(),
+            Some(&session),
+            "/export",
+            "COMPAT_INITIAL_OK"
+        )
+        .await
+        .is_none()
+    );
+    let session = check_output(
+        &executor,
+        dir.path(),
+        Some(&session),
+        "/recap",
+        "COMPAT_INITIAL_OK",
+    )
+    .await
+    .expect("recap remains resumable");
     let session = check_output(
         &executor,
         dir.path(),
@@ -194,9 +214,46 @@ async fn codex_cli_slash_command_catalogs() {
         ("/model", "Available models"),
         ("/skills", "Available skills"),
         ("/status", "Session Status"),
+        ("/pwd", "Working Directory"),
+        ("/debug-config", "Configuration Diagnostics"),
     ] {
         check_output(&executor, dir.path(), None, prompt, expected).await;
     }
+}
+
+#[tokio::test]
+async fn local_codex_commands_do_not_require_an_installed_cli() {
+    let executor: Codex =
+        serde_json::from_value(json!({"base_command_override":"synthetic-missing-codex"})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    check_output(&executor, dir.path(), None, "/cwd", "Working Directory").await;
+    check_output(
+        &executor,
+        dir.path(),
+        None,
+        "/recap",
+        "No active conversation",
+    )
+    .await;
+    check_output(
+        &executor,
+        dir.path(),
+        None,
+        "/export",
+        "No active conversation",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires a signed-in Claude CLI; checks a session-local auto effort override without inference"]
+async fn claude_cli_auto_effort_overrides_profile_level() {
+    let command = std::env::var("VK_TEST_CLAUDE_COMMAND").unwrap_or_else(|_| "claude".to_string());
+    let executor: ClaudeCode = serde_json::from_value(json!({"base_command_override":command, "effort":"auto", "env":{"CLAUDE_CODE_EFFORT_LEVEL":"high"},
+        "additional_params":["--max-budget-usd", "0.000001", "--strict-mcp-config", "--mcp-config", "'{\"mcpServers\":{}}'", "--tools="]
+    })).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    check_output(&executor, dir.path(), None, "/effort status", "auto").await;
 }
 
 #[tokio::test]

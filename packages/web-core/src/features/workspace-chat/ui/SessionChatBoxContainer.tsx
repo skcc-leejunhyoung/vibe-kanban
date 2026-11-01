@@ -67,6 +67,7 @@ import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 import { buildAgentPrompt } from '@/shared/lib/promptMessage';
 import {
   composerSlashCommandOverrides,
+  composerSessionCommand,
   splitComposerSettingsPrompt,
 } from '@/shared/lib/composerSlashCommands';
 import { publishChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
@@ -1373,7 +1374,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     ]
   );
 
-  const handleSettingsCommand = useCallback(
+  const handleComposerCommand = useCallback(
     async (prompt: string) => {
       if (!executorConfig) return false;
       try {
@@ -1384,11 +1385,108 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           executorConfig,
           modelSelectorConfig
         );
-        if (!overrides) return false;
+        const action = composerSessionCommand(
+          commandPrompt,
+          executorConfig.executor
+        );
+        if (!overrides && !action) return false;
+        if (action) {
+          if (action.command === 'settings') {
+            void SettingsDialog.show({ initialHostId: hostId ?? 'local' });
+          } else if (action.command === 'config-help') {
+            void ConfirmDialog.show({
+              title: 'Session settings commands',
+              message:
+                'Use /config model=<id> effort=<level> to change session settings, or /config to open Vibe Settings.',
+              confirmText: t('common:ok'),
+              showCancelButton: false,
+              variant: 'info',
+            });
+          } else if (!sessionId) {
+            throw new Error('Start a Vibe session before using this command.');
+          } else if (action.command === 'rename') {
+            if (action.argument) {
+              const draftAtRename = localMessageRef.current;
+              await sessionsApi.update(
+                sessionId,
+                { name: action.argument },
+                hostId
+              );
+              void queryClient.invalidateQueries({
+                queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+              });
+              if (
+                sessionIdRef.current !== sessionId ||
+                localMessageRef.current !== draftAtRename
+              )
+                return true;
+            } else {
+              handleRenameSession(sessionId, session?.name ?? '');
+            }
+          } else if (action.command === 'ps') {
+            const labels = {
+              codingagent: 'Agent',
+              setupscript: 'Setup',
+              cleanupscript: 'Cleanup',
+              archivescript: 'Archive',
+              devserver: 'Dev server',
+            };
+            const running = processes.filter(
+              (p) =>
+                p.session_id === sessionId &&
+                !p.dropped &&
+                p.status === 'running'
+            );
+            void ConfirmDialog.show({
+              title: 'Vibe session processes',
+              message: running.length
+                ? running
+                    .map(
+                      (p) =>
+                        `${labels[p.run_reason]} — ${new Date(p.started_at).toLocaleString()}`
+                    )
+                    .join('; ')
+                : 'No Vibe executions are running in this session.',
+              confirmText: t('common:ok'),
+              showCancelButton: false,
+              variant: 'info',
+            });
+          } else if (action.command === 'warnings') {
+            const ids = new Set(
+              processes
+                .filter((p) => p.session_id === sessionId && !p.dropped)
+                .map((p) => p.id)
+            );
+            const warnings = entries
+              .filter(
+                (e) =>
+                  ids.has(e.executionProcessId) &&
+                  e.type === 'NORMALIZED_ENTRY' &&
+                  (e.content.entry_type.type === 'error_message' ||
+                    (e.content.entry_type.type === 'system_message' &&
+                      /^warning:/i.test(e.content.content.trimStart())))
+              )
+              .slice(-20);
+            void ConfirmDialog.show({
+              title: 'Recent session errors and warnings',
+              message: warnings.length
+                ? warnings
+                    .map((e) =>
+                      e.type === 'NORMALIZED_ENTRY' ? e.content.content : ''
+                    )
+                    .join('\n\n')
+                : 'No errors or warnings are displayed in this conversation.',
+              confirmText: t('common:ok'),
+              showCancelButton: false,
+              variant: 'info',
+            });
+          }
+        }
         cancelDebouncedSave();
         setLocalMessage(remainingMessage);
         localMessageRef.current = remainingMessage;
-        setExecutorOverrides({ ...executorConfig, ...overrides });
+        if (overrides)
+          setExecutorOverrides({ ...executorConfig, ...overrides });
       } catch (error) {
         void ErrorDialog.show({
           title: t('common:error'),
@@ -1403,6 +1501,14 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       cancelDebouncedSave,
       setLocalMessage,
       setExecutorOverrides,
+      sessionId,
+      session,
+      workspaceId,
+      hostId,
+      queryClient,
+      handleRenameSession,
+      processes,
+      entries,
       t,
     ]
   );
@@ -1431,7 +1537,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       });
     };
 
-    if (await handleSettingsCommand(prompt)) return;
+    if (await handleComposerCommand(prompt)) return;
 
     if (!workspaceId || !executorConfig) {
       // Nothing to send into; the hook reports why.
@@ -1572,7 +1678,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     queryClient,
     onSelectSession,
     executorConfig,
-    handleSettingsCommand,
+    handleComposerCommand,
     localMessage,
     reviewMarkdown,
     cancelDebouncedSave,
@@ -1695,7 +1801,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if ((!localMessage.trim() && !reviewMarkdown) || !executorConfig) return;
 
     const { prompt } = buildAgentPrompt(localMessage, [reviewMarkdown]);
-    if (await handleSettingsCommand(prompt)) return;
+    if (await handleComposerCommand(prompt)) return;
 
     // The row is on the list at once (optimistic); free the composer now and
     // put the text back only if the server refuses it.
@@ -1729,7 +1835,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     reviewMarkdown,
     executorConfig,
     queueMessage,
-    handleSettingsCommand,
+    handleComposerCommand,
     cancelDebouncedSave,
     setLocalMessage,
     clearUploadedAttachments,
@@ -1754,7 +1860,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!sessionId || !workspaceId) return;
 
     const { prompt } = buildAgentPrompt(localMessage, [reviewMarkdown]);
-    if (await handleSettingsCommand(prompt)) return;
+    if (await handleComposerCommand(prompt)) return;
 
     cancelDebouncedSave();
     onScrollToBottom('auto');
@@ -1844,7 +1950,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isCodingAgentRunning,
     handleSend,
     handleQueueMessage,
-    handleSettingsCommand,
+    handleComposerCommand,
     sessionId,
     workspaceId,
     localMessage,

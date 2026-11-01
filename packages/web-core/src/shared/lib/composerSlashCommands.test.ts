@@ -7,6 +7,7 @@ import {
 } from 'shared/types';
 import {
   composerSlashCommandOverrides,
+  composerSessionCommand,
   splitComposerSettingsPrompt,
 } from './composerSlashCommands';
 
@@ -29,6 +30,65 @@ it('separates only standalone uploaded files without swallowing other instructio
 
 describe('composer slash command settings', () => {
   const codex: ExecutorConfig = { executor: BaseCodingAgent.CODEX };
+
+  it('persists native Claude effort and config aliases, including explicit auto', () => {
+    const claude = {
+      executor: BaseCodingAgent.CLAUDE_CODE,
+      model_id: 'synthetic-old',
+      reasoning_id: 'high',
+    };
+    expect(composerSlashCommandOverrides('/effort low', claude)).toEqual({
+      reasoning_id: 'low',
+    });
+    expect(composerSlashCommandOverrides('/effort auto', claude)).toEqual({
+      reasoning_id: 'auto',
+    });
+    for (const prompt of [
+      '/config model=synthetic-next effort=low',
+      '/settings effort=low model=synthetic-next',
+    ]) {
+      expect(composerSlashCommandOverrides(prompt, claude)).toEqual({
+        model_id: 'synthetic-next',
+        reasoning_id: 'low',
+      });
+    }
+    expect(composerSlashCommandOverrides('/effort status', claude)).toBeNull();
+    expect(() =>
+      composerSlashCommandOverrides(
+        '/config model=synthetic-next theme=dark',
+        claude
+      )
+    ).toThrow('Usage:');
+    expect(() =>
+      composerSlashCommandOverrides('/config effort=status', claude)
+    ).toThrow('Usage:');
+    expect(claude.model_id).toBe('synthetic-old');
+  });
+
+  it('parses Vibe session actions without treating instructions or other agents as actions', () => {
+    expect(
+      composerSessionCommand('/rename Synthetic session', BaseCodingAgent.CODEX)
+    ).toEqual({ command: 'rename', argument: 'Synthetic session' });
+    expect(
+      composerSessionCommand('/warnings', BaseCodingAgent.CLAUDE_CODE)
+    ).toEqual({ command: 'warnings', argument: '' });
+    expect(composerSessionCommand('/ps', BaseCodingAgent.CODEX)).toEqual({
+      command: 'ps',
+      argument: '',
+    });
+    expect(() =>
+      composerSessionCommand('/ps extra', BaseCodingAgent.CODEX)
+    ).toThrow('Usage:');
+    expect(
+      composerSessionCommand(
+        '/rename name\nother instructions',
+        BaseCodingAgent.CODEX
+      )
+    ).toBeNull();
+    expect(
+      composerSessionCommand('/rename name', BaseCodingAgent.OPENCODE)
+    ).toBeNull();
+  });
   const models: ModelSelectorConfig = {
     providers: [],
     agents: [],

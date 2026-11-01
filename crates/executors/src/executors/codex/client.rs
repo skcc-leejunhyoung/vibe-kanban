@@ -455,11 +455,12 @@ impl AppServerClient {
     pub async fn config_read(
         &self,
         cwd: Option<String>,
+        include_layers: bool,
     ) -> Result<ConfigReadResponse, ExecutorError> {
         let request = ClientRequest::ConfigRead {
             request_id: self.next_request_id(),
             params: ConfigReadParams {
-                include_layers: false,
+                include_layers,
                 cwd,
             },
         };

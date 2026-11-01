@@ -6,7 +6,8 @@ use std::{
 
 use chrono::{Datelike, NaiveDate};
 use codex_app_server_protocol::{
-    ConfigEdit, GetAccountTokenUsageResponse, JSONRPCNotification, MergeStrategy, ReviewTarget,
+    ConfigEdit, ConfigReadResponse, GetAccountTokenUsageResponse, JSONRPCNotification,
+    MergeStrategy, ReviewTarget,
 };
 use codex_protocol::{
     config_types::ServiceTier,
@@ -27,6 +28,90 @@ use crate::{
     },
     stdout_dup::spawn_local_output_process,
 };
+
+// Codex 0.166.0 built-ins: keep known terminal commands out of model prompts.
+const NATIVE_COMMANDS: &[&str] = &[
+    "model",
+    "presets",
+    "daybreak",
+    "ide",
+    "permissions",
+    "keymap",
+    "vim",
+    "setup-default-sandbox",
+    "experimental",
+    "approve",
+    "memories",
+    "skills",
+    "import",
+    "hooks",
+    "review",
+    "rename",
+    "new",
+    "archive",
+    "delete",
+    "resume",
+    "fork",
+    "worktree",
+    "app",
+    "init",
+    "compact",
+    "config",
+    "recap",
+    "plan",
+    "voice",
+    "goal",
+    "agents",
+    "side",
+    "btw",
+    "copy",
+    "export",
+    "raw",
+    "tui",
+    "diff",
+    "mention",
+    "status",
+    "daemon",
+    "warnings",
+    "cd",
+    "pwd",
+    "usage",
+    "debug-config",
+    "title",
+    "statusline",
+    "theme",
+    "pets",
+    "mcp",
+    "apps",
+    "plugins",
+    "logout",
+    "quit",
+    "exit",
+    "feedback",
+    "rollout",
+    "ps",
+    "stop",
+    "clear",
+    "test-approval",
+    "subagents",
+    "debug-m-drop",
+    "debug-m-update",
+    "cwd",
+    "pet",
+    "clean",
+];
+
+fn native_command_guidance(name: &str) -> String {
+    let destination = match name {
+        "goal" | "agents" | "subagents" | "side" | "btw" => {
+            "Use Vibe sessions and the subagent controls in the conversation."
+        }
+        "stop" | "clean" => "Use the Stop button to stop this Vibe execution.",
+        "cd" | "worktree" => "Select or create a Vibe workspace for the desired directory.",
+        _ => "Use Vibe settings or session controls; `/help` lists supported commands.",
+    };
+    format!("`/{name}` is a Codex terminal command that is not connected in Vibe. {destination}")
+}
 
 const CODEX_INIT_PROMPT: &str = include_str!("init_prompt.md");
 const DEFAULT_PROJECT_DOC_FILENAME: &str = "AGENTS.md";
@@ -58,6 +143,22 @@ pub(super) fn hardcoded_slash_commands() -> Vec<SlashCommandDescription> {
             "show account token activity and rate limits; /usage [daily|weekly|cumulative]",
         ),
         ("mcp", "list configured MCP tools"),
+        ("pwd", "show the working directory; /cwd is an alias"),
+        (
+            "debug-config",
+            "show effective settings and configuration layer sources",
+        ),
+        ("recap", "summarize the conversation without compacting it"),
+        (
+            "export",
+            "display the full conversation as Markdown without writing files",
+        ),
+        ("rename", "rename the Vibe session; /rename [name]"),
+        ("ps", "show running Vibe executions in this session"),
+        (
+            "warnings",
+            "show errors and warnings displayed in this conversation",
+        ),
         (
             "skills",
             "list available skills; invoke one with $skill-name in a message",
@@ -69,6 +170,14 @@ pub(super) fn hardcoded_slash_commands() -> Vec<SlashCommandDescription> {
         (
             "reasoning",
             "set reasoning effort with /reasoning <level> in the Vibe composer",
+        ),
+        (
+            "effort",
+            "alias for /reasoning <level> in the Vibe composer",
+        ),
+        (
+            "config",
+            "set session model and reasoning with /config model=<id> effort=<level>",
         ),
         (
             "plan",
@@ -112,7 +221,12 @@ pub enum CodexSlashCommand {
     Compact { instructions: Option<String> },
     Status,
     Usage { view: UsageView },
-    Mcp,
+    Mcp { verbose: bool },
+    Pwd,
+    DebugConfig,
+    Recap,
+    Export,
+    Composer { command: String },
     Models,
     Skills,
     Diff,
@@ -150,7 +264,14 @@ impl CodexSlashCommand {
                 "cumulative" => Self::Usage { view: UsageView::Cumulative },
                 _ => Self::Invalid { message: "Usage: `/usage [daily|weekly|cumulative]`. This command only reads usage; use the Codex CLI to redeem a reset.".to_string() },
             }),
-            "mcp" => Some(Self::Mcp),
+            "mcp" if matches!(cmd.arguments, "" | "verbose") => Some(Self::Mcp { verbose: cmd.arguments == "verbose" }),
+            "mcp" => Some(Self::Invalid { message: "Usage: `/mcp [verbose]`. For OAuth login, run `codex mcp login <server>` in a terminal on the agent host; Vibe does not start a browser callback from this command.".to_string() }),
+            "pwd" | "cwd" if cmd.arguments.is_empty() => Some(Self::Pwd),
+            "debug-config" if cmd.arguments.is_empty() => Some(Self::DebugConfig),
+            "recap" if cmd.arguments.is_empty() => Some(Self::Recap),
+            "export" if cmd.arguments.is_empty() => Some(Self::Export),
+            "pwd" | "cwd" | "debug-config" | "recap" | "export" => Some(Self::Invalid { message: format!("Usage: `/{}` without arguments. `/export` displays Markdown in the chat and does not write a file.", cmd.name) }),
+            "rename" | "ps" | "warnings" => Some(Self::Composer { command: cmd.name.clone() }),
             "help" | "commands" => Some(Self::Help),
             "diff" if cmd.arguments.is_empty() => Some(Self::Diff),
             "skills" if cmd.arguments.is_empty() => Some(Self::Skills),
@@ -192,7 +313,7 @@ impl CodexSlashCommand {
                     prompt: cmd.arguments.to_string(),
                 })
             }
-            "model" | "models" | "reasoning" | "plan" | "permissions" | "approvals" => {
+            "model" | "models" | "reasoning" | "effort" | "config" | "settings" | "plan" | "permissions" | "approvals" => {
                 Some(Self::Settings)
             }
             "diff" | "skills" => Some(Self::Invalid {
@@ -236,6 +357,7 @@ impl CodexSlashCommand {
                     _ => None,
                 },
             }),
+            name if NATIVE_COMMANDS.contains(&name) => Some(Self::Invalid { message: native_command_guidance(name) }),
             _ => None,
         }
     }
@@ -253,6 +375,18 @@ impl Codex {
             return match command {
                 CodexSlashCommand::Help => self.return_static_reply(current_dir, Ok(commands_message())).await,
                 CodexSlashCommand::Settings => self.return_static_reply(current_dir, Ok("Use the model, reasoning, and permission selectors in the Vibe Kanban composer to change session settings. `/model <id>`, `/reasoning <level>`, `/plan [on|off]`, and `/permissions <policy>` also update these selectors when sent from the composer.".to_string())).await,
+                CodexSlashCommand::Composer { command } => self.return_static_reply(current_dir, Ok(format!("Use `/{command}` in the Vibe composer to work with the current Vibe session."))).await,
+                CodexSlashCommand::Pwd => self.return_static_reply(current_dir, Ok(format!("# Working Directory\n\n`{}`", current_dir.display()))).await,
+                CodexSlashCommand::Recap => {
+                    if session_id.is_none() {
+                        return self.return_static_reply(current_dir, Ok("_No active conversation to recap._".to_string())).await;
+                    }
+                    let mut recap = self.clone();
+                    recap.sandbox = Some(super::SandboxMode::ReadOnly);
+                    recap.ask_for_approval = Some(super::AskForApproval::Never);
+                    recap.dont_ask = true;
+                    recap.spawn_agent_with_prompt(current_dir, "Summarize this conversation for the user. Include the objective, decisions, changes, verification and remaining work. Preserve exact names and identifiers. Do not modify files or compact the conversation. Do not use tools.", session_id, env).await
+                }
                 CodexSlashCommand::Invalid { message } => self.return_static_reply(current_dir, Err(message)).await,
                 CodexSlashCommand::Review { target } => {
                     let parts = self.build_command_builder()?.build_initial()?;
@@ -298,7 +432,13 @@ impl Codex {
                     self.handle_app_server_slash_command(current_dir, command, session_id, env)
                         .await
                 }
-                CodexSlashCommand::Mcp | CodexSlashCommand::Models | CodexSlashCommand::Skills | CodexSlashCommand::Usage { .. } => {
+                CodexSlashCommand::Export => {
+                    match session_id {
+                        Some(_) => self.handle_app_server_slash_command(current_dir, command, session_id, env).await,
+                        None => self.return_static_reply(current_dir, Ok("_No active conversation to export._".to_string())).await,
+                    }
+                }
+                CodexSlashCommand::Mcp { .. } | CodexSlashCommand::Models | CodexSlashCommand::Skills | CodexSlashCommand::Usage { .. } | CodexSlashCommand::DebugConfig => {
                     self.handle_app_server_slash_command(current_dir, command, None, env)
                         .await
                 }
@@ -387,8 +527,20 @@ impl Codex {
                         log_event_raw(client.log_writer(), message).await?;
                         exit_signal_tx.send_exit_signal(ExecutorExitResult::Success).await;
                     }
-                    CodexSlashCommand::Mcp => {
-                        let message = fetch_mcp_status_message(&client).await?;
+                    CodexSlashCommand::DebugConfig => {
+                        let config = client.config_read(Some(cwd.to_string_lossy().into_owned()), true).await?;
+                        let message = format_debug_config(&config, &thread_start_params);
+                        log_event_raw(client.log_writer(), message).await?;
+                        exit_signal_tx.send_exit_signal(ExecutorExitResult::Success).await;
+                    }
+                    CodexSlashCommand::Export => {
+                        let thread = client.thread_read_full(session_id.ok_or_else(|| ExecutorError::Io(std::io::Error::other("No active conversation to export")))?).await?;
+                        let message = format!("# Conversation Export\n\n{}", super::transcript::thread_transcript_markdown(&thread.thread));
+                        log_event_raw(client.log_writer(), message).await?;
+                        exit_signal_tx.send_exit_signal(ExecutorExitResult::Success).await;
+                    }
+                    CodexSlashCommand::Mcp { verbose } => {
+                        let message = fetch_mcp_status_message(&client, verbose).await?;
                         log_event_raw(client.log_writer(), message).await?;
                         exit_signal_tx
                             .send_exit_signal(ExecutorExitResult::Success)
@@ -420,7 +572,7 @@ impl Codex {
                     CodexSlashCommand::Fast { enable, status } => {
                         // Read current config to support toggle
                         let current_is_fast = client
-                            .config_read(None)
+                            .config_read(None, false)
                             .await?
                             .config.service_tier
                             .and_then(|t| ServiceTier::from_request_value(&t))
@@ -781,7 +933,7 @@ async fn fetch_status_message(
         None => None,
     };
 
-    let config_resp = client.config_read(None).await.ok();
+    let config_resp = client.config_read(None, false).await.ok();
 
     lines.push("## Configuration".to_string());
     if let Some(ctx) = rollout.as_ref().and_then(|r| r.turn_context.as_ref()) {
@@ -1027,7 +1179,10 @@ async fn find_rollout_file(dir: &Path, session_id: &str) -> Option<PathBuf> {
     None
 }
 
-async fn fetch_mcp_status_message(client: &AppServerClient) -> Result<String, ExecutorError> {
+async fn fetch_mcp_status_message(
+    client: &AppServerClient,
+    verbose: bool,
+) -> Result<String, ExecutorError> {
     let mut cursor = None;
     let mut servers = Vec::new();
     loop {
@@ -1038,10 +1193,13 @@ async fn fetch_mcp_status_message(client: &AppServerClient) -> Result<String, Ex
             break;
         }
     }
-    Ok(format_mcp_status(&servers))
+    Ok(format_mcp_status(&servers, verbose))
 }
 
-fn format_mcp_status(servers: &[codex_app_server_protocol::McpServerStatus]) -> String {
+fn format_mcp_status(
+    servers: &[codex_app_server_protocol::McpServerStatus],
+    verbose: bool,
+) -> String {
     if servers.is_empty() {
         return "_No MCP servers configured._".to_string();
     }
@@ -1057,6 +1215,24 @@ fn format_mcp_status(servers: &[codex_app_server_protocol::McpServerStatus]) -> 
             lines.push("- **Tools**: _none_".to_string());
         } else {
             lines.push(format!("- **Tools**: `{}`", tools.join("`, `")));
+            if verbose {
+                for name in &tools {
+                    let tool = &server.tools[name];
+                    lines.push(format!(
+                        "  - **{name}**: {}",
+                        tool.description.as_deref().unwrap_or("No description")
+                    ));
+                    if let Some(properties) = tool
+                        .input_schema
+                        .get("properties")
+                        .and_then(serde_json::Value::as_object)
+                    {
+                        let mut arguments: Vec<_> = properties.keys().map(String::as_str).collect();
+                        arguments.sort_unstable();
+                        lines.push(format!("    - Arguments: {}", arguments.join(", ")));
+                    }
+                }
+            }
         }
 
         if !server.resources.is_empty() {
@@ -1087,6 +1263,76 @@ fn format_mcp_status(servers: &[codex_app_server_protocol::McpServerStatus]) -> 
     lines.join("\n")
 }
 
+fn format_debug_config(
+    config: &ConfigReadResponse,
+    selected: &codex_app_server_protocol::ThreadStartParams,
+) -> String {
+    let raw = serde_json::to_value(&config.config).unwrap_or_default();
+    let mut settings = serde_json::Map::new();
+    // Only public settings are displayed; provider credentials and instruction bodies stay local.
+    for key in [
+        "model",
+        "model_provider",
+        "approval_policy",
+        "sandbox_mode",
+        "model_reasoning_effort",
+        "model_reasoning_summary",
+        "service_tier",
+    ] {
+        settings.insert(key.to_string(), raw.get(key).cloned().unwrap_or_default());
+    }
+    for (key, value) in [
+        ("model", selected.model.as_ref()),
+        ("model_provider", selected.model_provider.as_ref()),
+    ] {
+        if let Some(value) = value {
+            settings.insert(key.to_string(), json!(value));
+        }
+    }
+    if let Some(policy) = &selected.approval_policy {
+        settings.insert("approval_policy".to_string(), json!(policy));
+    }
+    if let Some(sandbox) = &selected.sandbox {
+        settings.insert("sandbox_mode".to_string(), json!(sandbox));
+    }
+    if let Some(tier) = &selected.service_tier {
+        settings.insert("service_tier".to_string(), json!(tier));
+    }
+    if let Some(overrides) = &selected.config {
+        for key in ["model_reasoning_effort", "model_reasoning_summary"] {
+            if let Some(value) = overrides.get(key) {
+                settings.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    let mut lines = vec!["# Configuration Diagnostics\n".to_string()];
+    for (key, value) in settings {
+        lines.push(format!("- **{key}**: `{value}`"));
+    }
+    lines.push("\n## Configuration Layers\n".to_string());
+    for layer in config.layers.iter().flatten() {
+        let source = serde_json::to_value(&layer.name).unwrap_or_default();
+        let kind = source
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let file = source
+            .get("file")
+            .and_then(serde_json::Value::as_str)
+            .map(|path| format!(" — `{path}`"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- {kind}{file} ({})",
+            if layer.disabled_reason.is_some() {
+                "disabled"
+            } else {
+                "enabled"
+            }
+        ));
+    }
+    lines.join("\n")
+}
+
 fn format_mcp_auth_status(status: &codex_app_server_protocol::McpAuthStatus) -> &'static str {
     match status {
         codex_app_server_protocol::McpAuthStatus::Unknown => "unknown",
@@ -1110,6 +1356,101 @@ mod tests {
                 command.name
             );
         }
+    }
+
+    #[test]
+    fn all_native_commands_have_an_explicit_policy_and_custom_prompts_still_pass_through() {
+        assert_eq!(NATIVE_COMMANDS.len(), 68);
+        for name in NATIVE_COMMANDS {
+            assert!(
+                CodexSlashCommand::parse(&format!("/{name}")).is_some(),
+                "missing policy for /{name}"
+            );
+        }
+        for prompt in ["/synthetic-custom", "/prompts:synthetic request"] {
+            assert!(CodexSlashCommand::parse(prompt).is_none());
+        }
+        for prompt in ["/goal do work", "/theme", "/stop", "/plugins"] {
+            assert!(matches!(
+                CodexSlashCommand::parse(prompt),
+                Some(CodexSlashCommand::Invalid { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn routes_connected_commands_and_rejects_unsupported_arguments() {
+        assert!(matches!(
+            CodexSlashCommand::parse("/cwd"),
+            Some(CodexSlashCommand::Pwd)
+        ));
+        assert!(matches!(
+            CodexSlashCommand::parse("/debug-config"),
+            Some(CodexSlashCommand::DebugConfig)
+        ));
+        assert!(matches!(
+            CodexSlashCommand::parse("/recap"),
+            Some(CodexSlashCommand::Recap)
+        ));
+        assert!(matches!(
+            CodexSlashCommand::parse("/export"),
+            Some(CodexSlashCommand::Export)
+        ));
+        assert!(matches!(
+            CodexSlashCommand::parse("/mcp verbose"),
+            Some(CodexSlashCommand::Mcp { verbose: true })
+        ));
+        for prompt in [
+            "/mcp login synthetic",
+            "/mcp unsupported",
+            "/export ../synthetic.md",
+            "/pwd extra",
+            "/recap\nother instructions",
+        ] {
+            assert!(matches!(
+                CodexSlashCommand::parse(prompt),
+                Some(CodexSlashCommand::Invalid { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn configuration_diagnostics_apply_session_overrides_without_dumping_secrets() {
+        let config: ConfigReadResponse = serde_json::from_value(json!({
+            "config": {"model": "synthetic-default", "api_key": "synthetic-secret", "developer_instructions": "synthetic-private-instructions"},
+            "origins": {},
+            "layers": [{"name": {"type": "sessionFlags"}, "version": "synthetic", "config": {"token": "synthetic-layer-secret"}}]
+        })).unwrap();
+        let selected = codex_app_server_protocol::ThreadStartParams {
+            model: Some("synthetic-selected".to_string()),
+            service_tier: Some(None),
+            ..Default::default()
+        };
+        let rendered = format_debug_config(&config, &selected);
+        assert!(rendered.contains("synthetic-selected"));
+        assert!(rendered.contains("sessionFlags"));
+        assert!(rendered.contains("**service_tier**: `null`"));
+        for secret in [
+            "synthetic-secret",
+            "synthetic-private-instructions",
+            "synthetic-layer-secret",
+        ] {
+            assert!(!rendered.contains(secret));
+        }
+    }
+
+    #[test]
+    fn verbose_mcp_adds_tool_descriptions_and_arguments() {
+        let server = serde_json::from_value(json!({"name":"synthetic-server", "authStatus":"notLoggedIn", "tools": {
+            "synthetic-tool": {"name":"synthetic-tool", "description":"Synthetic tool details", "inputSchema":{"type":"object", "properties":{"synthetic_arg":{"type":"string"}}}}
+        }, "resources":[], "resourceTemplates":[]})).unwrap();
+        assert!(
+            !format_mcp_status(std::slice::from_ref(&server), false)
+                .contains("Synthetic tool details")
+        );
+        let rendered = format_mcp_status(&[server], true);
+        assert!(rendered.contains("Synthetic tool details"));
+        assert!(rendered.contains("synthetic_arg"));
     }
 
     #[test]

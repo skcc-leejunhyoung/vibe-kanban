@@ -32,6 +32,22 @@ The available slash commands depend on which coding agent you're using. Vibe Kan
 Terminal-only interactions such as theme selection are unavailable. For Codex and Claude Code, `/model <id>`, `/reasoning <level>`, `/plan [on|off]`, and `/permissions auto|supervised|plan|dont_ask` update the composer settings for subsequent turns, including while a turn is running. These setting commands preserve attachments and do not interrupt or queue a turn. `/approvals` is an alias for `/permissions`.
 </Note>
 
+### Vibe Session Commands
+
+The following commands work with both Codex and Claude Code in the composer. They also work when you choose queue or send now: they update the session or open the requested view without interrupting the running agent. Attachments and review comments remain in the draft.
+
+| Command | Description |
+|---------|-------------|
+| `/rename [name]` | Rename the current Vibe session, or open its rename dialog |
+| `/ps` | Show running Vibe executions in the current session |
+| `/warnings` | Show up to 20 recent errors and warnings displayed in the current conversation |
+| `/config` | Open Vibe Settings for the selected host; `/settings` is an alias |
+| `/config model=<id> effort=<level>` | Save model and reasoning selections together for subsequent turns; either setting can be used alone |
+
+`/effort <level>` is an alias for `/reasoning <level>`. With Claude Code, `/effort auto` explicitly removes the profile's fixed effort for subsequent turns. The selection survives reopening the composer. `/effort status` remains a native Claude query. Use `/config --help` for the Vibe command syntax; other preferences belong in Vibe Settings.
+
+These commands manage Vibe sessions. `/ps` shows Vibe executions rather than the native CLI's internal terminal jobs, and `/warnings` reads errors and warnings already displayed in the conversation.
+
 ### Claude Code
 
 Claude Code provides built-in commands, user-defined commands, and skills. For full details, see the [built-in commands](https://code.claude.com/docs/en/interactive-mode#built-in-commands) and [skills](https://code.claude.com/docs/en/skills) documentation.
@@ -62,7 +78,11 @@ Vibe Kanban surfaces a curated subset of Codex built-in commands. For the full u
 | `/init` | Generate an AGENTS.md scaffold in the current directory |
 | `/status` | Display session configuration and token usage |
 | `/usage [daily\|weekly\|cumulative]` | Show account token activity, rate limits, and available resets |
-| `/mcp` | List configured MCP tools |
+| `/mcp [verbose]` | List configured MCP tools; verbose adds descriptions and argument names |
+| `/pwd` | Show the working directory; `/cwd` is an alias |
+| `/debug-config` | Show selected public settings and configuration layer sources without provider credentials or instruction bodies |
+| `/recap` | Ask for a summary of the active conversation without compacting it; uses a model turn with a read-only sandbox |
+| `/export` | Display the current Codex conversation as Markdown in the chat without writing or overwriting files |
 | `/skills` | List enabled skills; invoke one with `$skill-name` in a message |
 | `/model [id]` | List models or select a model in the composer; `/models` is an alias |
 | `/reasoning <level>` | Select reasoning effort in the composer |
@@ -72,6 +92,8 @@ Vibe Kanban surfaces a curated subset of Codex built-in commands. For the full u
 | `/help` | List supported commands; `/commands` is an alias |
 
 Fast changes retain the selected reasoning effort and apply to subsequent turns. Wait for model discovery before changing Fast mode. Terminal session-management commands such as `/new`, `/resume`, `/fork`, and `/quit` are handled through Vibe Kanban's session controls. Unknown commands remain available for custom prompts.
+
+Known Codex terminal commands that are not connected to Vibe produce an explicit message instead of becoming a model prompt. This includes native goal and agent-management menus and terminal display settings. `/mcp login <server>` provides instructions to run `codex mcp login <server>` in a terminal on the agent host; Vibe does not launch an OAuth callback from this command. Unsupported MCP arguments are rejected.
 
 `/usage` reads account-wide usage without starting a model turn. Daily activity and account summary fields require Codex service authentication; unavailable fields are shown explicitly. Weekly totals use weeks starting Monday, and cumulative totals cover the returned daily history. This command does not redeem usage resets.
 

@@ -210,6 +210,29 @@ describe('ModelSelectorContainer with session overrides', () => {
     });
   });
 
+  it('restores Claude auto effort after a new composer mount', async () => {
+    const claude = {
+      executor: BaseCodingAgent.CLAUDE_CODE,
+      model_id: 'synthetic-claude',
+      reasoning_id: 'high',
+    };
+    await act(() => root.render(<Chat lastUsed={claude} />));
+    await act(() => applyCommand('/effort auto'));
+    expect(current).toMatchObject({
+      model_id: 'synthetic-claude',
+      reasoning_id: 'auto',
+    });
+    const saved = persisted.at(-1)!;
+    await act(() => root.render(null));
+    await act(() => root.render(<Chat lastUsed={saved} />));
+    expect(current?.reasoning_id).toBe('auto');
+    await act(() => applyCommand('/settings effort=low model=synthetic-next'));
+    expect(current).toMatchObject({
+      model_id: 'synthetic-next',
+      reasoning_id: 'low',
+    });
+  });
+
   it('persists slash Fast changes and restores them when the composer remounts', async () => {
     await act(() => root.render(<Chat lastUsed={lastUsed} />));
     await act(() => applyCommand('/fast on'));
