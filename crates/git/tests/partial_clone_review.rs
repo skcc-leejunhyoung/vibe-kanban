@@ -244,6 +244,209 @@ fn missing_or_invalid_review_base_fails_without_creating_refs_or_switching_check
 }
 
 #[test]
+fn review_base_outside_single_branch_mapping_resolves_and_refreshes_status() {
+    for partial in [false, true] {
+        for remote_name in ["origin", "mirror/team"] {
+            let temp = TempDir::new().unwrap();
+            let path = single_branch_clone(&temp, partial);
+            let repo = Repository::open(&path).unwrap();
+            if remote_name != "origin" {
+                repo.remote_rename("origin", remote_name).unwrap();
+                // Both prefixes match; only the longer registered name owns this ref.
+                repo.remote("mirror", "/unused-shorter-remote").unwrap();
+                repo.config()
+                    .unwrap()
+                    .set_str(
+                        "remote.mirror.fetch",
+                        "+refs/heads/other:refs/remotes/mirror/other",
+                    )
+                    .unwrap();
+            }
+            let original_head = repo.head().unwrap().target();
+            let review_branch = "review/00000000-0000-4000-8000-000000000004";
+            repo.branch(
+                review_branch,
+                &repo.head().unwrap().peel_to_commit().unwrap(),
+                false,
+            )
+            .unwrap();
+            let config_key = format!("remote.{remote_name}.fetch");
+            let original_fetch = repo.config().unwrap().get_string(&config_key).unwrap();
+            fs::write(path.join("tracked.txt"), "author edits\n").unwrap();
+            fs::write(path.join("notes.txt"), "author notes\n").unwrap();
+
+            let git = GitService::new();
+            git.ensure_remote_branch(&path, remote_name, "dev").unwrap();
+            let base = format!("{remote_name}/dev");
+            assert_eq!(
+                git.get_remote_from_branch_name(&path, &base).unwrap().name,
+                remote_name
+            );
+            assert_eq!(git.local_target_branch_name(&path, &base).unwrap(), "dev");
+            assert_eq!(
+                git.get_remote_branch_status(&path, review_branch, Some(&base))
+                    .unwrap(),
+                (1, 0)
+            );
+
+            // Polling must compare against the newly fetched base, not the old ref handle.
+            let seed = Repository::open(temp.path().join("seed")).unwrap();
+            let old_base = seed
+                .find_reference("refs/heads/dev")
+                .unwrap()
+                .peel_to_commit()
+                .unwrap();
+            let signature =
+                git2::Signature::now("Synthetic Test", "fixture@example.invalid").unwrap();
+            let new_base = seed
+                .commit(
+                    Some("refs/heads/dev"),
+                    &signature,
+                    &signature,
+                    "advance synthetic base",
+                    &old_base.tree().unwrap(),
+                    &[&old_base],
+                )
+                .unwrap();
+            assert_eq!(
+                git.get_remote_branch_status(&path, review_branch, Some(&base))
+                    .unwrap(),
+                (1, 1)
+            );
+            assert_eq!(
+                repo.refname_to_id(&format!("refs/remotes/{base}")).unwrap(),
+                new_base
+            );
+            assert_eq!(repo.head().unwrap().target(), original_head);
+            assert_eq!(
+                repo.head().unwrap().shorthand().unwrap(),
+                "feature/review-fixture"
+            );
+            assert_eq!(
+                fs::read_to_string(path.join("tracked.txt")).unwrap(),
+                "author edits\n"
+            );
+            assert_eq!(
+                fs::read_to_string(path.join("notes.txt")).unwrap(),
+                "author notes\n"
+            );
+            assert_eq!(
+                repo.config().unwrap().get_string(&config_key).unwrap(),
+                original_fetch
+            );
+            assert!(
+                repo.find_reference(&format!("refs/remotes/{remote_name}/main"))
+                    .is_err()
+            );
+            assert!(!git.check_local_branch_exists(&path, "dev").unwrap());
+            if partial {
+                assert_eq!(
+                    repo.config()
+                        .unwrap()
+                        .get_string(&format!("remote.{remote_name}.partialclonefilter"))
+                        .unwrap(),
+                    "blob:none"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn review_base_status_fetch_respects_custom_destination_mappings() {
+    for partial in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let path = single_branch_clone(&temp, partial);
+        let cli = GitCli::new();
+        cli.git(
+            &path,
+            [
+                "config",
+                "--add",
+                "remote.origin.fetch",
+                "+refs/heads/dev:refs/remotes/cache/base",
+            ],
+        )
+        .unwrap();
+        cli.fetch_with_refspec(&path, "origin", "refs/heads/dev:refs/remotes/cache/base")
+            .unwrap();
+        let original_fetch = cli
+            .git(&path, ["config", "--get-all", "remote.origin.fetch"])
+            .unwrap();
+        let git = GitService::new();
+        assert_eq!(
+            git.get_remote_from_branch_name(&path, "cache/base")
+                .unwrap()
+                .name,
+            "origin"
+        );
+        assert_eq!(
+            git.get_remote_branch_status(&path, "feature/review-fixture", Some("cache/base"))
+                .unwrap(),
+            (1, 0)
+        );
+        assert_eq!(
+            cli.git(&path, ["config", "--get-all", "remote.origin.fetch"])
+                .unwrap(),
+            original_fetch
+        );
+        let repo = Repository::open(&path).unwrap();
+        assert!(repo.find_reference("refs/remotes/origin/dev").is_err());
+        assert!(repo.find_reference("refs/remotes/origin/main").is_err());
+    }
+}
+
+#[test]
+fn remote_resolution_preserves_custom_mappings_and_rejects_unknown_or_ambiguous_refs() {
+    let temp = TempDir::new().unwrap();
+    let git = GitService::new();
+    git.initialize_repo_with_main_branch(temp.path()).unwrap();
+    let repo = Repository::open(temp.path()).unwrap();
+    let head = repo.head().unwrap().target().unwrap();
+    repo.remote("configured", "/unused-configured-remote")
+        .unwrap();
+    repo.remote("cache", "/unused-prefix-remote").unwrap();
+    let mut config = repo.config().unwrap();
+    config
+        .set_str(
+            "remote.configured.fetch",
+            "+refs/heads/*:refs/remotes/cache/*",
+        )
+        .unwrap();
+    config
+        .set_str(
+            "remote.cache.fetch",
+            "+refs/heads/other:refs/remotes/cache/other",
+        )
+        .unwrap();
+    repo.reference("refs/remotes/cache/dev", head, true, "synthetic base")
+        .unwrap();
+    assert_eq!(
+        git.get_remote_from_branch_name(temp.path(), "cache/dev")
+            .unwrap()
+            .name,
+        "configured"
+    );
+    repo.reference("refs/remotes/cache-extra/dev", head, true, "unknown remote")
+        .unwrap();
+    assert!(
+        git.get_remote_from_branch_name(temp.path(), "cache-extra/dev")
+            .is_err()
+    );
+
+    repo.remote("second", "/unused-second-remote").unwrap();
+    config
+        .set_str("remote.second.fetch", "+refs/heads/*:refs/remotes/cache/*")
+        .unwrap();
+    let error = git
+        .get_remote_from_branch_name(temp.path(), "cache/dev")
+        .unwrap_err();
+    assert!(
+        matches!(error, git::GitServiceError::Git(ref error) if error.code() == git2::ErrorCode::Ambiguous)
+    );
+}
+
+#[test]
 fn publishing_from_single_branch_clone_tracks_only_the_published_head() {
     for partial in [false, true] {
         for branch in [

@@ -1088,8 +1088,8 @@ impl GitService {
                 .upstream()?
         }
         .into_reference();
-        let remote = self.get_remote_from_branch_ref(&repo, &base_branch_ref)?;
-        self.fetch_all_from_remote(&repo, &remote)?;
+        self.fetch_branch_from_remote(&repo, &base_branch_ref)?;
+        let base_branch_ref = repo.find_reference(base_branch_ref.name()?)?;
         self.get_branch_status_inner(&repo, &branch_ref, &base_branch_ref)
     }
 
@@ -2484,7 +2484,22 @@ impl GitService {
         branch_ref: &Reference,
     ) -> Result<Remote<'a>, GitServiceError> {
         let branch_name = branch_ref.name()?.to_string();
-        let remote_name_buf = repo.branch_remote_name(&branch_name)?;
+        let remote_name_buf = match repo.branch_remote_name(&branch_name) {
+            Ok(name) => name,
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {
+                // Explicitly fetched refs may be outside a single-branch clone's refspec.
+                let remotes = repo.remotes()?;
+                let names = remotes.iter().collect::<Result<Vec<_>, _>>()?;
+                let name = names
+                    .into_iter()
+                    .flatten()
+                    .filter(|name| branch_name.starts_with(&format!("refs/remotes/{name}/")))
+                    .max_by_key(|name| name.len())
+                    .ok_or(error)?;
+                return Ok(repo.find_remote(name)?);
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         let remote_name = str::from_utf8(&remote_name_buf)
             .map_err(|e| {
@@ -2783,11 +2798,14 @@ impl GitService {
         remote: &Remote,
         refspec: &str,
     ) -> Result<(), GitServiceError> {
-        // Get the remote
-        let remote_url = remote.url()?;
+        // Named remotes preserve partial-clone filters and authentication configuration.
+        let remote_source = match remote.name()? {
+            Some(name) => name,
+            None => remote.url()?,
+        };
 
         let git_cli = GitCli::new();
-        if let Err(e) = git_cli.fetch_with_refspec(repo.path(), remote_url, refspec) {
+        if let Err(e) = git_cli.fetch_with_refspec(repo.path(), remote_source, refspec) {
             tracing::error!("Fetch from GitHub failed: {}", e);
             return Err(e.into());
         }
@@ -2805,7 +2823,27 @@ impl GitService {
         let remote_name = remote.name()?.unwrap_or(&default_remote.name);
         let dest_ref = branch.name()?;
         let remote_prefix = format!("refs/remotes/{remote_name}/");
-        let src_ref = dest_ref.replacen(&remote_prefix, "refs/heads/", 1);
+        let src_ref = match remote
+            .refspecs()
+            .find(|spec| spec.direction() == git2::Direction::Fetch && spec.dst_matches(dest_ref))
+        {
+            Some(spec) => {
+                let source = spec.rtransform(dest_ref)?;
+                str::from_utf8(&source)
+                    .map_err(|e| {
+                        GitServiceError::InvalidRepository(format!("Invalid fetch source: {e}"))
+                    })?
+                    .to_string()
+            }
+            None => {
+                let branch = dest_ref.strip_prefix(&remote_prefix).ok_or_else(|| {
+                    GitServiceError::InvalidRepository(format!(
+                        "Ref '{dest_ref}' is outside remote '{remote_name}'"
+                    ))
+                })?;
+                format!("refs/heads/{branch}")
+            }
+        };
         let refspec = format!("+{src_ref}:{dest_ref}");
         self.fetch_from_remote(repo, &remote, &refspec)
     }
