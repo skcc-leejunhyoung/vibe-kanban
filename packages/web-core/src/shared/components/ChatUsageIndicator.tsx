@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { BaseCodingAgent } from 'shared/types';
@@ -8,18 +8,10 @@ import {
   ContextUsageGauge,
   type ContextUsageInfo,
 } from '@vibe/ui/components/ContextUsageGauge';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@vibe/ui/components/Dialog';
 import { agentsApi } from '@/shared/lib/api';
 import { formatBrowserDateTime } from '@/shared/lib/date';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
-import { restoreDialogFocus } from '@vibe/ui/lib/dialog-keyboard';
 
 const REFRESH_MS = 5 * 60 * 1000;
 
@@ -33,8 +25,6 @@ export function ChatUsageIndicator({
   tokenUsageInfo?: ContextUsageInfo | null;
 }) {
   const { t } = useTranslation('common');
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
   const supportsUsage =
     agent === BaseCodingAgent.CLAUDE_CODE || agent === BaseCodingAgent.CODEX;
   const contextHostId = useHostId();
@@ -128,30 +118,9 @@ export function ChatUsageIndicator({
     <ContextUsageGauge
       tokenUsageInfo={tokenUsageInfo}
       renderDetails={(trigger, context) => (
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <Tooltip
-            side="top"
-            content={content(context)}
-            className={dialogOpen ? 'hidden' : undefined}
-          >
-            <DialogTrigger asChild ref={triggerRef}>
-              {trigger}
-            </DialogTrigger>
-          </Tooltip>
-          <DialogContent
-            className="max-w-sm p-double"
-            aria-describedby={undefined}
-            onCloseAutoFocus={(event) => {
-              event.preventDefault();
-              restoreDialogFocus(triggerRef.current);
-            }}
-          >
-            <DialogHeader>
-              <DialogTitle>{t('contextUsage.label')}</DialogTitle>
-            </DialogHeader>
-            {content(context)}
-          </DialogContent>
-        </Dialog>
+        <Tooltip side="top" content={content(context)} openOnClick>
+          {trigger}
+        </Tooltip>
       )}
     />
   );
