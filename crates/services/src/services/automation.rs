@@ -90,10 +90,12 @@ async fn drain_to(pool: &SqlitePool, url: &str, token: &str, host_id: &str) {
         let Ok(mut event) = serde_json::from_str::<Value>(&payload) else {
             continue;
         };
-        if event["type"] == "artifact_scope_ended" {
+        let lifecycle =
+            event["type"] == "artifact_scope_ended" || event["type"] == "drawer_artifact_lifecycle";
+        if lifecycle {
             event["hostId"] = Value::String(host_id.to_owned());
         }
-        let path = if event["type"] == "artifact_scope_ended" {
+        let path = if lifecycle {
             "artifact-lifecycle"
         } else {
             "events"
@@ -138,6 +140,12 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_outbox_retries_gateway_failure_without_losing_the_event() {
+        for kind in ["artifact_scope_ended", "drawer_artifact_lifecycle"] {
+            cleanup_outbox_case(kind).await;
+        }
+    }
+
+    async fn cleanup_outbox_case(kind: &'static str) {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -147,7 +155,7 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::query("CREATE TABLE automation_event_outbox (id TEXT PRIMARY KEY, payload TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO automation_event_outbox (id, payload) VALUES ('synthetic-cleanup', ?)")
-            .bind(serde_json::json!({"id":"synthetic-cleanup", "type":"artifact_scope_ended", "workspaceId":"synthetic-workspace", "epoch":1, "deleted":false}).to_string()).execute(&pool).await.unwrap();
+            .bind(serde_json::json!({"id":"synthetic-cleanup", "type":kind, "workspaceId":"synthetic-workspace", "epoch":1, "deleted":false}).to_string()).execute(&pool).await.unwrap();
         let available = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(AtomicUsize::new(0));
         let handler_available = available.clone();
@@ -159,7 +167,7 @@ mod tests {
                 let calls = handler_calls.clone();
                 async move {
                     assert_eq!(event["hostId"], "synthetic-host");
-                    assert_eq!(event["type"], "artifact_scope_ended");
+                    assert_eq!(event["type"], kind);
                     calls.fetch_add(1, Ordering::SeqCst);
                     if available.load(Ordering::SeqCst) {
                         StatusCode::ACCEPTED

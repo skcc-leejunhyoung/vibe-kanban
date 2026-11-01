@@ -3,6 +3,7 @@ import type { GenerateSpecRequest } from 'shared/types';
 import {
   approvalsApi,
   artifactsApi,
+  drawerArtifactsApi,
   attachmentsApi,
   executionProcessesApi,
   issuePrsApi,
@@ -30,6 +31,35 @@ function apiResponse<T>(data: T): Response {
 }
 
 describe('host-aware task APIs', () => {
+  it('routes independent Drawer content and data by owning host and note without workspace identifiers', async () => {
+    const request = vi.fn<(path: string) => Promise<Response>>(async () =>
+      apiResponse({})
+    );
+    setLocalApiTransport({ request, openWebSocket: vi.fn() });
+    await drawerArtifactsApi.document(
+      'synthetic-artifact',
+      'synthetic-note',
+      'host-a'
+    );
+    await drawerArtifactsApi.snapshot(
+      'synthetic-artifact',
+      'synthetic-note',
+      'synthetic-version',
+      'host-b'
+    );
+    expect(request.mock.calls[0][0]).toContain(
+      '/api/host/host-a/drawer-artifacts/synthetic-artifact'
+    );
+    expect(request.mock.calls[1][0]).toContain(
+      '/api/host/host-b/drawer-artifacts/synthetic-artifact/snapshot'
+    );
+    for (const [path] of request.mock.calls) {
+      const url = new URL(path, 'https://example.test');
+      expect(url.searchParams.get('note_id')).toBe('synthetic-note');
+      expect(url.searchParams.has('workspace_id')).toBe(false);
+      expect(url.searchParams.has('session_id')).toBe(false);
+    }
+  });
   afterEach(() => {
     vi.useRealTimers();
     setLocalApiTransport(null);

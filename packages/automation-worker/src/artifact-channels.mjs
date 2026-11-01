@@ -17,6 +17,23 @@ const uuid = (value) =>
 const lifecycleKey = (kind, host, id) =>
   `${kind}:${JSON.stringify([host, id])}`;
 const scopeKeys = ["owner_id", "owner_host", "workspace_id", "session_id"];
+const drawerScopeKeys = [
+  "kind",
+  "owner_id",
+  "owner_host",
+  "note_id",
+  "artifact_id",
+];
+const fieldsFor = (scope) =>
+  scope?.kind === "drawer"
+    ? drawerScopeKeys
+    : scope?.kind === undefined
+      ? scopeKeys
+      : [];
+const sameScope = (left, right) =>
+  fieldsFor(left).length > 0 &&
+  left?.kind === right?.kind &&
+  fieldsFor(left).every((key) => left[key] === right?.[key]);
 const unresolved = (record) =>
   ["processing", "accepted", "unknown"].includes(record.status);
 
@@ -179,6 +196,17 @@ export function createArtifactChannels({ state, persist, runRule }) {
     const channel = state.artifactChannels[id];
     if (!state.enabled || !channel.enabled)
       fail("Artifact channel is disabled", 409);
+    if (
+      channel.scope.kind === "drawer" &&
+      state.artifactScopeEpochs[
+        lifecycleKey(
+          "drawer",
+          channel.scope.owner_host,
+          channel.scope.artifact_id,
+        )
+      ]?.paused
+    )
+      fail("Drawer dashboard is archived", 409);
     return channel;
   };
   const describe = (channel) => {
@@ -204,7 +232,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
   };
   const scoped = (id, scope, version) => {
     const channel = channelFor(id);
-    if (!scope || scopeKeys.some((key) => channel.scope[key] !== scope[key]))
+    if (!scope || !sameScope(channel.scope, scope))
       fail("Wrong artifact channel scope", 403);
     const binding = describe(channel);
     if (version && version !== binding.version)
@@ -234,6 +262,59 @@ export function createArtifactChannels({ state, persist, runRule }) {
     },
     async cleanupScope(input) {
       return locked(async () => {
+        if (input?.type === "drawer_artifact_lifecycle") {
+          if (
+            typeof input.hostId !== "string" ||
+            !input.hostId ||
+            input.hostId.length > 200 ||
+            !uuid(input.artifactId) ||
+            !Number.isSafeInteger(input.revision) ||
+            input.revision < 1 ||
+            typeof input.paused !== "boolean" ||
+            typeof input.deleted !== "boolean"
+          )
+            fail("Invalid Drawer artifact lifecycle event");
+          const key = lifecycleKey("drawer", input.hostId, input.artifactId);
+          const previous = state.artifactScopeEpochs[key];
+          if (previous && input.revision < previous.revision) return;
+          if (previous?.deleted && !input.deleted) return;
+          if (
+            previous &&
+            input.revision === previous.revision &&
+            (input.paused !== previous.paused ||
+              input.deleted !== previous.deleted)
+          )
+            fail("Conflicting Drawer lifecycle revision", 409);
+          if (previous && input.revision === previous.revision) return;
+          const channels = { ...state.artifactChannels };
+          const closed = { ...state.artifactClosedChannels };
+          state.artifactScopeEpochs[key] = {
+            revision: input.revision,
+            paused: input.paused,
+            deleted: input.deleted,
+          };
+          if (input.deleted)
+            for (const [id, channel] of Object.entries(channels)) {
+              if (
+                channel.scope.kind === "drawer" &&
+                channel.scope.owner_host === input.hostId &&
+                channel.scope.artifact_id === input.artifactId
+              ) {
+                delete state.artifactChannels[id];
+                state.artifactClosedChannels[id] = true;
+              }
+            }
+          try {
+            await persist();
+          } catch (error) {
+            state.artifactChannels = channels;
+            state.artifactClosedChannels = closed;
+            if (previous) state.artifactScopeEpochs[key] = previous;
+            else delete state.artifactScopeEpochs[key];
+            throw error;
+          }
+          return;
+        }
         if (
           !input ||
           typeof input !== "object" ||
@@ -262,6 +343,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
           deleted: !!previousEpoch?.deleted || input.deleted,
         };
         const matches = (scope, epoch = 0) =>
+          scope?.kind !== "drawer" &&
           scope?.owner_host === input.hostId &&
           scope.workspace_id === input.workspaceId &&
           (input.sessionId
@@ -318,7 +400,8 @@ export function createArtifactChannels({ state, persist, runRule }) {
           !name(input.id) ||
           input.sensitive !== false ||
           !input.scope ||
-          scopeKeys.some(
+          !fieldsFor(input.scope).length ||
+          fieldsFor(input.scope).some(
             (key) =>
               typeof input.scope[key] !== "string" ||
               !input.scope[key] ||
@@ -326,6 +409,25 @@ export function createArtifactChannels({ state, persist, runRule }) {
           )
         )
           fail("Explicit non-sensitive channel and scope required");
+        if (input.scope.kind === "drawer") {
+          const ended =
+            state.artifactScopeEpochs[
+              lifecycleKey(
+                "drawer",
+                input.scope.owner_host,
+                input.scope.artifact_id,
+              )
+            ];
+          if (
+            !uuid(input.scope.note_id) ||
+            !uuid(input.scope.artifact_id) ||
+            ended?.deleted ||
+            ended?.paused
+          )
+            fail("Drawer artifact scope ended or is archived", 409);
+          if (!input.actions || Object.keys(input.actions).length)
+            fail("Drawer artifacts are read-only", 400);
+        }
         const epoch = input.workspace_epoch ?? 0;
         const ended =
           state.artifactScopeEpochs[
@@ -387,10 +489,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
           fail("Too many artifact channels");
         const previous = state.artifactChannels[input.id];
         const previouslyClosed = state.artifactClosedChannels[input.id];
-        if (
-          previous &&
-          scopeKeys.some((key) => previous.scope[key] !== input.scope[key])
-        )
+        if (previous && !sameScope(previous.scope, input.scope))
           fail("Channel scope is immutable; use a new channel ID", 409);
         const channel = {
           id: input.id,
@@ -400,7 +499,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
               : randomUUID(),
           workspace_epoch: epoch,
           scope: Object.fromEntries(
-            scopeKeys.map((key) => [key, input.scope[key]]),
+            fieldsFor(input.scope).map((key) => [key, input.scope[key]]),
           ),
           enabled: input.enabled === true,
           data_schema: input.data_schema,
@@ -475,6 +574,18 @@ export function createArtifactChannels({ state, persist, runRule }) {
     },
     async publish(ruleId, id, data, operationId) {
       return locked(async () => {
+        const target = state.artifactChannels[id];
+        if (
+          target?.scope.kind === "drawer" &&
+          state.artifactScopeEpochs[
+            lifecycleKey(
+              "drawer",
+              target.scope.owner_host,
+              target.scope.artifact_id,
+            )
+          ]?.paused
+        )
+          return;
         // Ending a dashboard must not put its shared publisher Rule on a retry loop.
         if (
           !own(state.artifactChannels, id) &&
@@ -541,6 +652,8 @@ export function createArtifactChannels({ state, persist, runRule }) {
       });
     },
     async request(id, input) {
+      if (state.artifactChannels[id]?.scope.kind === "drawer")
+        fail("Drawer artifacts are read-only", 403);
       let dispatch;
       const record = await locked(async () => {
         const { channel } = scoped(id, input.scope, input.version);

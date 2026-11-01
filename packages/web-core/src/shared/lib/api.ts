@@ -33,6 +33,7 @@ import {
   UserSystemInfo,
   HostAppearance,
   AgentUsage,
+  DrawerArtifactDocument,
   McpServerQuery,
   UpdateMcpServersBody,
   GetMcpServerResponse,
@@ -2930,6 +2931,39 @@ export const scratchApi = {
 };
 
 // Agents API
+export const drawerArtifactsApi = {
+  document: async (
+    id: string,
+    noteId: string,
+    hostId: string | null,
+    signal?: AbortSignal
+  ): Promise<DrawerArtifactDocument> => {
+    const response = await makeHostAwareRequest(
+      `/api/drawer-artifacts/${id}?note_id=${encodeURIComponent(noteId)}`,
+      hostId,
+      { signal }
+    );
+    return handleApiResponse<DrawerArtifactDocument>(response);
+  },
+  snapshot: async (
+    id: string,
+    noteId: string,
+    version: string,
+    hostId: string | null,
+    signal?: AbortSignal
+  ): Promise<import('shared/types').ArtifactAutomationSnapshot> => {
+    const params = new URLSearchParams({ note_id: noteId, version });
+    const response = await makeHostAwareRequest(
+      `/api/drawer-artifacts/${id}/snapshot?${params}`,
+      hostId,
+      { signal }
+    );
+    return handleApiResponse<import('shared/types').ArtifactAutomationSnapshot>(
+      response
+    );
+  },
+};
+
 export const agentsApi = {
   getUsage: async (
     agent: BaseCodingAgent,

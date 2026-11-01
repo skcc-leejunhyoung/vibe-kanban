@@ -68,6 +68,30 @@ const NOTE_COLUMNS: &str = "id, owner_user_id, host_id, workspace_id, session_id
 pub struct DrawerRepository;
 
 impl DrawerRepository {
+    /// Append against the locked current body, never an earlier client snapshot.
+    pub async fn attach_artifact(
+        pool: &PgPool,
+        id: Uuid,
+        owner: Uuid,
+        host: Uuid,
+        artifact: Uuid,
+    ) -> Result<MutationResponse<DrawerNote>, sqlx::Error> {
+        let target = format!("(drawer-artifacts/{artifact} \"vibe-artifact\")");
+        let line = format!("\n\n[Dashboard]{target}");
+        let mut tx = super::begin_tx(pool).await?;
+        let data = sqlx::query_as::<_, DrawerNote>(&format!(
+            "UPDATE drawer_notes SET body = CASE WHEN strpos(body, $5) > 0 THEN body ELSE body || $6 END,
+                updated_at = CASE WHEN strpos(body, $5) > 0 THEN updated_at ELSE NOW() END
+             WHERE id = $1 AND owner_user_id = $2 AND host_id = $3 AND archived_at IS NULL
+                AND (strpos(body, $5) > 0 OR octet_length(body) + octet_length($6) <= $4)
+             RETURNING {NOTE_COLUMNS}"))
+            .bind(id).bind(owner).bind(host).bind(64_i32 * 1024).bind(target).bind(line)
+            .fetch_one(&mut *tx).await?;
+        let txid = get_txid(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(MutationResponse { data, txid })
+    }
+
     /// `archived`: `Some(true)` archived only, `Some(false)` inbox only, `None` both.
     pub async fn list_notes(
         pool: &PgPool,
@@ -598,5 +622,118 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod artifact_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires DRAWER_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+    async fn independent_artifact_links_append_atomically_without_overwriting_current_body() {
+        let pool = PgPool::connect(&std::env::var("DRAWER_TEST_DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        let owner = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let host = Uuid::new_v4();
+        for user in [owner, other] {
+            sqlx::query("INSERT INTO users (id,email) VALUES ($1,$2)")
+                .bind(user)
+                .bind(format!("{user}@example.test"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO hosts (id,owner_user_id,machine_id,name) VALUES ($1,$2,$3,'Synthetic host')")
+            .bind(host).bind(owner).bind(Uuid::new_v4().to_string()).execute(&pool).await.unwrap();
+        let note = DrawerRepository::create_note(
+            &pool,
+            owner,
+            CreateDrawerNoteRequest {
+                id: None,
+                title: "Synthetic dashboard".into(),
+                body: "Concurrent edit must survive".into(),
+                label: None,
+                pinned: None,
+                host_id: Some(host),
+                workspace_id: None,
+                session_id: None,
+                execution_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .data;
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let (a, b) = tokio::join!(
+            DrawerRepository::attach_artifact(&pool, note.id, owner, host, first),
+            DrawerRepository::attach_artifact(&pool, note.id, owner, host, second)
+        );
+        a.unwrap();
+        b.unwrap();
+        let actual = DrawerRepository::attach_artifact(&pool, note.id, owner, host, first)
+            .await
+            .unwrap()
+            .data;
+        assert!(actual.body.starts_with("Concurrent edit must survive"));
+        assert_eq!(actual.body.matches(&first.to_string()).count(), 1);
+        assert_eq!(actual.body.matches(&second.to_string()).count(), 1);
+        assert!(
+            DrawerRepository::attach_artifact(&pool, note.id, other, host, Uuid::new_v4())
+                .await
+                .is_err()
+        );
+        assert!(
+            DrawerRepository::attach_artifact(
+                &pool,
+                note.id,
+                owner,
+                Uuid::new_v4(),
+                Uuid::new_v4()
+            )
+            .await
+            .is_err()
+        );
+        DrawerRepository::update_note(
+            &pool,
+            note.id,
+            UpdateDrawerNoteRequest {
+                archived: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            DrawerRepository::attach_artifact(&pool, note.id, owner, host, Uuid::new_v4())
+                .await
+                .is_err()
+        );
+        DrawerRepository::update_note(
+            &pool,
+            note.id,
+            UpdateDrawerNoteRequest {
+                archived: Some(false),
+                body: Some("x".repeat(64 * 1024)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            DrawerRepository::attach_artifact(&pool, note.id, owner, host, Uuid::new_v4())
+                .await
+                .is_err()
+        );
+        for user in [owner, other] {
+            sqlx::query("DELETE FROM users WHERE id=$1")
+                .bind(user)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
     }
 }

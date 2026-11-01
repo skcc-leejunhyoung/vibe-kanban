@@ -7,6 +7,7 @@ pub mod automation;
 pub mod config;
 pub mod container;
 pub mod diff_stream;
+pub mod drawer_artifacts;
 pub mod events;
 pub mod execution_process;
 pub mod file;

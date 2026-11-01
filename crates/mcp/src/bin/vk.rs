@@ -2369,6 +2369,59 @@ const COMMANDS: &[Cmd] = &[
         &[req("body", "Preferences JSON", Where::Raw, Kind::Json)],
     )),
     // ---- drawer -------------------------------------------------------------
+    cmd(
+        &["drawer", "artifacts", "attach"],
+        "Store a read-only automation dashboard independently of its source workspace",
+        "POST",
+        "/execution-processes/{exec}/artifacts/drawer",
+        &[
+            EXEC,
+            keyed(
+                req("ws", "Source workspace", Where::Query, Kind::Str),
+                "workspace_id",
+            ),
+            keyed(
+                req("session", "Source session", Where::Query, Kind::Str),
+                "session_id",
+            ),
+            req(
+                "id",
+                "New stable dashboard UUID (reuse on a retry)",
+                Where::Body,
+                Kind::Str,
+            ),
+            keyed(
+                req(
+                    "note",
+                    "Owning Drawer note UUID on this host",
+                    Where::Body,
+                    Kind::Str,
+                ),
+                "note_id",
+            ),
+            keyed(
+                req(
+                    "artifact",
+                    "Attached source HTML artifact id",
+                    Where::Body,
+                    Kind::Str,
+                ),
+                "artifact_id",
+            ),
+            req(
+                "config",
+                "Read-only channel JSON: data_schema, publishers (registered Rule ids)",
+                Where::Body,
+                Kind::Json,
+            ),
+            req(
+                "sensitive",
+                "Must be false; protected Drawer artifacts are not supported",
+                Where::Body,
+                Kind::Bool,
+            ),
+        ],
+    ),
     special(
         &["drawer", "list"],
         "Drawer notes (inbox by default)",
@@ -5323,6 +5376,13 @@ mod tests {
 
     #[test]
     fn bool_and_typed_values_parse() {
+        assert!(build_cli().try_get_matches_from([
+            "vk", "drawer", "artifacts", "attach", "synthetic-execution",
+            "--ws", "synthetic-workspace", "--session", "synthetic-session",
+            "--id", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "--note", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "--artifact", "synthetic-html", "--config", "{\"data_schema\":{\"type\":\"object\",\"properties\":{}},\"publishers\":[\"synthetic-publisher\"]}",
+            "--sensitive", "false"
+        ]).is_ok());
         assert_eq!(parse_bool("Yes"), Some(true));
         assert_eq!(parse_bool("0"), Some(false));
         assert_eq!(parse_bool("maybe"), None);

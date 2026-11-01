@@ -734,3 +734,139 @@ test("cleanup cannot cross hosts even when workspace and session identifiers mat
   assert.deepEqual(Object.keys(t.state.artifactChannels), [other.id]);
   await t.channels.configure(other);
 });
+
+test("Drawer dashboards survive workspace cleanup, pause, resume and delete by ordered revision", async () => {
+  const t = await setup();
+  const artifact = randomUUID();
+  const drawer = {
+    kind: "drawer",
+    owner_id: "synthetic-owner",
+    owner_host: scope.owner_host,
+    note_id: randomUUID(),
+    artifact_id: artifact,
+  };
+  const config = {
+    ...t.config,
+    id: "drawer-dashboard",
+    scope: drawer,
+    actions: {},
+  };
+  await t.channels.configure(config);
+  const binding = await t.channels.describe(config.id, drawer);
+  await t.channels.publish("publisher", config.id, { count: 5 });
+  await t.channels.cleanupScope({
+    hostId: scope.owner_host,
+    workspaceId: scope.workspace_id,
+    epoch: 1,
+    deleted: true,
+  });
+  assert.equal(
+    (await t.channels.snapshot(config.id, drawer, binding.version, artifact))
+      .data.count,
+    5,
+  );
+  await assert.rejects(
+    t.channels.snapshot(
+      config.id,
+      { ...drawer, note_id: randomUUID() },
+      binding.version,
+      artifact,
+    ),
+    /scope/,
+  );
+  await assert.rejects(
+    t.channels.request(config.id, { ...t.request, scope: drawer }),
+    /read-only/,
+  );
+  await assert.rejects(
+    t.channels.configure({ ...config, actions: t.config.actions }),
+    /read-only/,
+  );
+  const event = {
+    type: "drawer_artifact_lifecycle",
+    hostId: drawer.owner_host,
+    artifactId: artifact,
+    revision: 2,
+    paused: true,
+    deleted: false,
+  };
+  await t.channels.cleanupScope(event);
+  await assert.rejects(
+    t.channels.snapshot(config.id, drawer, binding.version, artifact),
+    /archived/,
+  );
+  await t.channels.publish("publisher", config.id, { count: 99 });
+  assert.equal(t.state.artifactChannels[config.id].data.count, 5);
+  await t.channels.cleanupScope({ ...event, revision: 3, paused: false });
+  await t.channels.cleanupScope(event);
+  assert.equal(
+    (await t.channels.snapshot(config.id, drawer, binding.version, artifact))
+      .data.count,
+    5,
+  );
+  await t.channels.publish("publisher", config.id, { count: 6 });
+  await t.channels.cleanupScope({
+    ...event,
+    revision: 4,
+    paused: false,
+    deleted: true,
+  });
+  await t.channels.cleanupScope({ ...event, revision: 5, paused: false });
+  assert.equal(t.state.artifactChannels[config.id], undefined);
+  await assert.rejects(t.channels.configure(config), /scope ended/);
+  await t.channels.publish("publisher", config.id, { count: 7 });
+  assert.ok(t.state.rules.find((rule) => rule.id === "publisher").enabled);
+  const restored = createArtifactChannels({
+    state: structuredClone(t.saved()),
+    persist: async () => {},
+    runRule: t.execute,
+  });
+  await assert.rejects(restored.configure(config), /scope ended/);
+});
+
+test("Drawer lifecycle rejects malformed events, isolates hosts and rolls back failed persistence", async () => {
+  const t = await setup();
+  const artifact = randomUUID();
+  const drawer = {
+    kind: "drawer",
+    owner_id: "synthetic-owner",
+    owner_host: scope.owner_host,
+    note_id: randomUUID(),
+    artifact_id: artifact,
+  };
+  const config = {
+    ...t.config,
+    id: "drawer-dashboard",
+    scope: drawer,
+    actions: {},
+  };
+  await t.channels.configure(config);
+  const event = {
+    type: "drawer_artifact_lifecycle",
+    hostId: scope.owner_host,
+    artifactId: artifact,
+    revision: 1,
+    paused: false,
+    deleted: true,
+  };
+  for (const patch of [
+    { artifactId: "../invalid" },
+    { revision: 0 },
+    { paused: null },
+    { hostId: "" },
+  ])
+    await assert.rejects(
+      t.channels.cleanupScope({ ...event, ...patch }),
+      /Invalid/,
+    );
+  await t.channels.cleanupScope({ ...event, hostId: "other-synthetic-host" });
+  assert.ok(await t.channels.describe(config.id, drawer));
+  t.beforeSave(() => {
+    throw new Error("synthetic disk failure");
+  });
+  await assert.rejects(t.channels.cleanupScope(event), /disk/);
+  t.beforeSave(undefined);
+  assert.ok(await t.channels.describe(config.id, drawer));
+  await t.channels.cleanupScope(event);
+  await assert.rejects(t.channels.describe(config.id, drawer), /Unknown/);
+});

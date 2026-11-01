@@ -366,3 +366,21 @@ tick, at the cost of a turn even when nothing changed.
   }
 }
 ```
+
+### Drawer-owned read-only channels
+
+`vk drawer artifacts attach` creates a frozen dashboard and a channel scoped to
+its owner, host, Drawer note and artifact ID. Workspace lifecycle cleanup never
+removes these channels. Authenticated lifecycle deliveries pause them when their
+Drawer note is archived, resume them on restore, and remove them on note deletion.
+Revisions fence delayed deliveries and the host retries failed cleanup. These
+channels accept publications from registered Rules and expose no action requests.
+
+Routines also support `action.type: "run_rule"` with a Vibe connector, a registered
+`targetHostId` and `input: { "ruleId": "publisher-rule" }`. This reuses the existing
+scheduler, host verification, execution timeout and retry policy. The Rule must
+be enabled and have script kind. In that Rule, `ctx.actions.vibe.readAgentUsage(
+"CLAUDE_CODE")` or `"CODEX"` reads the bound host's existing usage endpoint using
+the connector's server-side authentication. Publish only bounded display data;
+retain unavailable/login state. Scheduled scripts with side effects still need
+their own idempotency, just like other trusted Rule scripts.

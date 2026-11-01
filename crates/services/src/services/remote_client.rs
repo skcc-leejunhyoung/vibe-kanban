@@ -190,6 +190,29 @@ impl Clone for RemoteClient {
 }
 
 impl RemoteClient {
+    pub async fn drawer_note(&self, id: Uuid) -> Result<api_types::DrawerNote, RemoteClientError> {
+        self.get_authed(&format!("/v1/drawer_notes/{id}")).await
+    }
+
+    pub async fn list_drawer_notes(
+        &self,
+    ) -> Result<api_types::ListDrawerNotesResponse, RemoteClientError> {
+        self.get_authed("/v1/drawer_notes").await
+    }
+
+    pub async fn attach_drawer_artifact(
+        &self,
+        id: Uuid,
+        artifact: Uuid,
+        host: Uuid,
+    ) -> Result<api_types::MutationResponse<api_types::DrawerNote>, RemoteClientError> {
+        self.post_authed(
+            &format!("/v1/drawer_notes/{id}/artifact-link"),
+            Some(&serde_json::json!({"artifact_id":artifact, "host_id":host})),
+        )
+        .await
+    }
+
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
     const TOKEN_REFRESH_LEEWAY_SECS: i64 = 20;
 

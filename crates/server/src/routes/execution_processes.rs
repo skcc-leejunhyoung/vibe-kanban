@@ -1022,6 +1022,7 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/repo-states", get(get_execution_process_repo_states))
         .route("/artifacts", get(super::artifacts::list))
         .route("/artifacts/register", post(super::artifacts::register))
+        .route("/artifacts/drawer", post(super::drawer_artifacts::register))
         .route("/artifacts/bundle", get(super::artifacts::bundle))
         .route("/artifacts/content", get(super::artifacts::content))
         .route(

@@ -815,6 +815,12 @@
       "automationActions": "연결된 자동화 요청: {{actions}}",
       "automationReady": "자동화 데이터가 이 화면에 갱신됩니다. 연결된 작업은 버튼을 눌러 요청하세요.",
       "automationClose": "대시보드 연결 종료 (진행 중인 작업은 계속됨)"
+    },
+    "drawer": {
+      "paused": "이 Drawer 항목이 아카이브되어 갱신이 중지되었습니다.",
+      "waiting": "자동화 데이터를 기다리고 있습니다.",
+      "updated": "마지막 갱신: {{time}}",
+      "unavailable": "이 Drawer 대시보드를 불러올 수 없습니다."
     }
   },
   "status": {

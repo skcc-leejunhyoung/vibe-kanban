@@ -359,6 +359,10 @@ export type ApprovalInfo = { approval_id: string, tool_name: string, execution_p
 
 export type ArtifactInputSchema = { "type": "object", properties: { [key in string]?: ArtifactInputSchema }, required: Array<string>, } | { "type": "string", enum: Array<string> | null, maxLength: number, } | { "type": "number", minimum: number | null, maximum: number | null, } | { "type": "boolean" } | { "type": "array", items: ArtifactInputSchema, maxItems: number, };
 
+export type DrawerArtifactFile = { path: string, mime: string, bytes: Array<number>, };
+
+export type DrawerArtifactDocument = { id: string, note_id: string, name: string, path: string, version: string, files: Array<DrawerArtifactFile>, };
+
 export type ArtifactDelivery = "follow_up" | "wait" | "service" | "automation";
 
 export type ArtifactHandler = "session.rename";

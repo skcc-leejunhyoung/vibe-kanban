@@ -232,7 +232,7 @@ fn toggle_for(
         }
         ["repos", ..] => Toggle::UpdateConfig,
         ["automation", ..] | ["automation-actions", ..] | ["agent-memory-sync", ..]
-        | ["execution-processes", _, "artifacts", "automation-channels"] => {
+        | ["execution-processes", _, "artifacts", "automation-channels" | "drawer"] => {
             Toggle::AutomationWrite
         }
         ["remote", ..] | ["tags", ..] | ["organizations", ..] => Toggle::WriteIssues,
@@ -512,6 +512,16 @@ mod tests {
         );
         assert_eq!(
             gated(Method::POST, "/api/automation/routines"),
+            Decision::Gated(Toggle::AutomationWrite)
+        );
+        let own = Uuid::new_v4();
+        assert_eq!(
+            classify(
+                &Method::POST,
+                "/api/execution-processes/p/artifacts/drawer",
+                &format!("session_id={own}"),
+                Some(own)
+            ),
             Decision::Gated(Toggle::AutomationWrite)
         );
         for path in [

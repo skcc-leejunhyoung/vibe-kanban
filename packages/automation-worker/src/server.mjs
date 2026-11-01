@@ -1244,6 +1244,11 @@ async function executeRoutineAction(routine, event) {
     routineChain: [...(event.routineChain || []), routine.id],
     idempotencyKey: event.routineIdempotencyKey,
   };
+  if (action.type === 'run_rule') {
+    const rule = state.rules.find(item => item.id === input.ruleId && item.enabled && (!item.kind || item.kind === 'script'));
+    if (!rule) throw new Error('enabled registered script Rule required');
+    return runRule(rule, { ...event, ...meta, source: 'routine', type: 'rule', targetHostId: action.targetHostId, connectorId: connector.id });
+  }
   if (action.type === 'create_issue') {
     const result = await createVibeIssue(
       connector.id,
@@ -4380,6 +4385,16 @@ function createRuleContext(rule, event, conditionOnly = false) {
     },
     actions: {
       vibe: {
+        readAgentUsage: async (agent) => {
+          if (event.source !== 'routine' || !event.targetHostId || !['CLAUDE_CODE', 'CODEX'].includes(agent))
+            throw new Error('Usage reads require a bound routine and a supported agent');
+          const connector = findConnector(event.connectorId);
+          const bridge = connector.config?.hostBridges?.[event.targetHostId];
+          if (!connector.enabled || connector.type !== 'vibe_kanban' || !bridge?.baseUrl)
+            throw new Error('Usage host is unavailable');
+          const result = await vibeApi(connector, 'GET', `/api/agents/${agent}/usage`, undefined, bridge.baseUrl);
+          return result.data;
+        },
         runRoutine: async (routineId) => {
           if (event.source !== 'artifact') throw new Error('An explicit artifact request is required');
           const routine = state.routines.find((item) => item.id === routineId && item.enabled);

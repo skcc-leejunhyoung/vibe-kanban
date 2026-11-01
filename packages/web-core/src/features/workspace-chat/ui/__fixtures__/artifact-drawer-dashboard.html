@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Usage dashboard</title>
+  <style>
+    body { margin: 0; padding: 18px; font: 14px/1.5 system-ui, sans-serif; color: #172033; background: #f8fafc; }
+    h2 { margin: 0 0 14px; font-size: 18px; }
+    .row { display: grid; grid-template-columns: 100px 1fr 48px; gap: 10px; align-items: center; margin: 12px 0; }
+    progress { width: 100%; accent-color: #2563eb; }
+    output { text-align: right; font-variant-numeric: tabular-nums; }
+    [data-vibe-status] { color: #64748b; font-size: 12px; margin-bottom: 0; }
+  </style>
+</head>
+<body>
+  <h2>Usage</h2>
+  <div class="row"><span>Claude Code</span><progress id="claude" max="100" value="0" aria-label="Claude Code usage"></progress><output id="claude-text">—</output></div>
+  <div class="row"><span>Codex</span><progress id="codex" max="100" value="0" aria-label="Codex usage"></progress><output id="codex-text">—</output></div>
+  <p data-vibe-status role="status"></p>
+  <script>
+    function render() {
+      const data = window.vibe.getData().data;
+      for (const agent of ['claude', 'codex']) {
+        const percent = data?.[agent + '_percent'];
+        document.getElementById(agent).value = typeof percent === 'number' ? percent : 0;
+        document.getElementById(agent + '-text').textContent = typeof percent === 'number' ? percent + '%' : '—';
+      }
+    }
+    window.addEventListener('vibe:data', render);
+    render();
+  </script>
+</body>
+</html>

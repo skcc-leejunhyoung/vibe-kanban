@@ -16,6 +16,7 @@ pub mod approvals;
 pub mod automation;
 pub mod config;
 pub mod containers;
+pub mod drawer_artifacts;
 pub mod filesystem;
 // pub mod github;
 pub mod artifact_interactions;
@@ -52,6 +53,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .merge(agent_usage::router())
         .merge(agent_memory_sync::router())
         .merge(automation::router())
+        .merge(drawer_artifacts::router())
         .merge(containers::router(&deployment))
         .merge(workspaces::router(&deployment))
         .merge(execution_processes::router(&deployment))

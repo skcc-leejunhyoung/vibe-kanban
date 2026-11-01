@@ -106,6 +106,12 @@ export interface AutomationRoutineCoalesce {
 
 export type AutomationRoutineAction =
   | {
+      type: 'run_rule';
+      connectorId: string;
+      targetHostId: string;
+      input: { ruleId: string };
+    }
+  | {
       type: 'create_issue';
       connectorId: string;
       input: { title: string; description?: string };

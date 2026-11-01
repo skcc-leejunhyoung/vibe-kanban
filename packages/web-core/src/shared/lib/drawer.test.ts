@@ -4,6 +4,7 @@ import {
   foldResolvedComments,
   isDrawerNoteUnread,
   splitDrawerNotes,
+  drawerArtifactId,
 } from './drawer';
 
 function note(overrides: Partial<DrawerNote> & { id: string }): DrawerNote {
@@ -27,6 +28,17 @@ function note(overrides: Partial<DrawerNote> & { id: string }): DrawerNote {
 }
 
 describe('drawer notes', () => {
+  it('recognises only an exact independent artifact ID, never a URL or filesystem path', () => {
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    expect(drawerArtifactId(`drawer-artifacts/${id}`)).toBe(id);
+    for (const path of [
+      `../drawer-artifacts/${id}`,
+      `https://example.test/drawer-artifacts/${id}`,
+      `drawer-artifacts/${id}/extra`,
+      'drawer-artifacts/not-an-id',
+    ])
+      expect(drawerArtifactId(path)).toBeNull();
+  });
   it('is unread until opened after the last edit or comment', () => {
     expect(isDrawerNoteUnread(note({ id: 'new' }))).toBe(true);
     expect(

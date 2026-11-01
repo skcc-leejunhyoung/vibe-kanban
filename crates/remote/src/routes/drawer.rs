@@ -12,6 +12,7 @@ use axum::{
     Json, Router,
     extract::{Extension, Path, Query, State},
     http::StatusCode,
+    routing::post,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -45,7 +46,32 @@ pub fn comment_mutation()
 }
 
 pub fn router() -> Router<AppState> {
-    note_mutation().router().merge(comment_mutation().router())
+    note_mutation()
+        .router()
+        .merge(comment_mutation().router())
+        .route("/drawer_notes/{id}/artifact-link", post(attach_artifact))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachArtifact {
+    artifact_id: Uuid,
+    host_id: Uuid,
+}
+
+async fn attach_artifact(
+    State(pool): State<PgPool>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<AttachArtifact>,
+) -> Result<Json<MutationResponse<DrawerNote>>, ErrorResponse> {
+    owned_note(&pool, &ctx, id).await?;
+    check_host(&pool, &ctx, Some(payload.host_id)).await?;
+    DrawerRepository::attach_artifact(&pool, id, ctx.user.id, payload.host_id, payload.artifact_id).await
+        .map(Json).map_err(|error| match error {
+            sqlx::Error::RowNotFound => ErrorResponse::new(StatusCode::CONFLICT, "Drawer note changed, is archived, belongs to a different host or exceeds 64 KiB; reload it before registering"),
+            error => write_error(error, "Drawer artifact link could not be attached"),
+        })
 }
 
 fn internal(error: sqlx::Error, what: &'static str) -> ErrorResponse {

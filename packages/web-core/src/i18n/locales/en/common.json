@@ -815,6 +815,12 @@
       "automationActions": "Connected automation actions: {{actions}}",
       "automationReady": "Automation data updates here. Use a connected action button to request work.",
       "automationClose": "Close dashboard connection (running work continues)"
+    },
+    "drawer": {
+      "paused": "Dashboard updates are paused while this Drawer note is archived.",
+      "waiting": "Waiting for automation data.",
+      "updated": "Last updated: {{time}}",
+      "unavailable": "This Drawer dashboard is unavailable."
     }
   },
   "status": {

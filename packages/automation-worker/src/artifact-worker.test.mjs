@@ -37,6 +37,18 @@ test(
         return res.end(
           JSON.stringify({ hostId: scope.owner_host, busy: false }),
         );
+      if (req.url === "/api/agents/CODEX/usage") {
+        assert.equal(req.method, "GET");
+        return res.end(
+          JSON.stringify({
+            success: true,
+            data: {
+              windows: [{ label: "5h", used_percent: 11 }],
+              updated_at: "2030-01-01T00:00:00Z",
+            },
+          }),
+        );
+      }
       if (req.url === "/api/automation-actions/notification") {
         notifications++;
         assert.ok(req.headers["idempotency-key"]);
@@ -53,6 +65,15 @@ test(
     const port = reservation.address().port;
     await new Promise((resolve) => reservation.close(resolve));
     const script = `async function handle(event, ctx) {
+    if (event.source === 'routine' && event.type === 'rule') {
+      const usage = await ctx.actions.vibe.readAgentUsage('CODEX');
+      await ctx.artifacts.publish('drawer-dashboard', { count: usage.windows[0].used_percent });
+      return;
+    }
+    if (event.source === 'drawer-fixture') {
+      await ctx.artifacts.publish('drawer-dashboard', { count: event.count });
+      return;
+    }
     if (event.source === 'fixture') {
       await ctx.artifacts.publish('dashboard', { count: event.count });
       if (event.request_id) await ctx.artifacts.complete('dashboard', event.request_id, 'completed');
@@ -324,6 +345,49 @@ test(
       );
       assert.equal(saved.retryQueue.length, 0);
       assert.equal(saved.artifactChannels.dashboard.data.count, 5);
+      const drawerId = randomUUID();
+      const drawerScope = {
+        kind: "drawer",
+        owner_id: scope.owner_id,
+        owner_host: scope.owner_host,
+        note_id: randomUUID(),
+        artifact_id: drawerId,
+      };
+      assert.equal(
+        (
+          await call("artifact-channels", {
+            id: "drawer-dashboard",
+            enabled: true,
+            sensitive: false,
+            scope: drawerScope,
+            data_schema: schema,
+            publishers: ["publisher"],
+            actions: {},
+          })
+        ).status,
+        200,
+      );
+      const drawerBinding = (
+        await call("artifact-channels/drawer-dashboard/describe", {
+          scope: drawerScope,
+        })
+      ).data;
+      const drawerRead = {
+        scope: drawerScope,
+        version: drawerBinding.version,
+        binding_id: drawerId,
+      };
+      assert.equal(
+        (
+          await call("events", {
+            id: randomUUID(),
+            source: "drawer-fixture",
+            type: "count",
+            count: 9,
+          })
+        ).status,
+        202,
+      );
       const lifecycle = {
         id: "synthetic-archive",
         type: "artifact_scope_ended",
@@ -357,8 +421,102 @@ test(
       assert.deepEqual(ended.artifactRequests, {});
       assert.equal(ended.retryQueue.length, 0);
       assert.ok(ended.rules.find((rule) => rule.id === "publisher").enabled);
+      assert.equal(
+        (await call("artifact-channels/drawer-dashboard/snapshot", drawerRead))
+          .data.data.count,
+        9,
+      );
+      assert.equal(
+        (
+          await call("routines", {
+            id: "usage-publish",
+            name: "Synthetic usage publisher",
+            enabled: true,
+            trigger: {
+              type: "schedule",
+              at: "2035-01-01T00:00",
+              timezone: "UTC",
+            },
+            action: {
+              type: "run_rule",
+              connectorId: "vibe",
+              targetHostId: scope.owner_host,
+              input: { ruleId: "publisher" },
+            },
+          })
+        ).status,
+        200,
+      );
+      assert.equal((await call("routines/usage-publish/run", {})).status, 200);
+      assert.equal(
+        (await call("artifact-channels/drawer-dashboard/snapshot", drawerRead))
+          .data.data.count,
+        11,
+      );
+      const drawerLifecycle = {
+        type: "drawer_artifact_lifecycle",
+        hostId: scope.owner_host,
+        artifactId: drawerId,
+        revision: 2,
+        paused: true,
+        deleted: false,
+      };
+      assert.equal(
+        (await call("artifact-lifecycle", drawerLifecycle)).status,
+        202,
+      );
+      assert.equal(
+        (
+          await call("events", {
+            id: randomUUID(),
+            source: "drawer-fixture",
+            type: "count",
+            count: 99,
+          })
+        ).status,
+        202,
+      );
+      assert.equal(
+        (await call("artifact-channels/drawer-dashboard/snapshot", drawerRead))
+          .status,
+        409,
+      );
+      assert.equal(
+        (
+          await call("artifact-lifecycle", {
+            ...drawerLifecycle,
+            revision: 3,
+            paused: false,
+          })
+        ).status,
+        202,
+      );
+      assert.equal(
+        (await call("artifact-lifecycle", drawerLifecycle)).status,
+        202,
+      );
+      assert.equal(
+        (await call("artifact-channels/drawer-dashboard/snapshot", drawerRead))
+          .data.data.count,
+        11,
+      );
+      assert.equal(
+        (
+          await call("artifact-lifecycle", {
+            ...drawerLifecycle,
+            revision: 4,
+            deleted: true,
+          })
+        ).status,
+        202,
+      );
       await stop();
       await start();
+      assert.equal(
+        (await call("artifact-channels/drawer-dashboard/snapshot", drawerRead))
+          .status,
+        404,
+      );
       assert.equal(
         (await call("artifact-channels/dashboard", undefined, true, "DELETE"))
           .status,

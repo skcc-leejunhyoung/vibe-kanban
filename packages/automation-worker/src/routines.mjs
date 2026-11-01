@@ -31,7 +31,7 @@ export function normalizeRoutine(input) {
     }
   }
   const coalesce = normalizeCoalesce(input.coalesce);
-  if (!['create_issue', 'start_workspace', 'send_prompt', 'notification'].includes(action.type)) {
+  if (!['create_issue', 'start_workspace', 'send_prompt', 'notification', 'run_rule'].includes(action.type)) {
     throw new Error('unsupported routine action');
   }
   if (!action.connectorId) throw new Error('action connectorId is required');
@@ -43,11 +43,13 @@ export function normalizeRoutine(input) {
     (typeof input.condition !== 'object' || Array.isArray(input.condition))
   ) throw new Error('condition must be an object or null');
   if (
-    ['start_workspace', 'send_prompt', 'notification'].includes(action.type) &&
+    ['start_workspace', 'send_prompt', 'notification', 'run_rule'].includes(action.type) &&
     !action.targetHostId
   )
     throw new Error(`${action.type} targetHostId is required`);
   const actionInput = action.input || {};
+  if (action.type === 'run_rule' && (typeof actionInput.ruleId !== 'string' || !actionInput.ruleId.trim() || actionInput.ruleId.length > 80 || Object.keys(actionInput).some(key => key !== 'ruleId')))
+    throw new Error('run_rule requires only a registered ruleId');
   if (action.type === 'create_issue' && !actionInput.title)
     throw new Error('create_issue title is required');
   if (action.type === 'start_workspace') {

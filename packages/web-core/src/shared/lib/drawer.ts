@@ -1,5 +1,13 @@
 import type { DrawerComment, DrawerNote } from 'shared/remote-types';
 
+export function drawerArtifactId(path: string): string | null {
+  return (
+    /^drawer-artifacts\/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i
+      .exec(path)?.[1]
+      ?.toLowerCase() ?? null
+  );
+}
+
 export type DrawerThreadItem =
   | { kind: 'comment'; comment: DrawerComment }
   | { kind: 'resolved'; comments: DrawerComment[] };

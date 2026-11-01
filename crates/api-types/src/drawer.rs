@@ -159,7 +159,7 @@ pub struct ListDrawerNotesQuery {
     pub archived: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct ListDrawerNotesResponse {
     pub drawer_notes: Vec<DrawerNote>,
 }

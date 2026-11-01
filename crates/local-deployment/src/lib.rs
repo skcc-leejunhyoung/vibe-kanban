@@ -236,6 +236,11 @@ impl Deployment for LocalDeployment {
         )
         .await;
         if let Ok(client) = remote_client.clone() {
+            services::services::drawer_artifacts::spawn(
+                db.pool.clone(),
+                client.clone(),
+                shutdown.child_token(),
+            );
             services::services::notification_handoffs::spawn(
                 db.pool.clone(),
                 client,

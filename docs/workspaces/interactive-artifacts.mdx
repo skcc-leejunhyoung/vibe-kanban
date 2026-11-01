@@ -173,6 +173,57 @@ Delayed cleanup cannot delete a newly configured channel after unarchiving.
 
 ## Automation dashboards
 
+### Independent dashboards in the Drawer
+
+A read-only dashboard can belong to a Drawer note instead of a workspace.
+Create the note on the owning host, attach your HTML in the current conversation,
+then register a fixed snapshot with a new UUID:
+
+```bash
+vk drawer artifacts attach <execution-id> \
+  --ws <source-workspace-id> --session <source-session-id> \
+  --id <new-dashboard-uuid> --note <drawer-note-id> --artifact <html-artifact-id> \
+  --sensitive false \
+  --config '{"data_schema":{"type":"object","properties":{"count":{"type":"number"}},"required":["count"]},"publishers":["dashboard-publisher"]}'
+```
+
+This requires both automation write and Drawer write permissions. Registration
+copies HTML and its snapshotted dependencies into the host's persistent database
+and appends a dashboard link to the note without replacing concurrent edits.
+Reuse the same dashboard UUID when checking an uncertain registration; a different
+document or configuration requires a new UUID. The response contains the fixed
+version, the link and the channel ID `drawer_<dashboard-uuid-without-hyphens>`.
+Only declared publisher Rules can call `ctx.artifacts.publish` for that channel.
+Use `window.vibe.getData()` and `vibe:data` as in the example below. This view
+accepts no submissions, saved drafts, agent follow-ups or action requests.
+
+The source workspace, session and execution are needed only to create the
+snapshot. Archiving or deleting them does not remove the independent dashboard.
+Keep the owning host and automation worker running to receive updates. The
+existing sandbox and external network restrictions still apply.
+
+Archiving the Drawer note stops reads immediately and pauses publications once
+the host reconciles the cloud note. Restoring it resumes reads without replaying
+actions. Deleting the note, removing its dashboard link or pruning an old archived
+note revokes the dashboard and removes its document and channel. Host and worker
+cleanup use durable records and retry after connectivity recovers. The host checks
+cloud notes every 15 seconds and the existing outbox retries every 15 seconds;
+shared Rules and connectors remain configured. A disconnect alone never deletes
+a dashboard. Limits are 128 independent dashboards per host, 2 MiB of UTF-8 HTML
+and 8 MiB for the complete JSON snapshot including dependencies.
+
+For periodic publication without starting an agent, use an existing Routine with
+`action.type = "run_rule"`, a Vibe connector, `targetHostId` and
+`input = {"ruleId":"dashboard-publisher"}`. The existing scheduler runs that
+enabled script Rule. The Rule can read the bound host's existing usage API with
+`ctx.actions.vibe.readAgentUsage('CLAUDE_CODE')` or `'CODEX'`, then publish only
+the display fields. Usage reads retain the API's five-minute cache and its
+unavailable/login state; do not turn unavailable usage into zero. Scheduled Rules
+retain the existing retry policy, so scripts with side effects must remain
+idempotent. Never publish connector credentials or raw CLI diagnostics.
+
+### Dashboards bound to a chat request
+
 An automation dashboard receives data from an existing trusted automation Rule.
 Buttons can request named actions handled by those Rules. The artifact never
 receives connector credentials, arbitrary API access or the worker's admin token.

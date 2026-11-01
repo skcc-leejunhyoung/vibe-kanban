@@ -98,6 +98,7 @@ function defaultRoutineActionInput(
   type: AutomationRoutineAction['type']
 ): Record<string, unknown> {
   if (type === 'create_issue') return { title: '', description: '' };
+  if (type === 'run_rule') return { ruleId: '' };
   if (type === 'notification') return { title: '', message: '' };
   if (type === 'send_prompt')
     return {
@@ -1670,6 +1671,7 @@ export function AutomationSettingsSection() {
                     { value: 'start_workspace', label: 'Start workspace' },
                     { value: 'send_prompt', label: 'Send prompt' },
                     { value: 'notification', label: 'Notification' },
+                    { value: 'run_rule', label: 'Run registered rule' },
                   ]}
                   onChange={(actionType) =>
                     setRoutine({

@@ -37,7 +37,11 @@ import { useReboundHotkey } from '@/shared/keyboard/useReboundHotkey';
 import { useDrawerKeyboardStore } from '@/shared/stores/useDrawerKeyboardStore';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
-import { foldResolvedComments, isDrawerNoteUnread } from '@/shared/lib/drawer';
+import {
+  foldResolvedComments,
+  isDrawerNoteUnread,
+  drawerArtifactId,
+} from '@/shared/lib/drawer';
 import { formatDateTimeFull, formatRelativeTime } from '@/shared/lib/date';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import { HostIdContext } from '@/shared/providers/HostIdProvider';
@@ -51,6 +55,7 @@ import {
 } from '@/features/workspace-chat/ui/artifact-preview';
 import { handleDrawerDetailKeyDown } from './drawerKeyboard';
 import { useDrawerBodyFocus } from './useDrawerBodyFocus';
+import { DrawerArtifact } from '@/features/workspace-chat/ui/DrawerArtifact';
 
 /**
  * The Drawer tab of the Quick chat dialog: notes the Autopilot wrote (title +
@@ -912,7 +917,10 @@ function NoteBody({ note }: { note: DrawerNote }) {
   const hasArtifactLines = segments.some(
     (segment) => segment.kind !== 'markdown' && segment.kind !== 'status'
   );
-  if (!scoped || !hasArtifactLines) {
+  const independent = segments.some(
+    (segment) => segment.kind === 'file' && drawerArtifactId(segment.path)
+  );
+  if ((!scoped && !independent) || !hasArtifactLines) {
     return (
       <MarkdownPreview
         content={note.body}
@@ -935,12 +943,23 @@ function ScopedNoteBody({
   note: DrawerNote;
   theme: 'light' | 'dark';
 }) {
-  const processId = note.execution_id!;
-  const workspaceId = note.workspace_id!;
-  const sessionId = note.session_id!;
-  const artifacts = useExecutionArtifacts(processId, workspaceId, sessionId);
-  const all = artifacts.data?.artifacts ?? [];
+  const processId = note.execution_id ?? '';
+  const workspaceId = note.workspace_id ?? '';
+  const sessionId = note.session_id ?? '';
   const segments = useMemo(() => splitArtifactSegments(note.body), [note.body]);
+  const sourceArtifacts = segments.some(
+    (segment) =>
+      segment.kind !== 'markdown' &&
+      segment.kind !== 'status' &&
+      !(segment.kind === 'file' && drawerArtifactId(segment.path))
+  );
+  const artifacts = useExecutionArtifacts(
+    processId,
+    workspaceId,
+    sessionId,
+    sourceArtifacts && !!processId && !!workspaceId && !!sessionId
+  );
+  const all = artifacts.data?.artifacts ?? [];
   return (
     <div className="flex flex-col gap-half">
       {segments.map((segment, index) => {
@@ -954,6 +973,18 @@ function ScopedNoteBody({
             />
           );
         }
+        const independentId =
+          segment.kind === 'file' ? drawerArtifactId(segment.path) : null;
+        if (independentId)
+          return (
+            <DrawerArtifact
+              key={`${note.id}:${independentId}`}
+              id={independentId}
+              noteId={note.id}
+              hostId={note.host_id}
+              archived={!!note.archived_at}
+            />
+          );
         const artifact = findSegmentArtifact(segment, all, all);
         return artifact ? (
           <ArtifactCards

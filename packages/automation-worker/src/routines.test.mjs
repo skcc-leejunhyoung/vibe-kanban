@@ -144,3 +144,11 @@ test('long recovery and batch keys fit the host limit without changing short key
   }
   assert.equal(routineEventKey('routine', { source: 'vibe', type: 'vk_event', id: 'synthetic' }), 'routine:vibe:vk_event:synthetic');
 });
+
+test('registered rule schedules require a host and accept only a Rule reference', () => {
+  const routine = { trigger: { type: 'schedule', cron: '*/5 * * * *', timezone: 'UTC' }, action: { type: 'run_rule', connectorId: 'synthetic-vibe', targetHostId: 'synthetic-host', input: { ruleId: 'synthetic-publisher' } } };
+  assert.equal(normalizeRoutine(routine).action.type, 'run_rule');
+  assert.throws(() => normalizeRoutine({ ...routine, action: { ...routine.action, targetHostId: '' } }), /targetHostId/);
+  for (const input of [{}, { ruleId: '' }, { ruleId: 'synthetic-publisher', script: 'arbitrary code' }])
+    assert.throws(() => normalizeRoutine({ ...routine, action: { ...routine.action, input } }), /registered ruleId/);
+});

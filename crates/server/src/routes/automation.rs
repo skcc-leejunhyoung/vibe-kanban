@@ -66,7 +66,7 @@ pub(super) async fn artifact_channel<T: DeserializeOwned>(
     payload: serde_json::Value,
 ) -> Result<T, ApiError> {
     if !services::services::artifact_interactions::valid_channel_id(channel)
-        || !["describe", "snapshot", "request", "configure"].contains(&operation)
+        || !["describe", "snapshot", "request", "configure", "lifecycle"].contains(&operation)
     {
         return Err(ApiError::BadRequest(
             "Invalid artifact automation operation".into(),
@@ -76,7 +76,9 @@ pub(super) async fn artifact_channel<T: DeserializeOwned>(
         ApiError::BadGateway("Artifact automation unavailable; check status before retrying".into())
     };
     let token = worker_token().ok_or_else(unavailable)?;
-    let path = if operation == "configure" {
+    let path = if operation == "lifecycle" {
+        "artifact-lifecycle".to_string()
+    } else if operation == "configure" {
         "artifact-channels".to_string()
     } else {
         format!("artifact-channels/{channel}/{operation}")
