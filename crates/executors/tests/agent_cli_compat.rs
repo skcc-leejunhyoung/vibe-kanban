@@ -66,11 +66,17 @@ async fn check_output(
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        completion.expect("turn must complete within 90 seconds"),
-        "executor reported failure"
-    );
-
+    if prompt == "/usage" {
+        for frame in stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        {
+            if frame["local_command"] == "usage" {
+                assert_eq!(frame["num_turns"].as_u64(), Some(0));
+                assert_eq!(frame["total_cost_usd"].as_f64(), Some(0.0));
+            }
+        }
+    }
     let store = Arc::new(MsgStore::new());
     store.push_stdout(stdout);
     store.push(LogMsg::Stderr(stderr));
@@ -98,6 +104,10 @@ async fn check_output(
             _ => {}
         }
     }
+    assert!(
+        completion.expect("turn must complete within 90 seconds"),
+        "executor reported failure; normalized errors: {errors:?}"
+    );
     assert!(
         answer_seen,
         "normalized answer must contain the synthetic marker"
@@ -187,6 +197,49 @@ async fn codex_cli_slash_command_catalogs() {
     ] {
         check_output(&executor, dir.path(), None, prompt, expected).await;
     }
+}
+
+#[tokio::test]
+#[ignore = "requires Codex service authentication; reads account usage without inference"]
+async fn codex_cli_usage_without_a_conversation() {
+    let command = std::env::var("VK_TEST_CODEX_COMMAND").unwrap_or_else(|_| "codex".to_string());
+    let executor: Codex =
+        serde_json::from_value(json!({"base_command_override": command})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for prompt in [
+        "/usage",
+        "/usage daily",
+        "/usage weekly",
+        "/usage cumulative",
+    ] {
+        assert!(
+            check_output(&executor, dir.path(), None, prompt, "Account Usage")
+                .await
+                .is_none()
+        );
+    }
+    assert!(
+        check_output(
+            &executor,
+            dir.path(),
+            Some("synthetic-unused-thread"),
+            "/usage",
+            "Account Usage"
+        )
+        .await
+        .is_none()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a signed-in Claude CLI; reads subscription usage without inference"]
+async fn claude_cli_usage_without_a_conversation() {
+    let command = std::env::var("VK_TEST_CLAUDE_COMMAND").unwrap_or_else(|_| "claude".to_string());
+    let executor: ClaudeCode = serde_json::from_value(json!({"base_command_override": command,
+        "additional_params": ["--max-budget-usd", "0.000001", "--strict-mcp-config", "--mcp-config", "'{\"mcpServers\":{}}'", "--tools="]
+    })).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    check_output(&executor, dir.path(), None, "/usage", "used").await;
 }
 
 #[tokio::test]

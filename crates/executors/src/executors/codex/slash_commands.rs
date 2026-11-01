@@ -1,6 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
-use codex_app_server_protocol::{ConfigEdit, JSONRPCNotification, MergeStrategy, ReviewTarget};
+use chrono::{Datelike, NaiveDate};
+use codex_app_server_protocol::{
+    ConfigEdit, GetAccountTokenUsageResponse, JSONRPCNotification, MergeStrategy, ReviewTarget,
+};
 use codex_protocol::{
     config_types::ServiceTier,
     protocol::{AgentMessageEvent, ErrorEvent, EventMsg},
@@ -45,6 +52,10 @@ pub(super) fn hardcoded_slash_commands() -> Vec<SlashCommandDescription> {
         (
             "status",
             "show session configuration, token usage, and rate limits",
+        ),
+        (
+            "usage",
+            "show account token activity and rate limits; /usage [daily|weekly|cumulative]",
         ),
         ("mcp", "list configured MCP tools"),
         (
@@ -100,6 +111,7 @@ pub enum CodexSlashCommand {
     Init,
     Compact { instructions: Option<String> },
     Status,
+    Usage { view: UsageView },
     Mcp,
     Models,
     Skills,
@@ -110,6 +122,13 @@ pub enum CodexSlashCommand {
     Settings,
     Invalid { message: String },
     Fast { enable: Option<bool>, status: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageView {
+    Daily,
+    Weekly,
+    Cumulative,
 }
 
 impl CodexSlashCommand {
@@ -125,6 +144,12 @@ impl CodexSlashCommand {
                 },
             }),
             "status" => Some(Self::Status),
+            "usage" => Some(match cmd.arguments {
+                "" | "day" | "daily" => Self::Usage { view: UsageView::Daily },
+                "week" | "weekly" => Self::Usage { view: UsageView::Weekly },
+                "cumulative" => Self::Usage { view: UsageView::Cumulative },
+                _ => Self::Invalid { message: "Usage: `/usage [daily|weekly|cumulative]`. This command only reads usage; use the Codex CLI to redeem a reset.".to_string() },
+            }),
             "mcp" => Some(Self::Mcp),
             "help" | "commands" => Some(Self::Help),
             "diff" if cmd.arguments.is_empty() => Some(Self::Diff),
@@ -273,7 +298,7 @@ impl Codex {
                     self.handle_app_server_slash_command(current_dir, command, session_id, env)
                         .await
                 }
-                CodexSlashCommand::Mcp | CodexSlashCommand::Models | CodexSlashCommand::Skills => {
+                CodexSlashCommand::Mcp | CodexSlashCommand::Models | CodexSlashCommand::Skills | CodexSlashCommand::Usage { .. } => {
                     self.handle_app_server_slash_command(current_dir, command, None, env)
                         .await
                 }
@@ -356,6 +381,11 @@ impl Codex {
                         exit_signal_tx
                             .send_exit_signal(ExecutorExitResult::Success)
                             .await;
+                    }
+                    CodexSlashCommand::Usage { view } => {
+                        let message = fetch_usage_message(&client, view).await?;
+                        log_event_raw(client.log_writer(), message).await?;
+                        exit_signal_tx.send_exit_signal(ExecutorExitResult::Success).await;
                     }
                     CodexSlashCommand::Mcp => {
                         let message = fetch_mcp_status_message(&client).await?;
@@ -512,6 +542,105 @@ impl Codex {
         spawned.exit_signal = Some(exit_signal_rx);
         Ok(spawned)
     }
+}
+
+async fn fetch_usage_message(
+    client: &AppServerClient,
+    view: UsageView,
+) -> Result<String, ExecutorError> {
+    let usage = tokio::time::timeout(Duration::from_secs(30), client.get_account_token_usage())
+        .await
+        .map_err(|_| {
+            ExecutorError::Io(std::io::Error::other(
+                "Timed out reading Codex account usage",
+            ))
+        })??;
+    let mut message = format_token_usage(&usage, view);
+    message.push_str("\n\n## Rate Limits\n");
+    match tokio::time::timeout(Duration::from_secs(5), client.get_account_rate_limits()).await {
+        Ok(Ok(limits)) => {
+            let limits = crate::usage::parse_codex_usage(limits);
+            if limits.windows.is_empty() && limits.reset_credits.is_none() {
+                message.push_str("\n_Rate limits unavailable._");
+            }
+            for window in limits.windows {
+                message.push_str(&format!(
+                    "\n- **{}**: {}% used{}",
+                    window.label,
+                    window.used_percent,
+                    window
+                        .reset_description
+                        .map(|reset| format!(" · {reset}"))
+                        .unwrap_or_default()
+                ));
+            }
+            if let Some(credits) = limits.reset_credits {
+                message.push_str(&format!("\n- **Available resets**: {credits}"));
+            }
+        }
+        _ => message.push_str("\n_Rate limits unavailable._"),
+    }
+    Ok(message)
+}
+
+fn format_token_usage(usage: &GetAccountTokenUsageResponse, view: UsageView) -> String {
+    let mut lines = vec!["# Account Usage\n".to_string()];
+    let summary = &usage.summary;
+    for (label, value) in [
+        ("Lifetime tokens", summary.lifetime_tokens),
+        ("Peak daily tokens", summary.peak_daily_tokens),
+        ("Longest turn (seconds)", summary.longest_running_turn_sec),
+        ("Current streak (days)", summary.current_streak_days),
+        ("Longest streak (days)", summary.longest_streak_days),
+    ] {
+        let value = value
+            .filter(|n| *n >= 0)
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unavailable".to_string());
+        lines.push(format!("- **{label}**: {value}"));
+    }
+    let mut buckets = BTreeMap::<NaiveDate, u128>::new();
+    for bucket in usage.daily_usage_buckets.iter().flatten() {
+        let Ok(date) = NaiveDate::parse_from_str(&bucket.start_date, "%Y-%m-%d") else {
+            continue;
+        };
+        let Ok(tokens) = u128::try_from(bucket.tokens) else {
+            continue;
+        };
+        let date = if view == UsageView::Weekly {
+            let Some(monday) = date.checked_sub_signed(chrono::Duration::days(
+                date.weekday().num_days_from_monday().into(),
+            )) else {
+                continue;
+            };
+            monday
+        } else {
+            date
+        };
+        *buckets.entry(date).or_default() += tokens;
+    }
+    let label = match view {
+        UsageView::Daily => "Daily",
+        UsageView::Weekly => "Weekly (week starting Monday)",
+        UsageView::Cumulative => "Cumulative (returned daily history)",
+    };
+    lines.push(format!("\n## {label} Token Activity\n"));
+    if buckets.is_empty() {
+        lines.push("_Token activity unavailable._".to_string());
+    } else {
+        lines.push("| Date | Tokens |\n| --- | ---: |".to_string());
+        let mut cumulative = 0;
+        for (date, tokens) in buckets {
+            cumulative += tokens;
+            let tokens = if view == UsageView::Cumulative {
+                cumulative
+            } else {
+                tokens
+            };
+            lines.push(format!("| {date} | {tokens} |"));
+        }
+    }
+    lines.join("\n")
 }
 
 pub async fn log_event_notification(
@@ -981,6 +1110,69 @@ mod tests {
                 command.name
             );
         }
+    }
+
+    #[test]
+    fn usage_is_a_local_read_with_explicit_views_and_no_reset_side_effects() {
+        for (prompt, expected) in [
+            ("/usage", UsageView::Daily),
+            ("/usage daily", UsageView::Daily),
+            ("/usage weekly", UsageView::Weekly),
+            ("/usage cumulative", UsageView::Cumulative),
+        ] {
+            assert!(
+                matches!(CodexSlashCommand::parse(prompt), Some(CodexSlashCommand::Usage { view }) if view == expected)
+            );
+        }
+        for prompt in [
+            "/usage reset",
+            "/usage daily extra",
+            "/usage\ninspect files",
+        ] {
+            assert!(matches!(
+                CodexSlashCommand::parse(prompt),
+                Some(CodexSlashCommand::Invalid { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn usage_groups_returned_history_and_preserves_unknown_summary_values() {
+        let usage: GetAccountTokenUsageResponse = serde_json::from_value(json!({
+            "summary": {"lifetimeTokens": 100, "peakDailyTokens": null},
+            "dailyUsageBuckets": [
+                {"startDate": "2024-01-08", "tokens": 7},
+                {"startDate": "2024-01-01", "tokens": 2},
+                {"startDate": "2024-01-01", "tokens": 3},
+                {"startDate": "2024-01-02", "tokens": 0},
+                {"startDate": "invalid", "tokens": 50},
+                {"startDate": "2024-01-03", "tokens": -1}
+            ]
+        }))
+        .unwrap();
+        let daily = format_token_usage(&usage, UsageView::Daily);
+        assert!(daily.contains("**Lifetime tokens**: 100"));
+        assert!(daily.contains("**Peak daily tokens**: unavailable"));
+        assert!(daily.contains("| 2024-01-01 | 5 |"));
+        assert!(daily.contains("| 2024-01-02 | 0 |"));
+        assert!(!daily.contains("invalid"));
+        assert!(!daily.contains("2024-01-03"));
+        let weekly = format_token_usage(&usage, UsageView::Weekly);
+        assert!(weekly.contains("| 2024-01-01 | 5 |"));
+        assert!(weekly.contains("| 2024-01-08 | 7 |"));
+        assert!(!weekly.contains("2024-01-02"));
+        let cumulative = format_token_usage(&usage, UsageView::Cumulative);
+        assert!(cumulative.contains("| 2024-01-08 | 12 |"));
+        assert!(cumulative.contains("returned daily history"));
+    }
+
+    #[test]
+    fn usage_does_not_invent_zero_activity_when_buckets_are_missing() {
+        let usage =
+            serde_json::from_value(json!({"summary": {}, "dailyUsageBuckets": null})).unwrap();
+        let message = format_token_usage(&usage, UsageView::Daily);
+        assert!(message.contains("Token activity unavailable"));
+        assert!(!message.contains("| 0 |"));
     }
 
     #[test]

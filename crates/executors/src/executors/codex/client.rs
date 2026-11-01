@@ -15,19 +15,19 @@ use codex_app_server_protocol::{
     ConfigBatchWriteParams, ConfigEdit, ConfigReadParams, ConfigReadResponse, ConfigWriteResponse,
     CurrentTimeReadResponse, DynamicToolCallOutputContentItem, DynamicToolCallResponse,
     FileChangeApprovalDecision, FileChangeRequestApprovalResponse, GetAccountParams,
-    GetAccountRateLimitsResponse, GetAccountResponse, InitializeCapabilities, InitializeParams,
-    InitializeResponse, ItemCompletedNotification, JSONRPCError, JSONRPCErrorError,
-    JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusParams,
-    ListMcpServerStatusResponse, McpServerStatusDetail, ModelListParams, ModelListResponse,
-    RateLimitSnapshot, RateLimitWindow, RequestId, ReviewStartParams, ReviewStartResponse,
-    ReviewTarget, ServerRequest, SkillsListParams, SkillsListResponse, SortDirection,
-    ThreadCompactStartParams, ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse,
-    ThreadHistoryMode, ThreadItem, ThreadItemEntry, ThreadItemsListParams, ThreadItemsListResponse,
-    ThreadReadParams, ThreadReadResponse, ThreadStartParams, ThreadStartResponse,
-    ThreadTurnsListParams, ThreadTurnsListResponse, ToolRequestUserInputAnswer,
-    ToolRequestUserInputQuestion, ToolRequestUserInputResponse, Turn, TurnCompletedNotification,
-    TurnInterruptParams, TurnInterruptResponse, TurnItemsView, TurnStartParams, TurnStartResponse,
-    TurnStatus, UserInput,
+    GetAccountRateLimitsResponse, GetAccountResponse, GetAccountTokenUsageResponse,
+    InitializeCapabilities, InitializeParams, InitializeResponse, ItemCompletedNotification,
+    JSONRPCError, JSONRPCErrorError, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse,
+    ListMcpServerStatusParams, ListMcpServerStatusResponse, McpServerStatusDetail, ModelListParams,
+    ModelListResponse, RateLimitSnapshot, RateLimitWindow, RequestId, ReviewStartParams,
+    ReviewStartResponse, ReviewTarget, ServerRequest, SkillsListParams, SkillsListResponse,
+    SortDirection, ThreadCompactStartParams, ThreadCompactStartResponse, ThreadForkParams,
+    ThreadForkResponse, ThreadHistoryMode, ThreadItem, ThreadItemEntry, ThreadItemsListParams,
+    ThreadItemsListResponse, ThreadReadParams, ThreadReadResponse, ThreadStartParams,
+    ThreadStartResponse, ThreadTurnsListParams, ThreadTurnsListResponse,
+    ToolRequestUserInputAnswer, ToolRequestUserInputQuestion, ToolRequestUserInputResponse, Turn,
+    TurnCompletedNotification, TurnInterruptParams, TurnInterruptResponse, TurnItemsView,
+    TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
 };
 use codex_protocol::{
     config_types::{CollaborationMode, ModeKind, Settings},
@@ -264,6 +264,16 @@ impl AppServerClient {
             },
         };
         self.send_request(request, "skills/list").await
+    }
+
+    pub async fn get_account_token_usage(
+        &self,
+    ) -> Result<GetAccountTokenUsageResponse, ExecutorError> {
+        let request = ClientRequest::GetAccountTokenUsage {
+            request_id: self.next_request_id(),
+            params: None,
+        };
+        self.send_request(request, "account/usage/read").await
     }
 
     pub async fn start_review(
@@ -1339,6 +1349,7 @@ fn request_id(request: &ClientRequest) -> RequestId {
         | ClientRequest::ConfigRead { request_id, .. }
         | ClientRequest::ConfigBatchWrite { request_id, .. }
         | ClientRequest::GetAccountRateLimits { request_id, .. }
+        | ClientRequest::GetAccountTokenUsage { request_id, .. }
         | ClientRequest::SkillsList { request_id, .. }
         | ClientRequest::ModelList { request_id, .. } => request_id.clone(),
         _ => unreachable!("request_id called for unsupported request variant"),

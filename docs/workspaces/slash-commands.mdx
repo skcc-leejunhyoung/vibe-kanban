@@ -45,6 +45,7 @@ Claude Code provides built-in commands, user-defined commands, and skills. For f
 | `/pr-comments` | Get comments from a GitHub pull request |
 | `/context` | Visualize current context usage |
 | `/cost` | Show the total cost and duration of the current session |
+| `/usage` | Show subscription usage and reset times without an inference turn |
 | `/release-notes` | View release notes |
 
 Any custom commands or skills you've installed will also appear in the typeahead.
@@ -60,6 +61,7 @@ Vibe Kanban surfaces a curated subset of Codex built-in commands. For the full u
 | `/diff` | Show staged and unstaged changes and untracked file names |
 | `/init` | Generate an AGENTS.md scaffold in the current directory |
 | `/status` | Display session configuration and token usage |
+| `/usage [daily\|weekly\|cumulative]` | Show account token activity, rate limits, and available resets |
 | `/mcp` | List configured MCP tools |
 | `/skills` | List enabled skills; invoke one with `$skill-name` in a message |
 | `/model [id]` | List models or select a model in the composer; `/models` is an alias |
@@ -70,6 +72,8 @@ Vibe Kanban surfaces a curated subset of Codex built-in commands. For the full u
 | `/help` | List supported commands; `/commands` is an alias |
 
 Fast changes retain the selected reasoning effort and apply to subsequent turns. Wait for model discovery before changing Fast mode. Terminal session-management commands such as `/new`, `/resume`, `/fork`, and `/quit` are handled through Vibe Kanban's session controls. Unknown commands remain available for custom prompts.
+
+`/usage` reads account-wide usage without starting a model turn. Daily activity and account summary fields require Codex service authentication; unavailable fields are shown explicitly. Weekly totals use weeks starting Monday, and cumulative totals cover the returned daily history. This command does not redeem usage resets.
 
 ### OpenCode
 

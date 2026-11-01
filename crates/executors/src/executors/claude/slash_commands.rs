@@ -263,6 +263,10 @@ impl ClaudeCode {
                     ),
                 },
                 SlashCommandDescription {
+                    name: "usage".to_string(),
+                    description: Some("Show subscription usage and reset times".to_string()),
+                },
+                SlashCommandDescription {
                     name: "fast".to_string(),
                     description: Some(
                         "Toggle Fast mode for higher-speed Opus responses. Use /fast [on|off]"
