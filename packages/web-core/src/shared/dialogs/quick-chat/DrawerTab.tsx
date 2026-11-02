@@ -644,6 +644,8 @@ function NoteDetail({
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shownNoteIdRef = useRef(note.id);
+  shownNoteIdRef.current = note.id;
 
   useEffect(() => {
     setDraftState(commentDrafts.get(note.id) ?? '');
@@ -664,14 +666,19 @@ function NoteDetail({
     setError(null);
     try {
       await onComment(body);
-      setDraft('');
-      endRef.current?.scrollIntoView({ block: 'nearest' });
+      // Clear the sent note's draft only: the user may have opened another
+      // note (with its own draft) while this was in flight.
+      commentDrafts.delete(note.id);
+      if (shownNoteIdRef.current === note.id) {
+        setDraftState('');
+        endRef.current?.scrollIntoView({ block: 'nearest' });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not send.');
     } finally {
       setSending(false);
     }
-  }, [draft, sending, onComment, setDraft]);
+  }, [draft, sending, onComment, note.id]);
 
   // A failed resolve rolls the row back; say why instead of snapping silently.
   const resolve = (comment: DrawerComment, resolved: boolean) => {
