@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import { drawerArtifactsApi } from '@/shared/lib/api';
 import type {
   ArtifactInputBridge,
@@ -64,8 +65,9 @@ export function DrawerArtifact({
     gcTime: 0,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
+    // A failed poll backs off instead of stopping, so a blip doesn't freeze it.
     refetchInterval: (query) =>
-      !archived && !query.state.error ? 2000 : false,
+      archived ? false : query.state.error ? 10000 : 2000,
   });
   useEffect(() => {
     if (archived)
@@ -120,7 +122,10 @@ export function DrawerArtifact({
         ? t('artifacts.input.disconnected')
         : snapshot.data?.updated_at
           ? t('artifacts.drawer.updated', {
-              time: new Date(snapshot.data.updated_at).toLocaleTimeString(),
+              time: new Date(snapshot.data.updated_at).toLocaleTimeString(
+                undefined,
+                withDisplayTimeZone()
+              ),
             })
           : t('artifacts.drawer.waiting'),
     editable: false,
@@ -190,8 +195,7 @@ export function DrawerArtifact({
       ? preview.error === 'artifacts.drawer.unavailable'
         ? t('artifacts.drawer.unavailable')
         : preview.error
-      : undefined) ??
-    scriptError;
+      : undefined);
   if (failure)
     return (
       <div>
@@ -234,6 +238,8 @@ export function DrawerArtifact({
         aria-live="polite"
       >
         <p>{state.current.message}</p>
+        {/* The bridge reports any failed resource, so keep the frame. */}
+        {scriptError && <p role="alert">{scriptError}</p>}
         {!archived && snapshot.isError && (
           <button
             type="button"

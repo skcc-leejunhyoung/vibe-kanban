@@ -1443,7 +1443,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
                 ? running
                     .map(
                       (p) =>
-                        `${labels[p.run_reason]} — ${new Date(p.started_at).toLocaleString()}`
+                        `${labels[p.run_reason]} — ${formatDateShortWithTime(p.started_at)}`
                     )
                     .join('; ')
                 : 'No Vibe executions are running in this session.',

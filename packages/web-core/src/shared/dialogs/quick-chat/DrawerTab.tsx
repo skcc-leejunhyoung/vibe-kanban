@@ -546,6 +546,7 @@ export function DrawerTab({
       >
         {selected ? (
           <NoteDetail
+            key={selected.id}
             note={selected}
             comments={selectedComments}
             view={view}
@@ -601,6 +602,9 @@ function noteActivityAt(note: DrawerNote, view: 'inbox' | 'archive'): string {
 // note, a tab switch, the dialog closing) keeps what was typed; the page and
 // the dialog share them. ponytail: memory only, a reload drops them.
 const commentDrafts = new Map<string, string>();
+// In-flight comment sends by note. NoteDetail remounts per note, so the copy
+// that started a send may be gone when it settles; a reopened copy follows it.
+const commentSends = new Map<string, Promise<void>>();
 
 function NoteDetail({
   note,
@@ -640,17 +644,10 @@ function NoteDetail({
     },
     [note.id]
   );
-  const [sending, setSending] = useState(false);
+  const [sending, setSending] = useState(() => commentSends.has(note.id));
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const shownNoteIdRef = useRef(note.id);
-  shownNoteIdRef.current = note.id;
-
-  useEffect(() => {
-    setDraftState(commentDrafts.get(note.id) ?? '');
-    setError(null);
-  }, [note.id]);
 
   useDrawerBodyFocus(scrollRef, {
     noteId: note.id,
@@ -659,26 +656,40 @@ function NoteDetail({
     focusRequest,
   });
 
-  const send = useCallback(async () => {
-    const body = draft.trim();
-    if (!body || sending) return;
-    setSending(true);
-    setError(null);
-    try {
-      await onComment(body);
-      // Clear the sent note's draft only: the user may have opened another
-      // note (with its own draft) while this was in flight.
-      commentDrafts.delete(note.id);
-      if (shownNoteIdRef.current === note.id) {
-        setDraftState('');
+  const follow = useCallback(
+    async (sent: Promise<void>) => {
+      setSending(true);
+      setError(null);
+      try {
+        await sent;
+        setDraftState(commentDrafts.get(note.id) ?? '');
         endRef.current?.scrollIntoView({ block: 'nearest' });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not send.');
+      } finally {
+        setSending(false);
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not send.');
-    } finally {
-      setSending(false);
-    }
-  }, [draft, sending, onComment, note.id]);
+    },
+    [note.id]
+  );
+
+  useEffect(() => {
+    const sent = commentSends.get(note.id);
+    if (sent) void follow(sent);
+  }, [note.id, follow]);
+
+  const send = useCallback(() => {
+    const body = draft.trim();
+    if (!body || commentSends.has(note.id)) return;
+    const sent = (async () => {
+      await onComment(body);
+      // Keep anything typed into this note while the send was in flight.
+      if (commentDrafts.get(note.id)?.trim() === body)
+        commentDrafts.delete(note.id);
+    })().finally(() => commentSends.delete(note.id));
+    commentSends.set(note.id, sent);
+    void follow(sent);
+  }, [draft, onComment, note.id, follow]);
 
   // A failed resolve rolls the row back; say why instead of snapping silently.
   const resolve = (comment: DrawerComment, resolved: boolean) => {

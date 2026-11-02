@@ -6,7 +6,10 @@ import { DrawerArtifact } from './DrawerArtifact';
 import { buildArtifactPreview } from './artifact-preview';
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, options?: { time?: string }) =>
+      options?.time ? `${key} ${options.time}` : key,
+  }),
 }));
 vi.mock('./artifact-preview', () => ({
   buildArtifactPreview: vi.fn(() => ({
@@ -85,6 +88,11 @@ describe('Drawer read-only dashboard', () => {
       actions: [],
       initial: { editable: false },
     });
+  });
+  it('shows the last update time in KST', () => {
+    expect(render()).toContain(
+      `artifacts.drawer.updated ${new Date('2030-01-01T00:00:00Z').toLocaleTimeString(undefined, { timeZone: 'Asia/Seoul' })}`
+    );
   });
   it('shows an archived note as paused while keeping its frozen document', () => {
     const html = render(true);

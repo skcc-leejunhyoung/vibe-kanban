@@ -8,6 +8,7 @@ import {
   splitComposerSettingsPrompt,
 } from '@/shared/lib/composerSlashCommands';
 import { buildAgentPrompt } from '@/shared/lib/promptMessage';
+import { formatDateShortWithTime } from '@/shared/lib/date';
 
 // Exercise the real action callbacks without mounting unrelated workspace providers.
 const source = ts.createSourceFile(
@@ -384,10 +385,15 @@ describe('Vibe session slash commands', () => {
       ...setup,
       processes,
       entries,
+      formatDateShortWithTime,
     });
     await handler('/ps');
     const message = setup.ConfirmDialog.show.mock.calls[0][0].message;
-    expect(message).toContain('Agent');
+    // KST-pinned regardless of the runner's zone.
+    expect(message).toContain(
+      `Agent — ${formatDateShortWithTime('2024-01-01T00:00:00Z')}`
+    );
+    expect(message).toContain('09:00');
     expect(message).not.toContain('Dev server');
     expect(message).not.toContain('Cleanup');
     await handler('/warnings');
