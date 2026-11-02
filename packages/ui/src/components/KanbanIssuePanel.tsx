@@ -9,6 +9,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
 import { cn } from '../lib/cn';
+import { isPlainEscape } from '../lib/dialog-keyboard';
 import { isModalKeyboardActive } from '../lib/modal-keyboard';
 import { isInInactiveWorkspacePane } from '../lib/workspace-pane';
 import {
@@ -434,7 +435,7 @@ export function KanbanIssuePanel({
       return;
     }
 
-    if (e.key !== 'Escape') return;
+    if (!isPlainEscape(e)) return;
     const target = e.target as HTMLElement;
     const isEditable =
       target.tagName === 'INPUT' ||

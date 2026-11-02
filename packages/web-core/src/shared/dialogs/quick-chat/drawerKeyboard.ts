@@ -1,5 +1,5 @@
 import type { KeyboardEvent } from 'react';
-import { activatesOnEnter } from '@vibe/ui/lib/dialog-keyboard';
+import { activatesOnEnter, isPlainEscape } from '@vibe/ui/lib/dialog-keyboard';
 
 export function handleDrawerDetailKeyDown(
   event: KeyboardEvent<HTMLElement>,
@@ -19,7 +19,7 @@ export function handleDrawerDetailKeyDown(
   )
     return;
 
-  if (event.key === 'Escape') {
+  if (isPlainEscape(event)) {
     event.preventDefault();
     actions.backToList();
     return;

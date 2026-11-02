@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useCallback } from 'react';
+import { isPlainEscape } from '@vibe/ui/lib/dialog-keyboard';
 import { useTranslation } from 'react-i18next';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { isPendingProcessId } from '@/shared/providers/executionProcessScope';
@@ -72,7 +73,7 @@ export function ProcessListContainer() {
         } else {
           onNextMatch?.();
         }
-      } else if (e.key === 'Escape') {
+      } else if (isPlainEscape(e)) {
         onSearchQueryChange?.('');
       }
     },

@@ -269,6 +269,24 @@ export function useDialogFocusGuard({
   }, [getContainer, isTopLayer]);
 }
 
+/**
+ * Escape with no modifier held — what `useHotkeys('escape')` matches. Native
+ * Escape handlers (go back, blur, cancel) check this so a modifier+Escape
+ * shortcut (e.g. Quick chat rebound to ⌘Esc) doesn't also trigger them.
+ */
+export function isPlainEscape(
+  event: Pick<KeyboardEvent, 'key'> &
+    Partial<Pick<KeyboardEvent, 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>>
+): boolean {
+  return (
+    event.key === 'Escape' &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey
+  );
+}
+
 /** Cmd+Enter (mac) / Ctrl+Enter — the dialog "confirm" gesture. */
 export function isDialogConfirmKey(event: KeyboardEvent): boolean {
   return (

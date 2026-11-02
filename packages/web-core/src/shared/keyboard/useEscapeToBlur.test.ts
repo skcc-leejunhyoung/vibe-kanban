@@ -36,6 +36,16 @@ describe('blurFocusedElementOnEscape', () => {
     expect(event.preventDefault).not.toHaveBeenCalled();
   });
 
+  it('keeps focus for a modifier+Escape shortcut', () => {
+    const element = focusableElement();
+    const event = { ...keyEvent('Escape'), metaKey: true };
+
+    blurFocusedElementOnEscape(event, element);
+
+    expect(element.blur).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+  });
+
   it('leaves Escape to an element that handles it itself', () => {
     const element = {
       tagName: 'SECTION',

@@ -26,6 +26,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
 import { openExternalUrl } from '../lib/open-url';
+import { isPlainEscape } from '../lib/dialog-keyboard';
 import { PrimaryButton } from './PrimaryButton';
 import { IconButtonGroup, IconButtonGroupItem } from './IconButtonGroup';
 import { Tooltip } from './Tooltip';
@@ -241,7 +242,7 @@ export function PreviewBrowser({
                       onUrlSubmit();
                       onMobileUrlExpandedChange?.(false);
                     }
-                    if (e.key === 'Escape') {
+                    if (isPlainEscape(e)) {
                       e.stopPropagation();
                       onUrlEscape?.();
                       onMobileUrlExpandedChange?.(false);
@@ -453,7 +454,7 @@ export function PreviewBrowser({
                   onChange={(e) => onUrlInputChange(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') onUrlSubmit();
-                    if (e.key === 'Escape') {
+                    if (isPlainEscape(e)) {
                       e.stopPropagation();
                       onUrlEscape?.();
                     }

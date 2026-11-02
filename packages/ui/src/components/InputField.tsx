@@ -6,6 +6,7 @@ import {
   PencilSimpleLineIcon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
+import { isPlainEscape } from '../lib/dialog-keyboard';
 
 interface InputFieldProps {
   value: string;
@@ -84,7 +85,7 @@ export function InputField({
     if (variant === 'editable') {
       if (e.key === 'Enter') {
         handleSave();
-      } else if (e.key === 'Escape') {
+      } else if (isPlainEscape(e)) {
         handleCancel();
       }
     }

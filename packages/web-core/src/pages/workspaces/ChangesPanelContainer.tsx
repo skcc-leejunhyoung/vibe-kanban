@@ -19,6 +19,7 @@ import {
 import { FileDiff, WorkerPoolContextProvider } from '@pierre/diffs/react';
 import type { DiffLineAnnotation, AnnotationSide } from '@pierre/diffs';
 import { MiddleEllipsisPath } from '@vibe/ui/components/MiddleEllipsisPath';
+import { isPlainEscape } from '@vibe/ui/lib/dialog-keyboard';
 const WorkerUrl = new URL(
   '@pierre/diffs/worker/worker-portable.js',
   import.meta.url
@@ -881,7 +882,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
         return;
       }
 
-      if (event.key === 'Escape') {
+      if (isPlainEscape(event)) {
         const diffKey = selectedDiff ? getDiffKey(selectedDiff) : null;
         if (!diffKey) return;
 
@@ -926,7 +927,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
         data-escape-handled={onEscape ? true : undefined}
         onFocusCapture={onPanelFocus}
         onKeyDownCapture={(event) => {
-          if (event.key !== 'Escape' || !onEscape) return;
+          if (!isPlainEscape(event) || !onEscape) return;
           event.preventDefault();
           event.stopPropagation();
           onEscape();

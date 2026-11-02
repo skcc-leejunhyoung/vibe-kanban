@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
+import { isPlainEscape } from '../lib/dialog-keyboard';
 import { KEYBOARD_CURSOR_RING } from '../lib/focus-ring';
 import { Droppable } from '@hello-pangea/dnd';
 import { CaretDownIcon, PlusIcon } from '@phosphor-icons/react';
@@ -267,7 +268,7 @@ function IssueListAddRow({
         e.preventDefault();
         setTitle(discardedDraftRef.current);
         discardedDraftRef.current = '';
-      } else if (e.key === 'Escape') {
+      } else if (isPlainEscape(e)) {
         // Leave the input but keep the add-row keyboard-focused so arrow keys
         // resume and Enter re-enters.
         e.preventDefault();

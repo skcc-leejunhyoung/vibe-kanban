@@ -1,11 +1,13 @@
 import { useEffect } from 'react';
+import { isPlainEscape } from '@vibe/ui/lib/dialog-keyboard';
 import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
 
 export function blurFocusedElementOnEscape(
-  event: Pick<KeyboardEvent, 'key' | 'preventDefault'>,
+  event: Parameters<typeof isPlainEscape>[0] &
+    Pick<KeyboardEvent, 'preventDefault'>,
   activeElement: Element | null
 ): void {
-  if (event.key !== 'Escape' || !activeElement) return;
+  if (!isPlainEscape(event) || !activeElement) return;
 
   if (
     typeof activeElement.closest === 'function' &&

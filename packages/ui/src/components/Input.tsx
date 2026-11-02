@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { cn } from '../lib/cn';
+import { isPlainEscape } from '../lib/dialog-keyboard';
 import { twMerge } from 'tailwind-merge';
 
 export interface InputProps
@@ -21,7 +22,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
     ref
   ) => {
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === 'Escape') {
+      if (isPlainEscape(e)) {
         e.currentTarget.blur();
       }
       if (e.key === 'Enter' && !e.nativeEvent.isComposing) {

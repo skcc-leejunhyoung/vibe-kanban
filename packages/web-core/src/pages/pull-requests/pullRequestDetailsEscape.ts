@@ -1,8 +1,14 @@
+import { isPlainEscape } from '@vibe/ui/lib/dialog-keyboard';
+
 const DETAIL_CONTROL_SELECTOR =
   'input, textarea, select, button, a, [role="button"], [contenteditable="true"]';
 
 interface EscapeEvent {
   key: string;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  shiftKey?: boolean;
   defaultPrevented: boolean;
   preventDefault(): void;
 }
@@ -17,7 +23,7 @@ export function handlePullRequestDetailsEscape(
   activeElement: FocusedElement | null,
   closeDetails: () => void
 ): void {
-  if (event.key !== 'Escape' || event.defaultPrevented) return;
+  if (!isPlainEscape(event) || event.defaultPrevented) return;
 
   if (
     activeElement?.closest(DETAIL_CONTROL_SELECTOR) &&

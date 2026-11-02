@@ -42,6 +42,15 @@ describe('Drawer detail keyboard', () => {
     expect(press('Escape').backToList).toHaveBeenCalledOnce();
   });
 
+  it.each([{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }])(
+    'leaves Escape with %j to its shortcut (Quick chat ⌘Esc)',
+    (modifier) => {
+      const { backToList, event } = press('Escape', modifier);
+      expect(backToList).not.toHaveBeenCalled();
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    }
+  );
+
   it.each([{ metaKey: true }, { ctrlKey: true }])(
     'navigates left/right with %j',
     (modifier) => {

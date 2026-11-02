@@ -18,6 +18,7 @@ import { DropdownMenuItem, DropdownMenuLabel } from './Dropdown';
 import { PrimaryButton } from './PrimaryButton';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
 import { ToolbarDropdown, ToolbarIconButton } from './Toolbar';
+import { isPlainEscape } from '../lib/dialog-keyboard';
 
 export interface EditorProps {
   value: string;
@@ -186,7 +187,7 @@ export function CreateChatBox<TExecutor extends string = string>({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    if (!isPlainEscape(e) || e.defaultPrevented) return;
 
     e.preventDefault();
     e.stopPropagation();

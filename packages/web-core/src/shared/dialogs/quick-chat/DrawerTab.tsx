@@ -27,6 +27,7 @@ import type {
   DrawerNote,
 } from 'shared/remote-types';
 import { cn } from '@vibe/ui/lib/cn';
+import { isPlainEscape } from '@vibe/ui/lib/dialog-keyboard';
 import { AutoResizeTextarea } from '@vibe/ui/components/AutoResizeTextarea';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
@@ -761,7 +762,7 @@ function NoteDetail({
                 }
                 // Keep the draft and return to the keyboard-scrollable body.
                 if (
-                  event.key === 'Escape' &&
+                  isPlainEscape(event) &&
                   !event.defaultPrevented &&
                   !event.nativeEvent.isComposing
                 ) {

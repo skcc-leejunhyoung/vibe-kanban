@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from '@vibe/ui/components/KeyboardDialog';
 import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
+import { isPlainEscape } from '@vibe/ui/lib/dialog-keyboard';
 import type { ExecutorConfig, Repo, Session } from 'shared/types';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { selectWorkspaceSession } from '@/shared/hooks/useWorkspaceSessions';
@@ -203,7 +204,7 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
   const drawerEscapeRef = useRef<(() => boolean) | null>(null);
   const handleDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (
-      event.key !== 'Escape' ||
+      !isPlainEscape(event) ||
       event.defaultPrevented ||
       event.nativeEvent.isComposing
     )
