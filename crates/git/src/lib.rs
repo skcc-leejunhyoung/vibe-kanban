@@ -1089,6 +1089,18 @@ impl GitService {
         }
         .into_reference();
         self.fetch_branch_from_remote(&repo, &base_branch_ref)?;
+        // The base-only fetch leaves `<remote>/<branch>` (read by the Pull button)
+        // stale. Best effort: an unpushed branch does not exist on the remote.
+        if base_branch_name.is_some()
+            && review_tracking_ref(branch_name).is_none()
+            && let Some(branch) = branch_ref.name()?.strip_prefix("refs/heads/")
+        {
+            let remote = self.get_remote_from_branch_ref(&repo, &base_branch_ref)?;
+            if let Some(remote) = remote.name()? {
+                let refspec = format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}");
+                let _ = GitCli::new().fetch_with_refspec(repo_path, remote, &refspec);
+            }
+        }
         let base_branch_ref = repo.find_reference(base_branch_ref.name()?)?;
         self.get_branch_status_inner(&repo, &branch_ref, &base_branch_ref)
     }

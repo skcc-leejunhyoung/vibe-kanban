@@ -532,3 +532,32 @@ fn publishing_from_single_branch_clone_tracks_only_the_published_head() {
         }
     }
 }
+
+#[test]
+fn remote_base_status_refreshes_a_work_branch_pushed_elsewhere() {
+    let temp = TempDir::new().unwrap();
+    let path = single_branch_clone(&temp, true);
+    let repo = Repository::open(&path).unwrap();
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.branch("vk/work", &head, false).unwrap();
+    let git = GitService::new();
+    git.ensure_remote_branch(&path, "origin", "dev").unwrap();
+    let tracking = "refs/remotes/origin/vk/work";
+
+    // Unpushed: the branch missing on the remote must not fail the poll.
+    assert_eq!(
+        git.get_remote_branch_status(&path, "vk/work", Some("origin/dev"))
+            .unwrap(),
+        (1, 0)
+    );
+    assert!(repo.find_reference(tracking).is_err());
+
+    // Pushed from another clone: the next poll records it.
+    let seed = Repository::open(temp.path().join("seed")).unwrap();
+    let pushed = seed.refname_to_id("refs/heads/dev").unwrap();
+    seed.reference("refs/heads/vk/work", pushed, false, "synthetic push")
+        .unwrap();
+    git.get_remote_branch_status(&path, "vk/work", Some("origin/dev"))
+        .unwrap();
+    assert_eq!(repo.refname_to_id(tracking).unwrap(), pushed);
+}
