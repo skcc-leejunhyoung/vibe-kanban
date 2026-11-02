@@ -296,6 +296,19 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
           handoff: delivery,
           members: delivery.members,
         });
+      } else if (lost.size) {
+        // Every alert is gone. If an admission whose response was lost took
+        // them, the host already queued these leftovers under this key and
+        // refuses it for a plain queue; only its own receipt can say so.
+        const receipt = await api(
+          routine,
+          "GET",
+          `/api/automation-actions/receipts/${encodeURIComponent(delivery.meta.idempotencyKey)}`,
+          undefined,
+          true,
+        );
+        if (receipt.status === "succeeded" && receipt.action === "notification_handoff")
+          return receipt;
       }
       // The receiving host stages the exact body, then atomically admits every
       // member centrally before publishing any runnable queue entry.

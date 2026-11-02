@@ -133,16 +133,17 @@ async fn action_receipt(
     axum::extract::State(deployment): axum::extract::State<DeploymentImpl>,
     Path(key): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let row = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT status,response FROM automation_action_receipts WHERE idempotency_key=?",
+    // The action tells a worker which kind of delivery owns the key.
+    let row = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT action,status,response FROM automation_action_receipts WHERE idempotency_key=?",
     )
     .bind(key)
     .fetch_optional(&deployment.db().pool)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(match row {
-        Some((status, response)) => {
-            serde_json::json!({"status":status,"response":response.and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok())})
+        Some((action, status, response)) => {
+            serde_json::json!({"action":action,"status":status,"response":response.and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok())})
         }
         None => serde_json::json!({"status":"missing"}),
     }))

@@ -284,29 +284,55 @@ test("an expired member leaves its batch while the rest is handed off without it
   assert.equal(staged[0].payload.handoff.payload.message, "2 events");
 });
 
-test("a retry after a lost admission response never hands anything off twice", async () => {
+test("a retry after a lost admission response recovers it from the host receipt", async () => {
+  const batchOf = (alerts) => ({ id: "synthetic-batch", count: 3, events: [...alerts, { id: "synthetic-process", kind: "process.failed" }] });
+  const build = (event) => ({ path: "/queue", payload: { message: `${event.count} events` }, meta: { idempotencyKey: "synthetic-admitted" } });
+  for (const receipt of [
+    { status: "succeeded", action: "notification_handoff", response: null },
+    // Staged, but admission was refused once the alerts fell back to the user.
+    { status: "running", action: "notification_handoff", response: null },
+    // An older host does not say which action owns the key.
+    { status: "succeeded", response: null },
+  ]) {
+    const f = fixture();
+    await f.routing.register(routine, [], true);
+    const alerts = [f.event("synthetic-a"), f.event("synthetic-b")];
+    for (const event of alerts) await f.routing.claim(routine, event);
+    // The host stages the batch, but its response is lost. Like begin_action,
+    // it then refuses that notification_handoff key for a plain queue_prompt.
+    let staged = false;
+    f.setFailure((path) => {
+      if (path === "/queue/notification-handoff") return (staged = true);
+      return staged && (path === "/queue" || path.endsWith("/renew-claim"));
+    });
+    await assert.rejects(f.routing.deliver(routine, batchOf(alerts), build));
+    f.setReceipt(receipt);
+    const accepted = receipt.status === "succeeded" && receipt.action === "notification_handoff";
+    const retry = f.routing.deliver(routine, redactEvent(batchOf(alerts)), build);
+    if (accepted) assert.deepEqual(await retry, receipt);
+    else await assert.rejects(retry, { status: 409 });
+    const lookups = f.calls.filter((c) => c.path.includes("/receipts/"));
+    assert.deepEqual(lookups.map((c) => [c.path, c.host]), [["/api/automation-actions/receipts/synthetic-admitted", true]]);
+    assert.equal(f.calls.filter((c) => c.path.endsWith("/handoff")).length, 1);
+    assert.equal(f.calls.filter((c) => c.path === "/queue/notification-handoff").length, 1);
+    // Anything not proven accepted keeps its key and body, so the host refuses it.
+    assert.deepEqual(
+      f.calls.filter((c) => c.path === "/queue").map((c) => [c.meta.idempotencyKey, c.payload.message]),
+      accepted ? [] : [["synthetic-admitted", "1 events"]],
+    );
+  }
+  // Every alert expired before the host saw the key: the leftover goes out once.
   const f = fixture();
   await f.routing.register(routine, [], true);
   const alerts = [f.event("synthetic-a"), f.event("synthetic-b")];
   for (const event of alerts) await f.routing.claim(routine, event);
-  const batch = { id: "synthetic-batch", count: 3, events: [...alerts, { id: "synthetic-process", kind: "process.failed" }] };
-  const build = (event) => ({ path: "/queue", payload: { message: `${event.count} events` }, meta: { idempotencyKey: "synthetic-admitted" } });
-  // The host admits the batch, but its response is lost.
-  let admitted = false;
-  f.setFailure((path) => {
-    if (path === "/queue/notification-handoff") return (admitted = true);
-    return admitted && path.endsWith("/renew-claim");
-  });
-  await assert.rejects(f.routing.deliver(routine, batch, build));
-  const retry = await f.routing.deliver(routine, redactEvent(batch), build);
-  assert.equal(f.calls.filter((c) => c.path.endsWith("/handoff")).length, 1);
-  assert.equal(f.calls.filter((c) => c.path === "/queue/notification-handoff").length, 1);
-  // Only the leftover reaches the host, under the admitted key the host refuses.
-  const leftover = f.calls.filter((c) => c.path === "/queue");
-  assert.equal(leftover.length, 1);
-  assert.equal(leftover[0].meta.idempotencyKey, "synthetic-admitted");
-  assert.equal(leftover[0].payload.message, "1 events");
-  assert.equal(retry.data.claim_token, "claim");
+  f.setFailure((path) => path.endsWith("/renew-claim"));
+  await f.routing.deliver(routine, batchOf(alerts), build);
+  assert.deepEqual(
+    f.calls.filter((c) => c.path === "/queue").map((c) => [c.meta.idempotencyKey, c.payload.message]),
+    [["synthetic-admitted", "1 events"]],
+  );
+  assert.equal(f.calls.some((c) => c.path.endsWith("/handoff") || c.path.endsWith("/notification-handoff")), false);
   f.calls.length = 0;
   const alertsOnly = await f.routing.deliver(routine, redactEvent({ events: alerts }), build);
   assert.equal(alertsOnly.skipped, "notification claims expired");
