@@ -177,6 +177,7 @@ export function DrawerTab({
     [comments.data, selected]
   );
 
+  const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const noteButtonsRef = useRef(new Map<string, HTMLButtonElement>());
   const [focusRequest, setFocusRequest] = useState(0);
@@ -257,6 +258,9 @@ export function DrawerTab({
     resolveSequence('seq-workspace-archive', overrides),
     (event) => {
       if (!selected) return;
+      // Not while a dialog stacked on top (an artifact preview) has focus.
+      const dialog = rootRef.current?.closest('[role="dialog"]');
+      if (dialog && !dialog.contains(document.activeElement)) return;
       event.preventDefault();
       archive(selected, view === 'inbox');
     },
@@ -281,6 +285,7 @@ export function DrawerTab({
 
   return (
     <div
+      ref={rootRef}
       className={cn(
         'grid gap-base',
         // A fixed height in the dialog: the list and the note share it and
@@ -567,6 +572,11 @@ function noteActivityAt(note: DrawerNote, view: 'inbox' | 'archive'): string {
     : note.updated_at;
 }
 
+// Comment drafts by note, so leaving the note (back to the list, another
+// note, a tab switch, the dialog closing) keeps what was typed; the page and
+// the dialog share them. ponytail: memory only, a reload drops them.
+const commentDrafts = new Map<string, string>();
+
 function NoteDetail({
   note,
   comments,
@@ -594,14 +604,24 @@ function NoteDetail({
   /** Fold (true) or reopen (false) one comment. */
   onResolve: (comment: DrawerComment, resolved: boolean) => Promise<unknown>;
 }) {
-  const [draft, setDraft] = useState('');
+  const [draft, setDraftState] = useState(
+    () => commentDrafts.get(note.id) ?? ''
+  );
+  const setDraft = useCallback(
+    (value: string) => {
+      setDraftState(value);
+      if (value) commentDrafts.set(note.id, value);
+      else commentDrafts.delete(note.id);
+    },
+    [note.id]
+  );
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setDraft('');
+    setDraftState(commentDrafts.get(note.id) ?? '');
     setError(null);
   }, [note.id]);
 
@@ -626,7 +646,7 @@ function NoteDetail({
     } finally {
       setSending(false);
     }
-  }, [draft, sending, onComment]);
+  }, [draft, sending, onComment, setDraft]);
 
   // A failed resolve rolls the row back; say why instead of snapping silently.
   const resolve = (comment: DrawerComment, resolved: boolean) => {
