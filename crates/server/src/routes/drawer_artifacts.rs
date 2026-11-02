@@ -1,3 +1,5 @@
+use std::{sync::LazyLock, time::Duration};
+
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query, State},
@@ -6,6 +8,7 @@ use axum::{
 };
 use db::models::execution_process::ExecutionProcess;
 use deployment::Deployment;
+use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use services::services::{
@@ -183,7 +186,7 @@ pub async fn register(
                 .map_err(bad)?;
             if existing.deleted {
                 return Err(ApiError::Conflict(
-                    "Drawer dashboard link was removed; register with a new ID".into(),
+                    "Drawer dashboard was revoked; register with a new ID".into(),
                 ));
             }
             client.ensure_account().await?;
@@ -259,11 +262,41 @@ fn registration(record: &StoredArtifact) -> serde_json::Value {
         "channel_id":record.channel_id, "attachment":format!("[Dashboard]({} \"vibe-artifact\")", record.link())})
 }
 
+/// Dashboards poll every 2 s; a cloud check covers them for this long and the
+/// 15 s sync still reconciles, so open viewers add no cloud reads.
+static CHECKED: LazyLock<Cache<(Uuid, Uuid), ()>> = LazyLock::new(|| {
+    Cache::builder()
+        .max_capacity(1024)
+        .time_to_live(Duration::from_secs(15))
+        .build()
+});
+
+async fn recently_checked(
+    deployment: &DeploymentImpl,
+    id: Uuid,
+    note_id: Uuid,
+) -> Option<(RemoteClient, StoredArtifact)> {
+    if deployment::host_cloud_session_denied() {
+        return None;
+    }
+    let client = deployment.remote_client().ok()?;
+    let owner = client.notification_account().await?;
+    if !CHECKED.contains_key(&(id, owner)) {
+        return None;
+    }
+    let record = stored::load(&deployment.db().pool, id).await.ok()?;
+    (record.owner_id == owner && record.note_id == note_id && record.attached && !record.deleted)
+        .then(|| (client.for_account(owner), record))
+}
+
 async fn checked(
     deployment: &DeploymentImpl,
     id: Uuid,
     note_id: Uuid,
 ) -> Result<(RemoteClient, StoredArtifact), ApiError> {
+    if let Some(found) = recently_checked(deployment, id, note_id).await {
+        return Ok(found);
+    }
     let (client, owner, host) = owner(deployment).await?;
     let _guard = stored::LOCK.lock().await;
     let record = stored::load(&deployment.db().pool, id)
@@ -284,6 +317,7 @@ async fn checked(
             "Drawer artifact is no longer available".into(),
         ));
     }
+    CHECKED.insert((id, owner), ()).await;
     Ok((client, record))
 }
 

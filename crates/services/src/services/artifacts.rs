@@ -948,6 +948,9 @@ impl ArtifactObserver {
             let ArtifactCandidate::File(raw) = candidate else {
                 continue;
             };
+            if super::drawer_artifacts::is_link(&raw) {
+                continue;
+            }
             match resolve_reference(&self.root, &self.working_dir, &raw) {
                 Ok(path) if path.is_file() => {
                     if let Ok(relative) = path.strip_prefix(&self.root) {

@@ -56,6 +56,15 @@ impl StoredArtifact {
     }
 }
 
+/// A note's own dashboard line, which never resolves to a workspace file.
+pub fn is_link(raw: &str) -> bool {
+    raw.get(..17)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("drawer-artifacts/"))
+        && raw
+            .get(17..)
+            .is_some_and(|id| id.len() == 36 && Uuid::try_parse(id).is_ok())
+}
+
 pub async fn load(pool: &SqlitePool, id: Uuid) -> Result<StoredArtifact> {
     Ok(
         sqlx::query_as("SELECT * FROM drawer_artifacts WHERE id = ?")
@@ -93,15 +102,19 @@ pub async fn reconcile(
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
+    let linked = note.is_some_and(|note| {
+        note.host_id == Some(record.host_id)
+            && executors::logs::artifacts::markdown_candidates(&note.body).iter().any(|candidate|
+                matches!(candidate, executors::logs::artifacts::ArtifactCandidate::File(path) if path.eq_ignore_ascii_case(&record.link())))
+    });
+    // Only a gone note or owner change revokes an attached dashboard. A body
+    // edit that drops the link, or an update from another host, pauses it so
+    // restoring the line brings it back.
     let deleted = record.deleted
         || record.binding_version.is_empty()
-        || note.is_none_or(|note| {
-            note.owner_user_id != record.owner_id
-                || note.host_id != Some(record.host_id)
-                || !executors::logs::artifacts::markdown_candidates(&note.body).iter().any(|candidate|
-                    matches!(candidate, executors::logs::artifacts::ArtifactCandidate::File(path) if path.eq_ignore_ascii_case(&record.link())))
-        });
-    let archived = note.is_some_and(|note| note.archived_at.is_some());
+        || note.is_none_or(|note| note.owner_user_id != record.owner_id)
+        || (!record.attached && !linked);
+    let archived = !linked || note.is_some_and(|note| note.archived_at.is_some());
     if !record.attached && !deleted {
         sqlx::query("UPDATE drawer_artifacts SET attached = 1 WHERE id = ?")
             .bind(id)
@@ -742,26 +755,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owner_or_host_transfer_revokes_only_its_bound_dashboard() {
+    async fn owner_transfer_revokes_only_its_bound_dashboard() {
+        let pool = database("sqlite::memory:").await;
+        let bound = record();
+        let other = record();
+        insert(&pool, &bound).await.unwrap();
+        insert(&pool, &other).await.unwrap();
+        reconcile(&pool, bound.id, Some(&note(&bound)))
+            .await
+            .unwrap();
+        let mut note = note(&bound);
+        note.owner_user_id = Uuid::new_v4();
+        assert!(
+            reconcile(&pool, bound.id, Some(&note))
+                .await
+                .unwrap()
+                .deleted
+        );
+        assert!(!load(&pool, other.id).await.unwrap().deleted);
+    }
+
+    #[tokio::test]
+    async fn dropped_link_or_other_host_update_pauses_until_the_link_returns() {
         for moved_host in [false, true] {
             let pool = database("sqlite::memory:").await;
-            let bound = record();
-            let other = record();
-            insert(&pool, &bound).await.unwrap();
-            insert(&pool, &other).await.unwrap();
-            let mut note = note(&bound);
-            if moved_host {
-                note.host_id = Some(Uuid::new_v4());
-            } else {
-                note.owner_user_id = Uuid::new_v4();
-            }
+            let record = record();
+            insert(&pool, &record).await.unwrap();
+            let linked = note(&record);
             assert!(
-                reconcile(&pool, bound.id, Some(&note))
+                reconcile(&pool, record.id, Some(&linked))
                     .await
                     .unwrap()
-                    .deleted
+                    .attached
             );
-            assert!(!load(&pool, other.id).await.unwrap().deleted);
+            let mut edited = linked.clone();
+            if moved_host {
+                edited.host_id = Some(Uuid::new_v4());
+            } else {
+                edited.body = "Rewritten report without the dashboard line".into();
+            }
+            let paused = reconcile(&pool, record.id, Some(&edited)).await.unwrap();
+            assert!(paused.archived && !paused.deleted);
+            assert_eq!(paused.document, record.document);
+            let resumed = reconcile(&pool, record.id, Some(&linked)).await.unwrap();
+            assert!(!resumed.archived && !resumed.deleted);
+            let events = events(&pool).await;
+            assert_eq!(events.len(), 2);
+            assert!(events.iter().all(|e| e["deleted"] == false));
+        }
+    }
+
+    #[test]
+    fn dashboard_links_are_recognised_without_matching_workspace_files() {
+        let id = Uuid::new_v4().to_string();
+        assert!(is_link(&format!("drawer-artifacts/{id}")));
+        assert!(is_link(&format!(
+            "Drawer-Artifacts/{}",
+            id.to_ascii_uppercase()
+        )));
+        for other in [
+            format!("drawer-artifacts/{id}/extra"),
+            format!("../drawer-artifacts/{id}"),
+            "drawer-artifacts/not-an-id".into(),
+            "drawer-artifacts/".into(),
+            "reports/dashboard.html".into(),
+        ] {
+            assert!(!is_link(&other), "{other}");
         }
     }
 }

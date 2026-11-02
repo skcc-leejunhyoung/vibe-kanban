@@ -203,7 +203,9 @@ pub async fn register(
         let canonical_working = std::fs::canonicalize(&working).unwrap_or(working.clone());
         let (mut files, mut missing) = (Vec::new(), Vec::new());
         for candidate in executors::logs::artifacts::markdown_candidates(&request.text) {
-            if let executors::logs::artifacts::ArtifactCandidate::File(raw) = candidate {
+            if let executors::logs::artifacts::ArtifactCandidate::File(raw) = candidate
+                && !services::services::drawer_artifacts::is_link(&raw)
+            {
                 match artifacts::resolve_reference(&canonical_root, &canonical_working, &raw) {
                     Ok(path) if path.is_file() => files.push(
                         path.strip_prefix(&canonical_root)

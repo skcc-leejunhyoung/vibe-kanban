@@ -190,8 +190,8 @@ vk drawer artifacts attach <execution-id> \
 This requires both automation write and Drawer write permissions. Registration
 copies HTML and its snapshotted dependencies into the host's persistent database
 and appends a dashboard link to the note without replacing concurrent edits.
-Reuse the same dashboard UUID when checking an uncertain registration; a different
-document or configuration requires a new UUID. The response contains the fixed
+Rerunning with the same dashboard UUID returns a completed registration. After a
+failed registration, or for a different document or configuration, use a new UUID. The response contains the fixed
 version, the link and the channel ID `drawer_<dashboard-uuid-without-hyphens>`.
 Only declared publisher Rules can call `ctx.artifacts.publish` for that channel.
 Use `window.vibe.getData()` and `vibe:data` as in the example below. This view
@@ -204,8 +204,10 @@ existing sandbox and external network restrictions still apply.
 
 Archiving the Drawer note stops reads immediately and pauses publications once
 the host reconciles the cloud note. Restoring it resumes reads without replaying
-actions. Deleting the note, removing its dashboard link or pruning an old archived
-note revokes the dashboard and removes its document and channel. Host and worker
+actions. Removing the dashboard link, or updating the note from another host,
+pauses the dashboard in the same way; restoring the link on the owning host
+resumes it. Deleting the note or pruning an old archived note revokes the
+dashboard and removes its document and channel. Host and worker
 cleanup use durable records and retry after connectivity recovers. The host checks
 cloud notes every 15 seconds and the existing outbox retries every 15 seconds;
 shared Rules and connectors remain configured. A disconnect alone never deletes

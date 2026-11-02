@@ -2386,7 +2386,7 @@ const COMMANDS: &[Cmd] = &[
             ),
             req(
                 "id",
-                "New stable dashboard UUID (reuse on a retry)",
+                "New dashboard UUID (rerunning with it returns a completed registration; after a failed one use a new UUID)",
                 Where::Body,
                 Kind::Str,
             ),
