@@ -2,8 +2,9 @@ import { create } from 'zustand';
 
 /**
  * Lets the archive shortcut (the workspace one, however it is bound) reach
- * the Drawer: a board with a note open in the active pane registers how to
- * archive or restore it, and the workspace archive handler tries that first.
+ * the Drawer: a board in the active pane registers how to archive or restore
+ * its focused or open note, and the workspace archive handler tries that
+ * first.
  */
 interface DrawerKeyboardState {
   archiveOpenNote: (() => void) | null;

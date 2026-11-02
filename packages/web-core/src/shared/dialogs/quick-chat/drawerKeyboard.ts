@@ -38,3 +38,12 @@ export function handleDrawerDetailKeyDown(
     actions.focusComment();
   }
 }
+
+/** What the archive shortcut acts on: the focused list row, else the open note. */
+export function drawerArchiveTarget<T extends { id: string }>(
+  list: readonly T[],
+  focusedId: string | undefined,
+  selected: T | null
+): T | null {
+  return list.find((note) => note.id === focusedId) ?? selected;
+}

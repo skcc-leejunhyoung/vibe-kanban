@@ -1,6 +1,9 @@
 import type { KeyboardEvent } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { handleDrawerDetailKeyDown } from './drawerKeyboard';
+import {
+  drawerArchiveTarget,
+  handleDrawerDetailKeyDown,
+} from './drawerKeyboard';
 
 function press(
   key: string,
@@ -107,5 +110,14 @@ describe('Drawer detail keyboard', () => {
         press(key, { portaled: true }).event.preventDefault
       ).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe('Drawer archive target', () => {
+  const list = [{ id: 'a' }, { id: 'b' }];
+  it('prefers the focused row, then the open note, else nothing', () => {
+    expect(drawerArchiveTarget(list, 'b', list[0])).toBe(list[1]);
+    expect(drawerArchiveTarget(list, undefined, list[0])).toBe(list[0]);
+    expect(drawerArchiveTarget(list, undefined, null)).toBeNull();
   });
 });

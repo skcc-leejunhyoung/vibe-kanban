@@ -54,7 +54,10 @@ import {
   findSegmentArtifact,
   splitArtifactSegments,
 } from '@/features/workspace-chat/ui/artifact-preview';
-import { handleDrawerDetailKeyDown } from './drawerKeyboard';
+import {
+  drawerArchiveTarget,
+  handleDrawerDetailKeyDown,
+} from './drawerKeyboard';
 import { useDrawerBodyFocus } from './useDrawerBodyFocus';
 import { DrawerArtifact } from '@/features/workspace-chat/ui/DrawerArtifact';
 
@@ -218,19 +221,37 @@ export function DrawerTab({
         archived_at: archived ? new Date().toISOString() : null,
       };
       void notes.update(note.id, changes).persisted.catch(() => {});
-      backToList();
+      if (note.id === selectedId) {
+        backToList();
+        return;
+      }
+      // A row archived from the list hands focus to its neighbour, so the
+      // next one can follow.
+      const index = list.findIndex((item) => item.id === note.id);
+      const next = list[index + 1] ?? list[index - 1];
+      requestAnimationFrame(() =>
+        (next ? noteButtonsRef.current.get(next.id) : listRef.current)?.focus()
+      );
     },
-    [notes, backToList]
+    [notes, backToList, selectedId, list]
   );
 
   // Keyboard: Escape returns to the list; the archive shortcut (the workspace
-  // one, as bound) archives (inbox) or restores (archive) the open note. On
-  // the page the workspace shortcut handler asks this store first while the
-  // pane is active; in the dialog the same binding is listened to in the
-  // dialog scope, and the dialog asks `escapeRef` on Escape.
+  // one, as bound) archives (inbox) or restores (archive) the focused list
+  // row, else the open note, and is otherwise a no-op here. On the page the
+  // workspace shortcut handler asks this store first while the pane is
+  // active; in the dialog the same binding is listened to in the dialog
+  // scope, and the dialog asks `escapeRef` on Escape.
   const isActivePane = useIsActivePane();
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
   const keysActive = !!selected && (!isPage || isActivePane);
+  const archiveTarget = useCallback(() => {
+    let focusedId: string | undefined;
+    for (const [id, button] of noteButtonsRef.current) {
+      if (button === document.activeElement) focusedId = id;
+    }
+    return drawerArchiveTarget(list, focusedId, selected);
+  }, [list, selected]);
   useHotkeys(
     'escape',
     (event) => {
@@ -245,27 +266,31 @@ export function DrawerTab({
     (s) => s.setArchiveOpenNote
   );
   useEffect(() => {
-    if (!isPage || !keysActive || !selected) return;
-    const handler = () => archive(selected, view === 'inbox');
+    if (!isPage || !isActivePane) return;
+    const handler = () => {
+      const note = archiveTarget();
+      if (note) archive(note, view === 'inbox');
+    };
     setArchiveOpenNote(handler);
     return () => {
       if (useDrawerKeyboardStore.getState().archiveOpenNote === handler) {
         setArchiveOpenNote(null);
       }
     };
-  }, [isPage, keysActive, selected, view, archive, setArchiveOpenNote]);
+  }, [isPage, isActivePane, archiveTarget, view, archive, setArchiveOpenNote]);
   useReboundHotkey(
     resolveSequence('seq-workspace-archive', overrides),
     (event) => {
-      if (!selected) return;
       // Not while a dialog stacked on top (an artifact preview) has focus.
       const dialog = rootRef.current?.closest('[role="dialog"]');
       if (dialog && !dialog.contains(document.activeElement)) return;
+      const note = archiveTarget();
+      if (!note) return;
       event.preventDefault();
-      archive(selected, view === 'inbox');
+      archive(note, view === 'inbox');
     },
-    { enabled: !isPage && keysActive, scopes: ['dialog'] },
-    [selected, view, archive]
+    { enabled: !isPage, scopes: ['dialog'] },
+    [archiveTarget, view, archive]
   );
   useEffect(() => {
     if (!escapeRef) return;

@@ -123,7 +123,7 @@ export function useWorkspaceShortcuts(options?: UseWorkspaceShortcutsOptions) {
   useReboundHotkey(
     seq('seq-workspace-archive'),
     () => {
-      // A Drawer note open in the active pane takes the archive key.
+      // A Drawer board in the active pane takes the archive key.
       const archiveNote = useDrawerKeyboardStore.getState().archiveOpenNote;
       if (archiveNote) archiveNote();
       else execute(Actions.ArchiveWorkspace);
