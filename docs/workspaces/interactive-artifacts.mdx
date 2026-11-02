@@ -209,7 +209,11 @@ note revokes the dashboard and removes its document and channel. Host and worker
 cleanup use durable records and retry after connectivity recovers. The host checks
 cloud notes every 15 seconds and the existing outbox retries every 15 seconds;
 shared Rules and connectors remain configured. A disconnect alone never deletes
-a dashboard. Limits are 128 independent dashboards per host, 2 MiB of UTF-8 HTML
+a dashboard. Cloud requests remain bound to the account that started them. If
+you switch accounts or sign out, Vibe defers reads and cleanup rather than treating
+another account's missing note as deletion. Return to the owning account and use
+**Check status** to resume reads; background cleanup checks resume on that account.
+Limits are 128 independent dashboards per host, 2 MiB of UTF-8 HTML
 and 8 MiB for the complete JSON snapshot including dependencies.
 
 For periodic publication without starting an agent, use an existing Routine with

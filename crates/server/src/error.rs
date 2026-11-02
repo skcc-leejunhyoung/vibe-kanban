@@ -228,6 +228,9 @@ fn remote_client_error(err: &RemoteClientError) -> ErrorInfo {
             "RemoteClientError",
             "Unauthorized. Please sign in again.",
         ),
+        RemoteClientError::AccountChanged => {
+            ErrorInfo::with_status(StatusCode::CONFLICT, "RemoteClientError", err.to_string())
+        }
         RemoteClientError::ReconnectPending => ErrorInfo::with_status(
             StatusCode::SERVICE_UNAVAILABLE,
             "RemoteClientError",
@@ -649,6 +652,16 @@ mod tests {
     use axum::{http::StatusCode, response::IntoResponse};
 
     use super::*;
+
+    #[test]
+    fn account_change_returns_a_conflict_for_explicit_recovery() {
+        assert_eq!(
+            ApiError::from(RemoteClientError::AccountChanged)
+                .into_response()
+                .status(),
+            StatusCode::CONFLICT
+        );
+    }
 
     #[test]
     fn host_lookup_refusals_keep_their_status() {

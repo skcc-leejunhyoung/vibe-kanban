@@ -16,7 +16,7 @@ use services::services::{
     drawer_artifacts::{
         self as stored, DrawerArtifactDocument, DrawerArtifactFile, StoredArtifact,
     },
-    remote_client::{RemoteClient, RemoteClientError},
+    remote_client::RemoteClient,
 };
 use sha2::{Digest, Sha256};
 use utils::response::ApiResponse;
@@ -67,6 +67,7 @@ async fn owner(deployment: &DeploymentImpl) -> Result<(RemoteClient, Uuid, Uuid)
         .notification_account()
         .await
         .ok_or_else(|| ApiError::Forbidden("Sign in to use Drawer artifacts".into()))?;
+    let client = client.for_account(owner);
     let host = client.current_host_id().await?;
     Ok((client, owner, host))
 }
@@ -91,7 +92,10 @@ pub async fn register(
         ));
     }
     let _guard = stored::LOCK.lock().await;
-    let note = client.drawer_note(request.note_id).await?;
+    let note = client
+        .drawer_note(request.note_id)
+        .await?
+        .ok_or_else(|| ApiError::Forbidden("Drawer note is unavailable".into()))?;
     if note.owner_user_id != owner || note.host_id != Some(host) || note.archived_at.is_some() {
         return Err(ApiError::Forbidden(
             "An active Drawer note on this host is required".into(),
@@ -173,6 +177,7 @@ pub async fn register(
             ));
         }
         if existing.attached {
+            client.ensure_account().await?;
             let existing = stored::reconcile(&deployment.db().pool, existing.id, Some(&note))
                 .await
                 .map_err(bad)?;
@@ -181,6 +186,7 @@ pub async fn register(
                     "Drawer dashboard link was removed; register with a new ID".into(),
                 ));
             }
+            client.ensure_account().await?;
             return Ok(Json(ApiResponse::success(registration(&existing))));
         }
         return Err(ApiError::Conflict(
@@ -211,6 +217,7 @@ pub async fn register(
         deleted: false,
         attached: false,
     };
+    client.ensure_account().await?;
     stored::insert(&deployment.db().pool, &record)
         .await
         .map_err(bad)?;
@@ -222,30 +229,28 @@ pub async fn register(
         sqlx::query("UPDATE drawer_artifacts SET binding_version = ? WHERE id = ?")
             .bind(&binding.version).bind(record.id).execute(&deployment.db().pool).await?;
         let attached = client.attach_drawer_artifact(note.id, record.id, host).await?;
+        client.ensure_account().await?;
         let confirmed = stored::reconcile(&deployment.db().pool, record.id, Some(&attached.data)).await.map_err(bad)?;
         if confirmed.deleted { return Err(bad("Dashboard link is not a standalone artifact line; close Markdown fences before registering")); }
         Ok::<_, ApiError>(())
     }.await;
     if let Err(error) = result {
         // Cloud attachment may have committed before a response was lost.
-        match client.drawer_note(note.id).await {
-            Ok(current) => {
-                let recovered = stored::reconcile(&deployment.db().pool, record.id, Some(&current))
-                    .await
-                    .map_err(bad)?;
-                if recovered.attached && !recovered.deleted {
-                    return Ok(Json(ApiResponse::success(registration(&recovered))));
-                }
+        let current = client.drawer_note(note.id).await;
+        client.ensure_account().await?;
+        // A failed reread stays pending for durable reconciliation.
+        if let Ok(current) = current {
+            let recovered = stored::reconcile(&deployment.db().pool, record.id, current.as_ref())
+                .await
+                .map_err(bad)?;
+            if recovered.attached && !recovered.deleted {
+                client.ensure_account().await?;
+                return Ok(Json(ApiResponse::success(registration(&recovered))));
             }
-            Err(RemoteClientError::Http { status: 404, .. }) => {
-                stored::reconcile(&deployment.db().pool, record.id, None)
-                    .await
-                    .map_err(bad)?;
-            }
-            Err(_) => {} // The durable reconciler resolves this after cloud connectivity recovers.
         }
         return Err(error);
     }
+    client.ensure_account().await?;
     Ok(Json(ApiResponse::success(registration(&record))))
 }
 
@@ -258,7 +263,7 @@ async fn checked(
     deployment: &DeploymentImpl,
     id: Uuid,
     note_id: Uuid,
-) -> Result<StoredArtifact, ApiError> {
+) -> Result<(RemoteClient, StoredArtifact), ApiError> {
     let (client, owner, host) = owner(deployment).await?;
     let _guard = stored::LOCK.lock().await;
     let record = stored::load(&deployment.db().pool, id)
@@ -269,11 +274,8 @@ async fn checked(
             "Wrong Drawer artifact owner, note or host".into(),
         ));
     }
-    let note = match client.drawer_note(record.note_id).await {
-        Ok(note) => Some(note),
-        Err(RemoteClientError::Http { status: 404, .. }) => None,
-        Err(error) => return Err(error.into()),
-    };
+    let note = client.drawer_note(record.note_id).await?;
+    client.ensure_account().await?;
     let record = stored::reconcile(&deployment.db().pool, id, note.as_ref())
         .await
         .map_err(bad)?;
@@ -282,7 +284,7 @@ async fn checked(
             "Drawer artifact is no longer available".into(),
         ));
     }
-    Ok(record)
+    Ok((client, record))
 }
 
 async fn document(
@@ -290,10 +292,10 @@ async fn document(
     Path(id): Path<Uuid>,
     Query(query): Query<NoteQuery>,
 ) -> Result<Json<ApiResponse<DrawerArtifactDocument>>, ApiError> {
-    let record = checked(&deployment, id, query.note_id).await?;
-    Ok(Json(ApiResponse::success(
-        serde_json::from_str(&record.document).map_err(bad)?,
-    )))
+    let (client, record) = checked(&deployment, id, query.note_id).await?;
+    let document = serde_json::from_str(&record.document).map_err(bad)?;
+    client.ensure_account().await?;
+    Ok(Json(ApiResponse::success(document)))
 }
 
 async fn snapshot(
@@ -301,7 +303,7 @@ async fn snapshot(
     Path(id): Path<Uuid>,
     Query(query): Query<VersionQuery>,
 ) -> Result<Json<ApiResponse<ArtifactAutomationSnapshot>>, ApiError> {
-    let record = checked(&deployment, id, query.note_id).await?;
+    let (client, record) = checked(&deployment, id, query.note_id).await?;
     if record.version != query.version {
         return Err(ApiError::Conflict("Drawer artifact version changed".into()));
     }
@@ -315,6 +317,7 @@ async fn snapshot(
             .fetch_one(&deployment.db().pool)
             .await?;
     if queued {
+        client.ensure_account().await?;
         let _: serde_json::Value = super::automation::artifact_channel(&record.channel_id, "lifecycle", json!({
             "type":"drawer_artifact_lifecycle", "hostId":deployment.user_id(), "artifactId":record.id,
             "revision":record.revision, "paused":false, "deleted":false
@@ -326,6 +329,7 @@ async fn snapshot(
     }
     let value: ArtifactAutomationSnapshot = super::automation::artifact_channel(&record.channel_id, "snapshot",
         json!({"scope":record.scope(deployment.user_id()), "version":record.binding_version, "binding_id":record.id})).await?;
+    client.ensure_account().await?;
     Ok(Json(ApiResponse::success(value)))
 }
 

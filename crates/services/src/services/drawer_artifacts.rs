@@ -99,7 +99,7 @@ pub async fn reconcile(
             note.owner_user_id != record.owner_id
                 || note.host_id != Some(record.host_id)
                 || !executors::logs::artifacts::markdown_candidates(&note.body).iter().any(|candidate|
-                    matches!(candidate, executors::logs::artifacts::ArtifactCandidate::File(path) if path == &record.link()))
+                    matches!(candidate, executors::logs::artifacts::ArtifactCandidate::File(path) if path.eq_ignore_ascii_case(&record.link())))
         });
     let archived = note.is_some_and(|note| note.archived_at.is_some());
     if !record.attached && !deleted {
@@ -158,6 +158,7 @@ async fn sync(pool: &SqlitePool, client: &RemoteClient) -> Result<()> {
     let Some(owner) = client.notification_account().await else {
         return Ok(());
     };
+    let client = client.for_account(owner);
     let host = client.current_host_id().await?;
     let _guard = LOCK.lock().await;
     let records: Vec<StoredArtifact> = sqlx::query_as(
@@ -172,6 +173,7 @@ async fn sync(pool: &SqlitePool, client: &RemoteClient) -> Result<()> {
     }
     let notes = client.list_drawer_notes().await?.drawer_notes;
     for record in records {
+        client.ensure_account().await?;
         reconcile(
             pool,
             record.id,
@@ -184,9 +186,344 @@ async fn sync(pool: &SqlitePool, client: &RemoteClient) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    use axum::{
+        Json, Router,
+        extract::OriginalUri,
+        http::{HeaderMap, StatusCode},
+        response::IntoResponse,
+    };
     use chrono::{DateTime, Utc};
+    use tokio::sync::RwLock;
 
     use super::*;
+    use crate::services::{
+        auth::AuthContext,
+        oauth_credentials::{Credentials, OAuthCredentials},
+    };
+
+    // Synthetic JWTs: local claim decoding only, never real account credentials.
+    const ACCOUNT_A: &str = "11111111-1111-4111-8111-111111111111";
+    const TOKEN_A: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJleHAiOjQxMDI0NDQ4MDB9.c3ludGhldGlj";
+    const TOKEN_B: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIyMjIyMjIyMi0yMjIyLTQyMjItODIyMi0yMjIyMjIyMjIyMjIiLCJleHAiOjQxMDI0NDQ4MDB9.c3ludGhldGlj";
+
+    fn credentials(token: &str) -> Credentials {
+        Credentials {
+            access_token: Some(token.into()),
+            refresh_token: token.into(),
+            expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Change {
+        Account,
+        Logout,
+        Refresh,
+        RoundTrip,
+    }
+
+    struct Cloud {
+        client: RemoteClient,
+        auth: AuthContext,
+        calls: Arc<AtomicUsize>,
+        server: tokio::task::JoinHandle<()>,
+        _directory: tempfile::TempDir,
+    }
+
+    impl Drop for Cloud {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    impl Cloud {
+        async fn new(
+            record: &StoredArtifact,
+            change_path: String,
+            status: StatusCode,
+            change: Change,
+        ) -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let auth = AuthContext::new(
+                Arc::new(OAuthCredentials::new(
+                    directory.path().join("synthetic-auth.json"),
+                )),
+                Arc::new(RwLock::new(None)),
+            );
+            auth.save_credentials(&credentials(TOKEN_A)).await.unwrap();
+            let saved = note(record);
+            let hosts = json!({"hosts":[{"id":record.host_id,"owner_user_id":record.owner_id,"machine_id":"synthetic-machine","name":"Synthetic host","status":"online","created_at":"2030-01-01T00:00:00Z","updated_at":"2030-01-01T00:00:00Z","access_role":"owner","auth_mode":"account","auth_generation":1,"remote_access_enabled":true,"capabilities":[]}]});
+            let handler_auth = auth.clone();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let handler_calls = calls.clone();
+            let changed = Arc::new(AtomicBool::new(false));
+            let router =
+                Router::new().fallback(move |OriginalUri(uri): OriginalUri, headers: HeaderMap| {
+                    let (auth, calls, change_path, hosts, saved, changed) = (
+                        handler_auth.clone(),
+                        handler_calls.clone(),
+                        change_path.clone(),
+                        hosts.clone(),
+                        saved.clone(),
+                        changed.clone(),
+                    );
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        if uri.path() == change_path && !changed.swap(true, Ordering::SeqCst) {
+                            match change {
+                                Change::Account => {
+                                    auth.save_credentials(&credentials(TOKEN_B)).await.unwrap()
+                                }
+                                Change::Logout => auth.clear_credentials().await.unwrap(),
+                                Change::Refresh => auth
+                                    .save_credentials(&credentials(
+                                        &TOKEN_A.replace("c3ludGhldGlj", "cm90YXRlZA"),
+                                    ))
+                                    .await
+                                    .unwrap(),
+                                Change::RoundTrip => {
+                                    auth.save_credentials(&credentials(TOKEN_B)).await.unwrap();
+                                    auth.save_credentials(&credentials(TOKEN_A)).await.unwrap();
+                                }
+                            }
+                        }
+                        if uri.path() == "/v1/hosts" {
+                            return Json(hosts).into_response();
+                        }
+                        if uri.path() == "/v1/drawer_notes" {
+                            let other_account = headers
+                                .get("authorization")
+                                .is_some_and(|header| header == &format!("Bearer {TOKEN_B}"));
+                            let notes = if other_account || status == StatusCode::NOT_FOUND {
+                                vec![]
+                            } else {
+                                vec![saved]
+                            };
+                            return Json(json!({"drawer_notes":notes})).into_response();
+                        }
+                        if uri.path() == "/v1/tokens/refresh" {
+                            let token = TOKEN_A.replace("c3ludGhldGlj", "cm90YXRlZA");
+                            return Json(json!({"access_token":token,"refresh_token":token}))
+                                .into_response();
+                        }
+                        let body = if uri.path().ends_with("/artifact-link") {
+                            json!({"data":saved,"txid":1})
+                        } else {
+                            json!(saved)
+                        };
+                        (status, Json(body)).into_response()
+                    }
+                });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            let client = RemoteClient::new(
+                &format!("http://{address}"),
+                auth.clone(),
+                "synthetic-machine".into(),
+            )
+            .unwrap();
+            Self {
+                client,
+                auth,
+                calls,
+                server,
+                _directory: directory,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_account_or_logout_during_sync_preserves_document_and_cleanup_outbox() {
+        for path in ["/v1/hosts", "/v1/drawer_notes"] {
+            for change in [Change::Account, Change::Logout] {
+                let pool = database("sqlite::memory:").await;
+                let mut record = record();
+                record.owner_id = Uuid::parse_str(ACCOUNT_A).unwrap();
+                insert(&pool, &record).await.unwrap();
+                let cloud = Cloud::new(&record, path.into(), StatusCode::OK, change).await;
+                let result = sync(&pool, &cloud.client).await;
+                let after = load(&pool, record.id).await.unwrap();
+                assert!(
+                    !after.deleted,
+                    "Changed account must never revoke the previous owner's dashboard"
+                );
+                assert_eq!(after.document, record.document);
+                assert_eq!(after.channel_config, record.channel_config);
+                assert!(events(&pool).await.is_empty());
+                assert!(result.is_err());
+                cloud
+                    .auth
+                    .save_credentials(&credentials(TOKEN_A))
+                    .await
+                    .unwrap();
+                sync(&pool, &cloud.client).await.unwrap();
+                let restored = load(&pool, record.id).await.unwrap();
+                assert!(restored.attached && !restored.deleted);
+                assert_eq!(restored.document, record.document);
+                assert!(events(&pool).await.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn late_note_reads_and_registration_acknowledgments_never_become_deletion_after_account_change()
+     {
+        for status in [
+            StatusCode::OK,
+            StatusCode::NOT_FOUND,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            for change in [Change::Account, Change::Logout] {
+                let mut record = record();
+                record.owner_id = Uuid::parse_str(ACCOUNT_A).unwrap();
+                for attach in [false, true] {
+                    let path = format!(
+                        "/v1/drawer_notes/{}{}",
+                        record.note_id,
+                        if attach { "/artifact-link" } else { "" }
+                    );
+                    let cloud = Cloud::new(&record, path, status, change).await;
+                    let client = cloud.client.for_account(record.owner_id);
+                    let error = if attach {
+                        client
+                            .attach_drawer_artifact(record.note_id, record.id, record.host_id)
+                            .await
+                            .unwrap_err()
+                    } else {
+                        client.drawer_note(record.note_id).await.unwrap_err()
+                    };
+                    assert!(matches!(
+                        error,
+                        super::super::remote_client::RemoteClientError::AccountChanged
+                    ));
+                    assert_eq!(
+                        cloud.calls.load(Ordering::SeqCst),
+                        1,
+                        "Never retry a request using the replacement account"
+                    );
+                    match change {
+                        Change::Account => assert_eq!(
+                            cloud.auth.get_credentials().await.unwrap().refresh_token,
+                            TOKEN_B
+                        ),
+                        Change::Logout => assert!(cloud.auth.get_credentials().await.is_none()),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bound_client_rejects_another_accounts_access_token_before_sending() {
+        let record = record();
+        let cloud = Cloud::new(&record, String::new(), StatusCode::OK, Change::Refresh).await;
+        let mixed = Credentials {
+            access_token: Some(TOKEN_B.into()),
+            ..credentials(TOKEN_A)
+        };
+        cloud.auth.save_credentials(&mixed).await.unwrap();
+        let client = cloud
+            .client
+            .for_account(Uuid::parse_str(ACCOUNT_A).unwrap())
+            .clone();
+        assert!(matches!(
+            client.drawer_note(record.note_id).await,
+            Err(super::super::remote_client::RemoteClientError::AccountChanged)
+        ));
+        assert_eq!(cloud.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            cloud.auth.get_credentials().await.unwrap().access_token,
+            mixed.access_token
+        );
+    }
+
+    #[tokio::test]
+    async fn same_owner_rotation_and_authoritative_missing_notes_still_revoke_normally() {
+        for change in [Change::Refresh, Change::RoundTrip] {
+            let pool = database("sqlite::memory:").await;
+            let mut record = record();
+            record.owner_id = Uuid::parse_str(ACCOUNT_A).unwrap();
+            insert(&pool, &record).await.unwrap();
+            let cloud = Cloud::new(
+                &record,
+                "/v1/drawer_notes".into(),
+                StatusCode::NOT_FOUND,
+                change,
+            )
+            .await;
+            sync(&pool, &cloud.client).await.unwrap();
+            let after = load(&pool, record.id).await.unwrap();
+            assert!(after.deleted);
+            assert_eq!(after.document, "null");
+            assert_eq!(events(&pool).await.len(), 1);
+            let client = cloud.client.for_account(record.owner_id);
+            let missing = Cloud::new(&record, String::new(), StatusCode::NOT_FOUND, change).await;
+            assert!(
+                missing
+                    .client
+                    .for_account(record.owner_id)
+                    .drawer_note(record.note_id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(client.ensure_account().await.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_requests_refresh_same_owner_tokens_but_never_clear_a_replacement_login() {
+        for changed in [false, true] {
+            let mut record = record();
+            record.owner_id = Uuid::parse_str(ACCOUNT_A).unwrap();
+            let cloud = Cloud::new(
+                &record,
+                if changed {
+                    "/v1/tokens/refresh".into()
+                } else {
+                    String::new()
+                },
+                StatusCode::OK,
+                Change::Account,
+            )
+            .await;
+            let expired = Credentials {
+                expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+                ..credentials(TOKEN_A)
+            };
+            cloud.auth.save_credentials(&expired).await.unwrap();
+            let result = cloud
+                .client
+                .for_account(record.owner_id)
+                .drawer_note(record.note_id)
+                .await;
+            if changed {
+                assert!(matches!(
+                    result,
+                    Err(super::super::remote_client::RemoteClientError::AccountChanged)
+                ));
+                assert_eq!(cloud.calls.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    cloud.auth.get_credentials().await.unwrap().refresh_token,
+                    TOKEN_B
+                );
+            } else {
+                assert_eq!(result.unwrap().unwrap().owner_user_id, record.owner_id);
+                assert_eq!(cloud.calls.load(Ordering::SeqCst), 2);
+                assert_ne!(
+                    cloud.auth.get_credentials().await.unwrap().refresh_token,
+                    TOKEN_A
+                );
+            }
+        }
+    }
 
     fn record() -> StoredArtifact {
         StoredArtifact {
@@ -387,6 +724,20 @@ mod tests {
                 .await
                 .unwrap()
                 .deleted
+        );
+        let uppercase = record();
+        insert(&pool, &uppercase).await.unwrap();
+        let mut actual = note(&uppercase);
+        actual.body = format!(
+            "[Dashboard](drawer-artifacts/{} \"vibe-artifact\")",
+            uppercase.id.to_string().to_ascii_uppercase()
+        );
+        assert!(
+            !reconcile(&pool, uppercase.id, Some(&actual))
+                .await
+                .unwrap()
+                .deleted,
+            "UUID casing accepted by the Drawer renderer must not revoke a dashboard"
         );
     }
 

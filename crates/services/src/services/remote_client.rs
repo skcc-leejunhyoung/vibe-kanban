@@ -54,6 +54,8 @@ pub enum RemoteClientError {
     Api(HandoffErrorCode),
     #[error("unauthorized")]
     Auth,
+    #[error("Signed-in account changed; reload before retrying this operation")]
+    AccountChanged,
     #[error("OAuth reconnect is in progress. Please try again after completing it.")]
     ReconnectPending,
     #[error("json error: {0}")]
@@ -166,6 +168,7 @@ pub struct RemoteClient {
     http: Client,
     auth_context: AuthContext,
     machine_id: String,
+    request_account: Option<Uuid>,
 }
 
 impl std::fmt::Debug for RemoteClient {
@@ -185,13 +188,38 @@ impl Clone for RemoteClient {
             http: self.http.clone(),
             auth_context: self.auth_context.clone(),
             machine_id: self.machine_id.clone(),
+            request_account: self.request_account,
         }
     }
 }
 
 impl RemoteClient {
-    pub async fn drawer_note(&self, id: Uuid) -> Result<api_types::DrawerNote, RemoteClientError> {
-        self.get_authed(&format!("/v1/drawer_notes/{id}")).await
+    /// Pin every request and retry to its starting account, including token refreshes.
+    pub fn for_account(&self, owner: Uuid) -> Self {
+        Self {
+            request_account: Some(owner),
+            ..self.clone()
+        }
+    }
+
+    pub async fn ensure_account(&self) -> Result<(), RemoteClientError> {
+        if let Some(owner) = self.request_account
+            && self.notification_account().await != Some(owner)
+        {
+            return Err(RemoteClientError::AccountChanged);
+        }
+        Ok(())
+    }
+
+    pub async fn drawer_note(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<api_types::DrawerNote>, RemoteClientError> {
+        match self.get_authed(&format!("/v1/drawer_notes/{id}")).await {
+            Ok(note) => Ok(Some(note)),
+            Err(RemoteClientError::Http { status: 404, .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn list_drawer_notes(
@@ -239,6 +267,7 @@ impl RemoteClient {
             http,
             auth_context,
             machine_id,
+            request_account: None,
         })
     }
 
@@ -585,6 +614,7 @@ impl RemoteClient {
             .map_err(|e| RemoteClientError::Url(e.to_string()))?;
 
         let operation = || async {
+            self.ensure_account().await?;
             let mut req = self
                 .http
                 .request(method.clone(), url.clone())
@@ -593,6 +623,12 @@ impl RemoteClient {
 
             if requires_auth {
                 let token = self.require_token().await?;
+                if self
+                    .request_account
+                    .is_some_and(|owner| utils::jwt::extract_subject(&token).ok() != Some(owner))
+                {
+                    return Err(RemoteClientError::AccountChanged);
+                }
                 req = req.bearer_auth(token);
             }
 
@@ -622,7 +658,7 @@ impl RemoteClient {
             }
         };
 
-        operation
+        let result = operation
             .retry(
                 &ExponentialBuilder::default()
                     .with_min_delay(Duration::from_millis(500))
@@ -638,7 +674,10 @@ impl RemoteClient {
                     e
                 )
             })
-            .await
+            .await;
+        // A late 404 or successful response must not be applied after logout/login.
+        self.ensure_account().await?;
+        result
     }
 
     // Public endpoint helpers (no auth required)
@@ -673,9 +712,12 @@ impl RemoteClient {
         let res = self
             .send(reqwest::Method::GET, path, true, None::<&()>)
             .await?;
-        res.json::<T>()
+        let result = res
+            .json::<T>()
             .await
-            .map_err(|e| RemoteClientError::Serde(e.to_string()))
+            .map_err(|e| RemoteClientError::Serde(e.to_string()));
+        self.ensure_account().await?;
+        result
     }
 
     pub async fn post_authed<T, B>(
@@ -688,9 +730,12 @@ impl RemoteClient {
         B: Serialize,
     {
         let res = self.send(reqwest::Method::POST, path, true, body).await?;
-        res.json::<T>()
+        let result = res
+            .json::<T>()
             .await
-            .map_err(|e| RemoteClientError::Serde(e.to_string()))
+            .map_err(|e| RemoteClientError::Serde(e.to_string()));
+        self.ensure_account().await?;
+        result
     }
 
     async fn patch_authed<T, B>(&self, path: &str, body: &B) -> Result<T, RemoteClientError>
