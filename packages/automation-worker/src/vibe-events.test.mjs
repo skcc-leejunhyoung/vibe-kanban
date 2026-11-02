@@ -186,6 +186,56 @@ test('maxWaitSeconds flushes a never-quiet burst from the first event', async ()
   assert.equal(flushes[0].id, 'batch:agent-event:1..agent-event:3');
 });
 
+test('an hourly hold returns alerts that would outlive their handoff deadline, keeping the hold', async () => {
+  const clock = fakeClock();
+  const flushes = [];
+  const expired = [];
+  const coalescer = createCoalescer({ ...clock, onFlush: async (id, batch) => flushes.push(batch), onExpire: async (id, events) => expired.push(...events) });
+  const routine = { id: 'r', coalesce: { ...COALESCE_DEFAULTS, windowSeconds: 30, minIntervalSeconds: 0, maxPerHour: 6, maxWaitSeconds: 600 } };
+  // Six flushes in the last 30 minutes: the next slot opens 30 minutes from now.
+  const start = clock.now();
+  const history = [30, 20, 15, 10, 5, 0].map((minutes) => start - minutes * 60_000);
+  coalescer.restore(routine, { events: [], flushes: history, lastFlushAt: history.at(-1) });
+  const alert = { ...journalEventToWorkerEvent(journal('cloud', 1, 'cloud.notification')), deliverBy: start + 19 * 60_000 };
+  const later = { ...journalEventToWorkerEvent(journal('cloud', 2, 'cloud.notification')), deliverBy: start + 40 * 60_000 };
+  await coalescer.add(routine, alert);
+  await coalescer.add(routine, later);
+  await coalescer.add(routine, journalEventToWorkerEvent(journal('h', 3, 'process.failed')));
+  assert.deepEqual(expired.map((event) => event.cursor), [1], 'returned at once, not after the deadline');
+  await clock.advance(29 * 60_000);
+  assert.equal(flushes.length, 0, 'maxWaitSeconds does not beat the hourly hold');
+  await clock.advance(60_000);
+  assert.equal(flushes.length, 1);
+  assert.deepEqual(flushes[0].events.map((event) => event.cursor), [2, 3]);
+});
+
+test('a near deadline flushes before the quiet window or maxWaitSeconds', async () => {
+  const clock = fakeClock();
+  const flushes = [];
+  const coalescer = createCoalescer({ ...clock, onFlush: async (id, batch) => flushes.push(batch) });
+  const routine = { id: 'r', coalesce: { ...COALESCE_DEFAULTS, windowSeconds: 600, minIntervalSeconds: 0, maxWaitSeconds: 0 } };
+  await coalescer.add(routine, { ...journalEventToWorkerEvent(journal('cloud', 1, 'cloud.notification')), deliverBy: clock.now() + 60_000 });
+  await coalescer.add(routine, journalEventToWorkerEvent(journal('h', 2, 'process.completed')));
+  await clock.advance(59_000);
+  assert.equal(flushes.length, 0);
+  await clock.advance(1_000);
+  assert.equal(flushes.length, 1);
+  assert.equal(flushes[0].count, 2);
+});
+
+test('a restored buffer returns alerts its hold would make late', async () => {
+  const clock = fakeClock();
+  const snapshots = {};
+  const expired = [];
+  const coalescer = createCoalescer({ ...clock, onFlush: async () => {}, onChange: async (id, snap) => { snapshots[id] = snap; }, onExpire: async (id, events) => expired.push(...events) });
+  const routine = { id: 'r', coalesce: { ...COALESCE_DEFAULTS, minIntervalSeconds: 1800 } };
+  const alert = { ...journalEventToWorkerEvent(journal('cloud', 1, 'cloud.notification')), deliverBy: clock.now() + 60_000 };
+  assert.equal(coalescer.restore(routine, { events: [alert], firstAt: clock.now(), lastFlushAt: clock.now(), flushes: [clock.now()] }), 0);
+  await new Promise(setImmediate);
+  assert.equal(expired.length, 1);
+  assert.equal(snapshots.r.events.length, 0, 'the persisted buffer drops it too');
+});
+
 test('persisted snapshots restore into a fresh coalescer and still flush', async () => {
   const clock = fakeClock();
   const snapshots = {};

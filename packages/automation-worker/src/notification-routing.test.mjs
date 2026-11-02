@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createNotificationRouting } from "./notification-routing.mjs";
+import { createNotificationRouting, HANDOFF_MARGIN_MS } from "./notification-routing.mjs";
 import { eventMatchesRoutine, redactEvent } from "./routines.mjs";
 
 import { journalEventToWorkerEvent } from "./vibe-events.mjs";
@@ -204,15 +204,11 @@ test("batch is frozen before the host stages and admits it", async () => {
   await f.routing.register(routine, [], true);
   const events = [f.event("b"), f.event("a")];
   for (const event of events) await f.routing.claim(routine, event);
-  await f.routing.deliver(
-    routine,
-    { events },
-    {
-      path: "/queue",
-      payload: { message: "synthetic" },
-      meta: { idempotencyKey: "fixed-batch" },
-    },
-  );
+  await f.routing.deliver(routine, { events }, () => ({
+    path: "/queue",
+    payload: { message: "synthetic" },
+    meta: { idempotencyKey: "fixed-batch" },
+  }));
   const handoffs = f.calls.filter((c) => c.path.endsWith("/handoff"));
   assert.equal(handoffs.length, 1);
   assert.equal(handoffs[0].payload.members.length, 2);
@@ -230,16 +226,121 @@ test("expired revision prevents any queue side effect", async () => {
   const event = f.event();
   await f.routing.claim(routine, event);
   f.setFailure((path) => path.endsWith("/renew-claim"));
-  await assert.rejects(
-    f.routing.deliver(routine, event, {
-      path: "/queue",
-      meta: { idempotencyKey: "fixed" },
-    }),
-  );
+  const result = await f.routing.deliver(routine, event, () => ({
+    path: "/queue",
+    meta: { idempotencyKey: "fixed" },
+  }));
+  assert.equal(result.skipped, "notification claims expired");
   assert.equal(
-    f.calls.some((c) => c.path === "/queue"),
+    f.calls.some((c) => c.path.startsWith("/queue") || c.path.endsWith("/handoff")),
     false,
   );
+});
+
+test("a claim records when its alert must be handed off by", async () => {
+  const routing = createNotificationRouting({
+    instanceId: "synthetic-instance",
+    now: () => 1_000_000,
+    async api(target, _method, path) {
+      if (path === "/v1/hosts")
+        return { hosts: [{ id: "test-host", machine_id: "test-host", access_role: "owner" }] };
+      if (path === "/v1/autopilot-notification-leases") return { id: "lease", protocol: 2 };
+      return { data: { claim_token: "claim", handoff_expires_in_ms: 1_200_000 } };
+    },
+  });
+  await routing.register(routine, [], true);
+  const event = { notificationId: "synthetic-alert", notificationRevision: 1, notificationIntent: "raw_event" };
+  assert.equal(await routing.claim(routine, event), true);
+  assert.equal(event.deliverBy, 1_000_000 + 1_200_000 - HANDOFF_MARGIN_MS);
+  const f = fixture();
+  await f.routing.register(routine, [], true);
+  const legacy = f.event();
+  await f.routing.claim(routine, legacy);
+  assert.equal("deliverBy" in legacy, false, "an older server leaves the coalescer unchanged");
+});
+
+test("an expired member leaves its batch while the rest is handed off without it", async () => {
+  const f = fixture();
+  await f.routing.register(routine, [], true);
+  const gone = f.event("synthetic-gone");
+  const live = f.event("synthetic-live");
+  for (const event of [gone, live]) await f.routing.claim(routine, event);
+  const process = { id: "synthetic-process", kind: "process.failed" };
+  f.setFailure((path) => path === "/v1/notifications/synthetic-gone/renew-claim");
+  const rendered = [];
+  await f.routing.deliver(routine, { id: "synthetic-batch", count: 3, events: [gone, live, process] }, (event) => {
+    rendered.push(event);
+    return { path: "/queue", payload: { message: `${event.count} events` }, meta: { idempotencyKey: "synthetic-mixed" } };
+  });
+  assert.equal(rendered.length, 1);
+  assert.deepEqual(rendered[0].events.map((event) => event.notificationId ?? event.id), ["synthetic-live", "synthetic-process"]);
+  assert.equal(rendered[0].count, 2);
+  const handoffs = f.calls.filter((c) => c.path.endsWith("/handoff"));
+  assert.deepEqual(handoffs.map((c) => c.path), ["/v1/notifications/synthetic-live/handoff"]);
+  assert.deepEqual(handoffs[0].payload.members.map((m) => m.id), ["synthetic-live"]);
+  const staged = f.calls.filter((c) => c.path === "/queue/notification-handoff");
+  assert.equal(staged.length, 1);
+  assert.deepEqual(staged[0].payload.handoff.members.map((m) => m.id), ["synthetic-live"]);
+  assert.equal(staged[0].payload.handoff.payload.message, "2 events");
+});
+
+test("a retry after a lost admission response never hands anything off twice", async () => {
+  const f = fixture();
+  await f.routing.register(routine, [], true);
+  const alerts = [f.event("synthetic-a"), f.event("synthetic-b")];
+  for (const event of alerts) await f.routing.claim(routine, event);
+  const batch = { id: "synthetic-batch", count: 3, events: [...alerts, { id: "synthetic-process", kind: "process.failed" }] };
+  const build = (event) => ({ path: "/queue", payload: { message: `${event.count} events` }, meta: { idempotencyKey: "synthetic-admitted" } });
+  // The host admits the batch, but its response is lost.
+  let admitted = false;
+  f.setFailure((path) => {
+    if (path === "/queue/notification-handoff") return (admitted = true);
+    return admitted && path.endsWith("/renew-claim");
+  });
+  await assert.rejects(f.routing.deliver(routine, batch, build));
+  const retry = await f.routing.deliver(routine, redactEvent(batch), build);
+  assert.equal(f.calls.filter((c) => c.path.endsWith("/handoff")).length, 1);
+  assert.equal(f.calls.filter((c) => c.path === "/queue/notification-handoff").length, 1);
+  // Only the leftover reaches the host, under the admitted key the host refuses.
+  const leftover = f.calls.filter((c) => c.path === "/queue");
+  assert.equal(leftover.length, 1);
+  assert.equal(leftover[0].meta.idempotencyKey, "synthetic-admitted");
+  assert.equal(leftover[0].payload.message, "1 events");
+  assert.equal(retry.data.claim_token, "claim");
+  f.calls.length = 0;
+  const alertsOnly = await f.routing.deliver(routine, redactEvent({ events: alerts }), build);
+  assert.equal(alertsOnly.skipped, "notification claims expired");
+  assert.equal(f.calls.some((c) => !c.path.endsWith("/renew-claim")), false);
+});
+
+test("a frozen batch that lost a member returns the rest and keeps renewing later claims", async () => {
+  const f = fixture();
+  await f.routing.register(routine, [], true);
+  const later = f.event("synthetic-later");
+  await f.routing.claim(routine, later);
+  f.setRecovered([
+    {
+      id: "synthetic-kept",
+      revision: 1,
+      claim_token: "claim",
+      handoff_key: "synthetic-frozen",
+      handoff: {
+        path: "/queue",
+        payload: { message: "saved" },
+        meta: { idempotencyKey: "synthetic-frozen" },
+        members: [
+          { id: "synthetic-gone", revision: 1, claim_token: "gone" },
+          { id: "synthetic-kept", revision: 1, claim_token: "claim" },
+        ],
+      },
+    },
+    { id: "synthetic-later", revision: 1, claim_token: "claim" },
+  ]);
+  f.setFailure((path) => path === "/v1/notifications/synthetic-gone/handoff");
+  assert.deepEqual(await f.routing.recover(routine), []);
+  assert.ok(f.calls.some((c) => c.path === "/v1/notifications/synthetic-kept/release"));
+  assert.ok(f.calls.some((c) => c.path === "/v1/notifications/synthetic-later/renew-claim"));
+  assert.equal(f.calls.some((c) => c.path === "/queue/notification-handoff"), false);
 });
 
 test("restart recovers claims independently from local event receipts", async () => {
@@ -377,11 +478,11 @@ test("a redacted retry uses its matching live claim without persisting the token
     (path, payload) =>
       path.endsWith("/renew-claim") && payload.claim_token !== "claim",
   );
-  await f.routing.deliver(routine, retry, {
+  await f.routing.deliver(routine, retry, () => ({
     path: "/queue",
     payload: {},
     meta: { idempotencyKey: "synthetic-retry" },
-  });
+  }));
   assert.ok(f.calls.some((c) => c.path === "/queue/notification-handoff"));
   assert.equal(retry.notificationClaim.claim_token, undefined);
 });
@@ -398,14 +499,13 @@ test("a redacted retry cannot borrow a token from another revision or lease", as
     f.setFailure(
       (path, payload) => path.endsWith("/renew-claim") && !payload.claim_token,
     );
-    await assert.rejects(
-      f.routing.deliver(routine, retry, {
-        path: "/queue",
-        meta: { idempotencyKey: "synthetic-stale-retry" },
-      }),
-    );
+    const result = await f.routing.deliver(routine, retry, () => ({
+      path: "/queue",
+      meta: { idempotencyKey: "synthetic-stale-retry" },
+    }));
+    assert.equal(result.skipped, "notification claims expired");
     assert.equal(
-      f.calls.some((c) => c.path === "/queue"),
+      f.calls.some((c) => c.path.startsWith("/queue")),
       false,
     );
     assert.equal(f.calls.at(-1).payload.claim_token, undefined);
@@ -487,12 +587,12 @@ test('raw follow-ups use durable admission while ordinary follow-ups keep their 
   const event = f.event();
   await f.routing.claim(routine, event);
   const delivery = { path: '/api/sessions/synthetic-session/follow-up', payload: { prompt: 'Synthetic prompt', executor_config: { executor: 'CODEX' } }, meta: { idempotencyKey: 'synthetic-follow-up' } };
-  await f.routing.deliver(routine, event, delivery);
+  await f.routing.deliver(routine, event, () => delivery);
   const staged = f.calls.find((call) => call.path.endsWith('/notification-handoff'));
   assert.equal(staged.path, '/api/sessions/synthetic-session/queue/notification-handoff');
   assert.deepEqual(staged.payload.handoff.payload, { message: 'Synthetic prompt', executor_config: { executor: 'CODEX' } });
   f.calls.length = 0;
-  await f.routing.deliver(routine, {}, delivery);
+  await f.routing.deliver(routine, {}, () => delivery);
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].path, delivery.path);
   assert.deepEqual(f.calls[0].payload, delivery.payload);

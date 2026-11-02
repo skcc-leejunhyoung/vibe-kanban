@@ -272,7 +272,8 @@ async fn mutate(
         return Err(conflict());
     }
     // Lock the notification before dispatch everywhere, including watchdog and delivery.
-    let row=sqlx::query("SELECT n.routing_state,d.claim_token,d.handoff_key,d.handoff FROM notifications n JOIN notification_dispatches d ON d.notification_id=n.id AND d.revision=n.revision JOIN autopilot_notification_leases l ON l.id=d.lease_id JOIN hosts h ON h.id=l.host_id AND h.owner_user_id=$2 AND h.deleted_at IS NULL WHERE n.id=$1 AND n.user_id=$2 AND n.revision=$3 AND l.id=$4 AND l.instance_id=$5 AND l.expires_at>NOW() AND l.protocol=2 AND d.handoff_deadline>NOW() AND ((n.routing_state='autopilot_pending' AND d.pending_deadline>NOW()) OR (n.routing_state='autopilot_claimed' AND d.claim_expires_at>NOW())) FOR UPDATE OF n,d")
+    // The worker schedules its batch from the remaining time, so clock skew cannot move it.
+    let row=sqlx::query("SELECT n.routing_state,d.claim_token,d.handoff_key,d.handoff,(EXTRACT(EPOCH FROM d.handoff_deadline-NOW())*1000)::bigint AS handoff_expires_in_ms FROM notifications n JOIN notification_dispatches d ON d.notification_id=n.id AND d.revision=n.revision JOIN autopilot_notification_leases l ON l.id=d.lease_id JOIN hosts h ON h.id=l.host_id AND h.owner_user_id=$2 AND h.deleted_at IS NULL WHERE n.id=$1 AND n.user_id=$2 AND n.revision=$3 AND l.id=$4 AND l.instance_id=$5 AND l.expires_at>NOW() AND l.protocol=2 AND d.handoff_deadline>NOW() AND ((n.routing_state='autopilot_pending' AND d.pending_deadline>NOW()) OR (n.routing_state='autopilot_claimed' AND d.claim_expires_at>NOW())) FOR UPDATE OF n,d")
         .bind(id).bind(user).bind(p.revision).bind(p.lease_id).bind(p.instance_id).fetch_optional(&mut *tx).await.map_err(internal)?.ok_or_else(conflict)?;
     let route: String = row.get("routing_state");
     let token: Option<Uuid> = row.get("claim_token");
@@ -283,6 +284,7 @@ async fn mutate(
         return Err(conflict());
     }
     let token = token.unwrap_or_else(Uuid::new_v4);
+    let handoff_expires_in_ms: i64 = row.get("handoff_expires_in_ms");
     match operation {
         "claim" | "renew" => {
             sqlx::query("UPDATE notification_dispatches SET claim_token=$2,claim_expires_at=LEAST(NOW()+INTERVAL '90 seconds',handoff_deadline),reason='claimed' WHERE notification_id=$1 AND revision=$3").bind(id).bind(token).bind(p.revision).execute(&mut *tx).await.map_err(internal)?;
@@ -364,7 +366,7 @@ async fn mutate(
         elapsed_ms=started.elapsed().as_millis() as u64,
         "notification routing transition committed");
     Ok(Json(MutationResponse {
-        data: json!({"claim_token":token}),
+        data: json!({"claim_token":token,"handoff_expires_in_ms":handoff_expires_in_ms}),
         txid,
     }))
 }
@@ -603,6 +605,22 @@ mod tests {
             assert!(!final_row.seen);
             assert_eq!(f.jobs(&n).await, 2);
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires NOTIFICATION_ROUTING_TEST_DATABASE_URL (disposable PostgreSQL)"]
+    async fn claims_report_the_remaining_handoff_window_without_extending_it() {
+        let _serial = TEST_LOCK.lock().await;
+        let f = Fixture::new().await;
+        let n = f.create(NotificationIntent::RawEvent, false, None).await;
+        let claim = f.act(&n, None, "claim").await.unwrap().0.data;
+        let claimed = claim["handoff_expires_in_ms"].as_i64().unwrap();
+        assert!(claimed > 19 * 60_000 && claimed <= 20 * 60_000);
+        let token: Uuid = serde_json::from_value(claim["claim_token"].clone()).unwrap();
+        sqlx::query("UPDATE notification_dispatches SET handoff_deadline=NOW()+INTERVAL '30 seconds' WHERE notification_id=$1").bind(n.id).execute(&f.pool).await.unwrap();
+        let renew = f.act(&n, Some(token), "renew").await.unwrap().0.data;
+        let renewed = renew["handoff_expires_in_ms"].as_i64().unwrap();
+        assert!(renewed > 0 && renewed <= 30_000);
     }
 
     #[tokio::test]

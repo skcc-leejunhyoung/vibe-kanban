@@ -379,6 +379,16 @@ const routineCoalescer = createCoalescer({
     state.routineBuffers[routineId] = snapshot;
     await persistState();
   },
+  // The interval or hourly hold would outlast the alert's handoff deadline, so
+  // the user gets it now instead of after the server's fallback.
+  onExpire: async (routineId, events) => {
+    const routine = state.routines.find((item) => item.id === routineId);
+    if (routine) await releaseClaimedNotifications(routine, { events });
+    await log('info', 'held alerts returned to the user before their handoff deadline', {
+      routineId,
+      count: events.length,
+    });
+  },
   onError: (error) =>
     log('error', 'coalesced routine run failed', { error: errorMessage(error) }),
 });
@@ -1309,15 +1319,20 @@ async function executeRoutineAction(routine, event) {
       if (!executorConfig?.executor)
         throw new Error('autopilot executor config is unavailable; set input.executor_config');
     }
-    const message = renderPromptTemplate(prompt, event);
-    const delivery={
-      path:`/api/sessions/${encodeURIComponent(sessionId)}/${queue?'queue':'follow-up'}`,
-      payload:queue?{message,executor_config:executorConfig}:{...payload,prompt:message,executor_config:executorConfig},
-      meta,
+    const build = (event) => {
+      const message = renderPromptTemplate(prompt, event);
+      return {
+        path:`/api/sessions/${encodeURIComponent(sessionId)}/${queue?'queue':'follow-up'}`,
+        payload:queue?{message,executor_config:executorConfig}:{...payload,prompt:message,executor_config:executorConfig},
+        meta,
+      };
     };
+    const delivery = explicitSessionId && build(event);
     const result = !explicitSessionId
-      ? await notificationRouting.deliver(routine,event,delivery)
+      ? await notificationRouting.deliver(routine,event,build)
       : await vibeApi(connector,'POST',delivery.path,delivery.payload,bridge.baseUrl,meta);
+    if (result?.skipped)
+      await log('info', `send_prompt skipped: ${result.skipped}`, { routineId: routine.id });
     await rememberRoutineOrigin(result?.data?.id, meta);
     return result;
   }

@@ -16,7 +16,8 @@ export const COALESCE_DEFAULTS = {
   minIntervalSeconds: 120,
   maxPerHour: 20,
   // Flush no later than this after the FIRST buffered event, so a stream of
-  // frequent events (status notes) cannot postpone the wake-up forever.
+  // frequent events (status notes) cannot postpone the wake-up forever. The
+  // interval and hourly holds still win over it.
   maxWaitSeconds: 300,
   immediate: [],
 };
@@ -150,12 +151,15 @@ function batchEvent(events) {
 // (but no later than `maxWaitSeconds` after the first), immediately for
 // `immediate` kinds, never sooner than `minIntervalSeconds` after the previous
 // flush and never more than `maxPerHour` times per rolling hour (held events
-// merge into the next flush). `onChange` receives a JSON-safe snapshot after
-// every add and flush so the host can persist it; `restore` loads such a
-// snapshot (re-arming its timer) after a restart.
+// merge into the next flush). An event with a `deliverBy` time flushes by then,
+// or leaves the buffer through `onExpire` as soon as a hold would outlast it.
+// `onChange` receives a JSON-safe snapshot after every add and flush so the
+// host can persist it; `restore` loads such a snapshot (re-arming its timer)
+// after a restart.
 export function createCoalescer({
   onFlush,
   onChange,
+  onExpire,
   onError = (error) => console.error(error),
   now = Date.now,
   setTimer = (fn, ms) => {
@@ -199,8 +203,19 @@ export function createCoalescer({
     return earliest;
   }
 
+  // Returns the events removed because the next allowed flush is too late.
   function arm(routine, item, at) {
     const settings = { ...COALESCE_DEFAULTS, ...(routine.coalesce || {}) };
+    const allowed = earliestAllowed(item, settings, at);
+    const late = (event) => (event.deliverBy ?? Infinity) < allowed;
+    const expired = item.events.filter(late);
+    item.events = item.events.filter((event) => !late(event));
+    if (item.timer) clearTimer(item.timer);
+    item.timer = null;
+    if (!item.events.length) {
+      item.firstAt = 0;
+      return expired;
+    }
     const urgent = item.events.some((event) =>
       settings.immediate.length ? kindMatches(event.kind, settings.immediate) : false
     );
@@ -208,14 +223,17 @@ export function createCoalescer({
       settings.maxWaitSeconds > 0 && item.firstAt
         ? item.firstAt + settings.maxWaitSeconds * 1000
         : Infinity;
-    const desired = urgent ? at : Math.min(at + settings.windowSeconds * 1000, maxAt);
-    const flushAt = Math.max(desired, earliestAllowed(item, settings, at));
-    if (item.timer) clearTimer(item.timer);
+    const deliverBy = Math.min(...item.events.map((event) => event.deliverBy ?? Infinity));
+    const desired = urgent
+      ? at
+      : Math.min(at + settings.windowSeconds * 1000, maxAt, deliverBy);
+    const flushAt = Math.max(desired, allowed);
     item.flushAt = flushAt;
     item.timer = setTimer(
       () => flush(routine.id).catch(onError),
       Math.max(0, flushAt - now())
     );
+    return expired;
   }
 
   async function add(routine, event) {
@@ -224,8 +242,9 @@ export function createCoalescer({
     const at = now();
     if (!item.events.length) item.firstAt = at;
     item.events.push(event);
-    arm(routine, item, at);
+    const expired = arm(routine, item, at);
     await onChange?.(routine.id, snapshot(item));
+    if (expired.length) await onExpire?.(routine.id, expired);
     return item.events.length;
   }
 
@@ -236,7 +255,11 @@ export function createCoalescer({
     item.firstAt = Number(saved?.firstAt) || 0;
     item.lastFlushAt = Number(saved?.lastFlushAt) || 0;
     item.flushes = Array.isArray(saved?.flushes) ? saved.flushes.map(Number) : [];
-    if (item.events.length) arm(routine, item, now());
+    const expired = item.events.length ? arm(routine, item, now()) : [];
+    if (expired.length)
+      Promise.resolve(onChange?.(routine.id, snapshot(item)))
+        .then(() => onExpire?.(routine.id, expired))
+        .catch(onError);
     return item.events.length;
   }
 

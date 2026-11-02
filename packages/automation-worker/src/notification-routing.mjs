@@ -1,7 +1,11 @@
 import { journalEventToWorkerEvent } from './vibe-events.mjs';
 
+// Time a flushed batch needs to reach the host's admission before the server's
+// handoff deadline returns its alerts to the user.
+export const HANDOFF_MARGIN_MS = 60000;
+
 // Central claims, rather than the worker's best-effort JSON cache, own held alerts.
-export function createNotificationRouting({ api, instanceId }) {
+export function createNotificationRouting({ api, instanceId, now = Date.now }) {
   const leases = new Map();
   const known = new Map();
   const keyOf = (item) => `${item.notificationId}:${item.notificationRevision}`;
@@ -28,6 +32,16 @@ export function createNotificationRouting({ api, instanceId }) {
       "POST",
       `/v1/notifications/${encodeURIComponent(item.notificationId)}/${action}`,
       body(item, extra),
+    );
+  // False once the server no longer lets this worker hand the alert off: its
+  // deadline returned it to the user, or a newer revision superseded it.
+  const owned = (call) =>
+    call.then(
+      () => true,
+      (error) => {
+        if (![404, 409].includes(error.status)) throw error;
+        return false;
+      },
     );
 
   return {
@@ -89,8 +103,12 @@ export function createNotificationRouting({ api, instanceId }) {
       if (event.notificationClaim?.lease_id !== lease)
         event.notificationClaim = { lease_id: lease };
       try {
+        const sent = now();
         const result = await request(routine, event, "claim");
         event.notificationClaim.claim_token = result.data.claim_token;
+        // The coalescer hands the alert back early rather than hold it past this.
+        const left = Number(result.data.handoff_expires_in_ms);
+        if (Number.isFinite(left)) event.deliverBy = sent + left - HANDOFF_MARGIN_MS;
         known.set(key, event);
         return true;
       } catch (error) {
@@ -169,7 +187,10 @@ export function createNotificationRouting({ api, instanceId }) {
         };
         const key = keyOf(event);
         if (row.handoff_key) {
-          await request(routine, event, "renew-claim");
+          if (!(await owned(request(routine, event, "renew-claim")))) {
+            known.delete(key);
+            continue;
+          }
           // The queue receipt is authoritative even if its HTTP response was lost.
           const receipt = await api(
             routine,
@@ -194,11 +215,20 @@ export function createNotificationRouting({ api, instanceId }) {
                   },
                 }
               : event;
-            await request(routine, head, "handoff", {
-              handoff_key: row.handoff_key,
-              handoff: row.handoff,
-              members,
-            });
+            const frozen = await owned(
+              request(routine, head, "handoff", {
+                handoff_key: row.handoff_key,
+                handoff: row.handoff,
+                members,
+              }),
+            );
+            if (!frozen) {
+              // A member of the frozen batch is gone, so it can never be
+              // admitted: this one goes back to the user instead of retrying.
+              await owned(request(routine, event, "release"));
+              known.delete(key);
+              continue;
+            }
             await api(
               routine,
               "POST",
@@ -216,19 +246,38 @@ export function createNotificationRouting({ api, instanceId }) {
             ...known.get(key),
             notificationClaim: event.notificationClaim,
           });
-          await request(routine, known.get(key), "renew-claim");
+          if (!(await owned(request(routine, known.get(key), "renew-claim"))))
+            known.delete(key);
           continue;
         }
         recovered.push(event);
       }
       return recovered;
     },
-    async deliver(routine, event, delivery) {
-      const items = itemsOf(event);
-      for (const item of items) await request(routine, item, "renew-claim");
+    // `build(event)` renders the delivery for the alerts this worker still owns,
+    // so an expired member never blocks, or appears in, the rest of its batch.
+    async deliver(routine, event, build) {
+      const items = [];
+      const lost = new Set();
+      for (const item of itemsOf(event)) {
+        if (await owned(request(routine, item, "renew-claim"))) items.push(item);
+        else {
+          lost.add(keyOf(item));
+          known.delete(keyOf(item));
+        }
+      }
+      if (lost.size) {
+        const events = (event.events || [event]).filter(
+          (item) => !item.notificationClaim || !lost.has(keyOf(item)),
+        );
+        if (!events.length) return { skipped: "notification claims expired" };
+        // Leftovers keep the batch key, which the host refuses once it was
+        // admitted, so a lost response cannot deliver them twice.
+        event = event.events ? { ...event, events, count: events.length } : event;
+      }
       items.sort((a, b) => a.notificationId.localeCompare(b.notificationId));
-      delivery = {
-        ...delivery,
+      const delivery = {
+        ...build(event),
         members: items.map((item) => ({
           id: item.notificationId,
           revision: item.notificationRevision,

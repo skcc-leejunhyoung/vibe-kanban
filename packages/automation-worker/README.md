@@ -321,7 +321,10 @@ filters by host id or name) and a `coalesce` block runs **once per burst**: the 
 `maxWaitSeconds`, default 300, after the first one; `0` removes that cap), right away for `immediate`
 kinds, never sooner than `minIntervalSeconds` after the previous flush and at
 most `maxPerHour` times per rolling hour (held events merge into the next
-flush). Pending buffers are saved in the worker state (`routineBuffers`) and
+flush). Those two holds win over `maxWaitSeconds`. A claimed cloud notification
+flushes before its central handoff deadline; when a hold would outlast that
+deadline, the alert goes back to the user's inbox at once while the rest of the
+buffer keeps waiting. Pending buffers are saved in the worker state (`routineBuffers`) and
 re-armed on restart, so events held by a window or an interval are not lost. The run receives a `vk_event_batch` event; `send_prompt` renders
 `{{count}}`, `{{cursor}}`, `{{hostIds}}` and `{{events}}` (one line per event)
 into the prompt. `target: "autopilot"` resolves the host's Autopilot session
