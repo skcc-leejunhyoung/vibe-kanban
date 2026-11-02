@@ -41,6 +41,7 @@ use executors::{
     executors::{
         BaseCodingAgent, CancellationToken, ExecutorExitResult, ExecutorExitSignal,
         SubagentLiveHandle,
+        utils::{SlashCommandCall, parse_slash_command},
     },
     logs::{NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch},
     profile::ExecutorConfig,
@@ -1321,7 +1322,14 @@ impl LocalContainerService {
                 )
                 .await
                 {
-                    Ok(Some(turn)) if turn.summary.is_some() => {
+                    // Slash-command output (/export, /usage, /debug-config, ...) can
+                    // hold the conversation or account data: never commit it.
+                    Ok(Some(turn))
+                        if turn.summary.is_some()
+                            && !turn.prompt.as_deref().is_some_and(|prompt| {
+                                parse_slash_command::<SlashCommandCall<'_>>(prompt).is_some()
+                            }) =>
+                    {
                         // The summary is the agent's final message verbatim, which
                         // in a vibe run ends with the `VIBE_RESULT:` sentinel. Strip
                         // it so orchestration noise never lands in the commit; fall
@@ -5935,6 +5943,54 @@ done
             session: session.clone(),
             workspace: workspace.clone(),
             repos: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn slash_command_output_never_becomes_the_commit_message() {
+        use db::models::{
+            coding_agent_turn::CreateCodingAgentTurn, execution_process::CreateExecutionProcess,
+        };
+
+        let (container, session, workspace) = queue_test_container().await;
+        let pool = &container.db.pool;
+        for (prompt, expected) in [
+            (" /export", None),
+            ("/usage weekly", None),
+            ("Fix the bug", Some("Fixed the bug")),
+        ] {
+            let mut ctx = finished_turn(&session, &workspace, ExecutionProcessStatus::Completed);
+            ctx.execution_process = ExecutionProcess::create(
+                pool,
+                &CreateExecutionProcess {
+                    session_id: session.id,
+                    executor_action: ctx.execution_process.executor_action().unwrap().clone(),
+                    run_reason: ExecutionProcessRunReason::CodingAgent,
+                },
+                Uuid::new_v4(),
+                &[],
+            )
+            .await
+            .unwrap();
+            let turn = CreateCodingAgentTurn {
+                execution_process_id: ctx.execution_process.id,
+                prompt: Some(prompt.into()),
+            };
+            CodingAgentTurn::create(pool, &turn, Uuid::new_v4())
+                .await
+                .unwrap();
+            CodingAgentTurn::update_summary(pool, ctx.execution_process.id, "Fixed the bug")
+                .await
+                .unwrap();
+            let default = format!(
+                "Commit changes from coding agent for workspace {}",
+                workspace.id
+            );
+            assert_eq!(
+                container.get_commit_message(&ctx).await,
+                expected.map_or(default, str::to_string),
+                "{prompt}"
+            );
         }
     }
 

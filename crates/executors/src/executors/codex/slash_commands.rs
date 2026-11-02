@@ -523,7 +523,7 @@ impl Codex {
                             .await;
                     }
                     CodexSlashCommand::Usage { view } => {
-                        let message = fetch_usage_message(&client, view).await?;
+                        let message = fetch_usage_message(&client, view).await;
                         log_event_raw(client.log_writer(), message).await?;
                         exit_signal_tx.send_exit_signal(ExecutorExitResult::Success).await;
                     }
@@ -696,18 +696,13 @@ impl Codex {
     }
 }
 
-async fn fetch_usage_message(
-    client: &AppServerClient,
-    view: UsageView,
-) -> Result<String, ExecutorError> {
-    let usage = tokio::time::timeout(Duration::from_secs(30), client.get_account_token_usage())
-        .await
-        .map_err(|_| {
-            ExecutorError::Io(std::io::Error::other(
-                "Timed out reading Codex account usage",
-            ))
-        })??;
-    let mut message = format_token_usage(&usage, view);
+async fn fetch_usage_message(client: &AppServerClient, view: UsageView) -> String {
+    let mut message =
+        match tokio::time::timeout(Duration::from_secs(30), client.get_account_token_usage()).await
+        {
+            Ok(Ok(usage)) => format_token_usage(&usage, view),
+            _ => "# Account Usage\n\n_Token usage unavailable._".to_string(),
+        };
     message.push_str("\n\n## Rate Limits\n");
     match tokio::time::timeout(Duration::from_secs(5), client.get_account_rate_limits()).await {
         Ok(Ok(limits)) => {
@@ -732,7 +727,7 @@ async fn fetch_usage_message(
         }
         _ => message.push_str("\n_Rate limits unavailable._"),
     }
-    Ok(message)
+    message
 }
 
 fn format_token_usage(usage: &GetAccountTokenUsageResponse, view: UsageView) -> String {
@@ -1484,6 +1479,64 @@ mod tests {
                 Some(CodexSlashCommand::Invalid { .. })
             ));
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn usage_read_failure_still_reports_rate_limits() {
+        use std::process::Stdio;
+
+        use tokio_util::sync::CancellationToken;
+
+        use crate::{
+            env::RepoContext,
+            executors::codex::jsonrpc::{ExitSignalSender, JsonRpcPeer},
+        };
+
+        let cancel = CancellationToken::new();
+        let client = AppServerClient::new(
+            LogWriter::new(tokio::io::sink()),
+            None,
+            false,
+            false,
+            None,
+            RepoContext::default(),
+            false,
+            String::new(),
+            cancel.clone(),
+        );
+        // account/usage/read fails; account/rateLimits/read still answers.
+        let mut server = tokio::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"while IFS= read -r line; do
+  id=${line#*\"id\":}; id=${id%%[,\}]*}
+  case "$line" in
+    *account/rateLimits/read*) printf '{"id":%s,"result":%s}\n' "$id" "$1" ;;
+    *) printf '{"id":%s,"error":{"code":-32603,"message":"usage unavailable"}}\n' "$id" ;;
+  esac
+done"#,
+                "mock-app-server",
+                r#"{"rateLimits":{"primary":{"usedPercent":37,"windowDurationMins":10080}}}"#,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        client.connect(JsonRpcPeer::spawn(
+            server.stdin.take().unwrap(),
+            server.stdout.take().unwrap(),
+            client.clone(),
+            ExitSignalSender::new(tx),
+            cancel.clone(),
+        ));
+
+        let message = fetch_usage_message(&client, UsageView::Daily).await;
+        assert!(message.contains("_Token usage unavailable._"), "{message}");
+        assert!(message.contains("**7d**: 37% used"), "{message}");
+        cancel.cancel();
     }
 
     #[test]
