@@ -1487,6 +1487,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         localMessageRef.current = remainingMessage;
         if (overrides)
           setExecutorOverrides({ ...executorConfig, ...overrides });
+        else await saveToScratch(remainingMessage, executorConfig);
       } catch (error) {
         void ErrorDialog.show({
           title: t('common:error'),
@@ -1501,6 +1502,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       cancelDebouncedSave,
       setLocalMessage,
       setExecutorOverrides,
+      saveToScratch,
       sessionId,
       session,
       workspaceId,

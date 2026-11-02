@@ -208,6 +208,7 @@ describe('Vibe session slash commands', () => {
       SettingsDialog: { show: vi.fn() },
       ErrorDialog: { show: vi.fn() },
       cancelDebouncedSave: vi.fn(),
+      saveToScratch: vi.fn().mockResolvedValue(undefined),
       setLocalMessage: vi.fn(),
       localMessageRef: { current: command },
       setExecutorOverrides: vi.fn(),
@@ -246,6 +247,10 @@ describe('Vibe session slash commands', () => {
         'synthetic-host'
       );
       expect(setup.setExecutorOverrides).not.toHaveBeenCalled();
+      expect(setup.saveToScratch).toHaveBeenCalledExactlyOnceWith(
+        '',
+        setup.executorConfig
+      );
       expect(dispatch).not.toHaveBeenCalled();
     });
   }
@@ -260,6 +265,7 @@ describe('Vibe session slash commands', () => {
     await callback('handleComposerCommand', setup)(command);
     expect(setup.setLocalMessage).not.toHaveBeenCalled();
     expect(setup.localMessageRef.current).toBe(command);
+    expect(setup.saveToScratch).not.toHaveBeenCalled();
     expect(setup.ErrorDialog.show).toHaveBeenCalledOnce();
   });
 
@@ -291,6 +297,7 @@ describe('Vibe session slash commands', () => {
       complete();
       await pending;
       expect(setup.setLocalMessage).not.toHaveBeenCalled();
+      expect(setup.saveToScratch).not.toHaveBeenCalled();
       expect(setup.queryClient.invalidateQueries).toHaveBeenCalledOnce();
     });
   }
@@ -303,6 +310,32 @@ describe('Vibe session slash commands', () => {
     expect(setup.SettingsDialog.show).toHaveBeenCalledExactlyOnceWith({
       initialHostId: 'synthetic-host',
     });
+  });
+
+  it('replaces consumed session commands in the saved draft while retaining attachments and settings', async () => {
+    const attachment = '![Synthetic](.vibe-attachments/synthetic.png)';
+    for (const command of [
+      '/ps',
+      '/warnings',
+      '/rename',
+      '/config',
+      '/config --help',
+    ]) {
+      const prompt = `${command}\n\n${attachment}`;
+      const setup = bindings(prompt);
+      let savedMessage = prompt;
+      setup.saveToScratch.mockImplementation(async (message: string) => {
+        savedMessage = message;
+      });
+      await callback('handleComposerCommand', setup)(prompt);
+      expect(savedMessage).toBe(attachment);
+      expect(setup.saveToScratch).toHaveBeenCalledExactlyOnceWith(
+        attachment,
+        setup.executorConfig
+      );
+      expect(setup.setLocalMessage).toHaveBeenCalledWith(attachment);
+      expect(setup.ErrorDialog.show).not.toHaveBeenCalled();
+    }
   });
 
   it('lists only current visible session executions and warnings', async () => {

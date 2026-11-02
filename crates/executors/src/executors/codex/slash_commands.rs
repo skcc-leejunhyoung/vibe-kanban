@@ -880,30 +880,39 @@ async fn fetch_diff_message(current_dir: &Path, env: &ExecutionEnv) -> Result<St
             .collect();
         drivers.sort_unstable();
         drivers.dedup();
-        let mut diff = diff_git_command(&path, env);
-        for driver in drivers {
+        let mut diffs = Vec::new();
+        for (label, staged) in [("Staged changes", true), ("Unstaged changes", false)] {
+            let mut diff = diff_git_command(&path, env);
+            for driver in &drivers {
+                diff.args([
+                    "-c",
+                    &format!("{driver}.clean="),
+                    "-c",
+                    &format!("{driver}.process="),
+                    "-c",
+                    &format!("{driver}.required=false"),
+                ]);
+            }
             diff.args([
-                "-c",
-                &format!("{driver}.clean="),
-                "-c",
-                &format!("{driver}.process="),
-                "-c",
-                &format!("{driver}.required=false"),
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--submodule=short",
+                "--ignore-submodules=dirty",
+                "--color=never",
             ]);
-        }
-        diff.args([
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--submodule=short",
-            "--ignore-submodules=dirty",
-            "--color=never",
-            "HEAD",
-            "--",
-        ]);
-        let output = diff.output().await.map_err(|err| err.to_string())?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+            if staged {
+                diff.arg("--cached");
+            }
+            diff.arg("--");
+            let output = diff.output().await.map_err(|err| err.to_string())?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).to_string());
+            }
+            diffs.push(format!(
+                "### {label}\n\n````diff\n{}\n````",
+                String::from_utf8_lossy(&output.stdout)
+            ));
         }
         let mut untracked = diff_git_command(&path, env);
         untracked.args(["ls-files", "--others", "--exclude-standard"]);
@@ -912,9 +921,9 @@ async fn fetch_diff_message(current_dir: &Path, env: &ExecutionEnv) -> Result<St
             return Err(String::from_utf8_lossy(&files.stderr).to_string());
         }
         sections.push(format!(
-            "## {}\n\n````diff\n{}\n````\n\nUntracked files:\n````text\n{}\n````",
+            "## {}\n\n{}\n\nUntracked files:\n````text\n{}\n````",
             path.display(),
-            String::from_utf8_lossy(&output.stdout),
+            diffs.join("\n\n"),
             String::from_utf8_lossy(&files.stdout)
         ));
     }
@@ -1683,9 +1692,60 @@ mod tests {
         std::fs::write(dir.path().join("untracked.txt"), "synthetic content\n").unwrap();
         let env = ExecutionEnv::new(Default::default(), false, String::new());
         let diff = fetch_diff_message(dir.path(), &env).await.unwrap();
+        assert!(diff.contains("+staged content"));
         assert!(diff.contains("+unstaged content"));
         assert!(diff.contains("+staged-only content"));
         assert!(diff.contains("untracked.txt"));
+    }
+
+    #[tokio::test]
+    async fn diff_keeps_staged_and_unstaged_changes_that_cancel_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tracked.txt"), "original\n").unwrap();
+        for args in [
+            vec!["init"],
+            vec!["add", "tracked.txt"],
+            vec![
+                "-c",
+                "user.name=Synthetic Tester",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "Synthetic baseline",
+            ],
+        ] {
+            assert!(
+                tokio::process::Command::new("git")
+                    .current_dir(dir.path())
+                    .args(args)
+                    .output()
+                    .await
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+        std::fs::write(dir.path().join("tracked.txt"), "staged change\n").unwrap();
+        assert!(
+            tokio::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(["add", "tracked.txt"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+        std::fs::write(dir.path().join("tracked.txt"), "original\n").unwrap();
+
+        let env = ExecutionEnv::new(Default::default(), false, String::new());
+        let diff = fetch_diff_message(dir.path(), &env).await.unwrap();
+        let (staged, unstaged) = diff.split_once("### Unstaged changes").unwrap();
+        assert!(staged.contains("-original\n+staged change"));
+        assert!(unstaged.contains("-staged change\n+original"));
     }
 
     #[test]
