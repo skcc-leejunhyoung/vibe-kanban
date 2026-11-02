@@ -203,7 +203,7 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
     const hasReviewComments = Boolean(reviewMarkdown);
 
     return (
-      <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="lg">
+      <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t('startReviewDialog.title')}</DialogTitle>

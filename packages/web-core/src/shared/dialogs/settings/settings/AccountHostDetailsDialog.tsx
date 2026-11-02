@@ -211,7 +211,7 @@ export function AccountHostDetailsDialog({
         if (!open && !action.busy) onClose();
       }}
     >
-      <DialogContent className="flex max-h-[85dvh] min-w-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+      <DialogContent className="flex max-h-[85dvh] min-w-0 flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="border-b border-border p-double">
           <div className="flex min-w-0 items-center gap-base">
             <DesktopIcon className="size-9 shrink-0 text-low" />

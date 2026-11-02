@@ -130,7 +130,7 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
 
   return (
     <Dialog open={modal.visible} onOpenChange={(open) => !open && modal.hide()}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Link GitHub issue</DialogTitle>
           <DialogDescription>

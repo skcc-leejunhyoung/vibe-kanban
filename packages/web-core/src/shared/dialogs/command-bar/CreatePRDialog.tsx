@@ -690,7 +690,6 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
               handleDismiss();
             }
           }}
-          size="lg"
         >
           <DialogContent>
             <DialogHeader>

@@ -8,8 +8,8 @@
 // the centered box lands on a fractional *device* pixel, that layer's texture
 // is bilinear-sampled, which visibly softens text and borders. The box lands on
 // a half pixel surprisingly often:
-//   - an odd-width dialog (e.g. ErrorDialog's `sm:max-w-[425px]`) on an
-//     even-width viewport: left = (vw - 425) / 2 => *.5px, or
+//   - an odd-width dialog (e.g. 425px) on an even-width viewport:
+//     left = (vw - 425) / 2 => *.5px, or
 //   - any width when `devicePixelRatio` is fractional (1.25 / 1.5 display
 //     scaling).
 // Because it depends on viewport-width parity, the blur toggled on and off as
@@ -39,7 +39,7 @@ export const DIALOG_WRAPPER_Z_INDEX = 9999;
 
 export const dialogContentBaseClasses = [
   'relative pointer-events-auto',
-  'w-full max-w-lg bg-panel border border-border rounded-sm shadow-lg',
+  'w-full bg-panel border border-border rounded-sm shadow-lg',
   'data-[state=open]:animate-in data-[state=closed]:animate-out',
   'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
   'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',

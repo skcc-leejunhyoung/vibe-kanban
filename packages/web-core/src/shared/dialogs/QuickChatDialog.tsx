@@ -573,9 +573,9 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
       }}
       ref={dialogRef}
       onKeyDown={handleDialogKeyDown}
-      // 56rem (≈1.5× the default xl): room for the Drawer's list + note, and
-      // the editor is not cramped either.
-      size="4xl"
+      // Wide: room for the Drawer's list + note, and the editor is not
+      // cramped either.
+      size="wide"
       // KeyboardDialog stacks dialogs at the top (items-start). Quick chat is
       // short, so center it vertically. Inline style overrides the base `my-8`
       // (cn is clsx-only, so a `my-auto` class wouldn't win).

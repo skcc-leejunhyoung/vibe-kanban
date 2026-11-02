@@ -318,7 +318,7 @@ const KeyboardShortcutsDialogImpl = create<NoProps>(() => {
           {/* Dialog content - handles animation */}
           <div
             className={cn(
-              'w-[700px] max-h-[80vh]',
+              'w-[56rem] max-w-[calc(100vw-2rem)] max-h-[80vh]',
               'bg-panel/95 backdrop-blur-sm rounded-sm border border-border/50 shadow-lg',
               'animate-in fade-in-0 slide-in-from-bottom-4 duration-200',
               'flex flex-col overflow-hidden'

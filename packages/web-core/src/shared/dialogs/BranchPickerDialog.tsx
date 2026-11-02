@@ -121,7 +121,7 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
           : t('createMode.targetBranch.selectBranch', { ns: 'common' });
 
     return (
-      <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="md">
+      <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>

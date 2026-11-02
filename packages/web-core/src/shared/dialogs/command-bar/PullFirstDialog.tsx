@@ -92,7 +92,7 @@ const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
   const isProcessing = pullAndPush.isPending;
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleCancel} size="lg">
+    <Dialog open={modal.visible} onOpenChange={handleCancel}>
       <DialogContent>
         <DialogHeader>
           <div className="flex items-center gap-3">

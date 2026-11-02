@@ -190,7 +190,7 @@ const ThemeVariantEditorDialogImpl = create<NoProps>(() => {
   };
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="3xl">
+    <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="wide">
       <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="border-b border-border p-4">
           <DialogTitle>{t('settings.general.themeEditor.title')}</DialogTitle>

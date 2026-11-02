@@ -259,7 +259,7 @@ export function KanbanFiltersDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[720px] p-0">
+      <DialogContent className="p-0">
         <div className="border-b border-border px-double pb-base pt-double">
           <DialogHeader className="space-y-half">
             <DialogTitle>{t('kanban.filters', 'Filters')}</DialogTitle>

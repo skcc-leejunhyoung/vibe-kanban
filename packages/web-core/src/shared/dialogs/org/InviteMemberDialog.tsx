@@ -108,7 +108,7 @@ const InviteMemberDialogImpl = create<InviteMemberDialogProps>((props) => {
   };
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="md">
+    <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t('inviteDialog.title')}</DialogTitle>

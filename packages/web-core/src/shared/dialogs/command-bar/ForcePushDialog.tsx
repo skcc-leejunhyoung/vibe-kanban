@@ -64,7 +64,7 @@ const ForcePushDialogImpl = create<ForcePushDialogProps>((props) => {
   const isProcessing = forcePush.isPending;
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleCancel} size="lg">
+    <Dialog open={modal.visible} onOpenChange={handleCancel}>
       <DialogContent>
         <DialogHeader>
           <div className="flex items-center gap-3">

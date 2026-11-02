@@ -12,12 +12,9 @@ import {
   useDialogKeyboard,
 } from '../lib/dialog-keyboard';
 import { DialogFocusScope } from './DialogFocusScope';
-import {
-  getKeyboardDialogMaxWidth,
-  type KeyboardDialogSize,
-} from '../lib/keyboard-dialog-size';
+import { getDialogMaxWidth, type DialogSize } from '../lib/dialog-size';
 
-export type { KeyboardDialogSize } from '../lib/keyboard-dialog-size';
+export type { DialogSize } from '../lib/dialog-size';
 
 const DIALOG_SCOPE = 'dialog';
 
@@ -41,7 +38,7 @@ const Dialog = React.forwardRef<
     open?: boolean;
     onOpenChange?: (open: boolean) => void;
     uncloseable?: boolean;
-    size?: KeyboardDialogSize;
+    size?: DialogSize;
     scrollMode?: 'viewport' | 'content';
     /** Edge-to-edge media viewer: no panel chrome, black backdrop. */
     fullscreen?: boolean;
@@ -60,7 +57,7 @@ const Dialog = React.forwardRef<
       onOpenChange,
       children,
       uncloseable,
-      size = 'xl',
+      size = 'compact',
       scrollMode = 'viewport',
       fullscreen = false,
       onCloseAutoFocus,
@@ -195,7 +192,7 @@ const Dialog = React.forwardRef<
             )}
             style={{
               ...style,
-              maxWidth: fullscreen ? 'none' : getKeyboardDialogMaxWidth(size),
+              maxWidth: fullscreen ? 'none' : getDialogMaxWidth(size),
             }}
             {...props}
           >

@@ -50,7 +50,6 @@ const EditorSelectionDialogImpl = create<EditorSelectionDialogProps>(
       <Dialog
         open={modal.visible}
         onOpenChange={(open) => !open && handleCancel()}
-        size="md"
       >
         <DialogContent>
           <DialogHeader>

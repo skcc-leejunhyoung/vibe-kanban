@@ -311,12 +311,7 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
             : t('scriptFixer.devServerTitle');
 
     return (
-      <Dialog
-        open={modal.visible}
-        onOpenChange={handleOpenChange}
-        size="4xl"
-        className="w-[90vw]"
-      >
+      <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="wide">
         <DialogContent className="max-h-[80vh] flex flex-col overflow-hidden">
           <DialogHeader>
             <DialogTitle>{dialogTitle}</DialogTitle>

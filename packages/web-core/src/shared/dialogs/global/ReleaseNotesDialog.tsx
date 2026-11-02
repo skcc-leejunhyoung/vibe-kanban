@@ -48,7 +48,7 @@ const ReleaseNotesDialogImpl = create<NoProps>(() => {
       open={modal.visible}
       onOpenChange={(open) => !open && modal.resolve()}
       className="h-[calc(100%-4rem)]"
-      size="2xl"
+      size="wide"
     >
       <DialogContent className="flex flex-col w-full h-full max-h-[calc(100dvh-4rem)] p-0">
         <DialogHeader className="px-6 pt-5 pb-4 border-b flex-shrink-0">

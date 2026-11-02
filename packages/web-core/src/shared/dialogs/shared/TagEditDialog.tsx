@@ -108,7 +108,7 @@ const TagEditDialogImpl = create<TagEditDialogProps>(({ tag, hostId }) => {
   };
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="lg">
+    <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>

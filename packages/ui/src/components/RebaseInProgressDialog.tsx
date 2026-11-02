@@ -93,7 +93,7 @@ const RebaseInProgressDialogImpl =
 
       return (
         <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
-          <DialogContent className="sm:max-w-[450px]">
+          <DialogContent>
             <DialogHeader>
               <DialogTitle>
                 {t('rebaseInProgress.dialog.title', 'Rebase In Progress')}

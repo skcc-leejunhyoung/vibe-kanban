@@ -7,6 +7,7 @@ import {
   dialogCenteringWrapperClasses,
   dialogContentBaseClasses,
 } from '../lib/dialog-centering';
+import { getDialogMaxWidth } from '../lib/dialog-size';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
 import { FloatingBoundaryContext } from '../lib/floating-boundary';
 import {
@@ -115,6 +116,7 @@ const DialogContent = React.forwardRef<
       onInteractOutside,
       onOpenAutoFocus,
       onCloseAutoFocus,
+      style,
       ...props
     },
     ref
@@ -215,6 +217,10 @@ const DialogContent = React.forwardRef<
             onOpenAutoFocus={handleOpenAutoFocus}
             onCloseAutoFocus={handleCloseAutoFocus}
             {...props}
+            // Radix dialogs are always compact (see ../lib/dialog-size.ts).
+            // Inline so a caller's max-w-* class can't win; `cn` is
+            // clsx-only and can't dedupe width classes.
+            style={{ ...style, maxWidth: getDialogMaxWidth('compact') }}
           >
             {children}
             {!hideCloseButton && (

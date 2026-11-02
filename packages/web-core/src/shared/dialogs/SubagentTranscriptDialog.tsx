@@ -169,7 +169,7 @@ const SubagentTranscriptDialogImpl = create<SubagentTranscriptDialogProps>(
             onOpenChange={(open) => {
               if (!open) modal.hide();
             }}
-            size="3xl"
+            size="wide"
           >
             <DialogContent className="w-full p-0 overflow-hidden">
               <DialogHeader className="px-4 pt-4 pb-0">

@@ -64,7 +64,7 @@ export function WorkspacesSortDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md p-0">
+      <DialogContent className="p-0">
         <div className="border-b border-border px-double pb-base pt-double">
           <DialogHeader className="space-y-half">
             <DialogTitle>
@@ -157,7 +157,7 @@ export function WorkspacesFilterDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md p-0">
+      <DialogContent className="p-0">
         <div className="border-b border-border px-double pb-base pt-double">
           <DialogHeader className="space-y-half">
             <DialogTitle>

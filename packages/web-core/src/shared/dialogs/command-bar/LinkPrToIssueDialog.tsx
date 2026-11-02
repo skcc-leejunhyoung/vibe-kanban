@@ -403,7 +403,7 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   };
 
   return (
-    <Dialog open={modal.visible} onOpenChange={handleOpenChange} size="lg">
+    <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t('linkPrToIssue.title')}</DialogTitle>

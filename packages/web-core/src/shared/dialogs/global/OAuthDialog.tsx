@@ -522,7 +522,6 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
           handleClose();
         }
       }}
-      size="lg"
     >
       <DialogContent>{renderContent()}</DialogContent>
     </Dialog>

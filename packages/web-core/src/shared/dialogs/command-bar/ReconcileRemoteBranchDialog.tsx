@@ -127,7 +127,7 @@ const ReconcileRemoteBranchDialogImpl =
           if (!open) finish('canceled');
         }}
       >
-        <DialogContent className="sm:max-w-[560px]">
+        <DialogContent>
           <DialogHeader>
             <div className="flex items-center gap-3">
               <ArrowDownToLine className="h-6 w-6 text-primary" />

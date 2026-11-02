@@ -75,8 +75,8 @@ export function GuideDialogShell({
               'animate-in fade-in-0 slide-in-from-bottom-4 duration-200',
               // Mobile: full screen, no rounded corners
               'rounded-none border-0',
-              // Desktop: fixed size with rounded corners
-              'md:w-[800px] md:h-[600px] md:rounded-sm md:border md:border-border/50',
+              // Desktop: wide dialog width (ui/src/lib/dialog-size.ts), rounded corners
+              'md:w-[56rem] md:max-w-[calc(100vw-2rem)] md:h-[600px] md:rounded-sm md:border md:border-border/50',
               className
             )}
           >
