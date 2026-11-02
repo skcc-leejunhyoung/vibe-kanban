@@ -630,6 +630,8 @@ function NoteDetail({
     );
   };
 
+  const openComments = comments.filter((comment) => !comment.resolved_at);
+
   const edited = note.updated_at !== note.created_at;
   return (
     <>
@@ -725,6 +727,20 @@ function NoteDetail({
                 onAction={() => resolve(item.comment, true)}
               />
             )
+          )}
+          {/* One PATCH per comment: drawer_comments has no bulk route. */}
+          {openComments.length > 1 && (
+            <button
+              type="button"
+              onClick={() =>
+                openComments.forEach((comment) => resolve(comment, true))
+              }
+              title="Resolve all open comments"
+              className="inline-flex items-center gap-half self-end rounded px-half text-sm text-low hover:text-high"
+            >
+              <CheckIcon className="size-icon-xs" /> Resolve all{' '}
+              {openComments.length}
+            </button>
           )}
           <div ref={endRef} />
           <div className="flex items-end gap-half rounded-md border border-border bg-secondary px-base py-half">
