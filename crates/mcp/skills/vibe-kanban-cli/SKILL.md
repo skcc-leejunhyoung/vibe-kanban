@@ -100,8 +100,10 @@ Kinds: `process.started|completed|failed|killed`, `approval.pending|resolved`,
 `queue.changed` (`size`, `paused`, `start_error`, `front_message_id`), `resume.fired`,
 `session.rate_limited` (`reason`, `resets_at`, `auto_resume`, `resume_at`),
 `session.waiting_on_blockers|blockers_resolved` (`task_id`, `blockers`),
-`workspace.cleanup_blocked` (`reason`), `cloud.notification`, `git.operation_failed`
-(a push/pull/merge/rebase/PR step the UI would show a dialog for: `op`, `category`
+`workspace.cleanup_blocked` (`reason`), `artifact.input_required|input_resolved` (an agent's
+form waits for a person), `cloud.notification`, `git.operation_failed`
+(a push/pull/merge/rebase/PR step the UI would show a dialog for, or op `agent_turn` when a
+turn left conflicts behind: `op`, `category`
 = diverged|conflict|rebase_in_progress|dirty|base_diverged|auth|cli_missing|provider_rejected|other,
 `ahead`/`behind`, `conflicted_files`, `message`, `choices[]` with the `vk` command of
 each button and `destructive`; a pull that finds the branch diverged is one too, with

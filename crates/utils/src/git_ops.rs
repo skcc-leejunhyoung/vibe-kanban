@@ -165,6 +165,10 @@ pub const OPS: &[Op] = &[
     op("create_pr", "POST", "/pull-requests", "pr create", false),
 ];
 
+/// A coding-agent turn that ended with the worktree in conflict: not a route,
+/// but the same dialog as a conflicting merge.
+pub const AGENT_TURN: Op = op("agent_turn", "", "", "", false);
+
 pub fn op_by_id(id: &str) -> Option<&'static Op> {
     OPS.iter().find(|op| op.id == id)
 }
@@ -420,6 +424,37 @@ pub fn classify(op: &Op, status: u16, envelope: &Value, target: &Target) -> Opti
     };
     failure.choices = choices(op, category, target);
     Some(failure)
+}
+
+/// The conflict dialog for a turn of the coding agent that left
+/// `conflicted_files` (or a rebase) behind in the worktree; published as
+/// `git.operation_failed` with op `agent_turn`.
+pub fn agent_turn_conflicts(
+    target: &Target,
+    conflicted_files: Vec<String>,
+    rebase_in_progress: bool,
+) -> GitFailure {
+    let category = if conflicted_files.is_empty() {
+        "rebase_in_progress"
+    } else {
+        "conflict"
+    };
+    let message = match (conflicted_files.len(), rebase_in_progress) {
+        (0, _) => "The agent's turn ended with a rebase still in progress.".to_string(),
+        (n, true) => {
+            format!("The agent's turn ended with {n} conflicted file(s) and a rebase in progress.")
+        }
+        (n, false) => format!("The agent's turn ended with {n} conflicted file(s)."),
+    };
+    GitFailure {
+        op: AGENT_TURN.id.to_string(),
+        category: category.to_string(),
+        message,
+        ahead: None,
+        behind: None,
+        conflicted_files,
+        choices: choices(&AGENT_TURN, category, target),
+    }
 }
 
 /// `... the remote branch has {behind} commit(s) the local branch is missing
@@ -792,6 +827,21 @@ mod tests {
         // A fast-forward or an up-to-date pull is a plain success.
         let done = json!({ "success": true, "data": { "type": "fast_forwarded", "commits": 2 } });
         assert!(classify(op_by_id("pull").unwrap(), 200, &done, &TARGET).is_none());
+    }
+
+    #[test]
+    fn an_agent_turn_that_left_conflicts_gets_the_conflict_dialog() {
+        let failure = agent_turn_conflicts(&TARGET, vec!["a.rs".to_string()], false);
+        assert_eq!(failure.op, "agent_turn");
+        assert_eq!(failure.category, "conflict");
+        assert_eq!(ids(&failure), ["resolve_with_agent", "abort", "cancel"]);
+        assert_eq!(
+            failure.choices[0].command.as_deref(),
+            Some("vk git resolve-conflicts ws-1 --repo repo-1")
+        );
+        let rebase = agent_turn_conflicts(&TARGET, Vec::new(), true);
+        assert_eq!(rebase.category, "rebase_in_progress");
+        assert_eq!(ids(&rebase), ["rebase_continue", "abort", "cancel"]);
     }
 
     #[test]

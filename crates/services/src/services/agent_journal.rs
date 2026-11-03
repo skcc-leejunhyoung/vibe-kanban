@@ -47,7 +47,7 @@ pub struct JournalEvent {
     /// `workspace.status_note`, `workspace.cleanup_blocked`, `vibe.phase`,
     /// `queue.changed`, `resume.fired`, `session.rate_limited`,
     /// `session.waiting_on_blockers`, `git.operation_failed`, `pr.created`,
-    /// `pr.status_changed`, `cloud.notification`.
+    /// `pr.status_changed`, `artifact.input_required`, `cloud.notification`.
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<Uuid>,

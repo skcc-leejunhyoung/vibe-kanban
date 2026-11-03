@@ -126,7 +126,14 @@ fn pushed(event: &JournalEvent, autopilot: Option<Uuid>) -> PushedAgentEvent {
         workspace_id: event.workspace_id,
         session_id: event.session_id,
         execution_id: event.execution_id,
-        autopilot: autopilot.is_some() && event.workspace_id == autopilot,
+        // The Autopilot's own workspace, or an operation it ran itself
+        // (`by_autopilot`, set by the git/PR event middleware).
+        autopilot: (autopilot.is_some() && event.workspace_id == autopilot)
+            || event
+                .data
+                .get("by_autopilot")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true),
         data,
     }
 }
@@ -164,6 +171,11 @@ mod tests {
         assert!(!other.autopilot);
         let unrelated = pushed(&event(None, json!({})), None);
         assert!(!unrelated.autopilot);
+        let own_action = pushed(
+            &event(Some(Uuid::new_v4()), json!({ "by_autopilot": true })),
+            Some(autopilot),
+        );
+        assert!(own_action.autopilot);
         let big = pushed(
             &event(None, json!({ "note": "x".repeat(MAX_DATA_BYTES) })),
             None,

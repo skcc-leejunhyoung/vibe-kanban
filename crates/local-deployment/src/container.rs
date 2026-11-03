@@ -919,6 +919,40 @@ impl LocalContainerService {
         map.remove(id)
     }
 
+    /// A turn that left a repo with conflicted files or a rebase in progress is
+    /// the conflict dialog with nobody to click it: publish it like one
+    /// (`git.operation_failed`, op `agent_turn`) so an agent can act on it.
+    fn publish_turn_conflicts(&self, ctx: &ExecutionContext, workspace_root: &std::path::Path) {
+        let workspace = ctx.workspace.id.to_string();
+        for repo in &ctx.repos {
+            let worktree = workspace_root.join(&repo.name);
+            let files = self.git.get_conflicted_files(&worktree).unwrap_or_default();
+            let rebasing = self.git.is_rebase_in_progress(&worktree).unwrap_or(false);
+            if files.is_empty() && !rebasing {
+                continue;
+            }
+            let repo_id = repo.id.to_string();
+            let target = utils::git_ops::Target {
+                workspace: &workspace,
+                repo: Some(&repo_id),
+                retry_args: "",
+            };
+            let failure = utils::git_ops::agent_turn_conflicts(&target, files, rebasing);
+            let mut data = serde_json::to_value(&failure).unwrap_or_default();
+            if let Some(map) = data.as_object_mut() {
+                map.insert("repo_id".into(), serde_json::json!(repo.id));
+                map.insert("branch".into(), serde_json::json!(ctx.workspace.branch));
+            }
+            agent_journal::publish(
+                "git.operation_failed",
+                Some(ctx.workspace.id),
+                Some(ctx.session.id),
+                Some(ctx.execution_process.id),
+                data,
+            );
+        }
+    }
+
     /// Quarantine a workspace the automatic cleanup cannot safely evaluate.
     /// Returning `Ok` (rather than `Err`) is the point: the expiry query skips
     /// blocked workspaces, so this replaces a warning that repeated on every
@@ -4487,6 +4521,13 @@ impl ContainerService for LocalContainerService {
             .as_ref()
             .ok_or_else(|| ContainerError::Other(anyhow!("Container reference not found")))?;
         let workspace_root = PathBuf::from(container_ref);
+
+        if matches!(
+            ctx.execution_process.run_reason,
+            ExecutionProcessRunReason::CodingAgent
+        ) {
+            self.publish_turn_conflicts(ctx, &workspace_root);
+        }
 
         let repos_with_changes = self.check_repos_for_changes(&workspace_root, &ctx.repos)?;
         if repos_with_changes.is_empty() {

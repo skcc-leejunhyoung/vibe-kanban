@@ -11,6 +11,7 @@ use db::models::{
 use deployment::Deployment;
 use serde::{Deserialize, Serialize};
 use services::services::{
+    agent_journal,
     artifact_interactions::{
         self as inputs, ArtifactAutomationBinding, ArtifactAutomationRequest,
         ArtifactAutomationResult, ArtifactAutomationSnapshot, ArtifactDelivery, ArtifactHandler,
@@ -258,6 +259,20 @@ pub async fn register(
     })
     .await
     .map_err(bad)?;
+    // A form waiting for the user is an approval in all but name: agents
+    // watching the journal learn that a person is needed here.
+    agent_journal::publish(
+        "artifact.input_required",
+        Some(query.workspace_id),
+        Some(process.session_id),
+        Some(process.id),
+        serde_json::json!({
+            "request_id": interaction.reference.request_id,
+            "artifact_id": interaction.artifact_id,
+            "delivery": interaction.delivery,
+            "expires_at": interaction.expires_at,
+        }),
+    );
     Ok(Json(ApiResponse::success(interaction)))
 }
 
@@ -580,6 +595,17 @@ pub async fn respond(
         None
     };
     inputs::save(&receipt).await.map_err(bad)?;
+    agent_journal::publish(
+        "artifact.input_resolved",
+        Some(query.workspace_id),
+        Some(session.id),
+        Some(process.id),
+        serde_json::json!({
+            "request_id": reference.request_id,
+            "artifact_id": receipt.interaction.artifact_id,
+            "state": receipt.interaction.state,
+        }),
+    );
     if let Some(executor_config) = config {
         let data = DraftFollowUpData {
             message: format!(

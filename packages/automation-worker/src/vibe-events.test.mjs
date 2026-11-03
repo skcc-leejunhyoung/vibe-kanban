@@ -286,6 +286,8 @@ test('git dialogs and opened PRs wake the Autopilot by default, plain git succes
   assert.ok(kindMatches('session.rate_limited', DEFAULT_KINDS));
   assert.ok(kindMatches('session.waiting_on_blockers', DEFAULT_KINDS));
   assert.ok(kindMatches('workspace.cleanup_blocked', DEFAULT_KINDS));
+  assert.ok(kindMatches('artifact.input_required', DEFAULT_KINDS));
+  assert.ok(!kindMatches('artifact.input_resolved', DEFAULT_KINDS));
   assert.ok(!kindMatches('git.operation_succeeded', DEFAULT_KINDS));
   assert.ok(!kindMatches('session.blockers_resolved', DEFAULT_KINDS));
   const title = (kind, data) => journalEventToWorkerEvent({ cursor: 1, kind, data }).title;

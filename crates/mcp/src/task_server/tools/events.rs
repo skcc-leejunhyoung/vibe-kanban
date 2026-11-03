@@ -24,7 +24,7 @@ struct ListEventsRequest {
     )]
     since: Option<String>,
     #[schemars(
-        description = "Optional kind prefixes to keep, e.g. [\"process.\", \"approval.pending\"]. Kinds: process.started|completed|failed|killed, approval.pending|resolved, workspace.created|archived|unarchived|deleted|status_note, vibe.phase, queue.changed, resume.fired, cloud.notification."
+        description = "Optional kind prefixes to keep, e.g. [\"process.\", \"approval.pending\"]. Kinds: process.started|completed|failed|killed, approval.pending|resolved, workspace.created|archived|unarchived|deleted|status_note, vibe.phase, queue.changed, resume.fired, cloud.notification, git.operation_failed|operation_succeeded, pr.created|status_changed, session.rate_limited|waiting_on_blockers|blockers_resolved, workspace.cleanup_blocked, artifact.input_required|input_resolved."
     )]
     kinds: Option<Vec<String>>,
     #[schemars(description = "Max events to return (default 100, max 1000)")]
@@ -46,7 +46,7 @@ struct WaitForEventsRequest {
     )]
     since: String,
     #[schemars(
-        description = "Optional kind prefixes to keep, e.g. [\"process.\", \"approval.pending\"]. Kinds: process.started|completed|failed|killed, approval.pending|resolved, workspace.created|archived|unarchived|deleted|status_note, vibe.phase, queue.changed, resume.fired, cloud.notification."
+        description = "Optional kind prefixes to keep, e.g. [\"process.\", \"approval.pending\"]. Kinds: process.started|completed|failed|killed, approval.pending|resolved, workspace.created|archived|unarchived|deleted|status_note, vibe.phase, queue.changed, resume.fired, cloud.notification, git.operation_failed|operation_succeeded, pr.created|status_changed, session.rate_limited|waiting_on_blockers|blockers_resolved, workspace.cleanup_blocked, artifact.input_required|input_resolved."
     )]
     kinds: Option<Vec<String>>,
     #[schemars(description = "Seconds to wait for a matching event (default 30, max 300)")]

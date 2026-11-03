@@ -18,6 +18,7 @@ export const DEFAULT_KINDS = [
   'session.rate_limited',
   'session.waiting_on_blockers',
   'workspace.cleanup_blocked',
+  'artifact.input_required',
 ];
 
 export const COALESCE_DEFAULTS = {
@@ -91,6 +92,8 @@ export function journalEventToWorkerEvent(event) {
     // session.rate_limited / workspace.cleanup_blocked / queue.changed.
     data.reason ? String(data.reason).slice(0, 120) : null,
     data.start_error ? `paused: ${String(data.start_error).slice(0, 120)}` : null,
+    // artifact.input_required: which form waits.
+    data.artifact_id ? `artifact ${String(data.artifact_id).slice(0, 80)}` : null,
   ]
     .filter(Boolean)
     .join(' · ');

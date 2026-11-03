@@ -16,7 +16,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use db::models::workspace::Workspace;
+use db::models::{session::Session, workspace::Workspace};
 use deployment::Deployment;
 use serde_json::{Value, json};
 use services::services::agent_journal;
@@ -46,6 +46,7 @@ pub async fn observe(
         return next.run(request).await;
     }
     let method = request.method().clone();
+    let by_autopilot = by_autopilot(&deployment.db().pool, request.headers()).await;
     let (parts, body) = request.into_parts();
     let Ok(bytes) = to_bytes(body, MAX_REQUEST_BYTES).await else {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
@@ -74,14 +75,38 @@ pub async fn observe(
         parts.status.as_u16(),
         &input,
         &envelope,
+        by_autopilot,
     )
     .await;
     Response::from_parts(parts, Body::from(bytes))
 }
 
+/// Whether the request came from the host's Autopilot (its CLI carries its
+/// session id). The resulting event is its own doing: it already has the
+/// answer in hand, so automation must not wake it with it again.
+async fn by_autopilot(pool: &SqlitePool, headers: &axum::http::HeaderMap) -> bool {
+    let Some(session_id) = headers
+        .get(crate::middleware::agent_access::AGENT_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<Uuid>().ok())
+    else {
+        return false;
+    };
+    let Ok(Some(session)) = Session::find_by_id(pool, session_id).await else {
+        return false;
+    };
+    matches!(
+        Workspace::find_by_id(pool, session.workspace_id).await,
+        Ok(Some(workspace)) if workspace.autopilot
+    )
+}
+
 /// Turn one request/response pair into its journal event. A failed
 /// `create_pr` also keeps the request's title and body as the workspace's PR
-/// draft, so `vk pr create --from-draft` can repeat it.
+/// draft, so `vk pr create --from-draft` can repeat it. `by_autopilot` marks
+/// an event the Autopilot caused itself (the cloud push tags it like its own
+/// workspace's events, so the event connector drops it).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn record(
     pool: Option<&SqlitePool>,
     workspace_id: Uuid,
@@ -90,6 +115,7 @@ pub(crate) async fn record(
     status: u16,
     input: &Value,
     envelope: &Value,
+    by_autopilot: bool,
 ) {
     let repo_id = input
         .get("repo_id")
@@ -106,17 +132,21 @@ pub(crate) async fn record(
     let Some(mut failure) = git_ops::classify(op, status, envelope, &target) else {
         // `pr.created` already tells the story of a successful create_pr.
         if op.id != "create_pr" {
+            let mut data = json!({
+                "op": op.id,
+                "repo_id": repo_id,
+                "branch": branch,
+                "result": envelope.get("data").cloned().unwrap_or(Value::Null),
+            });
+            if by_autopilot {
+                data["by_autopilot"] = json!(true);
+            }
             agent_journal::publish(
                 "git.operation_succeeded",
                 Some(workspace_id),
                 None,
                 None,
-                json!({
-                    "op": op.id,
-                    "repo_id": repo_id,
-                    "branch": branch,
-                    "result": envelope.get("data").cloned().unwrap_or(Value::Null),
-                }),
+                data,
             );
         }
         return;
@@ -136,6 +166,9 @@ pub(crate) async fn record(
         map.insert("branch".into(), json!(branch));
         map.insert("status".into(), json!(status));
         map.insert("request".into(), request_summary(op, input));
+        if by_autopilot {
+            map.insert("by_autopilot".into(), json!(true));
+        }
     }
     agent_journal::publish("git.operation_failed", Some(workspace_id), None, None, data);
 }
@@ -258,6 +291,7 @@ mod tests {
             200,
             &json!({ "repo_id": repo_id }),
             &envelope,
+            false,
         )
         .await;
         let events = events_for(workspace_id, since);
@@ -265,6 +299,7 @@ mod tests {
         let event = &events[0];
         assert_eq!(event.kind, "git.operation_failed");
         assert_eq!(event.data["op"], "push");
+        assert!(event.data.get("by_autopilot").is_none());
         assert_eq!(event.data["category"], "diverged");
         assert_eq!(event.data["behind"], 122);
         assert_eq!(event.data["ahead"], 3);
@@ -311,6 +346,7 @@ mod tests {
             200,
             &json!({ "repo_id": repo_id }),
             &envelope,
+            false,
         )
         .await;
         let events = events_for(workspace_id, since);
@@ -337,12 +373,50 @@ mod tests {
             200,
             &json!({ "repo_id": Uuid::new_v4() }),
             &envelope,
+            false,
         )
         .await;
         let events = events_for(workspace_id, since);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "git.operation_succeeded");
         assert_eq!(events[0].data["op"], "pull_and_push");
+    }
+
+    /// What the Autopilot does with `vk` must not come back to wake it.
+    #[tokio::test]
+    async fn the_autopilots_own_operations_are_tagged() {
+        let workspace_id = Uuid::new_v4();
+        let since = list(0, &[], 1).cursor;
+        let failed = serde_json::to_value(ApiResponse::<(), PushError>::error_with_data(
+            PushError::ForcePushRequired,
+        ))
+        .unwrap();
+        record(
+            None,
+            workspace_id,
+            "vk/feature",
+            git_ops::op_by_id("push").unwrap(),
+            200,
+            &json!({ "repo_id": Uuid::new_v4() }),
+            &failed,
+            true,
+        )
+        .await;
+        let ok = serde_json::to_value(ApiResponse::<()>::success(())).unwrap();
+        record(
+            None,
+            workspace_id,
+            "vk/feature",
+            git_ops::op_by_id("pull_and_push").unwrap(),
+            200,
+            &json!({ "repo_id": Uuid::new_v4() }),
+            &ok,
+            true,
+        )
+        .await;
+        let events = events_for(workspace_id, since);
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|e| e.data["by_autopilot"] == true));
     }
 
     fn git(cli: &GitCli, path: &Path, args: &[&str]) -> String {
@@ -431,6 +505,7 @@ mod tests {
             status,
             &request,
             &envelope,
+            false,
         )
         .await;
 
@@ -480,6 +555,7 @@ mod tests {
             200,
             &json!({ "repo_id": repo_id }),
             &envelope,
+            false,
         )
         .await;
         let remote_tip = git(&cli, &other, &["ls-remote", "origin", "refs/heads/feature"]);
