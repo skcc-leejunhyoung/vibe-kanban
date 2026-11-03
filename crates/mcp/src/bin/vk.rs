@@ -3885,9 +3885,11 @@ impl Ctx {
             .await
     }
 
-    /// Run a git/PR operation. A failure comes back with the dialog's
-    /// classification and choices under the error body's `failure` key, so
-    /// `--json` prints them and a caller can run the matching command.
+    /// Run a git/PR operation. A failure, or a success the UI still turns
+    /// into a dialog (a pull that found the branch diverged), comes back as an
+    /// error whose body carries the dialog's classification and choices under
+    /// `failure`, so `--json` prints them and a caller can run the matching
+    /// command.
     async fn git_op(
         &self,
         op: &'static Op,
@@ -3896,38 +3898,46 @@ impl Ctx {
         ws: Uuid,
         body: &Value,
     ) -> CliResult {
-        match self
+        let workspace = ws.to_string();
+        let repo = body
+            .get("repo_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let retry_args = git_ops::retry_args(op, body);
+        let target = Target {
+            workspace: &workspace,
+            repo: repo.as_deref(),
+            retry_args: &retry_args,
+        };
+        let (status, message, mut envelope, failure) = match self
             .client
             .exec(method, route, false, &[], Some(body), Some(self.timeout))
             .await
         {
+            Ok(value) => {
+                let envelope = json!({ "success": true, "data": value });
+                match git_ops::classify(op, 200, &envelope, &target) {
+                    Some(failure) => (200, failure.message.clone(), envelope, Some(failure)),
+                    None => return Ok(envelope["data"].clone()),
+                }
+            }
             Err(VkError::Api {
                 status,
                 message,
                 body: envelope,
             }) => {
-                let workspace = ws.to_string();
-                let repo = body
-                    .get("repo_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let retry_args = git_ops::retry_args(op, body);
-                let target = Target {
-                    workspace: &workspace,
-                    repo: repo.as_deref(),
-                    retry_args: &retry_args,
-                };
-                let mut envelope = envelope.unwrap_or_else(|| json!({ "success": false }));
+                let envelope = envelope.unwrap_or_else(|| json!({ "success": false }));
                 let failure = git_ops::classify(op, status, &envelope, &target);
-                envelope["failure"] = serde_json::to_value(failure).unwrap_or(Value::Null);
-                Err(VkError::Api {
-                    status,
-                    message,
-                    body: Some(envelope),
-                })
+                (status, message, envelope, failure)
             }
-            other => other,
-        }
+            Err(other) => return Err(other),
+        };
+        envelope["failure"] = serde_json::to_value(failure).unwrap_or(Value::Null);
+        Err(VkError::Api {
+            status,
+            message,
+            body: Some(envelope),
+        })
     }
 
     /// The most recently active session of a workspace.
@@ -5652,11 +5662,13 @@ async fn main() -> ExitCode {
                 .filter(|failure| failure.is_object());
             if json {
                 let mut body = json!({ "success": false, "error": error.to_string(), "status": error.status() });
-                if let Some(data) = envelope
-                    .and_then(|body| body.get("error_data"))
-                    .filter(|data| !data.is_null())
-                {
-                    body["error_data"] = data.clone();
+                for key in ["error_data", "data"] {
+                    if let Some(value) = envelope
+                        .and_then(|body| body.get(key))
+                        .filter(|value| !value.is_null())
+                    {
+                        body[key] = value.clone();
+                    }
                 }
                 // The dialog's classification and choices, beside the error.
                 if let Some(Value::Object(fields)) = failure {
@@ -5883,6 +5895,8 @@ mod tests {
                 let body = if path == format!("/api/workspaces/{ws}/git/push") {
                     json!({ "success": false, "data": null, "message": null,
                         "error_data": { "type": "diverged", "ahead": 1, "behind": 4 } })
+                } else if path == format!("/api/workspaces/{ws}/git/pull") {
+                    json!({ "success": true, "data": { "type": "diverged", "ahead": 1, "behind": 4 } })
                 } else {
                     json!({ "success": false, "message": format!("unexpected {path}") })
                 }
@@ -5918,12 +5932,42 @@ mod tests {
             .iter()
             .map(|c| c["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, ["pull_and_push", "retry", "force_push", "cancel"]);
+        assert_eq!(
+            ids,
+            [
+                "pull_and_push",
+                "merge_remote",
+                "retry",
+                "force_push",
+                "cancel"
+            ]
+        );
         assert_eq!(
             failure["choices"][0]["command"],
             format!("vk git pull-and-push {ws} --repo {repo}")
         );
-        assert_eq!(failure["choices"][2]["destructive"], true);
+        assert_eq!(failure["choices"][3]["destructive"], true);
+
+        // A pull answered with a successful `diverged` outcome is the
+        // reconcile dialog: reported as a failure with its two choices.
+        let matches = build_cli()
+            .try_get_matches_from(["vk", "git", "pull", &ws_arg, "--repo", &repo_arg])
+            .unwrap();
+        let (spec, leaf) = resolve(&matches).unwrap();
+        let VkError::Api { status, body, .. } = ctx.run_generic(spec, leaf).await.unwrap_err()
+        else {
+            panic!("expected an API error");
+        };
+        assert_eq!(status, 200);
+        let body = body.unwrap();
+        assert_eq!(body["data"]["type"], "diverged");
+        let ids: Vec<&str> = body["failure"]["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["merge_remote", "reset_to_remote", "cancel"]);
     }
 
     #[test]

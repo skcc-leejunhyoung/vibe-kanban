@@ -231,6 +231,22 @@ async fn persist_status(
     .await?;
 
     info!("PR #{} status changed to {:?}", pr.pr_number, status.status);
+    // A merged PR archives its workspace (below); a closed one needs a person
+    // to decide. Either way the agents learn it from the journal.
+    crate::services::agent_journal::publish(
+        "pr.status_changed",
+        pr.workspace_id,
+        None,
+        None,
+        serde_json::json!({
+            "repo_id": pr.repo_id,
+            "number": pr.pr_number,
+            "url": pr.pr_url,
+            "status": status.status,
+            "previous_status": pr.pr_status,
+            "merged_at": merged_at,
+        }),
+    );
 
     Ok(status.status)
 }
@@ -596,6 +612,27 @@ mod tests {
             .unwrap();
             (self.calls.borrow().clone(), merged)
         }
+    }
+
+    #[tokio::test]
+    async fn a_merged_pr_is_published_to_the_journal() {
+        use crate::services::agent_journal;
+
+        let mut fx = Fixture::new(PR_CHECK_TIMEOUT).await;
+        let since = agent_journal::list(0, &[], 1).cursor;
+        fx.reply(3, Reply::Status(MergeStatus::Merged));
+        let (_, merged) = fx.round(0).await;
+        assert_eq!(merged.len(), 1);
+        let events = agent_journal::list(since, &["pr.status_changed".to_string()], 1000).events;
+        let event = events
+            .iter()
+            .find(|e| e.data["number"] == 3)
+            .expect("pr.status_changed for #3");
+        assert_eq!(event.workspace_id, Some(merged[0].0));
+        assert_eq!(event.data["status"], "merged");
+        assert_eq!(event.data["previous_status"], "open");
+        // Unchanged PRs publish nothing.
+        assert!(events.iter().all(|e| e.data["number"] == 3));
     }
 
     #[tokio::test]

@@ -19,6 +19,7 @@ use db::models::{
 };
 use deployment::Deployment;
 use services::services::{
+    agent_journal,
     container::{ContainerService, lock_repo_checkout},
     issue_gating,
 };
@@ -362,6 +363,13 @@ async fn process_one(
         return Ok(());
     }
 
+    agent_journal::publish(
+        "session.blockers_resolved",
+        Some(workspace.id),
+        Some(session.id),
+        Some(execution_process.id),
+        serde_json::json!({ "task_id": row.task_id }),
+    );
     if let Err(e) = deployment
         .container()
         .finish_execution_spawn(&workspace, &session, &execution_process, &executor_action)

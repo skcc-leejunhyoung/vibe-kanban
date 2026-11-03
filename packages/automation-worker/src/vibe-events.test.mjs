@@ -282,7 +282,17 @@ test('notification ids come out of single events and batches, deduped and filter
 test('git dialogs and opened PRs wake the Autopilot by default, plain git successes do not', () => {
   assert.ok(kindMatches('git.operation_failed', DEFAULT_KINDS));
   assert.ok(kindMatches('pr.created', DEFAULT_KINDS));
+  assert.ok(kindMatches('pr.status_changed', DEFAULT_KINDS));
+  assert.ok(kindMatches('session.rate_limited', DEFAULT_KINDS));
+  assert.ok(kindMatches('session.waiting_on_blockers', DEFAULT_KINDS));
+  assert.ok(kindMatches('workspace.cleanup_blocked', DEFAULT_KINDS));
   assert.ok(!kindMatches('git.operation_succeeded', DEFAULT_KINDS));
+  assert.ok(!kindMatches('session.blockers_resolved', DEFAULT_KINDS));
+  const title = (kind, data) => journalEventToWorkerEvent({ cursor: 1, kind, data }).title;
+  assert.equal(title('git.operation_failed', { op: 'create_pr', category: 'diverged' }), 'git.operation_failed · create_pr diverged');
+  assert.equal(title('pr.status_changed', { number: 7, status: 'merged' }), 'pr.status_changed · #7 merged');
+  assert.equal(title('session.rate_limited', { reason: 'usage_limit' }), 'session.rate_limited · usage_limit');
+  assert.equal(title('queue.changed', { size: 1, paused: true, start_error: 'spawn failed' }), 'queue.changed · paused: spawn failed');
   const event = journalEventToWorkerEvent({
     cursor: 11, kind: 'git.operation_failed', workspace_id: 'ws-1',
     data: { op: 'create_pr', category: 'diverged', behind: 122, choices: [{ id: 'pull_and_push', destructive: false }] },

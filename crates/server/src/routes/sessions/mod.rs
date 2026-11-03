@@ -625,6 +625,15 @@ async fn follow_up_inner(
                     workspace.id,
                     blocker_count
                 );
+                // The chat shows "waiting on blockers"; tell agents too, with
+                // the issue whose blockers hold this turn.
+                services::services::agent_journal::publish(
+                    "session.waiting_on_blockers",
+                    Some(workspace.id),
+                    Some(session.id),
+                    Some(record.id),
+                    serde_json::json!({ "task_id": task_id, "blockers": blocker_count }),
+                );
             }
             Err(e) => {
                 tracing::error!(

@@ -167,13 +167,30 @@ impl QueuedMessageService {
                 acknowledgement: None,
             });
         }
-        let size = self.queue.get(&session_id).map(|q| q.len()).unwrap_or(0);
+        // The front message's start failure is what pauses the queue: the
+        // event names it so an agent can retry (`queue steer-queued`) or drop it.
+        let (size, front_message_id, start_error) = self
+            .queue
+            .get(&session_id)
+            .map(|q| {
+                (
+                    q.len(),
+                    q.front().map(|m| m.id),
+                    q.front().and_then(|m| m.start_error.clone()),
+                )
+            })
+            .unwrap_or((0, None, None));
         crate::services::agent_journal::publish(
             "queue.changed",
             None,
             Some(session_id),
             None,
-            serde_json::json!({ "size": size }),
+            serde_json::json!({
+                "size": size,
+                "paused": start_error.is_some(),
+                "start_error": start_error,
+                "front_message_id": front_message_id,
+            }),
         );
     }
 
@@ -875,6 +892,36 @@ mod tests {
             assert!(retry.start_error.is_none());
             assert_eq!(svc.take_next(session).unwrap().id, other.id);
         }
+    }
+
+    #[test]
+    fn a_failed_start_pauses_the_queue_in_the_journal() {
+        use crate::services::agent_journal;
+
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+        let since = agent_journal::list(0, &[], 1).cursor;
+        let latest = |since: u64| {
+            agent_journal::list(since, &["queue.changed".to_string()], 1000)
+                .events
+                .into_iter()
+                .rfind(|event| event.session_id == Some(session))
+                .expect("queue.changed event")
+                .data
+        };
+        let failed = svc.enqueue(session, sample_data("retry"));
+        let taken = svc.take_next(session).unwrap();
+        svc.restore_failed(taken, "spawn failed".into());
+        let paused = latest(since);
+        assert_eq!(paused["paused"], true);
+        assert_eq!(paused["start_error"], "spawn failed");
+        assert_eq!(paused["front_message_id"], serde_json::json!(failed.id));
+        assert_eq!(paused["size"], 1);
+
+        assert!(svc.promote_to_front(session, failed.id));
+        let resumed = latest(since);
+        assert_eq!(resumed["paused"], false);
+        assert!(resumed["start_error"].is_null());
     }
 
     #[test]

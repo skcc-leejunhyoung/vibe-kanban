@@ -279,7 +279,7 @@ after three days, with hourly cleanup even when hosts are offline.
   "config": {
     "vibeConnectorId": "vibe-default",
     "pollSeconds": 15,
-    "kinds": ["process.failed", "approval.pending", "vibe.phase", "workspace.status_note", "cloud.notification", "git.operation_failed", "pr.created"],
+    "kinds": ["process.failed", "approval.pending", "vibe.phase", "workspace.status_note", "cloud.notification", "git.operation_failed", "pr.", "session.rate_limited", "session.waiting_on_blockers", "workspace.cleanup_blocked"],
     "excludeAutopilot": true
   }
 }

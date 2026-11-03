@@ -9,10 +9,15 @@ export const DEFAULT_KINDS = [
   'vibe.phase',
   'cloud.notification',
   'drawer.',
-  // A git/PR dialog the user would have had to answer (pull first, force
-  // push, conflicts, ...) and the PR that a create finally opened.
+  // Decisions the UI would put in front of the user: a git/PR dialog (pull
+  // first, force push, conflicts, ...), a PR opened/merged/closed, a run
+  // stopped by a usage limit, a turn held by issue blockers, a workspace the
+  // automatic cleanup refused to touch.
   'git.operation_failed',
-  'pr.created',
+  'pr.',
+  'session.rate_limited',
+  'session.waiting_on_blockers',
+  'workspace.cleanup_blocked',
 ];
 
 export const COALESCE_DEFAULTS = {
@@ -77,6 +82,15 @@ export function journalEventToWorkerEvent(event) {
     data.name || data.title,
     exit !== undefined && exit !== null ? `exit ${exit}` : null,
     data.status_note ? String(data.status_note).slice(0, 280) : null,
+    // git.operation_failed: which step and what the dialog would say.
+    data.op && data.category ? `${data.op} ${data.category}` : null,
+    // pr.*: the number and its new status.
+    data.number !== undefined && data.number !== null
+      ? `#${data.number}${data.status ? ` ${data.status}` : ''}`
+      : null,
+    // session.rate_limited / workspace.cleanup_blocked / queue.changed.
+    data.reason ? String(data.reason).slice(0, 120) : null,
+    data.start_error ? `paused: ${String(data.start_error).slice(0, 120)}` : null,
   ]
     .filter(Boolean)
     .join(' · ');

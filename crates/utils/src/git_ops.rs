@@ -311,6 +311,28 @@ pub fn classify(op: &Op, status: u16, envelope: &Value, target: &Target) -> Opti
         .and_then(Value::as_bool)
         .unwrap_or(status < 400);
     if success && status < 400 {
+        // A fast-forward pull that could not happen is a successful `diverged`
+        // outcome; the UI answers it with the reconcile dialog.
+        let data = envelope.get("data");
+        if matches!(op.id, "pull" | "target_pull")
+            && data.and_then(|d| d.get("type")).and_then(Value::as_str) == Some("diverged")
+        {
+            let count = |key: &str| data.and_then(|d| d.get(key)).and_then(Value::as_u64);
+            let (ahead, behind) = (count("ahead"), count("behind"));
+            return Some(GitFailure {
+                op: op.id.to_string(),
+                category: "diverged".to_string(),
+                message: format!(
+                    "The branch diverged from its remote: {} remote-only commit(s), {} local-only. Merge the remote in or reset to it.",
+                    behind.unwrap_or(0),
+                    ahead.unwrap_or(0)
+                ),
+                ahead,
+                behind,
+                conflicted_files: Vec::new(),
+                choices: choices(op, "diverged", target),
+            });
+        }
         return None;
     }
     let error = envelope.get("error_data").filter(|v| !v.is_null());
@@ -429,13 +451,39 @@ fn choices(op: &Op, category: &str, target: &Target) -> Vec<Choice> {
         op.destructive,
     );
     let mut list = match category {
+        // A pull found the branch diverged: merge the remote in, or make the
+        // remote authoritative (the reconcile dialog).
+        "diverged" if matches!(op.id, "pull" | "target_pull") => vec![
+            of(
+                "merge_remote",
+                by(if on_target {
+                    "target_merge_remote"
+                } else {
+                    "merge_remote"
+                }),
+                "",
+                false,
+            ),
+            of(
+                "reset_to_remote",
+                by(if on_target {
+                    "target_reset_to_remote"
+                } else {
+                    "reset_to_remote"
+                }),
+                "--confirm",
+                true,
+            ),
+        ],
         "diverged" if on_target => vec![
             of("pull_and_push", by("target_pull_and_push"), "", false),
+            of("merge_remote", by("target_merge_remote"), "", false),
             retry,
             of("force_push", by("target_force_push"), "--force", true),
         ],
         "diverged" => vec![
             of("pull_and_push", by("pull_and_push"), "", false),
+            of("merge_remote", by("merge_remote"), "", false),
             retry,
             of("force_push", by("force_push"), "", true),
         ],
@@ -543,23 +591,29 @@ mod tests {
         assert_eq!((failure.ahead, failure.behind), (Some(3), Some(122)));
         assert_eq!(
             ids(&failure),
-            ["pull_and_push", "retry", "force_push", "cancel"]
+            [
+                "pull_and_push",
+                "merge_remote",
+                "retry",
+                "force_push",
+                "cancel"
+            ]
         );
         assert_eq!(
             failure.choices[0].command.as_deref(),
             Some("vk git pull-and-push ws-1 --repo repo-1")
         );
         assert_eq!(
-            failure.choices[1].command.as_deref(),
+            failure.choices[2].command.as_deref(),
             Some("vk git push ws-1 --repo repo-1")
         );
-        let force = &failure.choices[2];
+        let force = &failure.choices[3];
         assert!(force.destructive);
         assert_eq!(
             force.command.as_deref(),
             Some("vk git force-push ws-1 --repo repo-1")
         );
-        assert_eq!(failure.choices[3].command, None);
+        assert_eq!(failure.choices[4].command, None);
     }
 
     #[test]
@@ -581,10 +635,16 @@ mod tests {
         assert_eq!((failure.ahead, failure.behind), (Some(3), Some(122)));
         assert_eq!(
             ids(&failure),
-            ["pull_and_push", "retry", "force_push", "cancel"]
+            [
+                "pull_and_push",
+                "merge_remote",
+                "retry",
+                "force_push",
+                "cancel"
+            ]
         );
         assert_eq!(
-            failure.choices[1].command.as_deref(),
+            failure.choices[2].command.as_deref(),
             Some("vk pr create ws-1 --repo repo-1 --from-draft --base develop --draft")
         );
     }
@@ -689,16 +749,49 @@ mod tests {
         let target = classify(op_by_id("target_push").unwrap(), 200, &envelope, &TARGET).unwrap();
         assert_eq!(
             ids(&target),
-            ["pull_and_push", "retry", "force_push", "cancel"]
+            [
+                "pull_and_push",
+                "merge_remote",
+                "retry",
+                "force_push",
+                "cancel"
+            ]
         );
         assert_eq!(
             target.choices[0].command.as_deref(),
             Some("vk git target pull-and-push ws-1 --repo repo-1")
         );
         assert_eq!(
-            target.choices[2].command.as_deref(),
+            target.choices[3].command.as_deref(),
             Some("vk git target push ws-1 --repo repo-1 --force")
         );
+    }
+
+    #[test]
+    fn a_diverged_pull_offers_merge_or_reset() {
+        let envelope =
+            json!({ "success": true, "data": { "type": "diverged", "ahead": 1, "behind": 4 } });
+        let pull = classify(op_by_id("pull").unwrap(), 200, &envelope, &TARGET).unwrap();
+        assert_eq!(pull.category, "diverged");
+        assert_eq!((pull.ahead, pull.behind), (Some(1), Some(4)));
+        assert_eq!(ids(&pull), ["merge_remote", "reset_to_remote", "cancel"]);
+        assert_eq!(
+            pull.choices[0].command.as_deref(),
+            Some("vk git merge-remote ws-1 --repo repo-1")
+        );
+        assert!(pull.choices[1].destructive);
+        assert_eq!(
+            pull.choices[1].command.as_deref(),
+            Some("vk git reset-to-remote ws-1 --repo repo-1 --confirm")
+        );
+        let target = classify(op_by_id("target_pull").unwrap(), 200, &envelope, &TARGET).unwrap();
+        assert_eq!(
+            target.choices[1].command.as_deref(),
+            Some("vk git target reset-to-remote ws-1 --repo repo-1 --confirm")
+        );
+        // A fast-forward or an up-to-date pull is a plain success.
+        let done = json!({ "success": true, "data": { "type": "fast_forwarded", "commits": 2 } });
+        assert!(classify(op_by_id("pull").unwrap(), 200, &done, &TARGET).is_none());
     }
 
     #[test]

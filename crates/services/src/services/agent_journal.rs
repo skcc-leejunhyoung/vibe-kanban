@@ -1,6 +1,9 @@
 //! Process-wide journal of the events an agent polls for: process ends,
-//! approvals, status notes, vibe-run phases, workspace lifecycle, queue
-//! changes, scheduled resumes and cloud notifications.
+//! approvals, status notes, vibe-run phases, workspace lifecycle (including a
+//! cleanup the server could not run), queue changes (including a start
+//! failure that pauses a queue), scheduled resumes, usage limits, turns held
+//! by issue blockers, git/PR dialogs and PR status changes, and cloud
+//! notifications.
 //!
 //! Producers call [`publish`] (or one of the `observe_*` helpers that derive a
 //! transition from a row re-read); `GET /api/events/journal` and
@@ -41,8 +44,10 @@ pub struct JournalEvent {
     pub cursor: u64,
     pub at: DateTime<Utc>,
     /// Dotted kind, e.g. `process.completed`, `approval.pending`,
-    /// `workspace.status_note`, `vibe.phase`, `queue.changed`,
-    /// `resume.fired`, `cloud.notification`.
+    /// `workspace.status_note`, `workspace.cleanup_blocked`, `vibe.phase`,
+    /// `queue.changed`, `resume.fired`, `session.rate_limited`,
+    /// `session.waiting_on_blockers`, `git.operation_failed`, `pr.created`,
+    /// `pr.status_changed`, `cloud.notification`.
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<Uuid>,
@@ -73,6 +78,9 @@ struct Ring {
     next_cursor: u64,
 }
 
+/// (archived, status_note, cleanup_blocked_reason) of a workspace row.
+type WorkspaceState = (bool, Option<String>, Option<String>);
+
 struct Journal {
     ring: Mutex<Ring>,
     latest: watch::Sender<u64>,
@@ -82,8 +90,8 @@ struct Journal {
     /// Session → workspace learned from process rows, to label events that
     /// only know their process or session (approvals, queue changes).
     session_workspace: Mutex<HashMap<Uuid, Uuid>>,
-    /// (archived, status_note) per workspace, to publish only real changes.
-    workspace_state: Mutex<HashMap<Uuid, (bool, Option<String>)>>,
+    /// Last [`WorkspaceState`] per workspace, to publish only real changes.
+    workspace_state: Mutex<HashMap<Uuid, WorkspaceState>>,
     /// Last vibe phase per workspace.
     vibe_phase: Mutex<HashMap<Uuid, String>>,
 }
@@ -285,9 +293,14 @@ pub fn observe_process(process: &ExecutionProcess, workspace_id: Option<Uuid>, i
 }
 
 /// Turn a workspace row into `workspace.created`, `workspace.archived`,
-/// `workspace.unarchived` or `workspace.status_note` events.
+/// `workspace.unarchived`, `workspace.status_note` or
+/// `workspace.cleanup_blocked` events.
 pub fn observe_workspace(workspace: &Workspace, inserted: bool) {
-    let current = (workspace.archived, workspace.status_note.clone());
+    let current = (
+        workspace.archived,
+        workspace.status_note.clone(),
+        workspace.cleanup_blocked_reason.clone(),
+    );
     let previous = journal()
         .workspace_state
         .lock()
@@ -304,7 +317,7 @@ pub fn observe_workspace(workspace: &Workspace, inserted: bool) {
         }
         return;
     }
-    let (was_archived, old_note) = previous.unwrap_or_default();
+    let (was_archived, old_note, was_blocked) = previous.unwrap_or_default();
     if was_archived != workspace.archived {
         let kind = if workspace.archived {
             "workspace.archived"
@@ -323,6 +336,19 @@ pub fn observe_workspace(workspace: &Workspace, inserted: bool) {
                 "status_note": workspace.status_note,
                 "status_updated_at": workspace.status_updated_at,
             }),
+        );
+    }
+    // The automatic cleanup quarantined the workspace; only an explicit
+    // delete reclaims it, so a person (or agent) has to decide.
+    if was_blocked.is_none()
+        && let Some(reason) = &workspace.cleanup_blocked_reason
+    {
+        publish(
+            "workspace.cleanup_blocked",
+            Some(workspace.id),
+            None,
+            None,
+            json!({ "reason": reason, "name": workspace.name, "branch": workspace.branch }),
         );
     }
 }
@@ -443,6 +469,48 @@ mod tests {
         )
         .await;
         assert!(page.events.is_empty());
+    }
+
+    #[test]
+    fn a_blocked_cleanup_is_published_once() {
+        let now = Utc::now();
+        let mut workspace = Workspace {
+            id: Uuid::new_v4(),
+            task_id: None,
+            container_ref: None,
+            branch: "vk/feature".to_string(),
+            setup_completed_at: None,
+            created_at: now,
+            updated_at: now,
+            archived: false,
+            pinned: false,
+            name: Some("feature".to_string()),
+            worktree_deleted: false,
+            ephemeral: true,
+            in_place: false,
+            autopilot: false,
+            cleanup_blocked_reason: None,
+            status_note: None,
+            status_updated_at: None,
+        };
+        let before = list(0, &[], 1).cursor;
+        observe_workspace(&workspace, true);
+        workspace.cleanup_blocked_reason = Some("not a readable git worktree".to_string());
+        observe_workspace(&workspace, false);
+        observe_workspace(&workspace, false);
+        let kinds: Vec<String> = list(before, &["workspace.".to_string()], 100)
+            .events
+            .into_iter()
+            .filter(|e| e.workspace_id == Some(workspace.id))
+            .map(|e| e.kind)
+            .collect();
+        assert_eq!(kinds, ["workspace.created", "workspace.cleanup_blocked"]);
+        let blocked = list(before, &["workspace.cleanup_blocked".to_string()], 100)
+            .events
+            .into_iter()
+            .find(|e| e.workspace_id == Some(workspace.id))
+            .unwrap();
+        assert_eq!(blocked.data["reason"], "not a readable git worktree");
     }
 
     #[test]

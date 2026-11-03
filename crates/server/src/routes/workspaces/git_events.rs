@@ -210,7 +210,10 @@ mod tests {
     use utils::response::ApiResponse;
 
     use super::*;
-    use crate::{error::ApiError, routes::workspaces::git::PushError};
+    use crate::{
+        error::ApiError,
+        routes::workspaces::git::{PullWorkspaceResponse, PushError},
+    };
 
     fn events_for(workspace_id: Uuid, since: u64) -> Vec<JournalEvent> {
         list(since, &["git.".to_string(), "pr.".to_string()], 1000)
@@ -268,15 +271,57 @@ mod tests {
         assert_eq!(event.data["repo_id"], json!(repo_id));
         assert_eq!(
             choice_ids(event),
-            ["pull_and_push", "retry", "force_push", "cancel"]
+            [
+                "pull_and_push",
+                "merge_remote",
+                "retry",
+                "force_push",
+                "cancel"
+            ]
         );
         let choices = event.data["choices"].as_array().unwrap();
         assert_eq!(
             choices[0]["command"],
             format!("vk git pull-and-push {workspace_id} --repo {repo_id}")
         );
-        assert_eq!(choices[2]["destructive"], true);
+        assert_eq!(choices[3]["destructive"], true);
         assert_eq!(choices[0]["destructive"], false);
+    }
+
+    /// A pull that finds the branch diverged answers 200 with a `diverged`
+    /// outcome; the UI shows the reconcile dialog, so the journal gets the
+    /// failure with its two choices rather than a success.
+    #[tokio::test]
+    async fn a_diverged_pull_is_a_dialog_not_a_success() {
+        let workspace_id = Uuid::new_v4();
+        let repo_id = Uuid::new_v4();
+        let since = list(0, &[], 1).cursor;
+        let envelope = serde_json::to_value(ApiResponse::<PullWorkspaceResponse>::success(
+            PullWorkspaceResponse::Diverged {
+                ahead: 1,
+                behind: 4,
+            },
+        ))
+        .unwrap();
+        record(
+            None,
+            workspace_id,
+            "vk/feature",
+            git_ops::op_by_id("pull").unwrap(),
+            200,
+            &json!({ "repo_id": repo_id }),
+            &envelope,
+        )
+        .await;
+        let events = events_for(workspace_id, since);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "git.operation_failed");
+        assert_eq!(events[0].data["category"], "diverged");
+        assert_eq!(events[0].data["behind"], 4);
+        assert_eq!(
+            choice_ids(&events[0]),
+            ["merge_remote", "reset_to_remote", "cancel"]
+        );
     }
 
     #[tokio::test]
@@ -401,7 +446,13 @@ mod tests {
         assert!(event.data["request"].get("body").is_none());
         assert_eq!(
             choice_ids(event),
-            ["pull_and_push", "retry", "force_push", "cancel"]
+            [
+                "pull_and_push",
+                "merge_remote",
+                "retry",
+                "force_push",
+                "cancel"
+            ]
         );
         let choices = event.data["choices"].as_array().unwrap();
         assert_eq!(
@@ -409,7 +460,7 @@ mod tests {
             format!("vk git pull-and-push {workspace_id} --repo {repo_id}")
         );
         assert_eq!(
-            choices[1]["command"],
+            choices[2]["command"],
             format!("vk pr create {workspace_id} --repo {repo_id} --from-draft --base main")
         );
 

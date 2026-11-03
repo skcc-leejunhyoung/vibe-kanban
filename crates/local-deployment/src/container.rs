@@ -49,6 +49,7 @@ use executors::{
 use futures::{FutureExt, TryStreamExt, stream::select};
 use git::{GitService, GitServiceError};
 use services::services::{
+    agent_journal,
     approvals::{Approvals, executor_approvals::ExecutorApprovalBridge},
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
     container::{
@@ -2076,7 +2077,8 @@ impl LocalContainerService {
     const CAPACITY_RETRY_WINDOW_MINS: i64 = 30;
 
     /// If this execution stopped because a usage rate limit was reached, or
-    /// because the provider reported the model at capacity, and the session has
+    /// Record a usage limit or capacity error that ended this run as a
+    /// `session.rate_limited` journal event and, when the session has
     /// auto-resume enabled, schedule an automatic "continue" follow-up. A usage
     /// limit uses the agent-reported reset time when present and in the future,
     /// otherwise a conservative estimate; a capacity error retries shortly.
@@ -2088,9 +2090,6 @@ impl LocalContainerService {
             ctx.execution_process.run_reason,
             ExecutionProcessRunReason::CodingAgent
         ) {
-            return Ok(false);
-        }
-        if !ctx.session.auto_resume_enabled {
             return Ok(false);
         }
 
@@ -2114,22 +2113,43 @@ impl LocalContainerService {
             }
         };
 
-        let resume_at = match Self::rate_limit_reset_hint_from_msgs(&msgs) {
-            Some(reset_hint) => Self::resume_at_from_hint(reset_hint.as_deref(), Utc::now()),
-            // Not a usage limit: retry shortly if the provider reported the
-            // model at capacity, which is transient. The process status is no
-            // help here — codex reports the capacity failure as a failed *turn*
-            // while its app-server still exits 0, so the run lands as
-            // `Completed` and the logged error is the only signal.
-            None => {
-                if !Self::capacity_error_in_msgs(&msgs)
-                    || self.recent_capacity_retries(ctx.session.id).await?
-                        >= Self::CAPACITY_MAX_RETRIES
-                {
-                    return Ok(false);
-                }
-                Utc::now() + chrono::Duration::seconds(Self::CAPACITY_RETRY_DELAY_SECS)
+        let usage_limit = Self::rate_limit_reset_hint_from_msgs(&msgs);
+        // Not a usage limit: the provider may have reported the model at
+        // capacity, which is transient. The process status is no help here —
+        // codex reports the capacity failure as a failed *turn* while its
+        // app-server still exits 0, so the run lands as `Completed` and the
+        // logged error is the only signal.
+        let capacity = usage_limit.is_none() && Self::capacity_error_in_msgs(&msgs);
+        if usage_limit.is_none() && !capacity {
+            return Ok(false);
+        }
+
+        let auto_resume = ctx.session.auto_resume_enabled;
+        let resume_at = match (&usage_limit, auto_resume) {
+            (_, false) => None,
+            (Some(reset_hint), true) => {
+                Some(Self::resume_at_from_hint(reset_hint.as_deref(), Utc::now()))
             }
+            (None, true) => (self.recent_capacity_retries(ctx.session.id).await?
+                < Self::CAPACITY_MAX_RETRIES)
+                .then(|| Utc::now() + chrono::Duration::seconds(Self::CAPACITY_RETRY_DELAY_SECS)),
+        };
+        // Whether or not a resume is scheduled, an agent watching the journal
+        // learns the run stopped on a limit and what will happen next.
+        agent_journal::publish(
+            "session.rate_limited",
+            Some(ctx.workspace.id),
+            Some(ctx.session.id),
+            Some(ctx.execution_process.id),
+            serde_json::json!({
+                "reason": if capacity { "capacity" } else { "usage_limit" },
+                "resets_at": usage_limit.clone().flatten(),
+                "auto_resume": auto_resume,
+                "resume_at": resume_at,
+            }),
+        );
+        let Some(resume_at) = resume_at else {
+            return Ok(false);
         };
 
         PendingRateLimitResume::upsert(
