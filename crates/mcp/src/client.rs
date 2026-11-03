@@ -78,7 +78,13 @@ pub enum VkError {
     #[error("Failed to connect to the Vibe Kanban API: {0}")]
     Connect(String),
     #[error("{message}")]
-    Api { status: u16, message: String },
+    Api {
+        status: u16,
+        message: String,
+        /// The JSON body the server answered with (the `ApiResponse`
+        /// envelope), when it parsed; git/PR commands add a `failure` key.
+        body: Option<Value>,
+    },
     #[error("Failed to parse the Vibe Kanban API response: {0}")]
     Parse(String),
     #[error("{0}")]
@@ -222,8 +228,9 @@ impl VkClient {
     async fn response_error(response: reqwest::Response) -> VkError {
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
-        let message = serde_json::from_str::<Value>(&text)
-            .ok()
+        let body = serde_json::from_str::<Value>(&text).ok();
+        let message = body
+            .as_ref()
             .and_then(|value| {
                 value
                     .get("message")
@@ -239,7 +246,11 @@ impl VkClient {
                     format!("Vibe Kanban API returned status {status}: {}", text.trim())
                 }
             });
-        VkError::Api { status, message }
+        VkError::Api {
+            status,
+            message,
+            body,
+        }
     }
 
     /// Send and unwrap the `ApiResponse` envelope.
@@ -261,7 +272,12 @@ impl VkClient {
         if !envelope.success {
             return Err(VkError::Api {
                 status: 200,
-                message: envelope_error(envelope.message, envelope.error_data.as_ref()),
+                message: envelope_error(envelope.message.clone(), envelope.error_data.as_ref()),
+                body: Some(json!({
+                    "success": false,
+                    "message": envelope.message,
+                    "error_data": envelope.error_data,
+                })),
             });
         }
         envelope
@@ -302,6 +318,7 @@ impl VkClient {
                         .map(str::to_string),
                     value.get("error_data"),
                 ),
+                body: Some(value),
             }),
             None => Ok(value),
         }
@@ -1784,9 +1801,14 @@ impl VkClient {
             )
             .await
             .map_err(|error| match error {
-                VkError::Api { status: 409, message } => VkError::Api {
+                VkError::Api {
+                    status: 409,
+                    message,
+                    body,
+                } => VkError::Api {
                     status: 409,
                     message: format!("{message} (the session is busy; pass queue=true to run it after the current turn, or steer=true to interrupt)"),
+                    body,
                 },
                 other => other,
             })?;
@@ -2468,6 +2490,7 @@ impl VkClient {
             if !response.status().is_success() {
                 return Err(VkError::Api {
                     status: response.status().as_u16(),
+                    body: None,
                     message: format!(
                         "blob upload failed: {}",
                         response.text().await.unwrap_or_default()

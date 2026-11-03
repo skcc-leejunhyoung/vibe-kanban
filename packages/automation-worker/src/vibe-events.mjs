@@ -9,6 +9,10 @@ export const DEFAULT_KINDS = [
   'vibe.phase',
   'cloud.notification',
   'drawer.',
+  // A git/PR dialog the user would have had to answer (pull first, force
+  // push, conflicts, ...) and the PR that a create finally opened.
+  'git.operation_failed',
+  'pr.created',
 ];
 
 export const COALESCE_DEFAULTS = {

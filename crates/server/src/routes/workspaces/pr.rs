@@ -212,6 +212,7 @@ static PR_GENERATION_SCHEDULER: LazyLock<PrGenerationScheduler> =
 pub struct PrDraft {
     pub repo_id: Uuid,
     pub title: String,
+    #[serde(default)]
     pub body: String,
 }
 
@@ -220,7 +221,7 @@ pub struct PrDraftQuery {
     pub repo_id: Uuid,
 }
 
-async fn save_pr_draft(
+pub(super) async fn save_pr_draft(
     pool: &sqlx::SqlitePool,
     workspace_id: Uuid,
     draft: &PrDraft,
@@ -1150,6 +1151,15 @@ pub async fn create_pr(
         .await
     {
         Ok(pr_info) => {
+            super::git_events::pr_created(
+                workspace.id,
+                workspace_repo.repo_id,
+                pr_info.number,
+                &pr_info.url,
+                &head_branch,
+                &base_branch,
+                request.draft.unwrap_or(false),
+            );
             // Track the PR locally
             if let Err(e) = PullRequest::create_for_workspace(
                 pool,

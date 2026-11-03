@@ -38,7 +38,9 @@ impl From<VkError> for ToolError {
             VkError::Connect(details) => {
                 ToolError::new("Failed to connect to VK API", Some(details))
             }
-            VkError::Api { status, message } if status >= 400 => ToolError::new(
+            VkError::Api {
+                status, message, ..
+            } if status >= 400 => ToolError::new(
                 format!("VK API returned error status: {status}"),
                 Some(message),
             ),

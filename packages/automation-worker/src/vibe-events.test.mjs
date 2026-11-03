@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   COALESCE_DEFAULTS,
+  DEFAULT_KINDS,
   createCoalescer,
   deliversToAutopilot,
   journalEventToWorkerEvent,
@@ -276,4 +277,16 @@ test('notification ids come out of single events and batches, deduped and filter
   assert.deepEqual(notificationIdsOf(undefined), []);
   // A notification without a usable id is nothing to archive.
   assert.deepEqual(notificationIdsOf(journalEventToWorkerEvent(journal('cloud', 10, 'cloud.notification', { data: { id: 'junk' } }))), []);
+});
+
+test('git dialogs and opened PRs wake the Autopilot by default, plain git successes do not', () => {
+  assert.ok(kindMatches('git.operation_failed', DEFAULT_KINDS));
+  assert.ok(kindMatches('pr.created', DEFAULT_KINDS));
+  assert.ok(!kindMatches('git.operation_succeeded', DEFAULT_KINDS));
+  const event = journalEventToWorkerEvent({
+    cursor: 11, kind: 'git.operation_failed', workspace_id: 'ws-1',
+    data: { op: 'create_pr', category: 'diverged', behind: 122, choices: [{ id: 'pull_and_push', destructive: false }] },
+  });
+  assert.equal(event.kind, 'git.operation_failed');
+  assert.equal(event.data.choices[0].id, 'pull_and_push');
 });

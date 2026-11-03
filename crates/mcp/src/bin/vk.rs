@@ -21,6 +21,7 @@ use mcp::client::{
     UpdateIssueInput, VkClient, VkError, WorkspaceFilter, discover_base_url,
 };
 use serde_json::{Map, Value, json};
+use utils::git_ops::{self, Op, Target};
 use uuid::Uuid;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -1379,6 +1380,13 @@ const COMMANDS: &[Cmd] = &[
         &[WS, REPO_BODY],
     ),
     cmd(
+        &["git", "force-push"],
+        "Force-push the work branch (destructive: overwrites the remote; refused for agents)",
+        "POST",
+        "/workspaces/{ws}/git/push/force",
+        &[WS, REPO_BODY],
+    ),
+    cmd(
         &["git", "pull"],
         "Fast-forward the work branch from its remote",
         "POST",
@@ -1450,6 +1458,65 @@ const COMMANDS: &[Cmd] = &[
         &[WS, REPO_BODY],
     ),
     cmd(
+        &["git", "reset-to-remote"],
+        "Replace the local work branch with its remote (destructive: discards local commits; refused for agents)",
+        "POST",
+        "/workspaces/{ws}/git/reset-to-remote",
+        &[
+            WS,
+            REPO_BODY,
+            keyed(
+                opt(
+                    "confirm",
+                    "Confirm discarding local work",
+                    Where::Body,
+                    Kind::Flag,
+                ),
+                "confirm_discard",
+            ),
+        ],
+    ),
+    special(
+        &["git", "resolve-conflicts"],
+        "Ask the workspace's agent to resolve the conflicted files (the dialog's \"Resolve Conflicts\"; queued behind a running turn)",
+        "git.resolve-conflicts",
+        &[
+            WS,
+            opt(
+                "repo",
+                "Repository id (optional for single-repo workspaces)",
+                Where::Local,
+                Kind::Str,
+            ),
+            opt(
+                "session",
+                "Session to send to (default: the workspace's latest)",
+                Where::Local,
+                Kind::Str,
+            ),
+            short(
+                opt(
+                    "message",
+                    "Extra instructions appended to the conflict prompt",
+                    Where::Local,
+                    Kind::Str,
+                ),
+                'm',
+            ),
+            opt(
+                "steer",
+                "Interrupt the running turn instead of queueing",
+                Where::Local,
+                Kind::Flag,
+            ),
+            EXECUTOR,
+            MODEL_OPTS[0],
+            MODEL_OPTS[1],
+            MODEL_OPTS[2],
+            MODEL_OPTS[3],
+        ],
+    ),
+    cmd(
         &["git", "rename-branch"],
         "Rename the work branch",
         "PUT",
@@ -1492,10 +1559,19 @@ const COMMANDS: &[Cmd] = &[
     ),
     cmd(
         &["git", "target", "push"],
-        "Push the target branch",
+        "Push the target branch (--force is destructive and refused for agents)",
         "POST",
         "/workspaces/{ws}/git/target-branch/push",
-        &[WS, REPO_BODY],
+        &[
+            WS,
+            REPO_BODY,
+            opt(
+                "force",
+                "Force-push (destructive: overwrites the remote)",
+                Where::Body,
+                Kind::Flag,
+            ),
+        ],
     ),
     cmd(
         &["git", "target", "remote-status"],
@@ -1532,37 +1608,91 @@ const COMMANDS: &[Cmd] = &[
         "/workspaces/{ws}/git/target-branch/merge-remote",
         &[WS, REPO_BODY],
     ),
-    // ---- pr -----------------------------------------------------------------
     cmd(
-        &["pr", "create"],
-        "Open a pull request for the work branch",
+        &["git", "target", "reset-to-remote"],
+        "Replace the local target branch with its remote (destructive; refused for agents)",
         "POST",
-        "/workspaces/{ws}/pull-requests",
+        "/workspaces/{ws}/git/target-branch/reset-to-remote",
+        &[
+            WS,
+            REPO_BODY,
+            keyed(
+                opt(
+                    "confirm",
+                    "Confirm discarding local work",
+                    Where::Body,
+                    Kind::Flag,
+                ),
+                "confirm_discard",
+            ),
+        ],
+    ),
+    // ---- pr -----------------------------------------------------------------
+    special(
+        &["pr", "create"],
+        "Open a pull request for the work branch (--from-draft reuses the saved title/body)",
+        "pr.create",
+        &[
+            WS,
+            opt(
+                "repo",
+                "Repository id (optional for single-repo workspaces)",
+                Where::Local,
+                Kind::Str,
+            ),
+            opt(
+                "title",
+                "PR title (required unless --from-draft)",
+                Where::Local,
+                Kind::Str,
+            ),
+            opt("body", "PR body", Where::Local, Kind::Str),
+            opt(
+                "base",
+                "Target branch (defaults to the repo's)",
+                Where::Local,
+                Kind::Str,
+            ),
+            opt(
+                "head",
+                "Head branch (defaults to the work branch)",
+                Where::Local,
+                Kind::Str,
+            ),
+            opt("draft", "Open as draft", Where::Local, Kind::Flag),
+            opt(
+                "from-draft",
+                "Fill title/body from the saved PR draft (vk pr draft get); explicit --title/--body win",
+                Where::Local,
+                Kind::Flag,
+            ),
+        ],
+    ),
+    cmd(
+        &["pr", "draft", "get"],
+        "The saved PR draft (title/body) of the dialog",
+        "GET",
+        "/workspaces/{ws}/pull-requests/draft",
+        &[WS, REPO_QUERY],
+    ),
+    cmd(
+        &["pr", "draft", "set"],
+        "Save the PR draft the dialog (and --from-draft) will use",
+        "PUT",
+        "/workspaces/{ws}/pull-requests/draft",
         &[
             WS,
             REPO_BODY,
             req("title", "PR title", Where::Body, Kind::Str),
             opt("body", "PR body", Where::Body, Kind::Str),
-            keyed(
-                opt(
-                    "base",
-                    "Target branch (defaults to the repo's)",
-                    Where::Body,
-                    Kind::Str,
-                ),
-                "target_branch",
-            ),
-            keyed(
-                opt(
-                    "head",
-                    "Head branch (defaults to the work branch)",
-                    Where::Body,
-                    Kind::Str,
-                ),
-                "head_branch",
-            ),
-            opt("draft", "Open as draft", Where::Body, Kind::Flag),
         ],
+    ),
+    cmd(
+        &["pr", "draft", "delete"],
+        "Discard the saved PR draft",
+        "DELETE",
+        "/workspaces/{ws}/pull-requests/draft",
+        &[WS, REPO_QUERY],
     ),
     cmd(
         &["pr", "generate"],
@@ -3726,6 +3856,15 @@ impl Ctx {
                 }
             }
         }
+        if let Some(ws) = ws_for_repo
+            && let Some(op) = git_ops::op_for_cli(
+                spec.path,
+                body.get("force").and_then(Value::as_bool).unwrap_or(false),
+            )
+        {
+            let payload = raw_body.unwrap_or(Value::Object(body));
+            return self.git_op(op, spec.method, &route, ws, &payload).await;
+        }
         let is_write = !matches!(spec.method, "GET" | "HEAD");
         let payload = raw_body.or_else(|| {
             if is_write {
@@ -3744,6 +3883,84 @@ impl Ctx {
                 Some(self.timeout),
             )
             .await
+    }
+
+    /// Run a git/PR operation. A failure comes back with the dialog's
+    /// classification and choices under the error body's `failure` key, so
+    /// `--json` prints them and a caller can run the matching command.
+    async fn git_op(
+        &self,
+        op: &'static Op,
+        method: &str,
+        route: &str,
+        ws: Uuid,
+        body: &Value,
+    ) -> CliResult {
+        match self
+            .client
+            .exec(method, route, false, &[], Some(body), Some(self.timeout))
+            .await
+        {
+            Err(VkError::Api {
+                status,
+                message,
+                body: envelope,
+            }) => {
+                let workspace = ws.to_string();
+                let repo = body
+                    .get("repo_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let retry_args = git_ops::retry_args(op, body);
+                let target = Target {
+                    workspace: &workspace,
+                    repo: repo.as_deref(),
+                    retry_args: &retry_args,
+                };
+                let mut envelope = envelope.unwrap_or_else(|| json!({ "success": false }));
+                let failure = git_ops::classify(op, status, &envelope, &target);
+                envelope["failure"] = serde_json::to_value(failure).unwrap_or(Value::Null);
+                Err(VkError::Api {
+                    status,
+                    message,
+                    body: Some(envelope),
+                })
+            }
+            other => other,
+        }
+    }
+
+    /// The most recently active session of a workspace.
+    async fn latest_session(&self, ws: Uuid) -> Result<Uuid, VkError> {
+        let sessions: Vec<Value> = serde_json::from_value(
+            self.client
+                .exec(
+                    "GET",
+                    "/sessions",
+                    false,
+                    &[("workspace_id".to_string(), ws.to_string())],
+                    None,
+                    Some(self.timeout),
+                )
+                .await?,
+        )
+        .unwrap_or_default();
+        sessions
+            .iter()
+            .max_by_key(|session| {
+                session
+                    .get("updated_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .and_then(|session| session.get("id").and_then(Value::as_str))
+            .and_then(|id| id.parse().ok())
+            .ok_or_else(|| {
+                VkError::message(
+                    "The workspace has no session; pass --session or create one (vk session create)",
+                )
+            })
     }
 
     fn send_options(m: &ArgMatches) -> SendPromptOptions {
@@ -4088,6 +4305,142 @@ impl Ctx {
                     .multipart(form)
                     .timeout(self.timeout);
                 self.client.send_value(request).await
+            }
+            "pr.create" => {
+                let ws = self
+                    .workspace_id(&arg_str(m, "ws").unwrap_or_default())
+                    .await?;
+                let explicit = arg_str(m, "repo")
+                    .map(|repo| parse_uuid(&repo, "--repo"))
+                    .transpose()?;
+                let repo_id = self.client.resolve_repo_id(ws, explicit).await?;
+                let mut title = arg_str(m, "title");
+                let mut body = arg_str(m, "body");
+                if arg_flag(m, "from-draft") {
+                    let draft = self
+                        .client
+                        .exec(
+                            "GET",
+                            &format!("/workspaces/{ws}/pull-requests/draft"),
+                            false,
+                            &[("repo_id".to_string(), repo_id.to_string())],
+                            None,
+                            Some(self.timeout),
+                        )
+                        .await?;
+                    if draft.is_null() {
+                        return Err(VkError::message(
+                            "No saved PR draft for this repository (vk pr draft set, or pass --title)",
+                        ));
+                    }
+                    title = title.or_else(|| draft["title"].as_str().map(str::to_string));
+                    body = body.or_else(|| {
+                        draft["body"]
+                            .as_str()
+                            .filter(|b| !b.is_empty())
+                            .map(str::to_string)
+                    });
+                }
+                let Some(title) = title.filter(|t| !t.trim().is_empty()) else {
+                    return Err(VkError::message(
+                        "--title is required (or --from-draft with a saved draft)",
+                    ));
+                };
+                let payload = json!({
+                    "repo_id": repo_id,
+                    "title": title,
+                    "body": body,
+                    "target_branch": arg_str(m, "base"),
+                    "head_branch": arg_str(m, "head"),
+                    "draft": arg_flag(m, "draft"),
+                });
+                self.git_op(
+                    git_ops::op_by_id("create_pr").expect("create_pr op"),
+                    "POST",
+                    &format!("/workspaces/{ws}/pull-requests"),
+                    ws,
+                    &payload,
+                )
+                .await
+            }
+            "git.resolve-conflicts" => {
+                let ws = self
+                    .workspace_id(&arg_str(m, "ws").unwrap_or_default())
+                    .await?;
+                let explicit = arg_str(m, "repo")
+                    .map(|repo| parse_uuid(&repo, "--repo"))
+                    .transpose()?;
+                let repo_id = self.client.resolve_repo_id(ws, explicit).await?;
+                let statuses: Vec<Value> = serde_json::from_value(
+                    self.client
+                        .exec(
+                            "GET",
+                            &format!("/workspaces/{ws}/git/status"),
+                            false,
+                            &[],
+                            None,
+                            Some(self.timeout),
+                        )
+                        .await?,
+                )
+                .unwrap_or_default();
+                let status = statuses
+                    .into_iter()
+                    .find(|status| status["repo_id"].as_str() == Some(repo_id.to_string().as_str()))
+                    .ok_or_else(|| {
+                        VkError::message("That repository is not part of the workspace")
+                    })?;
+                let files: Vec<String> = status["conflicted_files"]
+                    .as_array()
+                    .map(|files| {
+                        files
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if files.is_empty() && status["is_rebase_in_progress"].as_bool() != Some(true) {
+                    return Err(VkError::message(
+                        "No conflicts in this workspace (vk ws status)",
+                    ));
+                }
+                let workspace = self
+                    .client
+                    .exec(
+                        "GET",
+                        &format!("/workspaces/{ws}"),
+                        false,
+                        &[],
+                        None,
+                        Some(self.timeout),
+                    )
+                    .await?;
+                let mut prompt = resolve_conflicts_instructions(
+                    workspace["branch"].as_str().unwrap_or_default(),
+                    status["target_branch_name"].as_str(),
+                    &files,
+                    status["conflict_op"].as_str(),
+                    status["repo_name"].as_str(),
+                );
+                if let Some(extra) = arg_str(m, "message").filter(|text| !text.trim().is_empty()) {
+                    prompt.push_str("\n\n");
+                    prompt.push_str(extra.trim());
+                }
+                let session = match arg_str(m, "session") {
+                    Some(raw) => self.session_arg(&raw).await?,
+                    None => self.latest_session(ws).await?,
+                };
+                let mut options = Self::send_options(m);
+                options.queue = !options.steer;
+                let outcome = self.client.send_prompt(session, &prompt, &options).await?;
+                Ok(json!({
+                    "session_id": session,
+                    "conflict_op": status["conflict_op"],
+                    "conflicted_files": files,
+                    "prompt": prompt,
+                    "outcome": outcome,
+                }))
             }
             "session.send" => {
                 let session = self
@@ -4884,6 +5237,7 @@ impl Ctx {
             return Err(VkError::Api {
                 status: response.status().as_u16(),
                 message: response.text().await.unwrap_or_default(),
+                body: None,
             });
         }
         let mut stream = response.bytes_stream();
@@ -4929,6 +5283,62 @@ impl Ctx {
 // ---------------------------------------------------------------------------
 // Skill installation
 // ---------------------------------------------------------------------------
+
+/// The prompt the "Resolve Conflicts" dialog sends (web-core
+/// `buildResolveConflictsInstructions`), so the agent gets the same brief
+/// whether a person or `vk` asked.
+fn resolve_conflicts_instructions(
+    source: &str,
+    base: Option<&str>,
+    files: &[String],
+    op: Option<&str>,
+    repo: Option<&str>,
+) -> String {
+    let source = if source.is_empty() {
+        "current attempt branch"
+    } else {
+        source
+    };
+    let base = base.filter(|b| !b.is_empty()).unwrap_or("base branch");
+    let repo_context = repo
+        .filter(|r| !r.is_empty())
+        .map(|r| format!(" in repository '{r}'"))
+        .unwrap_or_default();
+    let (label, header) = match op {
+        Some("merge") => (
+            "merge",
+            format!("Merge conflicts while merging into '{source}'{repo_context}."),
+        ),
+        Some("cherry_pick") => (
+            "cherry-pick",
+            format!("Cherry-pick conflicts on '{source}'{repo_context}."),
+        ),
+        Some("revert") => (
+            "revert",
+            format!("Revert conflicts on '{source}'{repo_context}."),
+        ),
+        _ => (
+            "rebase",
+            format!("Rebase conflicts while rebasing '{source}' onto '{base}'{repo_context}."),
+        ),
+    };
+    let mut text = header;
+    if !files.is_empty() {
+        text.push_str("\n\nFiles with conflicts:\n");
+        text.push_str(
+            &files
+                .iter()
+                .take(12)
+                .map(|f| format!("- {f}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    text.push_str(&format!(
+        "\n\nPlease resolve each file carefully. When continuing, ensure the {label} does not hang (set `GIT_EDITOR=true` or use a non-interactive editor)."
+    ));
+    text
+}
 
 fn skill_dir(explicit: Option<String>, home_sub: &str) -> PathBuf {
     match explicit {
@@ -5233,14 +5643,53 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
+            let envelope = match &error {
+                VkError::Api { body, .. } => body.as_ref(),
+                _ => None,
+            };
+            let failure = envelope
+                .and_then(|body| body.get("failure"))
+                .filter(|failure| failure.is_object());
             if json {
-                let body = json!({ "success": false, "error": error.to_string(), "status": error.status() });
+                let mut body = json!({ "success": false, "error": error.to_string(), "status": error.status() });
+                if let Some(data) = envelope
+                    .and_then(|body| body.get("error_data"))
+                    .filter(|data| !data.is_null())
+                {
+                    body["error_data"] = data.clone();
+                }
+                // The dialog's classification and choices, beside the error.
+                if let Some(Value::Object(fields)) = failure {
+                    for (key, value) in fields {
+                        if key != "message" {
+                            body[key] = value.clone();
+                        }
+                    }
+                }
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&body).unwrap_or_default()
                 );
             } else {
                 eprintln!("error: {error}");
+                if let Some(choices) = failure
+                    .and_then(|failure| failure.get("choices"))
+                    .and_then(Value::as_array)
+                {
+                    eprintln!("next (pick one):");
+                    for choice in choices {
+                        let id = choice["id"].as_str().unwrap_or_default();
+                        let flag = if choice["destructive"].as_bool() == Some(true) {
+                            " (destructive)"
+                        } else {
+                            ""
+                        };
+                        match choice["command"].as_str() {
+                            Some(command) => eprintln!("  {id}{flag}: {command}"),
+                            None => eprintln!("  {id}: leave it as is"),
+                        }
+                    }
+                }
             }
             match error {
                 VkError::Connect(_) => ExitCode::from(3),
@@ -5369,9 +5818,112 @@ mod tests {
             "pr resolve-url",
             "issue attachments upload",
             "automation host-status",
+            "git force-push",
+            "git reset-to-remote",
+            "git resolve-conflicts",
+            "git target reset-to-remote",
+            "pr draft get",
+            "pr draft set",
+            "pr draft delete",
         ] {
             assert!(paths.iter().any(|p| p == required), "missing {required}");
         }
+    }
+
+    #[test]
+    fn every_git_op_has_a_cli_command() {
+        let paths: Vec<String> = COMMANDS.iter().map(|c| c.path.join(" ")).collect();
+        for op in utils::git_ops::OPS {
+            assert!(paths.iter().any(|p| p == op.cli), "missing {}", op.cli);
+        }
+        // Dialog choices that are not routes of their own.
+        for extra in ["git resolve-conflicts", "pr attach"] {
+            assert!(paths.iter().any(|p| p == extra), "missing {extra}");
+        }
+    }
+
+    #[test]
+    fn resolve_conflicts_prompt_matches_the_dialog() {
+        let files = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let prompt = resolve_conflicts_instructions(
+            "vk/feature",
+            Some("develop"),
+            &files,
+            Some("merge"),
+            Some("widgets"),
+        );
+        assert_eq!(
+            prompt,
+            "Merge conflicts while merging into 'vk/feature' in repository 'widgets'.\n\nFiles with conflicts:\n- src/a.rs\n- src/b.rs\n\nPlease resolve each file carefully. When continuing, ensure the merge does not hang (set `GIT_EDITOR=true` or use a non-interactive editor)."
+        );
+        let rebase = resolve_conflicts_instructions("", None, &[], None, None);
+        assert!(rebase.starts_with(
+            "Rebase conflicts while rebasing 'current attempt branch' onto 'base branch'."
+        ));
+        assert!(!rebase.contains("Files with conflicts"));
+    }
+
+    /// `vk git push` against a server that reports a diverged branch: the
+    /// error carries the dialog's choices, pull-first before force-push.
+    #[tokio::test]
+    async fn a_failed_git_command_reports_the_dialog_choices() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let ws = Uuid::new_v4();
+        let repo = Uuid::new_v4();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0; 8192];
+                let n = socket.read(&mut buf).await.unwrap();
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+                let body = if path == format!("/api/workspaces/{ws}/git/push") {
+                    json!({ "success": false, "data": null, "message": null,
+                        "error_data": { "type": "diverged", "ahead": 1, "behind": 4 } })
+                } else {
+                    json!({ "success": false, "message": format!("unexpected {path}") })
+                }
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let ctx = Ctx {
+            client: VkClient::new(&base, "test/1"),
+            json: true,
+            timeout: Duration::from_secs(5),
+        };
+        let (ws_arg, repo_arg) = (ws.to_string(), repo.to_string());
+        let matches = build_cli()
+            .try_get_matches_from(["vk", "git", "push", &ws_arg, "--repo", &repo_arg])
+            .unwrap();
+        let (spec, leaf) = resolve(&matches).unwrap();
+        let error = ctx.run_generic(spec, leaf).await.unwrap_err();
+        let VkError::Api { status, body, .. } = error else {
+            panic!("expected an API error, got {error}");
+        };
+        assert_eq!(status, 200);
+        let failure = &body.unwrap()["failure"];
+        assert_eq!(failure["category"], "diverged");
+        assert_eq!(failure["behind"], 4);
+        let ids: Vec<&str> = failure["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["pull_and_push", "retry", "force_push", "cancel"]);
+        assert_eq!(
+            failure["choices"][0]["command"],
+            format!("vk git pull-and-push {ws} --repo {repo}")
+        );
+        assert_eq!(failure["choices"][2]["destructive"], true);
     }
 
     #[test]

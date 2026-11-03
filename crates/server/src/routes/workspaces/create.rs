@@ -1125,6 +1125,8 @@ const AUTOPILOT_AGENTS_MD: &str = r#"# Autopilot
 ## 조향 정책
 - process.failed: 실패 로그 꼬리를 읽고 원인이 분명하면 그 세션에 `vk session send <session> --queue -m "..."`로 재시도 지시. 같은 세션에 하루 2회까지.
 - approval.pending: 파일 삭제·force push·외부 전송은 승인하지 않고 링크만 전달한다. 테스트 실행·읽기·설치는 `vk session approvals respond <id> --exec <exec> --approve`(목록은 `vk session approvals list`).
+- git.operation_failed: 사람이 보던 git/PR 다이얼로그다. `data.choices`의 `command`를 그대로 쓴다. `destructive:false`인 `pull_and_push`·`retry`·`commit`은 자원 게이트(`vk ws list --json`에서 그 워크스페이스가 실행 중이 아닐 때) 뒤 직접 실행하고 결과(`git.operation_succeeded`/`pr.created`)를 확인한다. category=conflict는 `resolve_with_agent`(`vk git resolve-conflicts <ws>`)로 그 워크스페이스 세션에 queue한다. `destructive:true`(`force_push`·`reset_to_remote`·`abort`·`rebase`)는 실행하지 않고 Drawer 노트에 `--label "확인 필요"`로 명령과 이유를 올린다. 같은 워크스페이스·같은 op는 하루 2회까지.
+- pr.created: 해당 작업의 Drawer 현황 노트에 PR 링크를 반영한다. 알림은 보내지 않는다.
 - 사용자 세션이 진행 중이면 steer 대신 queue.
 
 ## 이슈 정책

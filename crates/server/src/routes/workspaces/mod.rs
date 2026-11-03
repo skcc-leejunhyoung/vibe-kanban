@@ -6,6 +6,7 @@ pub mod cursor_setup;
 pub mod execution;
 pub mod gh_cli_setup;
 pub mod git;
+pub mod git_events;
 pub mod integration;
 pub mod links;
 pub mod pr;
@@ -37,11 +38,17 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/messages/first", get(core::get_first_user_message))
         .route("/project", get(core::get_workspace_project_id))
         .route("/seen", axum::routing::put(core::mark_seen))
-        .nest("/git", git::router())
+        .nest(
+            "/git",
+            git::router().layer(from_fn_with_state(deployment.clone(), git_events::observe)),
+        )
         .nest("/execution", execution::router())
         .nest("/integration", integration::router())
         .nest("/repos", repos::router())
-        .nest("/pull-requests", pr::router())
+        .nest(
+            "/pull-requests",
+            pr::router().layer(from_fn_with_state(deployment.clone(), git_events::observe)),
+        )
         .layer(from_fn_with_state(
             deployment.clone(),
             load_workspace_middleware,
