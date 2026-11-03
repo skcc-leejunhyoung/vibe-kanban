@@ -16,6 +16,10 @@ import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { defineModal } from '@/shared/lib/modals';
 import { useMergeRemote } from '@/shared/hooks/useMergeRemote';
 import { useResetToRemote } from '@/shared/hooks/useResetToRemote';
+import {
+  divergenceResolved,
+  useResolvedElsewhere,
+} from '@/shared/hooks/useResolvedElsewhere';
 
 export interface ReconcileRemoteBranchDialogProps {
   workspaceId: string;
@@ -31,6 +35,8 @@ export type ReconcileRemoteBranchDialogResult =
   | 'merged'
   | 'reset'
   | 'conflicts'
+  /** Another session or the Autopilot synced the branch meanwhile. */
+  | 'resolved_elsewhere'
   | 'canceled';
 
 const ReconcileRemoteBranchDialogImpl =
@@ -119,6 +125,14 @@ const ReconcileRemoteBranchDialogImpl =
     };
 
     const isProcessing = mergeRemote.isPending || resetToRemote.isPending;
+    const resolvedElsewhere = useResolvedElsewhere({
+      workspaceId,
+      repoId,
+      hostId,
+      enabled: modal.visible && !isProcessing,
+      isResolved: (status) => divergenceResolved(status, isTarget),
+      onResolved: () => finish('resolved_elsewhere'),
+    });
 
     return (
       <Dialog
@@ -160,12 +174,19 @@ const ReconcileRemoteBranchDialogImpl =
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
+          {resolvedElsewhere && (
+            <Alert>
+              <AlertDescription>
+                {t('tasks:git.resolvedElsewhere')}
+              </AlertDescription>
+            </Alert>
+          )}
           <DialogFooter className="gap-2">
             <Button
               variant="outline"
               type="button"
               onClick={handleReset}
-              disabled={isProcessing}
+              disabled={isProcessing || resolvedElsewhere}
               className="text-destructive hover:text-destructive"
             >
               {t('tasks:git.reconcileRemote.resetToRemote')}
@@ -178,7 +199,11 @@ const ReconcileRemoteBranchDialogImpl =
             >
               {t('common:buttons.cancel')}
             </Button>
-            <Button type="submit" onClick={handleMerge} disabled={isProcessing}>
+            <Button
+              type="submit"
+              onClick={handleMerge}
+              disabled={isProcessing || resolvedElsewhere}
+            >
               {isProcessing && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}

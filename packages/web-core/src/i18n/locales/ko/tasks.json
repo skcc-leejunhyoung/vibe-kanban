@@ -76,6 +76,7 @@
     "unlinkMessage": "PR과 이 워크스페이스 간의 링크만 해제합니다. PR 자체는 영향을 받지 않습니다."
   },
   "createPrDialog": {
+    "resolvedElsewhere": "다른 곳(다른 세션 또는 Autopilot)에서 PR이 생성되었습니다. 창을 닫습니다.",
     "title": "Pull Request 생성",
     "description": "이 작업 시도에 대한 Pull Request를 생성합니다.",
     "titleLabel": "제목",
@@ -132,6 +133,7 @@
     "queuedStartFailed": "시작하지 못함: {{error}}"
   },
   "git": {
+    "resolvedElsewhere": "다른 곳(다른 세션 또는 Autopilot)에서 이미 처리되었습니다. 창을 닫습니다.",
     "labels": {
       "taskBranch": "작업 브랜치"
     },

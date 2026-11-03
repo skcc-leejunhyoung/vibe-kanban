@@ -11,6 +11,10 @@ import { create, useModal } from '@ebay/nice-modal-react';
 import { ArrowDownToLine, Loader2 } from 'lucide-react';
 import { defineModal } from '@/shared/lib/modals';
 import { usePullAndPush } from '@/shared/hooks/usePullAndPush';
+import {
+  divergenceResolved,
+  useResolvedElsewhere,
+} from '@/shared/hooks/useResolvedElsewhere';
 import { useState } from 'react';
 import { Alert, AlertDescription } from '@vibe/ui/components/Alert';
 import { useTranslation } from 'react-i18next';
@@ -37,7 +41,8 @@ export interface PullFirstDialogProps {
  *
  * Resolves with one of: `'success'` (pulled & pushed), `'conflicts'` (the merge
  * hit conflicts — the conflict UI takes over), `'force'` (the user chose to
- * force push instead), or `'canceled'`.
+ * force push instead), `'resolved_elsewhere'` (another session or the
+ * Autopilot synced the branch while the dialog was open), or `'canceled'`.
  */
 const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
   const modal = useModal();
@@ -70,6 +75,18 @@ const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
     isTarget ?? false,
     hostId
   );
+  const resolvedElsewhere = useResolvedElsewhere({
+    workspaceId,
+    repoId,
+    hostId,
+    enabled: modal.visible && !pullAndPush.isPending,
+    isResolved: (status) => divergenceResolved(status, isTarget ?? false),
+    onResolved: () => {
+      modal.resolve('resolved_elsewhere');
+      modal.hide();
+    },
+  });
+
   const handlePullAndPush = async () => {
     setError(null);
     try {
@@ -116,12 +133,19 @@ const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
+        {resolvedElsewhere && (
+          <Alert>
+            <AlertDescription>
+              {t('tasks:git.resolvedElsewhere')}
+            </AlertDescription>
+          </Alert>
+        )}
         <DialogFooter className="gap-2 sm:justify-between">
           <Button
             variant="ghost"
             type="button"
             onClick={handleForce}
-            disabled={isProcessing}
+            disabled={isProcessing || resolvedElsewhere}
             className="text-destructive hover:text-destructive"
           >
             {t('tasks:git.pullFirstDialog.forceInstead')}
@@ -138,7 +162,7 @@ const PullFirstDialogImpl = create<PullFirstDialogProps>((props) => {
             <Button
               type="submit"
               onClick={handlePullAndPush}
-              disabled={isProcessing}
+              disabled={isProcessing || resolvedElsewhere}
             >
               {isProcessing && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

@@ -219,6 +219,7 @@
     }
   },
   "git": {
+    "resolvedElsewhere": "Already handled elsewhere (another session or the Autopilot). Closing…",
     "labels": {
       "taskBranch": "Task Branch"
     },
@@ -423,6 +424,7 @@
     "unlinkMessage": "This removes the link between the pull request and this workspace. The pull request itself is not affected."
   },
   "createPrDialog": {
+    "resolvedElsewhere": "The pull request was opened elsewhere (another session or the Autopilot). Closing…",
     "title": "Create Pull Request",
     "description": "Create a pull request for this workspace.",
     "titleLabel": "Title",

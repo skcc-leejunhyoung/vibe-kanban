@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@vibe/ui/components/KeyboardDialog';
+import { Alert, AlertDescription } from '@vibe/ui/components/Alert';
 import { Button } from '@vibe/ui/components/Button';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { Label } from '@vibe/ui/components/Label';
@@ -25,6 +26,10 @@ import { defineModal } from '@/shared/lib/modals';
 import { buildResolveConflictsInstructions } from '@/shared/lib/conflicts';
 import { useExecutionProcesses } from '@/shared/hooks/useExecutionProcesses';
 import { getLatestConfigFromProcesses } from '@/shared/lib/executor';
+import {
+  conflictsResolved,
+  useResolvedElsewhere,
+} from '@/shared/hooks/useResolvedElsewhere';
 import type {
   BaseCodingAgent,
   ExecutorProfileId,
@@ -44,6 +49,8 @@ export interface ResolveConflictsDialogProps {
 
 export type ResolveConflictsDialogResult =
   | { action: 'resolved'; sessionId?: string }
+  /** The conflicts were resolved by another session or the Autopilot meanwhile. */
+  | { action: 'resolved_elsewhere' }
   | { action: 'cancelled' };
 
 const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
@@ -127,6 +134,19 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
       useState<ExecutorProfileId | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isAborting, setIsAborting] = useState(false);
+    const resolvedElsewhere = useResolvedElsewhere({
+      workspaceId,
+      repoId,
+      hostId,
+      enabled: modal.visible && !isSubmitting && !isAborting,
+      isResolved: conflictsResolved,
+      onResolved: () => {
+        modal.resolve({
+          action: 'resolved_elsewhere',
+        } as ResolveConflictsDialogResult);
+        modal.hide();
+      },
+    });
     const [error, setError] = useState<string | null>(null);
 
     const effectiveProfile = userSelectedProfile ?? resolvedDefaultProfile;
@@ -310,6 +330,13 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
           </DialogHeader>
 
           <div className="space-y-4">
+            {resolvedElsewhere && (
+              <Alert>
+                <AlertDescription>
+                  {t('tasks:git.resolvedElsewhere')}
+                </AlertDescription>
+              </Alert>
+            )}
             {/* Conflict summary */}
             <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
               <p className="font-medium text-warning-foreground dark:text-warning">
@@ -369,7 +396,7 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
               variant="destructive"
               type="button"
               onClick={handleAbort}
-              disabled={isSubmitting || isAborting}
+              disabled={isSubmitting || isAborting || resolvedElsewhere}
             >
               {isAborting
                 ? t('resolveConflicts.dialog.aborting', 'Aborting...')
@@ -398,7 +425,7 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
               <Button
                 type="submit"
                 onClick={handleSubmit}
-                disabled={!canSubmit || isAborting}
+                disabled={!canSubmit || isAborting || resolvedElsewhere}
               >
                 {isSubmitting
                   ? t('resolveConflicts.dialog.resolving', 'Starting...')

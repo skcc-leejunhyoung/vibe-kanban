@@ -30,6 +30,10 @@ import { create, useModal } from '@ebay/nice-modal-react';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useRepoBranches } from '@/shared/hooks/useRepoBranches';
 import {
+  openPrAppeared,
+  useResolvedElsewhere,
+} from '@/shared/hooks/useResolvedElsewhere';
+import {
   GhCliHelpInstructions,
   GhCliSetupDialog,
   mapGhCliErrorToUi,
@@ -165,6 +169,28 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     const cancelCreate = usePrBackgroundStore((s) => s.cancelCreate);
     const generating = bg?.generate?.status === 'running';
     const creatingPR = bg?.create?.status === 'running';
+
+    // After a failed create, another session or the Autopilot may open the PR
+    // (the same `git.operation_failed` event tells it how). Finish like our own
+    // create would, minus opening the PR window (no click to allow it).
+    const resolvedElsewhere = useResolvedElsewhere({
+      workspaceId: attempt.id,
+      repoId: repoId ?? '',
+      hostId,
+      enabled: modal.visible && !!repoId && !!error && !creatingPR,
+      isResolved: (status, baseline) =>
+        !!openPrAppeared(status, baseline, prHeadBranch || null),
+      onResolved: () => {
+        queryClient.invalidateQueries({
+          queryKey: ['branchStatus', attempt.id],
+        });
+        const store = usePrBackgroundStore.getState();
+        store.clearCreate(attempt.id);
+        if (repoId) store.clearDraft(attempt.id, repoId);
+        modal.resolve({ success: true } as CreatePRDialogResult);
+        modal.hide();
+      },
+    });
 
     const { data: branches = [], isLoading: branchesLoading } = useRepoBranches(
       repoId,
@@ -860,6 +886,13 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
                   </Alert>
                 )}
                 {error && <Alert variant="destructive">{error}</Alert>}
+                {resolvedElsewhere && (
+                  <Alert>
+                    <AlertDescription>
+                      {t('createPrDialog.resolvedElsewhere')}
+                    </AlertDescription>
+                  </Alert>
+                )}
               </div>
             )}
             <DialogFooter>
