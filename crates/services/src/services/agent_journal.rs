@@ -1,5 +1,5 @@
-//! Process-wide journal of the events an agent polls for: process ends,
-//! approvals, status notes, vibe-run phases, workspace lifecycle (including a
+//! Process-wide journal of the events an agent polls for: process ends (and
+//! runs that stalled or died with a restart), approvals, status notes, vibe-run phases, workspace lifecycle (including a
 //! cleanup the server could not run), queue changes (including a start
 //! failure that pauses a queue), scheduled resumes, usage limits, turns held
 //! by issue blockers, git/PR dialogs and PR status changes, and cloud

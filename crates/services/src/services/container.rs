@@ -463,6 +463,26 @@ pub trait ContainerService {
                     e
                 );
             }
+            // The journal stays silent about a finished row it first sees after
+            // a restart, so say explicitly that this turn died with the server
+            // and can be resumed.
+            let parent = process
+                .parent_workspace_and_session(&self.db().pool)
+                .await
+                .ok()
+                .flatten();
+            crate::services::agent_journal::publish(
+                "process.orphaned",
+                parent.as_ref().map(|(workspace, _)| workspace.id),
+                Some(process.session_id),
+                Some(process.id),
+                serde_json::json!({
+                    "run_reason": process.run_reason,
+                    "started_at": process.started_at,
+                    "name": parent.as_ref().and_then(|(workspace, _)| workspace.name.clone()),
+                    "branch": parent.as_ref().map(|(workspace, _)| workspace.branch.clone()),
+                }),
+            );
             // Capture after-head commit OID per repository
             if let Ok(ctx) = ExecutionProcess::load_context(&self.db().pool, process.id).await
                 && let Some(ref container_ref) = ctx.workspace.container_ref

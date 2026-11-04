@@ -10,6 +10,7 @@ pub mod relay_pairing;
 pub mod routes;
 pub mod runtime;
 pub mod scheduled_resume_watcher;
+pub mod stall_watcher;
 pub mod startup;
 pub mod vibe_approval_responder;
 pub mod vibe_run_watcher;

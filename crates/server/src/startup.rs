@@ -180,6 +180,8 @@ pub async fn initialize_deployment(
 
     // Background poller that resumes sessions after their usage rate limit resets.
     crate::rate_limit_watcher::spawn(deployment.clone());
+    // Background poller that reports coding-agent runs that stopped producing output.
+    crate::stall_watcher::spawn(deployment.clone());
 
     // Background poller that resumes sessions at agent-scheduled wakeup times
     // (claude ScheduleWakeup / session_crons).

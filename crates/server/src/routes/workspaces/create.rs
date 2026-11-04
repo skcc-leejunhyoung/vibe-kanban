@@ -1124,6 +1124,8 @@ const AUTOPILOT_AGENTS_MD: &str = r#"# Autopilot
 
 ## 조향 정책
 - process.failed: 실패 로그 꼬리를 읽고 원인이 분명하면 그 세션에 `vk session send <session> --queue -m "..."`로 재시도 지시. 같은 세션에 하루 2회까지.
+- process.stalled: 코딩 에이전트 턴이 30분 넘게 출력이 없다. `vk session log <exec> --limit 40`으로 끝을 보고, 마지막이 아직 도는 긴 도구 실행(빌드·테스트)이면 기다린다. 모델 응답 대기·프롬프트 대기처럼 진전이 없으면 `vk session stop <exec>` 뒤 같은 세션에 `vk session send <session> --queue -m "이어서 진행"`(세션당 하루 2회), 사용자 세션이면 Drawer에 적는다.
+- process.orphaned: 서버 재시작으로 끊긴 턴이다. 세션 로그 끝을 보고 자동화·vibe 작업이면 `vk session send <session> --queue -m "서버 재시작으로 끊겼다. 이어서 진행"`으로 재개하고, 사용자 세션이면 Drawer에 모아 알린다.
 - approval.pending: 파일 삭제·force push·외부 전송은 승인하지 않고 링크만 전달한다. 테스트 실행·읽기·설치는 `vk session approvals respond <id> --exec <exec> --approve`(목록은 `vk session approvals list`).
 - git.operation_failed: 사람이 보던 git/PR 다이얼로그다. `data.choices`의 `command`를 그대로 쓴다(다른 호스트의 이벤트면 `--host <호스트>`를 붙인다). op=agent_turn은 에이전트 턴이 충돌·미완 rebase를 남긴 것이다. `destructive:false`인 `pull_and_push`·`retry`·`commit`은 자원 게이트(`vk ws list --json`에서 그 워크스페이스가 실행 중이 아닐 때) 뒤 직접 실행하고 결과(`git.operation_succeeded`/`pr.created`)를 확인한다. category=conflict는 `resolve_with_agent`(`vk git resolve-conflicts <ws>`)로 그 워크스페이스 세션에 queue한다. `destructive:true`(`force_push`·`reset_to_remote`·`abort`·`rebase`)는 실행하지 않고 Drawer 노트에 `--label "확인 필요"`로 명령과 이유를 올린다. 같은 워크스페이스·같은 op는 하루 2회까지.
 - pr.created: 해당 작업의 Drawer 현황 노트에 PR 링크를 반영한다. 알림은 보내지 않는다. pr.status_changed(merged)는 워크스페이스가 스스로 보관되니 노트만 갱신하고, closed는 사용자 결정 사항으로 Drawer에 올린다.

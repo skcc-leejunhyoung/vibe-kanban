@@ -2182,6 +2182,36 @@ impl LocalContainerService {
                 "resume_at": resume_at,
             }),
         );
+        // The Autopilot's own events are dropped by automation (it is the one
+        // that would act on them), so its limit goes to the user directly.
+        if ctx.workspace.autopilot {
+            let what = if capacity {
+                "the model is at capacity".to_string()
+            } else {
+                format!(
+                    "a usage limit was reached{}",
+                    usage_limit
+                        .clone()
+                        .flatten()
+                        .map(|reset| format!(" (resets {reset})"))
+                        .unwrap_or_default()
+                )
+            };
+            let next = match resume_at {
+                Some(at) => format!("Auto-resume is scheduled for {at}."),
+                None if auto_resume => "Auto-resume retries are exhausted.".to_string(),
+                None => "Auto-resume is off for this session.".to_string(),
+            };
+            self.notification_service
+                .notify_raw(
+                    "Autopilot stopped on a usage limit",
+                    &format!("The Autopilot's turn stopped because {what}. {next}"),
+                    ctx.workspace.id,
+                    format!("autopilot-rate-limit:{}", ctx.execution_process.id),
+                    false,
+                )
+                .await;
+        }
         let Some(resume_at) = resume_at else {
             return Ok(false);
         };
