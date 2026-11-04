@@ -1302,8 +1302,10 @@ export type JournalEvent = {
 cursor: bigint, at: string,
 /**
  * Dotted kind, e.g. `process.completed`, `approval.pending`,
- * `workspace.status_note`, `vibe.phase`, `queue.changed`,
- * `resume.fired`, `cloud.notification`.
+ * `workspace.status_note`, `workspace.cleanup_blocked`, `vibe.phase`,
+ * `queue.changed`, `resume.fired`, `session.rate_limited`,
+ * `session.waiting_on_blockers`, `git.operation_failed`, `pr.created`,
+ * `pr.status_changed`, `artifact.input_required`, `cloud.notification`.
  */
 kind: string, workspace_id?: string | null, session_id?: string | null, execution_id?: string | null,
 /**

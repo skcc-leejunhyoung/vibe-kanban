@@ -79,6 +79,7 @@ import {
   kindMatches,
   createCoalescer,
   retryExhaustedEvent,
+  carriesRetryExhausted,
   deliversToAutopilot,
   journalEventToWorkerEvent,
   renderPromptTemplate,
@@ -4344,7 +4345,11 @@ async function processRetryQueue({
         item.status = 'exhausted';
         item.nextAttemptAt = null;
         summary.exhausted += 1;
-        if (item.event?.kind !== 'automation.retry_exhausted')
+        // A coalesced batch carries its events under `events`: one that
+        // already announced an exhaustion must not announce another, or a
+        // routine that keeps failing (the Autopilot's host offline) would
+        // feed itself a new event every time its retries run out.
+        if (!carriesRetryExhausted(item.event))
           await announceRetryExhausted({
             what: routine ? 'routine_run' : 'rule_run',
             retryId: item.id,

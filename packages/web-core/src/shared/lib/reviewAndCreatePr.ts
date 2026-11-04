@@ -156,7 +156,20 @@ async function continueReviewAndCreatePr(
           isTarget: true,
           hostId,
         });
-        if (resolution !== 'success') {
+        // Synced elsewhere (another session or the Autopilot): the remote has
+        // nothing the local branch lacks any more, so a plain push goes through.
+        const reconciled =
+          resolution === 'success' ||
+          (resolution === 'resolved_elsewhere' &&
+            (
+              await workspacesApi.pushTargetBranch(
+                workspaceId,
+                repo.id,
+                false,
+                hostId
+              )
+            ).success);
+        if (!reconciled) {
           throw new Error(
             'The target branch must be reconciled before creating the pull request.'
           );

@@ -60,9 +60,15 @@ async fn tick(deployment: &DeploymentImpl, announced: &mut HashSet<Uuid>) -> any
     announced.retain(|id| running.iter().any(|process| process.id == *id));
     let limit = idle_limit_secs();
     let now = Utc::now();
+    // A run waiting on a person's approval is silent by design and already
+    // reported as `approval.pending`; stopping it would drop that request.
+    let awaiting_approval = deployment.approvals().get_pending_execution_process_ids(
+        &running.iter().map(|process| process.id).collect::<Vec<_>>(),
+    );
     for process in running {
         if process.run_reason != ExecutionProcessRunReason::CodingAgent
             || announced.contains(&process.id)
+            || awaiting_approval.contains(&process.id)
         {
             continue;
         }

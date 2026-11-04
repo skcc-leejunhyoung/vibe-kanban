@@ -2110,7 +2110,6 @@ impl LocalContainerService {
     const CAPACITY_MAX_RETRIES: usize = 2;
     const CAPACITY_RETRY_WINDOW_MINS: i64 = 30;
 
-    /// If this execution stopped because a usage rate limit was reached, or
     /// Record a usage limit or capacity error that ended this run as a
     /// `session.rate_limited` journal event and, when the session has
     /// auto-resume enabled, schedule an automatic "continue" follow-up. A usage

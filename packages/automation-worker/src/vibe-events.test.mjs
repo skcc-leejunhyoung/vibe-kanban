@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   COALESCE_DEFAULTS,
   DEFAULT_KINDS,
+  carriesRetryExhausted,
   createCoalescer,
   eventLine,
   retryExhaustedEvent,
@@ -321,4 +322,14 @@ test('a retry that ran out becomes an event the Autopilot routine can match', ()
   assert.equal(eventLine(event), '- worker automation.retry_exhausted · pr_link · issue issue-1 · https://github.com/acme/widgets/pull/7 · HTTP 409 duplicate import');
   // Without an explicit retry id the subject keeps the id stable across announcements.
   assert.equal(retryExhaustedEvent({ what: 'routine_run', routineId: 'r1', error: 'x' }).id, 'automation-exhausted:routine_run:r1');
+});
+
+test('a batch that already reports an exhausted retry does not announce another', () => {
+  const exhausted = retryExhaustedEvent({ what: 'routine_run', retryId: 'r-1', error: 'host offline' });
+  const other = journalEventToWorkerEvent({ cursor: 3, kind: 'process.failed', data: {} });
+  assert.ok(carriesRetryExhausted(exhausted));
+  assert.ok(carriesRetryExhausted({ type: 'vk_event_batch', events: [other, exhausted] }));
+  assert.ok(!carriesRetryExhausted({ type: 'vk_event_batch', events: [other] }));
+  assert.ok(!carriesRetryExhausted(other));
+  assert.ok(!carriesRetryExhausted(undefined));
 });

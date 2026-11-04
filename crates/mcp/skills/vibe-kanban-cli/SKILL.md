@@ -97,7 +97,7 @@ instructions); a `--prompt` of your own goes in as is.
 `vk events wait --since <cursor>` to block until the next matching event.
 Kinds: `process.started|completed|failed|killed|stalled|orphaned` (`stalled` = a coding-agent run
 with no output for 30 minutes, `data.choices` = `vk session log`/`vk session stop`; `orphaned` = a
-run that died with a server restart, resume it with `vk session send --queue`), `approval.pending|resolved`,
+coding-agent run that died with a server restart, resume it with `vk session send --queue`), `approval.pending|resolved`,
 `workspace.created|archived|unarchived|deleted|status_note`, `vibe.phase`,
 `queue.changed` (`size`, `paused`, `start_error`, `front_message_id`), `resume.fired`,
 `session.rate_limited` (`reason`, `resets_at`, `auto_resume`, `resume_at`),

@@ -4,6 +4,7 @@ import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
+import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
 import type { ExecutorConfig } from 'shared/types';
 import {
   resumeReviewAndCreatePr,
@@ -244,6 +245,52 @@ describe('runReviewAndCreatePr', () => {
     expect(workspacesApi.pushTargetBranch).toHaveBeenCalledOnce();
     expect(startCreateFromAi).toHaveBeenCalledOnce();
     expect(localStorage.getItem('vibe-review-and-create-pr')).toBe('{}');
+  });
+
+  it('pushes again and continues when the divergence was resolved elsewhere', async () => {
+    localStorage.setItem(
+      'vibe-review-and-create-pr',
+      JSON.stringify({
+        'local:workspace-1': {
+          workspaceId: 'workspace-1',
+          reviewSessionId: 'review-session-1',
+          hostId: null,
+        },
+      })
+    );
+    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
+      phase: 'done',
+    } as never);
+    vi.mocked(workspacesApi.get).mockResolvedValue({
+      branch: 'vk/work-branch',
+    } as never);
+    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
+      { id: 'repo-1', name: 'repo-1', target_branch: 'feature' },
+    ] as never);
+    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
+      { repo_id: 'repo-1', is_target_remote: false, merges: [] },
+    ] as never);
+    vi.mocked(workspacesApi.pushTargetBranch)
+      .mockResolvedValueOnce({
+        success: false,
+        error: { type: 'diverged', ahead: 1, behind: 2 },
+      } as never)
+      .mockResolvedValueOnce({ success: true } as never);
+    vi.mocked(PullFirstDialog.show).mockResolvedValue(
+      'resolved_elsewhere' as never
+    );
+    const startCreateFromAi = vi.fn().mockResolvedValue(true);
+    vi.mocked(usePrFromAiBackgroundStore.getState).mockReturnValue({
+      startCreateFromAi,
+    } as never);
+
+    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
+      true
+    );
+
+    expect(workspacesApi.pushTargetBranch).toHaveBeenCalledTimes(2);
+    expect(startCreateFromAi).toHaveBeenCalledOnce();
+    expect(ErrorDialog.show).not.toHaveBeenCalled();
   });
 
   it('clears a blocked review so reopening the workspace does not retry it', async () => {

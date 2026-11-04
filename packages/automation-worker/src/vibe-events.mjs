@@ -157,6 +157,12 @@ export function retryExhaustedEvent({
   };
 }
 
+// The event (or a coalesced batch of them) already reports a retry that ran out.
+export function carriesRetryExhausted(event) {
+  const isExhausted = (item) => item?.kind === 'automation.retry_exhausted';
+  return isExhausted(event) || (event?.events || []).some(isExhausted);
+}
+
 export function eventLine(event) {
   event = sanitizeNotificationEvent(event);
   const ids = [
