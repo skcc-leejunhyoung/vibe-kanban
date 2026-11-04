@@ -101,7 +101,9 @@ Kinds: `process.started|completed|failed|killed`, `approval.pending|resolved`,
 `session.rate_limited` (`reason`, `resets_at`, `auto_resume`, `resume_at`),
 `session.waiting_on_blockers|blockers_resolved` (`task_id`, `blockers`),
 `workspace.cleanup_blocked` (`reason`), `artifact.input_required|input_resolved` (an agent's
-form waits for a person), `cloud.notification`, `git.operation_failed`
+form waits for a person), `cloud.notification`, `automation.retry_exhausted` (the automation
+worker's own retries ran out — reaches the Autopilot through its routine only, not `vk events`),
+`git.operation_failed`
 (a push/pull/merge/rebase/PR step the UI would show a dialog for, or op `agent_turn` when a
 turn left conflicts behind: `op`, `category`
 = diverged|conflict|rebase_in_progress|dirty|base_diverged|auth|cli_missing|provider_rejected|other,

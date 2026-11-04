@@ -1,7 +1,16 @@
 import test from 'node:test';
-import { renderPromptTemplate } from './vibe-events.mjs';
+import { renderPromptTemplate, retryExhaustedEvent } from './vibe-events.mjs';
 import assert from 'node:assert/strict';
 import { automationEventKey, eventMatchesRoutine, isIndeterminateActionError, normalizeRoutine, recoverInterruptedAutomationState, redactEvent, routineEventKey, routineRunTrigger, scheduleOccurrence, validateRoutineScope } from './routines.mjs';
+
+test('an exhausted retry matches a vk_event routine with an automation. prefix', () => {
+  const routine = normalizeRoutine({ id: 'autopilot-events', enabled: true, trigger: { type: 'vk_event', kinds: ['process.', 'automation.'] }, action: { type: 'notification', connectorId: 'vibe', targetHostId: 'host', input: { title: 'a', message: 'b' } } });
+  const event = retryExhaustedEvent({ what: 'pr_link', retryId: 'pr-link:i:u', issueId: 'i', prUrl: 'u', attempts: 3, error: 'boom' });
+  assert.ok(eventMatchesRoutine(routine, event));
+  assert.equal(automationEventKey(event), 'automation:vk_event:automation-exhausted:pr-link:i:u');
+  const narrow = normalizeRoutine({ ...routine, trigger: { type: 'vk_event', kinds: ['process.'] } });
+  assert.ok(!eventMatchesRoutine(narrow, event));
+});
 
 test('cron occurrences are keyed by local timezone minute', () => {
   const routine = normalizeRoutine({ id: 'daily', enabled: true, trigger: { type: 'schedule', cron: '30 9 * * 1-5', timezone: 'Asia/Seoul' }, action: { type: 'notification', connectorId: 'vibe', targetHostId: 'host', input: { title: 'a', message: 'b' } } });

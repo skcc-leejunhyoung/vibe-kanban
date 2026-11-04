@@ -315,6 +315,14 @@ routine of their own (trigger `kinds: ["drawer."]`, a short window, a high
 lists every other kind: `immediate` cannot beat the main routine's hourly cap,
 so a reply would otherwise wait for its next free flush slot.
 
+The worker also raises an event of its own, `automation.retry_exhausted`
+(`what` = `pr_link` | `github_issue_link` | `routine_run` | `rule_run`, with the
+issue id, PR URL, rule/routine id, attempts and the last error), when one of its
+retries runs out. It enters the same routine pipeline as journal events (it never
+passes through a connector, so add the `automation.` prefix to the routine's
+`kinds`), and the Autopilot can retry by hand (`vk pr link-issue`, `vk issue ...`)
+or report it.
+
 A routine with trigger `vk_event` (optional `kinds` prefixes and `hosts`
 filters by host id or name) and a `coalesce` block runs **once per burst**: the buffer flushes
 `windowSeconds` after the last matching event (but no later than

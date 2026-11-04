@@ -78,6 +78,7 @@ import {
   DEFAULT_KINDS,
   kindMatches,
   createCoalescer,
+  retryExhaustedEvent,
   deliversToAutopilot,
   journalEventToWorkerEvent,
   renderPromptTemplate,
@@ -1124,6 +1125,22 @@ async function flushCoalescedRoutine(routineId, batch) {
   if (result.status === 'busy') await queueRoutineEvent(routine.id, batch, key);
 }
 
+// A retry that ran out goes through the same door as a journal event so the
+// Autopilot routine hears it. Its own failure never re-announces itself.
+async function announceRetryExhausted(details) {
+  const event = retryExhaustedEvent(details);
+  const key = automationEventKey(event);
+  if (state.eventReceipts[key]) return;
+  try {
+    await processAutomationEvent(key, event);
+  } catch (error) {
+    await log('warn', 'retry exhaustion not delivered to routines', {
+      retryId: details.retryId,
+      error: errorMessage(error),
+    });
+  }
+}
+
 async function processAutomationEvent(key, event) {
   state.eventReceipts[key] = { status: 'running', receivedAt: Date.now() };
   await persistState();
@@ -1205,6 +1222,14 @@ async function runRoutine(routine, event, idempotencyKey) {
     state.routineClaims[idempotencyKey].status = run.status;
     run.error = errorMessage(error);
     if (event.source !== 'artifact') await enqueueRoutineRetry(routine, event, idempotencyKey, error);
+    else if (event.kind !== 'automation.retry_exhausted')
+      await announceRetryExhausted({
+        what: 'routine_run',
+        retryId: `run:${run.id}`,
+        routineId: routine.id,
+        attempts: 1,
+        error: run.error,
+      });
   } finally {
     run.finishedAt = new Date().toISOString();
     routineInFlight.delete(routine.id);
@@ -3160,6 +3185,14 @@ async function retryPendingGithubIssueLinks(githubConnector) {
           attempts: operation.attempts,
           error: errorMessage(error),
         });
+        await announceRetryExhausted({
+          what: 'github_issue_link',
+          retryId: `issue-link:${operation.input?.issueId || operation.ruleId}`,
+          ruleId: operation.ruleId,
+          issueId: operation.input?.issueId,
+          attempts: operation.attempts,
+          error: errorMessage(error),
+        });
       },
     });
   if (changed) {
@@ -3208,14 +3241,24 @@ async function retryPendingPullRequestLinks() {
           attempts: op.attempts,
           error: op.lastError,
         }),
-      onExhausted: (op) =>
-        log('error', 'vibe PR link retry exhausted', {
+      onExhausted: async (op) => {
+        await log('error', 'vibe PR link retry exhausted', {
           connectorId: op.vibeConnectorId,
           issueId: op.issueId,
           prUrl: op.payload?.url,
           attempts: op.attempts,
           error: op.lastError,
-        }),
+        });
+        await announceRetryExhausted({
+          what: 'pr_link',
+          retryId: `pr-link:${op.issueId || ''}:${op.payload?.url || ''}`,
+          connectorId: op.vibeConnectorId,
+          issueId: op.issueId,
+          prUrl: op.payload?.url,
+          attempts: op.attempts,
+          error: op.lastError,
+        });
+      },
     });
   if (changed) {
     state.pullRequestLinkOperations = remaining;
@@ -4301,6 +4344,16 @@ async function processRetryQueue({
         item.status = 'exhausted';
         item.nextAttemptAt = null;
         summary.exhausted += 1;
+        if (item.event?.kind !== 'automation.retry_exhausted')
+          await announceRetryExhausted({
+            what: routine ? 'routine_run' : 'rule_run',
+            retryId: item.id,
+            ruleId: item.ruleId,
+            routineId: routine?.id,
+            connectorId: item.connectorId,
+            attempts: item.attempts,
+            error: item.lastError,
+          });
         if (routine) {
           const run = state.routineRuns.find(
             (entry) =>

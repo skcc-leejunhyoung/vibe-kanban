@@ -117,6 +117,46 @@ export function journalEventToWorkerEvent(event) {
   });
 }
 
+// The worker's own retries ran out (a PR/issue link, a routine run): until now
+// that was a log line nobody read. Shaped like a journal event so the same
+// routine (`kinds` prefix `automation.`) wakes the Autopilot, which can retry
+// by hand (`vk pr link-issue`, `vk issue ...`) or put it on the Drawer.
+export function retryExhaustedEvent({
+  what, retryId, ruleId, routineId, connectorId, issueId, prUrl, attempts, error,
+}) {
+  const subject = issueId || prUrl || routineId || ruleId || 'unknown';
+  const id = `automation-exhausted:${retryId || `${what}:${subject}`}`;
+  const reason = String(error || '').slice(0, 300);
+  return {
+    id,
+    source: 'automation',
+    type: 'vk_event',
+    kind: 'automation.retry_exhausted',
+    autopilot: false,
+    cursor: null,
+    hostId: null,
+    hostName: 'worker',
+    workspaceId: null,
+    sessionId: null,
+    executionId: null,
+    at: new Date().toISOString(),
+    title: ['automation.retry_exhausted', what, issueId ? `issue ${issueId}` : null, prUrl, reason]
+      .filter(Boolean)
+      .join(' · '),
+    data: {
+      what,
+      retry_id: retryId ?? null,
+      rule_id: ruleId ?? null,
+      routine_id: routineId ?? null,
+      connector_id: connectorId ?? null,
+      issue_id: issueId ?? null,
+      pr_url: prUrl ?? null,
+      attempts: attempts ?? null,
+      error: reason,
+    },
+  };
+}
+
 export function eventLine(event) {
   event = sanitizeNotificationEvent(event);
   const ids = [

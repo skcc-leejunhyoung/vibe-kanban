@@ -4,6 +4,8 @@ import {
   COALESCE_DEFAULTS,
   DEFAULT_KINDS,
   createCoalescer,
+  eventLine,
+  retryExhaustedEvent,
   deliversToAutopilot,
   journalEventToWorkerEvent,
   kindMatches,
@@ -301,4 +303,22 @@ test('git dialogs and opened PRs wake the Autopilot by default, plain git succes
   });
   assert.equal(event.kind, 'git.operation_failed');
   assert.equal(event.data.choices[0].id, 'pull_and_push');
+});
+
+test('a retry that ran out becomes an event the Autopilot routine can match', () => {
+  const event = retryExhaustedEvent({
+    what: 'pr_link', retryId: 'pr-link:issue-1:https://github.com/acme/widgets/pull/7',
+    connectorId: 'vibe-default', issueId: 'issue-1', prUrl: 'https://github.com/acme/widgets/pull/7',
+    attempts: 5, error: 'HTTP 409 duplicate import',
+  });
+  assert.equal(event.kind, 'automation.retry_exhausted');
+  assert.equal(event.type, 'vk_event');
+  assert.equal(event.id, 'automation-exhausted:pr-link:issue-1:https://github.com/acme/widgets/pull/7');
+  assert.equal(event.data.pr_url, 'https://github.com/acme/widgets/pull/7');
+  assert.equal(event.data.attempts, 5);
+  assert.ok(kindMatches(event.kind, ['automation.']));
+  assert.ok(!kindMatches(event.kind, DEFAULT_KINDS));
+  assert.equal(eventLine(event), '- worker automation.retry_exhausted · pr_link · issue issue-1 · https://github.com/acme/widgets/pull/7 · HTTP 409 duplicate import');
+  // Without an explicit retry id the subject keeps the id stable across announcements.
+  assert.equal(retryExhaustedEvent({ what: 'routine_run', routineId: 'r1', error: 'x' }).id, 'automation-exhausted:routine_run:r1');
 });

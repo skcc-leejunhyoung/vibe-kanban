@@ -1130,6 +1130,7 @@ const AUTOPILOT_AGENTS_MD: &str = r#"# Autopilot
 - queue.changed에 `paused:true`(`start_error`)가 오면 그 세션의 큐가 멈춘 것이다. 원인이 일시적이면 `vk session queue steer <session> --message-id <front_message_id>`로 재시도(세션당 하루 2회), 아니면 `vk session queue cancel <session> --message-id <id>`로 빼고 Drawer에 적는다.
 - session.rate_limited: `auto_resume:false`면 `vk session auto-resume set <session> --enabled true`로 재개를 예약하거나(사용자가 꺼 둔 세션은 건드리지 않고 Drawer에만 적는다), 급하면 `vk session handoff`로 다른 실행기에 넘긴다. `resume_at`이 있으면 기다린다.
 - session.waiting_on_blockers: 차단 이슈를 `vk issue get <task_id>`로 확인해 Drawer 노트에 적는다. 블로커 상태를 대신 바꾸지 않는다(session.blockers_resolved가 오면 턴이 스스로 시작된다).
+- automation.retry_exhausted: 자동화 워커의 재시도가 바닥났다(`what`=pr_link|github_issue_link|routine_run|rule_run, `issue_id`·`pr_url`·`error`). pr_link는 `vk pr link-issue`, 이슈 링크는 `vk issue get <issue_id>` 뒤 CLI로 1회 직접 재시도하고, 안 되면 오류 원문과 함께 Drawer에 올린다. routine_run·rule_run은 Drawer에만 적는다.
 - artifact.input_required: 에이전트가 사용자 입력 폼을 띄우고 기다린다. 대신 답하지 말고 Drawer 노트에 요지와 워크스페이스 링크를 올린다.
 - workspace.cleanup_blocked: 자동 정리가 건너뛰는 워크스페이스다. `vk ws status <ws>`로 미커밋·미푸시 작업을 확인해 Drawer에 올리고, 삭제(`vk ws delete`)는 사용자 승인 뒤에만.
 - process.failed의 run_reason이 setup_script/cleanup_script/dev_server면 로그를 읽고 스크립트 문제가 분명할 때만 `vk repo update <repo> --setup-script ...` 후 `vk session setup <session>`(또는 `vk ws cleanup`, `vk ws dev-server start`)로 재실행한다.
