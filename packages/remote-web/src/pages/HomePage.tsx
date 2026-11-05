@@ -5,6 +5,7 @@ import type { Project } from "shared/remote-types";
 import type { OrganizationWithRole } from "shared/types";
 import { listOrganizationProjects } from "@remote/shared/lib/api";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
+import { AppBarDrawerContainer } from "@/pages/workspaces/AppBarDrawerContainer";
 import { AppBarNotificationBellContainer } from "@/pages/workspaces/AppBarNotificationBellContainer";
 import { useOrganizationStore } from "@/shared/stores/useOrganizationStore";
 import { useUserOrganizations } from "@/shared/hooks/useUserOrganizations";
@@ -269,7 +270,7 @@ export default function HomePage() {
           </section>
         )}
 
-        <header className="flex items-start justify-between gap-base">
+        <header className="flex flex-wrap items-start justify-between gap-base">
           <div className="space-y-half">
             <h1 className="text-2xl font-semibold text-high">Organizations</h1>
             <p className="text-sm text-low">
@@ -280,7 +281,7 @@ export default function HomePage() {
             </p>
           </div>
           {isMobile && isSignedIn && (
-            <div className="flex shrink-0 items-center gap-base">
+            <div className="ml-auto flex shrink-0 items-center gap-base">
               <button
                 type="button"
                 aria-label="Quick chat"
@@ -289,6 +290,7 @@ export default function HomePage() {
               >
                 <LightningIcon className="h-5 w-5" weight="bold" />
               </button>
+              <AppBarDrawerContainer />
               <AppBarNotificationBellContainer />
             </div>
           )}
