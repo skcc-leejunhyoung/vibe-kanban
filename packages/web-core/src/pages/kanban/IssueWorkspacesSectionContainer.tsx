@@ -53,7 +53,7 @@ export function IssueWorkspacesSectionContainer({
   const { workspaces } = useUserContext();
 
   const {
-    pullRequests,
+    getPullRequestsForWorkspace,
     getIssue,
     getWorkspacesForIssue,
     issues,
@@ -94,13 +94,11 @@ export function IssueWorkspacesSectionContainer({
         : undefined;
 
       // Find all linked PRs for this workspace
-      const linkedPrs = pullRequests
-        .filter((pr) => pr.workspace_id === workspace.id)
-        .map((pr) => ({
-          number: pr.number,
-          url: pr.url,
-          status: pr.status as 'open' | 'merged' | 'closed',
-        }));
+      const linkedPrs = getPullRequestsForWorkspace(workspace.id).map((pr) => ({
+        number: pr.number,
+        url: pr.url,
+        status: pr.status as 'open' | 'merged' | 'closed',
+      }));
 
       // Get owner
       const owner =
@@ -134,7 +132,7 @@ export function IssueWorkspacesSectionContainer({
   }, [
     issueId,
     getWorkspacesForIssue,
-    pullRequests,
+    getPullRequestsForWorkspace,
     membersWithProfilesById,
     userId,
     localWorkspacesById,

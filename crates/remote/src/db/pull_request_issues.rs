@@ -139,15 +139,16 @@ impl PullRequestIssueRepository {
         Ok(records)
     }
 
-    pub async fn create<'e, E>(
-        executor: E,
+    pub async fn create(
+        tx: &mut sqlx::Transaction<'_, Postgres>,
         pull_request_id: Uuid,
         issue_id: Uuid,
         id: Option<Uuid>,
-    ) -> Result<PullRequestIssue, PullRequestIssueError>
-    where
-        E: Executor<'e, Database = Postgres>,
-    {
+    ) -> Result<PullRequestIssue, PullRequestIssueError> {
+        sqlx::query("SELECT id FROM pull_requests WHERE id = $1 FOR UPDATE")
+            .bind(pull_request_id)
+            .fetch_one(&mut **tx)
+            .await?;
         let id = id.unwrap_or_else(Uuid::new_v4);
         let record = sqlx::query_as!(
             PullRequestIssue,
@@ -155,7 +156,7 @@ impl PullRequestIssueRepository {
             INSERT INTO pull_request_issues (id, pull_request_id, issue_id, project_id)
             VALUES ($1, $2, $3, (SELECT project_id FROM issues WHERE id = $3))
             ON CONFLICT (pull_request_id, issue_id) DO UPDATE
-                SET pull_request_id = EXCLUDED.pull_request_id
+                SET is_explicit = TRUE
             RETURNING
                 id              AS "id!: Uuid",
                 pull_request_id AS "pull_request_id!: Uuid",
@@ -166,7 +167,7 @@ impl PullRequestIssueRepository {
             pull_request_id,
             issue_id
         )
-        .fetch_one(executor)
+        .fetch_one(&mut **tx)
         .await?;
         Ok(record)
     }
@@ -193,6 +194,10 @@ impl PullRequestIssueRepository {
         pull_request_id: Uuid,
         issue_id: Uuid,
     ) -> Result<bool, PullRequestIssueError> {
+        sqlx::query("SELECT id FROM pull_requests WHERE id = $1 FOR UPDATE")
+            .bind(pull_request_id)
+            .fetch_optional(&mut **tx)
+            .await?;
         sqlx::query!(
             "DELETE FROM pull_request_issues WHERE pull_request_id = $1 AND issue_id = $2",
             pull_request_id,

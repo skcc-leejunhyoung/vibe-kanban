@@ -114,10 +114,10 @@ export const KanbanIssueCard = memo(function KanbanIssueCard({
   // repeated at the issue level.
   const issuePullRequests = useMemo(() => {
     if (workspaces.length === 0) return pullRequests;
-    const shown = new Set(workspaces.map((workspace) => workspace.id));
-    return pullRequests.filter(
-      (pr) => !pr.workspace_id || !shown.has(pr.workspace_id)
+    const shown = new Set(
+      workspaces.flatMap((workspace) => workspace.prs.map((pr) => pr.url))
     );
+    return pullRequests.filter((pr) => !shown.has(pr.url));
   }, [pullRequests, workspaces]);
 
   const selectedTagIds = useMemo(

@@ -67,10 +67,7 @@ import {
 } from '@vibe/ui/components/KanbanBoard';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import type { KanbanGithubIssue } from '@vibe/ui/components/KanbanCardContent';
-import type {
-  WorkspaceWithStats,
-  WorkspacePr,
-} from '@vibe/ui/components/IssueWorkspaceCard';
+import type { WorkspaceWithStats } from '@vibe/ui/components/IssueWorkspaceCard';
 import {
   resolveRelationshipsForIssue,
   type ResolvedRelationship,
@@ -238,7 +235,7 @@ export function KanbanContainer() {
     insertIssueTag,
     removeIssueTag,
     insertTag,
-    pullRequests,
+    getPullRequestsForWorkspace,
     githubIssueLinks,
     isLoading: projectLoading,
     error: projectError,
@@ -860,24 +857,6 @@ export function KanbanContainer() {
     [openIssueWorkspace]
   );
 
-  const prsByWorkspaceId = useMemo(() => {
-    const map = new Map<string, WorkspacePr[]>();
-
-    for (const pr of pullRequests) {
-      if (!pr.workspace_id) continue;
-
-      const prs = map.get(pr.workspace_id) ?? [];
-      prs.push({
-        number: pr.number,
-        url: pr.url,
-        status: pr.status as 'open' | 'merged' | 'closed',
-      });
-      map.set(pr.workspace_id, prs);
-    }
-
-    return map;
-  }, [pullRequests]);
-
   const githubIssuesByIssueId = useStableGroups(
     useMemo(() => {
       const map = new Map<string, KanbanGithubIssue[]>();
@@ -949,7 +928,11 @@ export function KanbanContainer() {
               filesChanged: workspace.files_changed ?? 0,
               linesAdded: workspace.lines_added ?? 0,
               linesRemoved: workspace.lines_removed ?? 0,
-              prs: prsByWorkspaceId.get(workspace.id) ?? [],
+              prs: getPullRequestsForWorkspace(workspace.id).map((pr) => ({
+                number: pr.number,
+                url: pr.url,
+                status: pr.status,
+              })),
               owner:
                 membersWithProfilesById.get(workspace.owner_user_id) ?? null,
               updatedAt: workspace.updated_at,
@@ -979,7 +962,7 @@ export function KanbanContainer() {
       getWorkspacesForIssue,
       localWorkspacesById,
       locallyArchivedWorkspaceIds,
-      prsByWorkspaceId,
+      getPullRequestsForWorkspace,
       membersWithProfilesById,
       userId,
     ]),

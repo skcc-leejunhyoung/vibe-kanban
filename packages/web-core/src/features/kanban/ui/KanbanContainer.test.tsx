@@ -467,7 +467,7 @@ describe('KanbanContainer project refresh', () => {
       await act(() => vi.advanceTimersByTimeAsync(0));
 
       expect(board.retryOrg).toHaveBeenCalledOnce();
-      expect(makeRequest).toHaveBeenCalledTimes(12);
+      expect(makeRequest).toHaveBeenCalledTimes(13);
       for (const [path] of vi.mocked(makeRequest).mock.calls) {
         expect(
           new URL(path, 'http://api.test').searchParams.get('project_id')

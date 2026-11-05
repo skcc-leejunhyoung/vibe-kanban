@@ -1,5 +1,5 @@
 use api_types::Workspace;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -7,6 +7,8 @@ use uuid::Uuid;
 pub enum WorkspaceError {
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("workspace is already linked to another host, owner, project or issue")]
+    AlreadyLinked,
 }
 
 pub struct CreateWorkspaceParams {
@@ -86,6 +88,12 @@ impl WorkspaceRepository {
             r#"
             INSERT INTO workspaces (project_id, owner_user_id, host_id, local_workspace_id, issue_id, name, archived, files_changed, lines_added, lines_removed)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (local_workspace_id) DO UPDATE SET
+                host_id = EXCLUDED.host_id
+            WHERE workspaces.owner_user_id = EXCLUDED.owner_user_id
+                AND (workspaces.host_id IS NULL OR workspaces.host_id = EXCLUDED.host_id)
+                AND workspaces.project_id = EXCLUDED.project_id
+                AND workspaces.issue_id IS NOT DISTINCT FROM EXCLUDED.issue_id
             RETURNING
                 id, project_id, owner_user_id, host_id, issue_id,
                 local_workspace_id, name, archived, files_changed,
@@ -102,8 +110,9 @@ impl WorkspaceRepository {
         .bind(files_changed)
         .bind(lines_added)
         .bind(lines_removed)
-        .fetch_one(pool)
-        .await?;
+        .fetch_optional(pool)
+        .await?
+        .ok_or(WorkspaceError::AlreadyLinked)?;
         Ok(record)
     }
 
@@ -208,23 +217,25 @@ impl WorkspaceRepository {
         Ok(exists)
     }
 
-    pub async fn delete_by_local_id(
-        pool: &PgPool,
-        local_workspace_id: Uuid,
-    ) -> Result<(), WorkspaceError> {
-        sqlx::query!(
-            "DELETE FROM workspaces WHERE local_workspace_id = $1",
-            local_workspace_id
-        )
-        .execute(pool)
-        .await?;
-        Ok(())
+    pub async fn lock(
+        tx: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+    ) -> Result<Option<Workspace>, sqlx::Error> {
+        sqlx::query_as("SELECT id, project_id, owner_user_id, host_id, issue_id, local_workspace_id, name, archived, files_changed, lines_added, lines_removed, created_at, updated_at FROM workspaces WHERE id = $1 FOR UPDATE")
+            .bind(id).fetch_optional(&mut **tx).await
     }
 
     pub async fn delete(pool: &PgPool, id: Uuid) -> Result<(), WorkspaceError> {
+        let mut tx = super::begin_tx(pool).await?;
+        Self::lock(&mut tx, id).await?;
+        super::pull_request_workspaces::PullRequestWorkspaceRepository::unlink_workspace(
+            &mut tx, id,
+        )
+        .await?;
         sqlx::query!("DELETE FROM workspaces WHERE id = $1", id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 

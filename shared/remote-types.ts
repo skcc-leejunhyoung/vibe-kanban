@@ -252,6 +252,8 @@ export type PullRequest = { id: string, url: string, number: number, status: Pul
 
 export type PullRequestIssue = { id: string, pull_request_id: string, issue_id: string, project_id: string, };
 
+export type PullRequestWorkspace = { id: string, pull_request_id: string, workspace_id: string, issue_id: string, project_id: string, };
+
 export type PullRequestIssueMapping = { url: string, pull_request_issues: Array<PullRequestIssue>, };
 
 export type ListPullRequestIssueMappingsRequest = { urls: Array<string>, };
@@ -593,6 +595,13 @@ export const PROJECT_PULL_REQUEST_ISSUES_SHAPE = defineShape<PullRequestIssue>(
   ['project_id'] as const,
   '/v1/shape/project/{project_id}/pull_request_issues',
   '/v1/fallback/pull_request_issues'
+);
+
+export const PROJECT_PULL_REQUEST_WORKSPACES_SHAPE = defineShape<PullRequestWorkspace>(
+  'pull_request_workspaces',
+  ['project_id'] as const,
+  '/v1/shape/project/{project_id}/pull_request_workspaces',
+  '/v1/fallback/pull_request_workspaces'
 );
 
 export const PROJECT_GITHUB_ISSUE_LINKS_SHAPE = defineShape<GithubIssueLink>(

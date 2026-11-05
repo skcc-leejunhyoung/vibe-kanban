@@ -191,3 +191,73 @@ it('does not carry a previous opt-out to another issue or use a mismatched proje
   await render('repo-test', null);
   expect(state.blocked).toBe(false);
 });
+
+it('discards the old PR payload while the new host is loading', async () => {
+  await render();
+  await vi.waitFor(() => expect(state.status).toBe('ready'));
+  vi.mocked(issuePrsApi.getPrInfo).mockImplementation(
+    () => new Promise(() => {})
+  );
+  env.host = 'new-synthetic-host';
+  await render();
+  expect(state.status).toBe('loading');
+  expect(state.blocked).toBe(true);
+  expect(state.prReviewPayload).toBeNull();
+});
+
+it('rebuilds the payload for the current repository while reusing URL-scoped PR metadata', async () => {
+  await render();
+  await vi.waitFor(() => expect(state.status).toBe('ready'));
+  await render('new-synthetic-repo');
+  expect(state.status).toBe('ready');
+  expect(state.prReviewPayload?.repo_id).toBe('new-synthetic-repo');
+  expect(issuePrsApi.getPrInfo).toHaveBeenCalledOnce();
+});
+
+it('allows a healthy background PR refresh using the current cached payload', async () => {
+  await render();
+  await vi.waitFor(() => expect(state.status).toBe('ready'));
+  vi.mocked(issuePrsApi.getPrInfo).mockImplementation(
+    () => new Promise(() => {})
+  );
+  await act(async () => {
+    void client.invalidateQueries({ queryKey: ['review-mode-pr'] });
+  });
+  expect(state.status).toBe('ready');
+  expect(state.blocked).toBe(false);
+  expect(state.prReviewPayload?.repo_id).toBe('repo-test');
+});
+
+it('blocks when one of several linked PR lookups fails', async () => {
+  context = {
+    ...context,
+    getPullRequestsForIssue: () => [
+      { url: detail.url },
+      { url: 'https://github.com/example/widgets/pull/13' },
+    ],
+  } as ProjectContextValue;
+  vi.mocked(issuePrsApi.getPrInfo)
+    .mockResolvedValueOnce({ success: true, data: detail })
+    .mockRejectedValueOnce(new Error('Synthetic second PR failure'));
+  await render();
+  await vi.waitFor(() => expect(state.status).toBe('error'));
+  expect(state.blocked).toBe(true);
+  expect(state.prReviewPayload).toBeNull();
+});
+
+it('retains an explicit opt-out for the same issue through later metadata failures', async () => {
+  await render();
+  await vi.waitFor(() => expect(state.status).toBe('ready'));
+  await act(() => state.setEnabled(false));
+  context = {
+    ...context,
+    reviewTags: {
+      ...context.reviewTags,
+      error: { message: 'Synthetic tag outage', status: 503 },
+    },
+  };
+  await render();
+  expect(state.status).toBe('disabled');
+  expect(state.blocked).toBe(false);
+  expect(state.prReviewPayload).toBeNull();
+});

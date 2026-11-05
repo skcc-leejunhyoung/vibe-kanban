@@ -167,6 +167,14 @@ pub const PROJECT_PULL_REQUEST_ISSUES_SHAPE: ShapeDefinition<PullRequestIssue> =
     params: ["project_id"],
 );
 
+pub const PROJECT_PULL_REQUEST_WORKSPACES_SHAPE: ShapeDefinition<api_types::PullRequestWorkspace> = crate::define_shape!(
+    name: "PROJECT_PULL_REQUEST_WORKSPACES_SHAPE",
+    table: "pull_request_workspaces",
+    where_clause: r#""project_id" = $1"#,
+    url: "/shape/project/{project_id}/pull_request_workspaces",
+    params: ["project_id"],
+);
+
 // Kept as an explicit definition until the migration-backed SQLx query cache is
 // generated; runtime shape registration is identical to `define_shape!`.
 pub const PROJECT_GITHUB_ISSUE_LINKS_SHAPE: ShapeDefinition<GithubIssueLink> = ShapeDefinition {

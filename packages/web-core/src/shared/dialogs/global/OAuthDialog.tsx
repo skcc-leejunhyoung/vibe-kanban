@@ -16,9 +16,9 @@ import { useCallback, useState, useRef, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthMutations } from '@/shared/hooks/auth/useAuthMutations';
 import { useAuthStatus } from '@/shared/hooks/auth/useAuthStatus';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { organizationKeys } from '@/shared/hooks/organizationKeys';
 import { tokenManager } from '@/shared/lib/auth/tokenManager';
+import { AuthError } from '@/shared/lib/auth/errors';
 import { getAuthRuntime } from '@/shared/lib/auth/runtime';
 import { oauthApi, type AuthMethodsResponse } from '@/shared/lib/api';
 import { REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY } from '@/shared/lib/relayHostQueryKeys';
@@ -42,7 +42,6 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
   const modal = useModal();
   const { t } = useTranslation('common');
   const queryClient = useQueryClient();
-  const { reloadSystem } = useUserSystem();
   const [state, setState] = useState<OAuthState>({ type: 'select' });
   const popupRef = useRef<Window | null>(null);
   const autoStartedRef = useRef(false);
@@ -65,6 +64,30 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
   const hasLocalAuth = authMethods?.local_auth_enabled ?? false;
   const oauthProviders = authMethods?.oauth_providers ?? [];
   const hasOAuthProviders = oauthProviders.length > 0;
+
+  const refreshLocalSession = useCallback(async () => {
+    // The route's config may belong to another host; login always belongs here.
+    await queryClient.invalidateQueries(
+      {
+        queryKey: ['user-system', 'local'],
+        exact: true,
+        refetchType: 'all',
+      },
+      { throwOnError: true }
+    );
+    if (!(await tokenManager.triggerRefresh())) {
+      throw new AuthError(
+        'required',
+        'Sign-in did not restore the local session. Please try again.'
+      );
+    }
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
+      }),
+      queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
+    ]);
+  }, [queryClient]);
 
   // Auth mutations hook
   const { initHandoff, cancelHandoff } = useAuthMutations({
@@ -169,12 +192,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
       // Reload user system, then refresh token so paused Electric shapes
       // resume after re-authentication without requiring a full page reload.
       void (async () => {
-        await reloadSystem();
-        await tokenManager.triggerRefresh();
-        await queryClient.invalidateQueries({
-          queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
-        });
-        await queryClient.invalidateQueries({ queryKey: organizationKeys.all });
+        await refreshLocalSession();
         setState({
           type: 'success',
           displayName:
@@ -197,8 +215,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
     modal,
     reauthenticate,
     isReauthenticationComplete,
-    reloadSystem,
-    queryClient,
+    refreshLocalSession,
     cancelHandoff,
   ]);
 
@@ -254,12 +271,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
         localEmail.trim(),
         localPassword
       );
-      await reloadSystem();
-      await tokenManager.triggerRefresh();
-      await queryClient.invalidateQueries({
-        queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
-      });
-      queryClient.invalidateQueries({ queryKey: organizationKeys.all });
+      await refreshLocalSession();
 
       setState({
         type: 'success',
@@ -282,8 +294,7 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
     localEmail,
     localPassword,
     modal,
-    queryClient,
-    reloadSystem,
+    refreshLocalSession,
   ]);
 
   // Cleanup polling when dialog closes

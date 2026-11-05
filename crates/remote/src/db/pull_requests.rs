@@ -97,7 +97,7 @@ impl PullRequestRepository {
                 created_at          AS "created_at!: DateTime<Utc>",
                 updated_at          AS "updated_at!: DateTime<Utc>"
             FROM pull_requests
-            WHERE workspace_id = $1
+            WHERE id IN (SELECT pull_request_id FROM pull_request_workspaces WHERE workspace_id = $1)
             "#,
             workspace_id
         )
@@ -241,6 +241,11 @@ impl PullRequestRepository {
                 target_branch_name, project_id, issue_id, workspace_id
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (url, project_id) DO UPDATE SET
+                status = EXCLUDED.status,
+                merged_at = EXCLUDED.merged_at,
+                merge_commit_sha = EXCLUDED.merge_commit_sha,
+                updated_at = NOW()
             RETURNING
                 id                  AS "id!: Uuid",
                 url                 AS "url!: String",
@@ -270,27 +275,6 @@ impl PullRequestRepository {
         .await?;
 
         Ok(record)
-    }
-
-    /// Associates an existing PR with the workspace it was synced from, so the
-    /// workspace ↔ PR ↔ issue links can be cleaned up when the workspace is
-    /// unlinked. Only overwrites when a workspace id is provided.
-    pub async fn set_workspace_id<'e, E>(
-        executor: E,
-        id: Uuid,
-        workspace_id: Uuid,
-    ) -> Result<(), PullRequestError>
-    where
-        E: Executor<'e, Database = Postgres>,
-    {
-        sqlx::query!(
-            "UPDATE pull_requests SET workspace_id = $1, updated_at = NOW() WHERE id = $2",
-            workspace_id,
-            id
-        )
-        .execute(executor)
-        .await?;
-        Ok(())
     }
 
     pub async fn update<'e, E>(

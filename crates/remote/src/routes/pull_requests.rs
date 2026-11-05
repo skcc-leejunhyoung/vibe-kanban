@@ -22,7 +22,8 @@ use crate::{
     auth::RequestContext,
     db::{
         get_txid, issues::IssueRepository, pull_request_issues::PullRequestIssueRepository,
-        pull_requests::PullRequestRepository,
+        pull_request_workspaces::PullRequestWorkspaceRepository,
+        pull_requests::PullRequestRepository, workspaces::WorkspaceRepository,
     },
 };
 
@@ -143,7 +144,7 @@ async fn create_pull_request(
             })?,
         };
 
-    PullRequestIssueRepository::create(&mut *tx, pr.id, issue_id, None)
+    PullRequestIssueRepository::create(&mut tx, pr.id, issue_id, None)
         .await
         .map_err(|error| {
             tracing::error!(?error, "failed to link pull request to issue");
@@ -289,6 +290,16 @@ async fn upsert_pull_request(
     )
     .await?;
 
+    let mut tx = state.pool().begin().await.map_err(|error| {
+        tracing::error!(?error, "failed to begin transaction");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    let workspace = WorkspaceRepository::lock(&mut tx, workspace.id)
+        .await
+        .map_err(|error| db_error(error, "failed to lock workspace"))?
+        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
+
     let issue_id = workspace
         .issue_id
         .ok_or_else(|| ErrorResponse::new(StatusCode::BAD_REQUEST, "workspace has no issue"))?;
@@ -304,65 +315,29 @@ async fn upsert_pull_request(
         .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "issue not found"))?;
 
     let project_id = issue.project_id;
+    if project_id != workspace.project_id {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "issue does not belong to the workspace project",
+        ));
+    }
 
-    let mut tx = state.pool().begin().await.map_err(|error| {
-        tracing::error!(?error, "failed to begin transaction");
-        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-    })?;
+    let pr = PullRequestRepository::create(
+        &mut *tx,
+        payload.url,
+        payload.number,
+        payload.status,
+        payload.merged_at,
+        payload.merge_commit_sha,
+        payload.target_branch_name,
+        project_id,
+        issue_id,
+        Some(workspace.id),
+    )
+    .await
+    .map_err(|error| db_error(error, "failed to upsert pull request"))?;
 
-    let existing_pr =
-        PullRequestRepository::find_by_url_and_project(&mut *tx, &payload.url, project_id)
-            .await
-            .map_err(|error| {
-                tracing::error!(?error, url = %payload.url, "failed to check for existing PR");
-                ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-            })?;
-
-    let pr = if let Some(existing) = existing_pr {
-        let updated = PullRequestRepository::update(
-            &mut *tx,
-            existing.id,
-            Some(payload.status),
-            Some(payload.merged_at),
-            Some(payload.merge_commit_sha),
-        )
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, "failed to update pull request");
-            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-        })?;
-
-        // Remember which workspace this PR was synced from so the link can be
-        // cleaned up when that workspace is unlinked from the issue.
-        PullRequestRepository::set_workspace_id(&mut *tx, updated.id, workspace.id)
-            .await
-            .map_err(|error| {
-                tracing::error!(?error, "failed to associate pull request with workspace");
-                ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-            })?;
-
-        updated
-    } else {
-        PullRequestRepository::create(
-            &mut *tx,
-            payload.url,
-            payload.number,
-            payload.status,
-            payload.merged_at,
-            payload.merge_commit_sha,
-            payload.target_branch_name,
-            project_id,
-            issue_id,
-            Some(workspace.id),
-        )
-        .await
-        .map_err(|error| {
-            tracing::error!(?error, "failed to create pull request");
-            db_error(error, "failed to create pull request")
-        })?
-    };
-
-    PullRequestIssueRepository::create(&mut *tx, pr.id, issue_id, None)
+    PullRequestWorkspaceRepository::create(&mut tx, pr.id, workspace.id, issue_id, project_id)
         .await
         .map_err(|error| {
             tracing::error!(?error, "failed to link pull request to issue");

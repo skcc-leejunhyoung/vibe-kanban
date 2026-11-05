@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO pull_request_issues (id, pull_request_id, issue_id, project_id)\n            VALUES ($1, $2, $3, (SELECT project_id FROM issues WHERE id = $3))\n            ON CONFLICT (pull_request_id, issue_id) DO UPDATE\n                SET pull_request_id = EXCLUDED.pull_request_id\n            RETURNING\n                id              AS \"id!: Uuid\",\n                pull_request_id AS \"pull_request_id!: Uuid\",\n                issue_id        AS \"issue_id!: Uuid\",\n                project_id      AS \"project_id!: Uuid\"\n            ",
+  "query": "\n            INSERT INTO pull_request_issues (id, pull_request_id, issue_id, project_id)\n            VALUES ($1, $2, $3, (SELECT project_id FROM issues WHERE id = $3))\n            ON CONFLICT (pull_request_id, issue_id) DO UPDATE\n                SET is_explicit = TRUE\n            RETURNING\n                id              AS \"id!: Uuid\",\n                pull_request_id AS \"pull_request_id!: Uuid\",\n                issue_id        AS \"issue_id!: Uuid\",\n                project_id      AS \"project_id!: Uuid\"\n            ",
   "describe": {
     "columns": [
       {
@@ -38,5 +38,5 @@
       false
     ]
   },
-  "hash": "66433262ab2bc2f42c65cd3cc8b2a0c3a0f79bc2c921bbee943ab97733c3aadd"
+  "hash": "e8e0ae0c728937bbe530260e0edd7fc887f5b43c0558b008bbaf461e43202ec8"
 }

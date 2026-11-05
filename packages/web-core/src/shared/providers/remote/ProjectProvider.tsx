@@ -16,6 +16,7 @@ import {
   PROJECT_ISSUE_RELATIONSHIPS_SHAPE,
   PROJECT_PULL_REQUESTS_SHAPE,
   PROJECT_PULL_REQUEST_ISSUES_SHAPE,
+  PROJECT_PULL_REQUEST_WORKSPACES_SHAPE,
   PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
   PROJECT_WORKSPACES_SHAPE,
   ISSUE_MUTATION,
@@ -107,6 +108,11 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     params,
     { enabled, mutation: PULL_REQUEST_ISSUE_MUTATION }
   );
+  const pullRequestWorkspacesResult = useShape(
+    PROJECT_PULL_REQUEST_WORKSPACES_SHAPE,
+    params,
+    { enabled }
+  );
   const githubIssueLinksResult = useShape(
     PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
     params,
@@ -137,6 +143,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     issueRelationshipsResult.error ||
     pullRequestsResult.error ||
     pullRequestIssuesResult.error ||
+    pullRequestWorkspacesResult.error ||
     githubIssueLinksResult.error ||
     workspacesResult.error ||
     null;
@@ -153,6 +160,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     issueRelationshipsResult.retry();
     pullRequestsResult.retry();
     pullRequestIssuesResult.retry();
+    pullRequestWorkspacesResult.retry();
     githubIssueLinksResult.retry();
     workspacesResult.retry();
   }, [
@@ -166,6 +174,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     issueRelationshipsResult,
     pullRequestsResult,
     pullRequestIssuesResult,
+    pullRequestWorkspacesResult,
     githubIssueLinksResult,
     workspacesResult,
   ]);
@@ -260,6 +269,24 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     }, [pullRequestIssuesResult.data, pullRequestsResult.data])
   );
 
+  const pullRequestsByWorkspaceId = useStableGroups(
+    useMemo(() => {
+      const linksByPullRequestId = groupBy(
+        pullRequestWorkspacesResult.data,
+        (link) => link.pull_request_id
+      );
+      const map = new Map<string, PullRequest[]>();
+      for (const pr of pullRequestsResult.data) {
+        for (const link of linksByPullRequestId.get(pr.id) ?? EMPTY) {
+          const prs = map.get(link.workspace_id);
+          if (!prs) map.set(link.workspace_id, [pr]);
+          else prs.push(pr);
+        }
+      }
+      return map;
+    }, [pullRequestWorkspacesResult.data, pullRequestsResult.data])
+  );
+
   // An issue maps to at most one GitHub issue link (UNIQUE(issue_id)).
   const githubIssueLinkByIssueId = useMemo(() => {
     const map = new Map<string, ProjectGithubIssueLink>();
@@ -319,6 +346,12 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     (issueId: string): PullRequest[] =>
       pullRequestsByIssueId.get(issueId) ?? EMPTY,
     [pullRequestsByIssueId]
+  );
+
+  const getPullRequestsForWorkspace = useCallback(
+    (workspaceId: string): PullRequest[] =>
+      pullRequestsByWorkspaceId.get(workspaceId) ?? EMPTY,
+    [pullRequestsByWorkspaceId]
   );
 
   const getGithubIssueLinkForIssue = useCallback(
@@ -424,6 +457,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getStatus,
       getTag,
       getPullRequestsForIssue,
+      getPullRequestsForWorkspace,
       getGithubIssueLinkForIssue,
       getWorkspacesForIssue,
 
@@ -462,6 +496,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getStatus,
       getTag,
       getPullRequestsForIssue,
+      getPullRequestsForWorkspace,
       getGithubIssueLinkForIssue,
       getWorkspacesForIssue,
       issuesById,

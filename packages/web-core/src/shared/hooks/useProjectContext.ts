@@ -168,6 +168,7 @@ export interface ProjectContextValue {
   getStatus: (statusId: string) => ProjectStatus | undefined;
   getTag: (tagId: string) => Tag | undefined;
   getPullRequestsForIssue: (issueId: string) => PullRequest[];
+  getPullRequestsForWorkspace: (workspaceId: string) => PullRequest[];
   getGithubIssueLinkForIssue: (
     issueId: string
   ) => ProjectGithubIssueLink | undefined;

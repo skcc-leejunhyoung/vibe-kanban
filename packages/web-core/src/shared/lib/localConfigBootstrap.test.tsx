@@ -1,4 +1,4 @@
-import { act, useEffect } from 'react';
+import { act, useEffect, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, expect, it, vi } from 'vitest';
 import { installFakeDomReact } from './electric/electricTestKit';
@@ -31,45 +31,67 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-it('waits for the configured origin before mounting consumers and keeps them on refetch', async () => {
-  dom = installFakeDomReact();
-  let resolve!: (info: UserSystemInfo) => void;
-  vi.mocked(configApi.getConfig).mockImplementation(
-    () =>
-      new Promise((done) => {
-        resolve = done;
-      })
-  );
-  const origins: string[] = [];
-  const unmount = vi.fn();
-  function Consumer() {
-    useEffect(() => {
-      origins.push(getRemoteApiUrl());
-      return unmount;
-    }, []);
-    return null;
+it.each(['https://central.test', null])(
+  'waits for config %s and keeps local input through a failed background refetch',
+  async (apiBase) => {
+    dom = installFakeDomReact();
+    const expectedBase = apiBase ?? getRemoteApiUrl();
+    setRemoteApiBase('https://stale.example.test');
+    let resolve!: (info: UserSystemInfo) => void;
+    let reject!: (error: Error) => void;
+    vi.mocked(configApi.getConfig).mockImplementation(
+      () =>
+        new Promise((done, fail) => {
+          resolve = done;
+          reject = fail;
+        })
+    );
+    const origins: string[] = [];
+    const unmount = vi.fn();
+    let currentInput = '';
+    let editInput!: (value: string) => void;
+    function Consumer() {
+      const [input, setInput] = useState('');
+      currentInput = input;
+      editInput = setInput;
+      useEffect(() => {
+        origins.push(getRemoteApiUrl());
+        return unmount;
+      }, []);
+      return null;
+    }
+    await dom.render(
+      <QueryClientProvider client={client}>
+        <UserSystemProvider>
+          <Consumer />
+        </UserSystemProvider>
+      </QueryClientProvider>
+    );
+    expect(origins).toEqual([]);
+    await act(async () =>
+      resolve({
+        shared_api_base: apiBase,
+        login_status: { status: 'loggedout' },
+      } as UserSystemInfo)
+    );
+    await vi.waitFor(() => expect(origins).toEqual([expectedBase]));
+    await act(() => editInput('unfinished draft'));
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: ['user-system', 'local'] });
+    });
+    expect(unmount).not.toHaveBeenCalled();
+    expect(origins).toHaveLength(1);
+    expect(currentInput).toBe('unfinished draft');
+    await act(() => reject(new Error('Synthetic background failure')));
+    await vi.waitFor(() =>
+      expect(client.getQueryState(['user-system', 'local'])?.status).toBe(
+        'error'
+      )
+    );
+    expect(unmount).not.toHaveBeenCalled();
+    expect(currentInput).toBe('unfinished draft');
   }
-  await dom.render(
-    <QueryClientProvider client={client}>
-      <UserSystemProvider>
-        <Consumer />
-      </UserSystemProvider>
-    </QueryClientProvider>
-  );
-  expect(origins).toEqual([]);
-  await act(async () =>
-    resolve({
-      shared_api_base: 'https://central.test',
-      login_status: { status: 'loggedout' },
-    } as UserSystemInfo)
-  );
-  await vi.waitFor(() => expect(origins).toEqual(['https://central.test']));
-  await act(async () => {
-    void client.invalidateQueries({ queryKey: ['user-system', 'local'] });
-  });
-  expect(unmount).not.toHaveBeenCalled();
-  expect(origins).toHaveLength(1);
-});
+);
 
 it('does not mount consumers on initial failure and recovers on retry', async () => {
   dom = installFakeDomReact();

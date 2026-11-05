@@ -94,6 +94,15 @@ function seedRows(
     pull_request_issues: [
       { id: 'pri1', project_id: p, pull_request_id: 'pr1', issue_id: 'i1' },
     ],
+    pull_request_workspaces: [
+      {
+        id: 'pw1',
+        project_id: p,
+        pull_request_id: 'pr1',
+        workspace_id: 'w1',
+        issue_id: 'i1',
+      },
+    ],
     github_issue_links: [
       { id: 'g1', project_id: p, issue_id: 'i1', number: 7, url: 'u' },
     ],
@@ -164,6 +173,48 @@ async function renderProvider(
 }
 
 describe('ProjectProvider streams', () => {
+  it('keeps a shared PR on both workspaces and removes only the unlinked badge', async () => {
+    const provider = await renderProvider();
+    const original = provider.latest().getPullRequestsForWorkspace('w1');
+    expect(original.map((pr) => pr.id)).toEqual(['pr1']);
+    await act(async () => {
+      emitChange(provider.session('pull_request_workspaces'), 'insert', {
+        id: 'pw2',
+        project_id: provider.projectId,
+        pull_request_id: 'pr1',
+        workspace_id: 'w2',
+        issue_id: 'i1',
+      });
+    });
+    expect(provider.latest().getPullRequestsForWorkspace('w1')).toBe(original);
+    expect(
+      provider
+        .latest()
+        .getPullRequestsForWorkspace('w2')
+        .map((pr) => pr.id)
+    ).toEqual(['pr1']);
+    expect(provider.latest().getPullRequestsForWorkspace('unlinked')).toEqual(
+      []
+    );
+    await act(async () => {
+      emitChange(provider.session('pull_request_workspaces'), 'delete', {
+        id: 'pw2',
+        project_id: provider.projectId,
+        pull_request_id: 'pr1',
+        workspace_id: 'w2',
+        issue_id: 'i1',
+      });
+    });
+    expect(provider.latest().getPullRequestsForWorkspace('w1')).toBe(original);
+    expect(provider.latest().getPullRequestsForWorkspace('w2')).toEqual([]);
+    expect(
+      provider
+        .latest()
+        .getPullRequestsForIssue('i1')
+        .map((pr) => pr.id)
+    ).toEqual(['pr1']);
+  });
+
   it('waits for both review sources and keeps unrelated failures separate', async () => {
     const provider = await renderProvider({
       pendingTables: ['issue_tags', 'pull_request_issues'],
@@ -202,7 +253,7 @@ describe('ProjectProvider streams', () => {
     expect(provider.latest().reviewPullRequests.error).toBeNull();
   });
 
-  it('opens 12 project streams and shares them with other readers', async () => {
+  it('opens 13 project streams and shares them with other readers', async () => {
     const provider = await renderProvider({ withReadOnlyReader: true });
     // Collection ids end with the project id (legacy ids also had a `-mut`
     // twin for mutating readers, counted here on purpose).
@@ -210,8 +261,8 @@ describe('ProjectProvider streams', () => {
     const streams = () =>
       electricSessions.filter((s) => ownStream.test(s.id)).map((s) => s.id);
 
-    expect(streams()).toHaveLength(12);
-    expect(new Set(streams()).size).toBe(12);
+    expect(streams()).toHaveLength(13);
+    expect(new Set(streams()).size).toBe(13);
     expect(streams()).not.toContain(`issue_followers-${provider.projectId}`);
 
     // A raw reader (e.g. the sidebar's issue grouping) reuses the same
@@ -220,7 +271,7 @@ describe('ProjectProvider streams', () => {
       project_id: provider.projectId,
     });
     const subscription = raw.subscribeChanges(() => {});
-    expect(streams()).toHaveLength(12);
+    expect(streams()).toHaveLength(13);
     subscription.unsubscribe();
   });
 });

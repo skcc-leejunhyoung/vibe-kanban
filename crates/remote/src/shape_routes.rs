@@ -68,6 +68,11 @@ struct ListWorkspacesResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ListPullRequestWorkspacesResponse {
+    pull_request_workspaces: Vec<api_types::PullRequestWorkspace>,
+}
+
+#[derive(Debug, Serialize)]
 struct ListProjectMilestonesResponse {
     project_milestones: Vec<ProjectMilestone>,
 }
@@ -198,6 +203,12 @@ pub fn all_shape_routes() -> Vec<ShapeRoute> {
             fallback_list_pull_request_issues,
         ),
         ShapeRoute::new(
+            &shapes::PROJECT_PULL_REQUEST_WORKSPACES_SHAPE,
+            ShapeScope::Project,
+            "/fallback/pull_request_workspaces",
+            fallback_list_pull_request_workspaces,
+        ),
+        ShapeRoute::new(
             &shapes::PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
             ShapeScope::Project,
             "/fallback/github_issue_links",
@@ -217,6 +228,26 @@ pub fn all_shape_routes() -> Vec<ShapeRoute> {
             fallback_list_issue_comment_reactions,
         ),
     ]
+}
+
+async fn fallback_list_pull_request_workspaces(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Query(query): Query<ProjectFallbackQuery>,
+) -> Result<Json<ListPullRequestWorkspacesResponse>, ErrorResponse> {
+    ensure_project_access(state.pool(), ctx.user.id, query.project_id).await?;
+    let pull_request_workspaces =
+        crate::db::pull_request_workspaces::PullRequestWorkspaceRepository::list_by_project(
+            state.pool(),
+            query.project_id,
+        )
+        .await
+        .map_err(|error| {
+            crate::routes::error::db_error(error, "failed to list workspace PR links")
+        })?;
+    Ok(Json(ListPullRequestWorkspacesResponse {
+        pull_request_workspaces,
+    }))
 }
 
 // =============================================================================

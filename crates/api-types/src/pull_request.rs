@@ -39,6 +39,15 @@ pub struct PullRequestIssue {
     pub project_id: Uuid,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS, sqlx::FromRow)]
+pub struct PullRequestWorkspace {
+    pub id: Uuid,
+    pub pull_request_id: Uuid,
+    pub workspace_id: Uuid,
+    pub issue_id: Uuid,
+    pub project_id: Uuid,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListPullRequestsQuery {
     pub issue_id: Uuid,

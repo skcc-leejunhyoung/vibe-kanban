@@ -29,6 +29,7 @@ pub mod project_notification_preferences;
 pub mod project_statuses;
 pub mod projects;
 pub mod pull_request_issues;
+pub mod pull_request_workspaces;
 pub mod pull_requests;
 pub mod tags;
 pub mod types;

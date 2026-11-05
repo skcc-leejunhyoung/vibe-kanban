@@ -164,6 +164,7 @@ fn export_shapes() -> String {
         PullRequestStatus::decl(),
         PullRequest::decl(),
         PullRequestIssue::decl(),
+        api_types::PullRequestWorkspace::decl(),
         PullRequestIssueMapping::decl(),
         ListPullRequestIssueMappingsRequest::decl(),
         ListPullRequestIssueMappingsResponse::decl(),

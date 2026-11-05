@@ -1,12 +1,13 @@
 import { act, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Issue } from 'shared/remote-types';
-import { installDomlessReact } from '@/shared/lib/electric/electricTestKit';
+import type { Issue, PullRequest } from 'shared/remote-types';
+import { installFakeDomReact } from '@/shared/lib/electric/electricTestKit';
 import { KanbanIssueCard, type KanbanIssueCardProps } from './KanbanIssueCard';
 
 const contentRenders = vi.fn();
 let lastContentProps: {
   displayId: string;
+  pullRequests: PullRequest[];
   onOpenInNewTabClick?: () => void;
 } | null = null;
 
@@ -16,6 +17,7 @@ vi.mock('@vibe/ui/components/KanbanBoard', () => ({
 vi.mock('@vibe/ui/components/KanbanCardContent', () => ({
   KanbanCardContent: (props: {
     displayId: string;
+    pullRequests: PullRequest[];
     onOpenInNewTabClick?: () => void;
   }) => {
     contentRenders(props.displayId);
@@ -30,11 +32,11 @@ vi.mock('@/shared/components/SearchableTagDropdownContainer', () => ({
   SearchableTagDropdownContainer: () => null,
 }));
 
-let dom: ReturnType<typeof installDomlessReact>;
+let dom: ReturnType<typeof installFakeDomReact>;
 
 beforeEach(() => {
   contentRenders.mockClear();
-  dom = installDomlessReact();
+  dom = installFakeDomReact();
 });
 
 afterEach(async () => {
@@ -107,6 +109,25 @@ async function renderBoard() {
 }
 
 describe('KanbanIssueCard', () => {
+  it('deduplicates PR badges using actual workspace links instead of the legacy pointer', async () => {
+    const board = await renderBoard();
+    const pr = {
+      id: 'pr-shared',
+      number: 17,
+      url: 'https://github.com/synthetic-fixture/repository/pull/17',
+      status: 'open',
+      workspace_id: 'old-workspace',
+    } as PullRequest;
+    const workspace = {
+      id: 'review-workspace',
+      prs: [pr],
+    } as unknown as KanbanIssueCardProps['workspaces'][number];
+    await board.rerender({ pullRequests: [pr], workspaces: [workspace] });
+    expect(lastContentProps?.pullRequests).toEqual([]);
+    await board.rerender({ workspaces: [{ ...workspace, prs: [] }] });
+    expect(lastContentProps?.pullRequests).toEqual([pr]);
+  });
+
   it('skips re-rendering while its props are unchanged', async () => {
     const board = await renderBoard();
     expect(contentRenders).toHaveBeenCalledTimes(1);

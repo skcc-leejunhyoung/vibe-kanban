@@ -262,7 +262,7 @@ async fn create_pull_request_issue(
             })?,
         };
 
-    let data = PullRequestIssueRepository::create(&mut *tx, pr.id, payload.issue_id, payload.id)
+    let data = PullRequestIssueRepository::create(&mut tx, pr.id, payload.issue_id, payload.id)
         .await
         .map_err(|error| {
             tracing::error!(?error, "failed to link pull request to issue");

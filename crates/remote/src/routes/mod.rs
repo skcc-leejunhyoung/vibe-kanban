@@ -44,6 +44,8 @@ mod organizations;
 pub mod project_statuses;
 pub mod projects;
 pub mod pull_request_issues;
+#[cfg(test)]
+mod pull_request_workspace_tests;
 mod pull_requests;
 pub mod tags;
 mod tokens;
