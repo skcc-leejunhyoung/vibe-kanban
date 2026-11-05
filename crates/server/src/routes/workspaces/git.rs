@@ -1279,6 +1279,21 @@ pub async fn get_workspace_branch_status(
                 (Some(a), Some(b))
             };
 
+            // The work branch against its counterpart on the repo's primary remote,
+            // read from the local remote-tracking ref (`origin/<work_branch>`): no
+            // network. `exists` mirrors what the pull operation actually does
+            // (resolve origin for the branch), so the "Pull" button matches whether a
+            // pull would do anything: a pushed vk branch with no PR still shows it, a
+            // local-only branch never does.
+            let tracking = resolve_primary_remote_with(&git, &repo).and_then(|remote| {
+                git.get_remote_tracking_status(&repo.path, &workspace.branch, &remote)
+                    .ok()
+            });
+            let work_branch_has_remote = tracking.is_some_and(|(exists, _, _)| exists);
+
+            // An open PR fetches its head for fresh counts; otherwise the tracking
+            // ref's counts (as fresh as the last push/pull/fetch) let a diverged-
+            // branch dialog see the divergence go away.
             let (remote_ahead, remote_behind) = if let Some(Merge::Pr(PrMerge {
                 pr_info:
                     PullRequestInfo {
@@ -1293,24 +1308,11 @@ pub async fn get_workspace_branch_status(
                     Err(_) => (None, None),
                 }
             } else {
-                (None, None)
+                match tracking {
+                    Some((true, ahead, behind)) => (Some(ahead), Some(behind)),
+                    _ => (None, None),
+                }
             };
-
-            // Whether the work branch has a counterpart on the repo's primary remote.
-            // Checked via the local remote-tracking ref (`origin/<work_branch>`), so
-            // it's network-free and — unlike `remote_commits_ahead` above — does NOT
-            // depend on an open PR. This mirrors what the pull operation actually does
-            // (resolve origin for the branch), so the "Pull" button matches whether a
-            // pull would do anything: a pushed vk branch with no PR still shows it, a
-            // local-only branch never does.
-            let work_branch_has_remote =
-                if let Some(remote) = resolve_primary_remote_with(&git, &repo) {
-                    git.get_remote_tracking_status(&repo.path, &workspace.branch, &remote)
-                        .map(|(exists, _, _)| exists)
-                        .unwrap_or(false)
-                } else {
-                    false
-                };
 
             // How far the local target (base) branch is ahead/behind its counterpart
             // on the repo's primary remote. Read from local tracking refs only (no
