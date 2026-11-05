@@ -353,6 +353,23 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       isLoading,
       error,
       retry,
+      reviewTags: {
+        isLoading: tagsResult.isLoading || issueTagsResult.isLoading,
+        error: tagsResult.error || issueTagsResult.error,
+        retry: () => {
+          tagsResult.retry();
+          issueTagsResult.retry();
+        },
+      },
+      reviewPullRequests: {
+        isLoading:
+          pullRequestsResult.isLoading || pullRequestIssuesResult.isLoading,
+        error: pullRequestsResult.error || pullRequestIssuesResult.error,
+        retry: () => {
+          pullRequestsResult.retry();
+          pullRequestIssuesResult.retry();
+        },
+      },
 
       // Issue mutations
       insertIssue: issuesResult.insert,

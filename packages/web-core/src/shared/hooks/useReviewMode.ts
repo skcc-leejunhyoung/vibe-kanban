@@ -6,6 +6,7 @@ import { hasReviewTag, resolveReviewMode } from '@/shared/lib/reviewMode';
 import type { PrReviewInput, PullRequestDetail } from 'shared/types';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
+import { getAuthErrorKind } from '@/shared/lib/auth/errors';
 
 interface LinkedIssueLike {
   issueId: string;
@@ -31,12 +32,25 @@ export interface ReviewModeState {
    * is enabled and a PR was resolved, otherwise null (normal `vk/` branch).
    */
   prReviewPayload: PrReviewInput | null;
+  blocked: boolean;
+  canToggle: boolean;
+  requiresLogin: boolean;
+  error: unknown;
+  status:
+    | 'normal'
+    | 'loading'
+    | 'error'
+    | 'repository-required'
+    | 'ready'
+    | 'no-pr'
+    | 'disabled';
+  retry: () => void;
 }
 
 /**
  * Resolves whether a workspace being created from `linkedIssue` should run in
  * review mode (work directly on the issue's open PR head branch). Safe to call
- * outside a ProjectProvider — it simply reports `reviewTagPresent: false`.
+ * without a linked issue. A linked issue needs its matching project context.
  */
 export function useReviewMode(
   linkedIssue: LinkedIssueLike | null,
@@ -44,9 +58,18 @@ export function useReviewMode(
 ): ReviewModeState {
   // Read the project context defensively: the create UI is also reachable
   // outside a project (no linked issue), where the provider is absent.
-  const projectCtx = useContext(ProjectContext);
+  const context = useContext(ProjectContext);
+  const projectCtx =
+    context?.projectId === linkedIssue?.remoteProjectId ? context : null;
   const hostId = useHostId();
-  const [enabled, setEnabled] = useState(true);
+  const scope = JSON.stringify([
+    linkedIssue?.remoteProjectId,
+    linkedIssue?.issueId,
+    getHostRequestScopeQueryKey(hostId),
+  ]);
+  const [selection, setSelection] = useState({ scope, enabled: true });
+  if (selection.scope !== scope) setSelection({ scope, enabled: true });
+  const enabled = selection.scope === scope ? selection.enabled : true;
 
   const issueId = linkedIssue?.issueId ?? null;
 
@@ -67,7 +90,16 @@ export function useReviewMode(
 
   // Resolve regardless of the toggle so the banner can show the PR even when
   // the user has flipped review mode off.
-  const canResolve = reviewTagPresent && !!repoId && issuePrUrls.length > 0;
+  const tagsSource = projectCtx?.reviewTags;
+  const prsSource = projectCtx?.reviewPullRequests;
+  const tagsReady = !!tagsSource && !tagsSource.isLoading && !tagsSource.error;
+  const prsReady = !!prsSource && !prsSource.isLoading && !prsSource.error;
+  const canResolve =
+    tagsReady &&
+    prsReady &&
+    reviewTagPresent &&
+    !!repoId &&
+    issuePrUrls.length > 0;
 
   const prQueries = useQueries({
     queries: issuePrUrls.map((url) => ({
@@ -85,10 +117,22 @@ export function useReviewMode(
       ),
     [prQueries]
   );
-  const isFetching = prQueries.some((query) => query.isFetching);
+  const detailError = canResolve
+    ? (prQueries.find((query) => query.isError)?.error ??
+      prQueries.flatMap((query) =>
+        query.data?.success === false
+          ? [new Error(query.data.message ?? 'PR lookup failed')]
+          : []
+      )[0])
+    : null;
+  const error =
+    tagsSource?.error ||
+    (reviewTagPresent && (prsSource?.error || detailError)) ||
+    null;
+  const detailsPending = canResolve && prQueries.some((query) => !query.data);
 
   const resolvedReview = useMemo(() => {
-    if (!canResolve) return null;
+    if (!canResolve || error || detailsPending) return null;
     return resolveReviewMode({
       tags,
       openPrs: linkedPrs,
@@ -98,16 +142,50 @@ export function useReviewMode(
       repoId: repoId!,
       remoteName: null,
     });
-  }, [canResolve, tags, linkedPrs, repoId]);
+  }, [canResolve, error, detailsPending, tags, linkedPrs, repoId]);
+
+  let status: ReviewModeState['status'];
+  if (!linkedIssue) status = 'normal';
+  else if (!enabled) status = 'disabled';
+  else if (!projectCtx || error) status = 'error';
+  else if (!tagsReady) status = 'loading';
+  else if (!reviewTagPresent) status = 'normal';
+  else if (!repoId) status = 'repository-required';
+  else if (!prsReady || detailsPending) status = 'loading';
+  else status = resolvedReview ? 'ready' : 'no-pr';
+
+  const canToggle = tagsReady && reviewTagPresent;
+  const retry = () => {
+    if (!tagsReady) tagsSource?.retry();
+    if (reviewTagPresent && !prsReady) prsSource?.retry();
+    if (canResolve)
+      for (const query of prQueries) {
+        if (query.isError || query.data?.success === false || !query.data)
+          void query.refetch();
+      }
+  };
 
   return {
     reviewTagPresent,
     resolved: resolvedReview !== null,
-    isResolving: canResolve && isFetching,
+    isResolving: status === 'loading',
     headBranch: resolvedReview?.head_branch ?? null,
     prNumber: resolvedReview ? Number(resolvedReview.pr_number) : null,
     enabled,
-    setEnabled,
-    prReviewPayload: enabled ? resolvedReview : null,
+    setEnabled: (next) => {
+      if (next || canToggle) setSelection({ scope, enabled: next });
+    },
+    prReviewPayload: status === 'ready' ? resolvedReview : null,
+    blocked:
+      status === 'loading' ||
+      status === 'error' ||
+      status === 'repository-required',
+    canToggle,
+    requiresLogin:
+      Boolean(tagsSource?.error || prsSource?.error) &&
+      getAuthErrorKind(tagsSource?.error || prsSource?.error) === 'required',
+    error,
+    status,
+    retry,
   };
 }

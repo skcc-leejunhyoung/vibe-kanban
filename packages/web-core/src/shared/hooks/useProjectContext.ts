@@ -76,6 +76,16 @@ export interface ProjectContextValue {
   isLoading: boolean;
   error: SyncError | null;
   retry: () => void;
+  reviewTags: {
+    isLoading: boolean;
+    error: SyncError | null;
+    retry: () => void;
+  };
+  reviewPullRequests: {
+    isLoading: boolean;
+    error: SyncError | null;
+    retry: () => void;
+  };
 
   // Issue mutations
   insertIssue: (data: CreateIssueRequest) => InsertResult<Issue>;

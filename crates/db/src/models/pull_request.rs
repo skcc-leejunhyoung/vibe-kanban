@@ -36,32 +36,45 @@ impl PullRequest {
         target_branch_name: &str,
         head_branch_name: Option<&str>,
     ) -> Result<PullRequest, sqlx::Error> {
+        let existing = Self::find_by_url(pool, pr_url).await?;
+        if workspace_id.is_none()
+            && let Some(pr) = existing
+        {
+            return Ok(pr);
+        }
+        let (status, merged_at, merge_commit_sha) = existing
+            .map(|pr| (pr.pr_status, pr.merged_at, pr.merge_commit_sha))
+            .unwrap_or((MergeStatus::Open, None, None));
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
-        sqlx::query!(
-            "INSERT INTO pull_requests (id, workspace_id, repo_id, pr_url, pr_number, pr_status, target_branch_name, head_branch_name, created_at)
-            VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)
-            ON CONFLICT(pr_url) DO UPDATE SET
-                workspace_id = COALESCE(pull_requests.workspace_id, excluded.workspace_id),
+        sqlx::query_as!(
+            PullRequest,
+            r#"INSERT INTO pull_requests (id, workspace_id, repo_id, pr_url, pr_number, pr_status, target_branch_name, head_branch_name, created_at, merged_at, merge_commit_sha)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO UPDATE SET
                 repo_id = COALESCE(pull_requests.repo_id, excluded.repo_id),
                 head_branch_name = COALESCE(pull_requests.head_branch_name, excluded.head_branch_name),
-                updated_at = CURRENT_TIMESTAMP",
+                updated_at = CURRENT_TIMESTAMP,
+                synced_at = NULL
+            RETURNING id, workspace_id AS "workspace_id: Uuid", repo_id AS "repo_id: Uuid",
+                pr_url, pr_number, pr_status AS "pr_status: MergeStatus", target_branch_name,
+                head_branch_name, merged_at AS "merged_at: DateTime<Utc>", merge_commit_sha,
+                created_at AS "created_at!: DateTime<Utc>", updated_at AS "updated_at!: DateTime<Utc>",
+                synced_at AS "synced_at: DateTime<Utc>""#,
             id,
             workspace_id,
             repo_id,
             pr_url,
             pr_number,
+            status,
             target_branch_name,
             head_branch_name,
             now,
+            merged_at,
+            merge_commit_sha,
         )
-        .execute(pool)
-        .await?;
-
-        let pr = Self::find_by_url(pool, pr_url)
-            .await?
-            .ok_or(sqlx::Error::RowNotFound)?;
-        Ok(pr)
+        .fetch_one(pool)
+        .await
     }
 
     pub async fn create_for_workspace(
@@ -387,7 +400,7 @@ impl PullRequest {
         Ok(result.rows_affected())
     }
 
-    /// Unlinks a single PR (by its unique URL) from a workspace/repo. Scoped to
+    /// Unlinks a single PR URL from a workspace/repo. Scoped to
     /// both identifiers so one repo cannot unlink another repo's PR row in the
     /// same workspace. Removes the local link only — the PR on the host is
     /// untouched. Returns the number of links removed (0 or 1).
@@ -448,13 +461,12 @@ impl PullRequest {
 
 #[cfg(test)]
 mod tests {
-    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
     use uuid::Uuid;
 
-    use super::PullRequest;
+    use super::{MergeStatus, PullRequest};
 
-    #[tokio::test]
-    async fn unlinking_a_pr_keeps_links_for_other_repos_in_the_workspace() {
+    async fn legacy_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -480,6 +492,112 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn review_links_preserve_existing_workspaces_and_migrated_pr_state() {
+        let pool = legacy_pool().await;
+        let repo = Uuid::new_v4();
+        let author = Uuid::new_v4();
+        let reviewer = Uuid::new_v4();
+        let url = "https://github.com/synthetic-org/sample/pull/17";
+        let original = PullRequest::create_for_workspace(
+            &pool,
+            author,
+            repo,
+            "main",
+            17,
+            url,
+            Some("feature/sample"),
+        )
+        .await
+        .unwrap();
+        PullRequest::update_status(&pool, url, &MergeStatus::Closed, None, None)
+            .await
+            .unwrap();
+        PullRequest::mark_synced(&pool, &original.id).await.unwrap();
+        let before = PullRequest::find_by_url(&pool, url).await.unwrap().unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261105090000_preserve_workspace_pr_links.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let preserved = PullRequest::find_by_workspace_id(&pool, author)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(preserved.id, before.id);
+        assert_eq!(preserved.pr_status, before.pr_status);
+        assert_eq!(preserved.synced_at, before.synced_at);
+        assert_eq!(preserved.head_branch_name, before.head_branch_name);
+
+        let review = PullRequest::create_for_workspace(
+            &pool,
+            reviewer,
+            repo,
+            "origin/main",
+            17,
+            url,
+            Some("feature/sample"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(review.workspace_id, Some(reviewer));
+        assert_ne!(review.id, original.id);
+        assert_eq!(review.pr_status, MergeStatus::Closed);
+        assert_eq!(review.target_branch_name, "origin/main");
+        let retry = PullRequest::create_for_workspace(
+            &pool,
+            reviewer,
+            repo,
+            "origin/main",
+            17,
+            url,
+            Some("feature/sample"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(retry.id, review.id);
+        assert_eq!(PullRequest::get_unresolved(&pool).await.unwrap().len(), 2);
+
+        PullRequest::update_status(&pool, url, &MergeStatus::Open, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            PullRequest::count_open_for_workspace(&pool, author)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            PullRequest::count_open_for_workspace(&pool, reviewer)
+                .await
+                .unwrap(),
+            1
+        );
+        PullRequest::delete_by_workspace_and_repo(&pool, reviewer, repo)
+            .await
+            .unwrap();
+        assert_eq!(
+            PullRequest::find_by_workspace_id(&pool, author)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        // Tracking a URL without a workspace must not add another copy.
+        PullRequest::create(&pool, None, None, url, 17, "main", None)
+            .await
+            .unwrap();
+        assert_eq!(PullRequest::get_unresolved(&pool).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unlinking_a_pr_keeps_links_for_other_repos_in_the_workspace() {
+        let pool = legacy_pool().await;
 
         let workspace_id = Uuid::new_v4();
         let selected_repo_id = Uuid::new_v4();

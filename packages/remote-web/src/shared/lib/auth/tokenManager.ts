@@ -8,6 +8,7 @@ import {
   shouldRefreshAccessToken,
 } from "shared/jwt";
 import { refreshTokens } from "@remote/shared/lib/api";
+import { AuthError } from "@/shared/lib/auth/errors";
 
 const TOKEN_REFRESH_TIMEOUT_MS = 80_000;
 const TOKEN_REFRESH_MAX_ATTEMPTS = 3;
@@ -66,7 +67,7 @@ async function doTokenRefresh(
   )
     return current;
   if (!refreshToken) {
-    throw new Error("No refresh token available");
+    throw new AuthError("required", "No refresh token available");
   }
 
   try {
@@ -78,7 +79,10 @@ async function doTokenRefresh(
     // the credential it used, and never one protected by an active reconnect.
     if ((error as { status?: number }).status === 401) {
       if (await applyTokenRefresh(refreshToken)) {
-        throw new Error("Session expired. Please sign in again.");
+        throw new AuthError(
+          "required",
+          "Session expired. Please sign in again.",
+        );
       }
     } else {
       throw error;

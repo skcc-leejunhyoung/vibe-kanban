@@ -1,6 +1,7 @@
 import { ApiError, oauthApi } from '@/shared/lib/api';
 import { REMOTE_AUTH_UNAVAILABLE_SLUG } from '@/shared/lib/auth/remoteAuthDegraded';
 import { queryClient } from '@/shared/lib/queryClient';
+import { AuthError } from './errors';
 import {
   accessTokensBelongToDifferentUsers,
   shouldRefreshAccessToken,
@@ -32,17 +33,9 @@ function updateRemoteAuthDegradedCache(
 
 function setRemoteAuthDegraded(slug: string | null): void {
   queryClient.setQueryData<UserSystemCache | undefined>(
-    ['user-system'],
+    ['user-system', 'local'],
     (old) => updateRemoteAuthDegradedCache(old, slug)
   );
-
-  for (const [queryKey] of queryClient.getQueriesData<UserSystemCache>({
-    queryKey: ['remote-workspace-user-system'],
-  })) {
-    queryClient.setQueryData<UserSystemCache | undefined>(queryKey, (old) =>
-      updateRemoteAuthDegradedCache(old, slug)
-    );
-  }
 }
 
 function isUnauthorizedError(error: unknown): boolean {
@@ -86,8 +79,8 @@ class TokenManager {
     // from Electric shapes or other background requests after logout.
     const cachedSystem = queryClient.getQueryData<{
       login_status?: { status: string };
-    }>(['user-system']);
-    if (cachedSystem && cachedSystem.login_status?.status !== 'loggedin') {
+    }>(['user-system', 'local']);
+    if (cachedSystem?.login_status?.status === 'loggedout') {
       this.clearRecoveryLoop();
       return null;
     }
@@ -109,9 +102,10 @@ class TokenManager {
       });
 
       if (!data.access_token) {
-        setRemoteAuthDegraded(REMOTE_AUTH_UNAVAILABLE_SLUG);
-        this.syncRecoveryState();
-        return null;
+        throw new AuthError(
+          'unavailable',
+          'Access token is temporarily unavailable'
+        );
       }
 
       return this.handleTokenSuccess(data.access_token);
@@ -124,7 +118,7 @@ class TokenManager {
         setRemoteAuthDegraded(REMOTE_AUTH_UNAVAILABLE_SLUG);
         this.syncRecoveryState();
       }
-      return null;
+      throw error;
     }
   }
 
@@ -132,11 +126,13 @@ class TokenManager {
    * Force a token refresh. Call this when you receive a 401 response.
    * Coordinates multiple callers to prevent concurrent refresh attempts.
    *
-   * Returns the new token (or null if refresh failed).
+   * Returns null for a logged-out account; failures retain their cause.
    */
   async triggerRefresh(rejectedAccessToken?: string): Promise<string | null> {
     // CRITICAL: Assign promise SYNCHRONOUSLY so concurrent 401 handlers share one refresh.
-    this.refreshPromise ??= this.doRefresh();
+    this.refreshPromise ??= this.doRefresh().finally(() => {
+      this.refreshPromise = null;
+    });
     const token = await this.refreshPromise;
     // Each caller must validate the shared result, including late requests
     // that joined another account's already-running refresh.
@@ -184,8 +180,8 @@ class TokenManager {
     // from Electric shapes or other background requests after logout.
     const cachedSystem = queryClient.getQueryData<{
       login_status?: { status: string };
-    }>(['user-system']);
-    if (cachedSystem && cachedSystem.login_status?.status !== 'loggedin') {
+    }>(['user-system', 'local']);
+    if (cachedSystem?.login_status?.status === 'loggedout') {
       // Pause shapes so they stop making requests while logged out
       this.pauseShapes();
       return null;
@@ -207,9 +203,10 @@ class TokenManager {
       });
 
       if (!data.access_token) {
-        setRemoteAuthDegraded(REMOTE_AUTH_UNAVAILABLE_SLUG);
-        this.syncRecoveryState();
-        return null;
+        throw new AuthError(
+          'unavailable',
+          'Access token is temporarily unavailable'
+        );
       }
 
       return this.handleTokenSuccess(data.access_token);
@@ -222,9 +219,8 @@ class TokenManager {
         setRemoteAuthDegraded(REMOTE_AUTH_UNAVAILABLE_SLUG);
         this.syncRecoveryState();
       }
-      return null;
+      throw error;
     } finally {
-      this.refreshPromise = null;
       this.setRefreshing(false);
     }
   }
@@ -236,14 +232,17 @@ class TokenManager {
     // If they're already logged out, 401s are expected — don't show the dialog.
     const cachedSystem = queryClient.getQueryData<{
       login_status?: { status: string };
-    }>(['user-system']);
+    }>(['user-system', 'local']);
     const wasLoggedIn = cachedSystem?.login_status?.status === 'loggedin';
 
     // Pause shapes — session is invalid, prevent further 401s
     this.pauseShapes();
 
     // Reload system state so the UI transitions to logged-out
-    await queryClient.invalidateQueries({ queryKey: ['user-system'] });
+    await queryClient.invalidateQueries({
+      queryKey: ['user-system', 'local'],
+      exact: true,
+    });
 
     // Only show the login dialog if the user was previously logged in
     // (i.e., their session expired unexpectedly). Don't prompt users who
@@ -276,6 +275,7 @@ class TokenManager {
   private shouldRecoverDegradedAuth(): boolean {
     const cachedSystem = queryClient.getQueryData<UserSystemCache>([
       'user-system',
+      'local',
     ]);
     return (
       cachedSystem?.login_status?.status === 'loggedin' &&
@@ -305,13 +305,18 @@ class TokenManager {
       return;
     }
 
-    const token = await this.getToken();
+    // Token failures are shown by callers; the timer must keep recovering.
+    const token = await this.getToken().catch(() => null);
     if (token || !this.shouldRecoverDegradedAuth()) {
       this.clearRecoveryLoop();
       return;
     }
 
     this.recoveryAttempt += 1;
+    if (this.recoveryTimeoutId) {
+      clearTimeout(this.recoveryTimeoutId);
+      this.recoveryTimeoutId = null;
+    }
     this.scheduleRecoveryAttempt();
   }
 

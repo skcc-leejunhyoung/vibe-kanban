@@ -158,11 +158,37 @@ where
     }
 
     info!("Checking {} of {} unresolved PRs", due.len(), prs.len());
+    let mut probes = HashMap::<String, Option<PullRequestInfo>>::new();
+    let mut all_archived = HashMap::<String, bool>::new();
     for pr in due {
-        let result = match timeout(schedule.probe_timeout, probe(pr.pr_url.clone())).await {
-            Ok(Ok(info)) => persist_status(pool, pr, info).await,
-            Ok(Err(e)) => Err(e.into()),
-            Err(_) => Err(PrMonitorError::Timeout(schedule.probe_timeout)),
+        // Review workspaces share a PR; probe it once and notify every link.
+        let info = if let Some(info) = probes.get(&pr.pr_url) {
+            info.clone()
+        } else {
+            let result = match timeout(schedule.probe_timeout, probe(pr.pr_url.clone())).await {
+                Ok(result) => result.map_err(PrMonitorError::from),
+                Err(_) => Err(PrMonitorError::Timeout(schedule.probe_timeout)),
+            };
+            let info = match result {
+                Ok(info) => Some(info),
+                Err(e) => {
+                    if e.is_environmental() {
+                        warn!(
+                            "Skipping PR #{} due to environmental error: {}",
+                            pr.pr_number, e
+                        );
+                    } else {
+                        error!("Error checking PR #{}: {}", pr.pr_number, e);
+                    }
+                    None
+                }
+            };
+            probes.insert(pr.pr_url.clone(), info.clone());
+            info
+        };
+        let result = match info {
+            Some(info) => persist_status(pool, pr, info).await,
+            None => Ok(pr.pr_status.clone()),
         };
         // On error or timeout keep the last known status; the schedule
         // retries it at its normal cadence.
@@ -186,7 +212,11 @@ where
             merged.push((workspace_id, pr.pr_number));
         }
         let archived = status == MergeStatus::Closed && workspace_archived(pool, pr).await;
-        schedule.probed(&pr.pr_url, status, archived, round);
+        let archived = all_archived
+            .entry(pr.pr_url.clone())
+            .and_modify(|all| *all &= archived)
+            .or_insert(archived);
+        schedule.probed(&pr.pr_url, status, *archived, round);
     }
 
     Ok(merged)
@@ -509,6 +539,12 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+            sqlx::raw_sql(include_str!(
+                "../../../db/migrations/20261105090000_preserve_workspace_pr_links.sql"
+            ))
+            .execute(&pool)
+            .await
+            .unwrap();
             let fixture = Self {
                 pool,
                 schedule: PollSchedule::new(MINUTE, 10 * MINUTE, probe_timeout),
@@ -611,6 +647,32 @@ mod tests {
             .await
             .unwrap();
             (self.calls.borrow().clone(), merged)
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_pr_is_probed_once_and_preserves_every_workspace_link() {
+        let mut fx = Fixture::new(PR_CHECK_TIMEOUT).await;
+        let author = fx.add_pr(42, MergeStatus::Closed, true).await;
+        let reviewer = fx.add_pr(42, MergeStatus::Closed, false).await;
+        let (calls, _) = fx.round(0).await;
+        assert_eq!(calls.iter().filter(|n| **n == 42).count(), 1);
+        // One active reviewer keeps the normal cadence even if the author is archived.
+        let (calls, _) = fx.round(1).await;
+        assert_eq!(calls.iter().filter(|n| **n == 42).count(), 1);
+        fx.reply(42, Reply::Status(MergeStatus::Merged));
+        let (calls, merged) = fx.round(2).await;
+        assert_eq!(calls.iter().filter(|n| **n == 42).count(), 1);
+        assert!(merged.contains(&(author, 42)));
+        assert!(merged.contains(&(reviewer, 42)));
+        for workspace in [author, reviewer] {
+            assert_eq!(
+                PullRequest::find_by_workspace_id(&fx.pool, workspace)
+                    .await
+                    .unwrap()[0]
+                    .pr_status,
+                MergeStatus::Merged
+            );
         }
     }
 

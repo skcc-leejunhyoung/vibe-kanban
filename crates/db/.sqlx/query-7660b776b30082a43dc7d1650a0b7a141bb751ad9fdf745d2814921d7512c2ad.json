@@ -1,0 +1,92 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO pull_requests (id, workspace_id, repo_id, pr_url, pr_number, pr_status, target_branch_name, head_branch_name, created_at, merged_at, merge_commit_sha)\n            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ON CONFLICT DO UPDATE SET\n                repo_id = COALESCE(pull_requests.repo_id, excluded.repo_id),\n                head_branch_name = COALESCE(pull_requests.head_branch_name, excluded.head_branch_name),\n                updated_at = CURRENT_TIMESTAMP,\n                synced_at = NULL\n            RETURNING id, workspace_id AS \"workspace_id: Uuid\", repo_id AS \"repo_id: Uuid\",\n                pr_url, pr_number, pr_status AS \"pr_status: MergeStatus\", target_branch_name,\n                head_branch_name, merged_at AS \"merged_at: DateTime<Utc>\", merge_commit_sha,\n                created_at AS \"created_at!: DateTime<Utc>\", updated_at AS \"updated_at!: DateTime<Utc>\",\n                synced_at AS \"synced_at: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "workspace_id: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "repo_id: Uuid",
+        "ordinal": 2,
+        "type_info": "Blob"
+      },
+      {
+        "name": "pr_url",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "pr_number",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "pr_status: MergeStatus",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "target_branch_name",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "head_branch_name",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "merged_at: DateTime<Utc>",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "merge_commit_sha",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 10,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 11,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "synced_at: DateTime<Utc>",
+        "ordinal": 12,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "7660b776b30082a43dc7d1650a0b7a141bb751ad9fdf745d2814921d7512c2ad"
+}

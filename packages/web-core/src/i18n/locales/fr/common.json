@@ -180,7 +180,8 @@
       "unlinkFromIssueLabel": "Également dissocier du ticket",
       "repoMissingWarning": "Le dépôt source n'existe plus sur le disque. L'espace de travail et toutes les ressources pouvant encore être nettoyées seront supprimés, mais la branche ne peut pas être supprimée."
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "linkErrorRecovery": "L’espace de travail a été créé, mais son association à l’issue a échoué. Utilisez Associer un espace de travail existant dans l’issue pour le reconnecter."
   },
   "fileTree": {
     "searchPlaceholder": "Rechercher des fichiers...",
@@ -540,6 +541,10 @@
     "workspaceOnly": {
       "create": "Workspace seul",
       "creating": "Creation du workspace..."
+    },
+    "reviewMode": {
+      "failed": "Impossible de vérifier les données nécessaires à la revue",
+      "singleRepo": "Sélectionnez un seul dépôt pour la revue ou désactivez le mode revue."
     }
   },
   "modelSelector": {
@@ -607,5 +612,16 @@
     "prev": "Résumé précédent",
     "next": "Résumé suivant",
     "past": "Résumé antérieur"
+  },
+  "bootstrap": {
+    "loadFailed": "Impossible de charger les paramètres. Réessayez."
+  },
+  "hostSelection": {
+    "forbidden": "Vous n’avez pas l’autorisation de consulter ces hôtes.",
+    "unavailable": "Impossible de charger les hôtes. Réessayez.",
+    "pairingUnavailable": "Impossible de charger les appairages. Les hôtes de compte disponibles restent utilisables.",
+    "noHosts": "Aucun hôte distant disponible.",
+    "noOnline": "Aucun hôte distant en ligne.",
+    "noMatches": "Aucun hôte ne correspond à votre recherche."
   }
 }

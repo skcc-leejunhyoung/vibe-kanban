@@ -43,6 +43,22 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("remote token refresh", () => {
+  it("classifies missing credentials as requiring login", async () => {
+    getAccessToken.mockResolvedValue(null);
+    getRefreshCredentials.mockResolvedValue({
+      accessToken: null,
+      refreshToken: null,
+    });
+    await expect(getToken()).rejects.toMatchObject({ kind: "required" });
+    expect(refreshTokens).not.toHaveBeenCalled();
+  });
+  it("classifies a revoked session as requiring login", async () => {
+    refreshTokens.mockRejectedValue(
+      Object.assign(new Error("Expired"), { status: 401 }),
+    );
+    await expect(getToken()).rejects.toMatchObject({ kind: "required" });
+    expect(applyTokenRefresh).toHaveBeenCalledWith("current-refresh");
+  });
   it("uses the conditional rotation path without changing signed-in state", async () => {
     await expect(getToken()).resolves.toBe("rotated-access");
     expect(refreshTokens).toHaveBeenCalledWith("current-refresh");

@@ -1,5 +1,12 @@
 import { BaseCodingAgent } from 'shared/types';
-import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
+import {
+  useMemo,
+  useCallback,
+  useState,
+  useEffect,
+  useRef,
+  useContext,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
 import { LockIcon } from '@phosphor-icons/react';
@@ -31,6 +38,8 @@ import { ReviewModeBanner } from './ReviewModeBanner';
 import { GithubLinkedBranchBanner } from './GithubLinkedBranchBanner';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
+import { ProjectContext } from '@/shared/hooks/useProjectContext';
+import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 
 function getRepoDisplayName(repo: Repo) {
   return repo.display_name || repo.name;
@@ -48,7 +57,21 @@ interface CreateChatBoxContainerProps {
   onWorkspaceCreated: (workspaceId: string) => void;
 }
 
-export function CreateChatBoxContainer({
+export function CreateChatBoxContainer(props: CreateChatBoxContainerProps) {
+  const { linkedIssue } = useCreateMode();
+  const project = useContext(ProjectContext);
+  // Resumed drafts can open outside the project board.
+  if (linkedIssue && project?.projectId !== linkedIssue.remoteProjectId) {
+    return (
+      <ProjectProvider projectId={linkedIssue.remoteProjectId}>
+        <CreateChatBoxContent {...props} />
+      </ProjectProvider>
+    );
+  }
+  return <CreateChatBoxContent {...props} />;
+}
+
+function CreateChatBoxContent({
   onWorkspaceCreated,
 }: CreateChatBoxContainerProps) {
   const { t } = useTranslation('common');
@@ -302,13 +325,17 @@ export function CreateChatBoxContainer({
 
   // Determine if we can submit
   const canSubmit =
+    !reviewMode.blocked &&
     hasSelectedRepos &&
     hasSelectedBranchesForAllRepos &&
     isWorkingBranchValid &&
     message.trim().length > 0 &&
     effectiveExecutor !== null;
   const canCreateOnly =
-    hasSelectedRepos && hasSelectedBranchesForAllRepos && isWorkingBranchValid;
+    !reviewMode.blocked &&
+    hasSelectedRepos &&
+    hasSelectedBranchesForAllRepos &&
+    isWorkingBranchValid;
 
   const handlePresetSelect = (presetId: string | null) => {
     if (!effectiveExecutor) return;
@@ -575,7 +602,7 @@ export function CreateChatBoxContainer({
                 {t('createMode.headings.chatStep')}
               </h2>
 
-              {reviewMode.reviewTagPresent && (
+              {(reviewMode.reviewTagPresent || reviewMode.blocked) && (
                 <ReviewModeBanner
                   resolved={reviewMode.resolved}
                   isResolving={reviewMode.isResolving}
@@ -583,16 +610,23 @@ export function CreateChatBoxContainer({
                   prNumber={reviewMode.prNumber}
                   enabled={reviewMode.enabled}
                   onEnabledChange={reviewMode.setEnabled}
+                  status={reviewMode.status}
+                  canToggle={reviewMode.canToggle}
+                  requiresLogin={reviewMode.requiresLogin}
+                  error={reviewMode.error}
+                  onRetry={reviewMode.retry}
                 />
               )}
 
-              {!reviewMode.reviewTagPresent && githubLinkedBranchSource && (
-                <GithubLinkedBranchBanner
-                  repository={githubLinkedBranchSource.repository}
-                  enabled={useGithubLinkedTarget}
-                  onEnabledChange={setUseGithubLinkedTarget}
-                />
-              )}
+              {!reviewMode.reviewTagPresent &&
+                !reviewMode.blocked &&
+                githubLinkedBranchSource && (
+                  <GithubLinkedBranchBanner
+                    repository={githubLinkedBranchSource.repository}
+                    enabled={useGithubLinkedTarget}
+                    onEnabledChange={setUseGithubLinkedTarget}
+                  />
+                )}
 
               <div className="flex min-h-0 flex-1 justify-center @container">
                 <CreateChatBox
@@ -642,6 +676,7 @@ export function CreateChatBoxContainer({
                     />
                   }
                   onSend={handleSubmit}
+                  sendDisabled={!canSubmit}
                   isSending={createWorkspace.isPending}
                   onStop={handleStop}
                   isStopRequested={isStopRequested}

@@ -21,6 +21,7 @@ const EMPTY_REMOTE_HOSTS: RemoteCloudHost[] = [];
 
 interface RemoteCloudHostsState {
   hosts: RemoteCloudHost[];
+  pairingError: unknown;
 }
 
 interface RemoteCloudHostDataSources {
@@ -92,7 +93,10 @@ export async function fetchRemoteCloudHostsState(
       });
   }
 
-  return { hosts };
+  return {
+    hosts,
+    pairingError: paired.status === 'rejected' ? paired.reason : null,
+  };
 }
 
 export function useRemoteCloudHostsState(options?: { enabled?: boolean }) {

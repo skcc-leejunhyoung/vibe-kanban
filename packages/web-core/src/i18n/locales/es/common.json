@@ -180,7 +180,8 @@
       "unlinkFromIssueLabel": "También desvincular del issue",
       "repoMissingWarning": "El repositorio de origen ya no existe en el disco. Se eliminarán el espacio de trabajo y los recursos que aún se puedan limpiar, pero no se podrá eliminar la rama."
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "linkErrorRecovery": "Se creó el espacio de trabajo, pero no se pudo vincular a la incidencia. Usa Vincular espacio de trabajo existente en la incidencia para volver a conectarlo."
   },
   "fileTree": {
     "searchPlaceholder": "Buscar archivos...",
@@ -540,6 +541,10 @@
     "workspaceOnly": {
       "create": "Solo workspace",
       "creating": "Creando workspace..."
+    },
+    "reviewMode": {
+      "failed": "No se pudieron verificar los datos necesarios para la revisión",
+      "singleRepo": "Selecciona un repositorio para revisar o desactiva el modo de revisión."
     }
   },
   "modelSelector": {
@@ -607,5 +612,16 @@
     "prev": "Resumen anterior",
     "next": "Resumen siguiente",
     "past": "Resumen anterior"
+  },
+  "bootstrap": {
+    "loadFailed": "No se pudo cargar la configuración. Vuelve a intentarlo."
+  },
+  "hostSelection": {
+    "forbidden": "No tienes permiso para ver estos hosts.",
+    "unavailable": "No se pudieron cargar los hosts. Vuelve a intentarlo.",
+    "pairingUnavailable": "No se pudieron cargar los emparejamientos. Puedes usar los hosts de cuenta disponibles.",
+    "noHosts": "No hay hosts remotos disponibles.",
+    "noOnline": "No hay hosts remotos en línea.",
+    "noMatches": "Ningún host coincide con la búsqueda."
   }
 }

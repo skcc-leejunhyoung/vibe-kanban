@@ -27,6 +27,7 @@ import type {
   UserWebSettings,
 } from 'shared/remote-types';
 import { getAuthRuntime } from '@/shared/lib/auth/runtime';
+import { AuthError } from '@/shared/lib/auth/errors';
 import { syncRelayApiBaseWithRemote } from '@/shared/lib/relayBackendApi';
 
 const BUILD_TIME_API_BASE = import.meta.env.VITE_VK_SHARED_API_BASE || '';
@@ -282,7 +283,7 @@ async function makeAuthenticatedRequest(
   const authRuntime = getAuthRuntime();
   const token = await authRuntime.getToken();
   if (!token) {
-    throw new Error('Not authenticated');
+    throw new AuthError('required', 'Not authenticated');
   }
 
   const headers = new Headers(options.headers ?? {});
@@ -312,7 +313,7 @@ async function makeAuthenticatedRequest(
       });
     }
     // Refresh failed, throw an auth error
-    throw new Error('Session expired. Please log in again.');
+    throw new AuthError('required', 'Session expired. Please log in again.');
   }
 
   return response;

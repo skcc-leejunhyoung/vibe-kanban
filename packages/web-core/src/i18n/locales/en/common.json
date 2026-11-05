@@ -206,7 +206,8 @@
       "cannotDeleteOpenPr": "Cannot delete branch while PR is open",
       "unlinkFromIssueLabel": "Also unlink from issue",
       "repoMissingWarning": "The source repository no longer exists on disk. The workspace and any resources that can still be cleaned up will be removed, but the branch cannot be deleted."
-    }
+    },
+    "linkErrorRecovery": "The workspace was created, but linking it to the issue failed. Use Link existing workspace on the issue to reconnect it."
   },
   "fileTree": {
     "searchPlaceholder": "Search files...",
@@ -680,7 +681,9 @@
       "activeDetail": "PR #{{number}} · working on {{branch}}",
       "disabled": "Review mode off — a new branch will be created",
       "noPr": "No open PR found for this issue — a new branch will be created",
-      "toggleLabel": "Review mode"
+      "toggleLabel": "Review mode",
+      "failed": "Could not verify the data required for review",
+      "singleRepo": "Select one repository for review, or turn review mode off."
     },
     "workingBranch": {
       "label": "Working branch",
@@ -831,5 +834,16 @@
     "prev": "Previous summary",
     "next": "Next summary",
     "past": "Earlier summary"
+  },
+  "bootstrap": {
+    "loadFailed": "Could not load settings. Please try again."
+  },
+  "hostSelection": {
+    "forbidden": "You do not have permission to view these hosts.",
+    "unavailable": "Could not load hosts. Please try again.",
+    "pairingUnavailable": "Could not load pairings. Available account hosts can still be used.",
+    "noHosts": "No remote hosts are available.",
+    "noOnline": "No remote hosts are online.",
+    "noMatches": "No hosts match your search."
   }
 }

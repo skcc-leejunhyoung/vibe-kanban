@@ -73,6 +73,7 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
   agentIcon?: ReactNode;
   contextUsage?: ReactNode;
   onSend: () => void;
+  sendDisabled?: boolean;
   isSending: boolean;
   /** While sending: stop the run being created (shown only when given). */
   onStop?: () => void;
@@ -129,6 +130,7 @@ export function CreateChatBox<TExecutor extends string = string>({
   agentIcon,
   contextUsage,
   onSend,
+  sendDisabled = false,
   isSending,
   onStop,
   isStopRequested = false,
@@ -157,7 +159,7 @@ export function CreateChatBox<TExecutor extends string = string>({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isSecondaryPending = secondaryAction?.isPending ?? false;
   const isDisabled = disabled || isSending || isSecondaryPending;
-  const canSend = editor.value.trim().length > 0 && !isDisabled;
+  const canSend = editor.value.trim().length > 0 && !isDisabled && !sendDisabled;
 
   const handleCmdEnter = () => {
     if (canSend) {

@@ -52,10 +52,7 @@ export function useCreateWorkspace() {
           console.error('Failed to link workspace to issue:', linkError);
           void ConfirmDialog.show({
             title: i18n.t('common:workspaces.linkError'),
-            message:
-              linkError instanceof Error
-                ? linkError.message
-                : String(linkError),
+            message: `${i18n.t('common:workspaces.linkErrorRecovery')}\n\n${linkError instanceof Error ? linkError.message : String(linkError)}`,
             confirmText: i18n.t('common:ok'),
             showCancelButton: false,
           });

@@ -6,6 +6,7 @@ import { createCollection } from '@tanstack/react-db';
 import { isEqual } from 'lodash';
 
 import { getAuthRuntime } from '@/shared/lib/auth/runtime';
+import { AuthError, getAuthErrorKind } from '@/shared/lib/auth/errors';
 import { getRemoteApiUrl, makeRequest } from '@/shared/lib/remoteApi';
 import {
   PROJECT_GITHUB_ISSUE_LINKS_SHAPE,
@@ -462,6 +463,24 @@ function createErrorHandlingFetch(args: {
   };
 }
 
+function toSyncError(error: unknown): SyncError {
+  const failure = error as {
+    status?: number;
+    statusCode?: number;
+    message?: string;
+  } | null;
+  const kind = getAuthErrorKind(error);
+  return {
+    status:
+      kind === 'required'
+        ? 401
+        : kind === 'forbidden'
+          ? 403
+          : (failure?.status ?? failure?.statusCode),
+    message: failure?.message || String(error),
+  };
+}
+
 function createElectricShapeOptions(args: {
   shape: ShapeDefinition<unknown>;
   params: Record<string, string>;
@@ -471,6 +490,9 @@ function createElectricShapeOptions(args: {
   const authRuntime = getAuthRuntime();
   const reportStreamError = (error: SyncError) => {
     if (!args.errors.silent) args.errors.report(error);
+  };
+  const reportAuthError = (error: unknown) => {
+    reportStreamError(toSyncError(error));
   };
   let isPaused = false;
   const pauseable = {
@@ -492,9 +514,13 @@ function createElectricShapeOptions(args: {
       : args.params,
     headers: {
       Authorization: async () => {
-        const token = await authRuntime.getToken();
+        const token = await authRuntime.getToken().catch((error: unknown) => {
+          reportAuthError(error);
+          throw error;
+        });
         if (!token) {
           isPaused = true;
+          reportAuthError(new AuthError('required', 'Not authenticated'));
           return '';
         }
         return `Bearer ${token}`;
@@ -517,16 +543,18 @@ function createElectricShapeOptions(args: {
       if (isTransientElectricShapeError(error)) return;
 
       const status = error.status;
-      const message = error.message || String(error);
-
       if (status === 401) {
-        authRuntime.triggerRefresh().catch(() => {
-          reportStreamError({ status, message });
-        });
+        authRuntime
+          .triggerRefresh()
+          .then((token) => {
+            if (!token)
+              reportAuthError(new AuthError('required', 'Session expired'));
+          })
+          .catch(reportAuthError);
         return;
       }
 
-      reportStreamError({ status, message });
+      reportAuthError(error);
     },
   };
 
@@ -628,11 +656,14 @@ function createFallbackSync(args: {
                 { method: 'GET', cache: 'no-store', signal: controller.signal }
               );
               if (!response.ok) {
-                throw new Error(
-                  await parseResponseError(
-                    response,
-                    `Failed to fetch fallback ${args.shape.table}`
-                  )
+                throw Object.assign(
+                  new Error(
+                    await parseResponseError(
+                      response,
+                      `Failed to fetch fallback ${args.shape.table}`
+                    )
+                  ),
+                  { status: response.status }
                 );
               }
               return extractFallbackRows(
@@ -658,9 +689,7 @@ function createFallbackSync(args: {
           if (isCleanedUp || version !== refreshVersion || isAbortError(error))
             return;
 
-          const message =
-            error instanceof Error ? error.message : 'Fallback fetch failed';
-          args.reportError({ message });
+          args.reportError(toSyncError(error));
         } finally {
           if (timeoutId) globalThis.clearTimeout(timeoutId);
           if (version === refreshVersion) {

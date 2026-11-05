@@ -174,20 +174,22 @@ const OAuthDialogImpl = create<OAuthDialogProps>((props) => {
         await queryClient.invalidateQueries({
           queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
         });
-      })();
-
-      // Invalidate organization caches to force fresh fetch after login
-      queryClient.invalidateQueries({ queryKey: organizationKeys.all });
-
-      setState({
-        type: 'success',
-        displayName:
-          statusData.profile?.username || statusData.profile?.email || null,
+        await queryClient.invalidateQueries({ queryKey: organizationKeys.all });
+        setState({
+          type: 'success',
+          displayName:
+            statusData.profile?.username || statusData.profile?.email || null,
+        });
+        setTimeout(() => {
+          modal.resolve(true);
+          modal.remove();
+        }, 1500);
+      })().catch((error: unknown) => {
+        setState({
+          type: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        });
       });
-      setTimeout(() => {
-        modal.resolve(true);
-        modal.remove();
-      }, 1500);
     }
   }, [
     statusData,

@@ -180,7 +180,8 @@
       "unlinkFromIssueLabel": "同時取消與議題的關聯",
       "repoMissingWarning": "來源儲存庫已不存在於磁碟上。將刪除工作區以及仍可清理的資源，但無法刪除分支。"
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "linkErrorRecovery": "工作區已建立，但關聯議題失敗。請在議題中使用關聯現有工作區重新連線。"
   },
   "fileTree": {
     "searchPlaceholder": "搜尋檔案...",
@@ -540,6 +541,10 @@
     "workspaceOnly": {
       "create": "Workspace only",
       "creating": "Creating workspace..."
+    },
+    "reviewMode": {
+      "failed": "無法驗證審查所需的資訊",
+      "singleRepo": "請選擇一個儲存庫進行審查，或關閉審查模式。"
     }
   },
   "modelSelector": {
@@ -607,5 +612,16 @@
     "prev": "上一則摘要",
     "next": "下一則摘要",
     "past": "較早的摘要"
+  },
+  "bootstrap": {
+    "loadFailed": "無法載入設定，請重試。"
+  },
+  "hostSelection": {
+    "forbidden": "你沒有檢視這些主機的權限。",
+    "unavailable": "無法載入主機，請重試。",
+    "pairingUnavailable": "無法載入配對資訊。仍可使用可用的帳戶主機。",
+    "noHosts": "沒有可用的遠端主機。",
+    "noOnline": "沒有上線的遠端主機。",
+    "noMatches": "沒有符合搜尋條件的主機。"
   }
 }

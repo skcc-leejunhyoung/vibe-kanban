@@ -192,7 +192,8 @@
       "unlinkFromIssueLabel": "이슈에서도 연결 해제",
       "repoMissingWarning": "원본 저장소가 디스크에 더 이상 존재하지 않습니다. 워크스페이스와 정리할 수 있는 리소스는 삭제되지만 브랜치는 삭제할 수 없습니다."
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "linkErrorRecovery": "워크스페이스는 생성되었지만 이슈 연결에 실패했습니다. 이슈의 기존 워크스페이스 연결 메뉴에서 다시 연결해 주세요."
   },
   "fileTree": {
     "searchPlaceholder": "파일 검색...",
@@ -666,7 +667,9 @@
       "activeDetail": "PR #{{number}} · {{branch}} 작업 중",
       "disabled": "리뷰 모드 끔 — 새 브랜치가 생성됩니다",
       "noPr": "이 이슈에 열린 PR이 없음 — 새 브랜치가 생성됩니다",
-      "toggleLabel": "리뷰 모드"
+      "toggleLabel": "리뷰 모드",
+      "failed": "리뷰에 필요한 정보를 확인하지 못했습니다",
+      "singleRepo": "리뷰할 저장소를 1개 선택하거나 리뷰 모드를 꺼 주세요."
     },
     "workingBranch": {
       "label": "작업 브랜치",
@@ -831,5 +834,16 @@
     "prev": "이전 요약",
     "next": "다음 요약",
     "past": "지난 요약"
+  },
+  "bootstrap": {
+    "loadFailed": "설정을 불러오지 못했습니다. 다시 시도해 주세요."
+  },
+  "hostSelection": {
+    "forbidden": "호스트 목록을 조회할 권한이 없습니다.",
+    "unavailable": "호스트 목록을 불러오지 못했습니다. 다시 시도해 주세요.",
+    "pairingUnavailable": "페어링 정보를 불러오지 못했습니다. 계정 호스트는 사용할 수 있습니다.",
+    "noHosts": "사용 가능한 원격 호스트가 없습니다.",
+    "noOnline": "온라인 상태인 원격 호스트가 없습니다.",
+    "noMatches": "검색 조건에 맞는 호스트가 없습니다."
   }
 }

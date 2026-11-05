@@ -8,6 +8,8 @@ import {
   PROJECT_ISSUES_SHAPE,
 } from 'shared/remote-types';
 import { makeRequest } from '@/shared/lib/remoteApi';
+import { AuthError } from '@/shared/lib/auth/errors';
+import { getAuthRuntime } from '@/shared/lib/auth/runtime';
 import {
   configureTestAuthRuntime,
   electricSessions,
@@ -214,6 +216,62 @@ describe('collection cache', () => {
 });
 
 describe('fallback recovery', () => {
+  it.each([
+    new AuthError('required', 'Sign in required'),
+    Object.assign(new Error('Unavailable'), { statusCode: 503 }),
+    new Response('Forbidden', { status: 403 }),
+  ])(
+    'keeps authentication status when switching to REST fallback: %s',
+    async (failure) => {
+      const p = params();
+      vi.mocked(makeRequest).mockImplementation(async () => {
+        if (failure instanceof Response) return failure.clone();
+        throw failure;
+      });
+      const collection = createShapeCollection(PROJECT_ISSUES_SHAPE, p);
+      const listener = { onError: vi.fn() };
+      const stop = subscribeShapeErrors(collection, listener);
+      const subscription = collection.subscribeChanges(() => {});
+      emitError(lastSessionFor(`issues-${p.project_id}`), {
+        name: 'AbortError',
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(listener.onError).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status:
+            failure instanceof AuthError
+              ? 401
+              : failure instanceof Response
+                ? 403
+                : 503,
+        })
+      );
+      stop();
+      subscription.unsubscribe();
+    }
+  );
+
+  it('preserves a refresh outage after a stream 401', async () => {
+    const p = params();
+    const failure = Object.assign(new Error('Token unavailable'), {
+      statusCode: 503,
+    });
+    vi.spyOn(getAuthRuntime(), 'triggerRefresh').mockRejectedValue(failure);
+    vi.mocked(makeRequest).mockRejectedValue(failure);
+    const collection = createShapeCollection(PROJECT_ISSUES_SHAPE, p);
+    const listener = { onError: vi.fn() };
+    const stop = subscribeShapeErrors(collection, listener);
+    const subscription = collection.subscribeChanges(() => {});
+    emitError(lastSessionFor(`issues-${p.project_id}`), { status: 401 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listener.onError).toHaveBeenLastCalledWith({
+      status: 503,
+      message: 'Token unavailable',
+    });
+    stop();
+    subscription.unsubscribe();
+  });
+
   it.each([
     { message: 'Load cancelled' },
     { name: 'AbortError', message: 'Aborted' },

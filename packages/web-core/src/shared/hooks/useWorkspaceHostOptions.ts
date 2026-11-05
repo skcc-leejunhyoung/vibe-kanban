@@ -53,7 +53,7 @@ export function buildRelayHostOptions(
  * joined with the browser's IndexedDB pairings — the same source the remote
  * AppBar host switcher uses.
  */
-export function useWorkspaceHostOptions(): { hosts: AppBarHost[] } {
+export function useWorkspaceHostOptions() {
   const runtime = useAppRuntime();
   const isRemote = runtime === 'remote';
 
@@ -80,16 +80,46 @@ export function useWorkspaceHostOptions(): { hosts: AppBarHost[] } {
 
     return buildRelayHostOptions(
       relayHostsQuery.data ?? [],
-      pairedHostsQuery.data ?? []
+      pairedHostsQuery.isError ? [] : (pairedHostsQuery.data ?? [])
     );
   }, [
     isRemote,
     localHostsQuery.data,
     relayHostsQuery.data,
     pairedHostsQuery.data,
+    pairedHostsQuery.isError,
   ]);
 
-  return { hosts };
+  const error = isRemote ? relayHostsQuery.error : localHostsQuery.error;
+  const partialError = isRemote
+    ? pairedHostsQuery.error
+    : localHostsQuery.data?.pairingError;
+  const isLoading = isRemote
+    ? relayHostsQuery.isPending ||
+      (pairedHostsQuery.isPending && hosts.length === 0)
+    : localHostsQuery.isPending;
+  const retry = () => {
+    if (!isRemote) {
+      void localHostsQuery.refetch();
+    } else {
+      if (error || !partialError) void relayHostsQuery.refetch();
+      if (partialError) void pairedHostsQuery.refetch();
+    }
+  };
+
+  return {
+    hosts,
+    error,
+    partialError,
+    isLoading,
+    retry,
+    // List-only consumers should not rerender on each polling request.
+    get isRefreshing() {
+      return isRemote
+        ? relayHostsQuery.isFetching || pairedHostsQuery.isFetching
+        : localHostsQuery.isFetching;
+    },
+  };
 }
 
 // CryptoKey objects get new identities on each IDB read. Host pickers only

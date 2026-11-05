@@ -180,7 +180,8 @@
       "unlinkFromIssueLabel": "イシューからもリンク解除する",
       "repoMissingWarning": "元のリポジトリがディスク上に存在しません。ワークスペースと、まだクリーンアップ可能なリソースは削除されますが、ブランチは削除できません。"
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "linkErrorRecovery": "ワークスペースは作成されましたが、イシューへのリンクに失敗しました。イシューの既存ワークスペースのリンクから再接続してください。"
   },
   "fileTree": {
     "searchPlaceholder": "ファイルを検索...",
@@ -540,6 +541,10 @@
     "workspaceOnly": {
       "create": "Workspace only",
       "creating": "Creating workspace..."
+    },
+    "reviewMode": {
+      "failed": "レビューに必要な情報を確認できませんでした",
+      "singleRepo": "レビューするリポジトリを1つ選択するか、レビューモードをオフにしてください。"
     }
   },
   "modelSelector": {
@@ -607,5 +612,16 @@
     "prev": "前のサマリー",
     "next": "次のサマリー",
     "past": "以前のサマリー"
+  },
+  "bootstrap": {
+    "loadFailed": "設定を読み込めませんでした。再試行してください。"
+  },
+  "hostSelection": {
+    "forbidden": "ホスト一覧を表示する権限がありません。",
+    "unavailable": "ホストを読み込めませんでした。再試行してください。",
+    "pairingUnavailable": "ペアリング情報を読み込めませんでした。利用可能なアカウントホストは使用できます。",
+    "noHosts": "利用可能なリモートホストはありません。",
+    "noOnline": "オンラインのリモートホストはありません。",
+    "noMatches": "検索条件に一致するホストはありません。"
   }
 }

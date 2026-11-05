@@ -180,7 +180,8 @@
       "unlinkFromIssueLabel": "同时取消与议题的关联",
       "repoMissingWarning": "源仓库已不存在于磁盘上。将删除工作区以及仍可清理的资源，但无法删除分支。"
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "linkErrorRecovery": "工作区已创建，但关联议题失败。请在议题中使用关联现有工作区重新连接。"
   },
   "fileTree": {
     "searchPlaceholder": "搜索文件...",
@@ -540,6 +541,10 @@
     "workspaceOnly": {
       "create": "Workspace only",
       "creating": "Creating workspace..."
+    },
+    "reviewMode": {
+      "failed": "无法验证审查所需的信息",
+      "singleRepo": "请选择一个仓库进行审查，或关闭审查模式。"
     }
   },
   "modelSelector": {
@@ -607,5 +612,16 @@
     "prev": "上一条摘要",
     "next": "下一条摘要",
     "past": "较早的摘要"
+  },
+  "bootstrap": {
+    "loadFailed": "无法加载设置，请重试。"
+  },
+  "hostSelection": {
+    "forbidden": "你没有查看这些主机的权限。",
+    "unavailable": "无法加载主机，请重试。",
+    "pairingUnavailable": "无法加载配对信息。仍可使用可用的账户主机。",
+    "noHosts": "没有可用的远程主机。",
+    "noOnline": "没有在线的远程主机。",
+    "noMatches": "没有符合搜索条件的主机。"
   }
 }

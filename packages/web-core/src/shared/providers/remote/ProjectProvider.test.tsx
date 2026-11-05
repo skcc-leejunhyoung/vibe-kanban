@@ -4,6 +4,7 @@ import {
   configureTestAuthRuntime,
   electricSessions,
   emitChange,
+  emitError,
   emitSnapshot,
   installDomlessReact,
   lastSessionFor,
@@ -104,6 +105,7 @@ async function renderProvider(
   options: {
     withReadOnlyReader?: boolean;
     fallbackIssues?: boolean;
+    pendingTables?: string[];
   } = {}
 ) {
   const projectId = `p${++projectCounter}`;
@@ -139,6 +141,7 @@ async function renderProvider(
       const base = session.id.replace(/-mut$/, '');
       const table = base.slice(0, base.lastIndexOf('-'));
       if (options.fallbackIssues && table === 'issues') continue;
+      if (options.pendingTables?.includes(table)) continue;
       emitSnapshot(session, rows[table] ?? []);
     }
   });
@@ -161,6 +164,44 @@ async function renderProvider(
 }
 
 describe('ProjectProvider streams', () => {
+  it('waits for both review sources and keeps unrelated failures separate', async () => {
+    const provider = await renderProvider({
+      pendingTables: ['issue_tags', 'pull_request_issues'],
+    });
+    expect(provider.latest().reviewTags.isLoading).toBe(true);
+    expect(provider.latest().reviewPullRequests.isLoading).toBe(true);
+    await act(async () => {
+      emitSnapshot(
+        provider.session('issue_tags'),
+        seedRows(provider.projectId).issue_tags
+      );
+    });
+    expect(provider.latest().reviewTags.isLoading).toBe(false);
+    expect(provider.latest().reviewPullRequests.isLoading).toBe(true);
+    await act(async () => {
+      emitSnapshot(provider.session('pull_request_issues'), []);
+    });
+    expect(provider.latest().reviewPullRequests.isLoading).toBe(false);
+    vi.mocked(makeRequest).mockRejectedValue(new Error('Synthetic outage'));
+    await act(async () => {
+      emitError(provider.session('project_milestones'), {
+        status: 503,
+        message: 'Unavailable',
+      });
+    });
+    expect(provider.latest().error).toBeTruthy();
+    expect(provider.latest().reviewTags.error).toBeNull();
+    expect(provider.latest().reviewPullRequests.error).toBeNull();
+    await act(async () => {
+      emitError(provider.session('issue_tags'), {
+        status: 403,
+        message: 'Forbidden',
+      });
+    });
+    expect(provider.latest().reviewTags.error).toBeTruthy();
+    expect(provider.latest().reviewPullRequests.error).toBeNull();
+  });
+
   it('opens 12 project streams and shares them with other readers', async () => {
     const provider = await renderProvider({ withReadOnlyReader: true });
     // Collection ids end with the project id (legacy ids also had a `-mut`
