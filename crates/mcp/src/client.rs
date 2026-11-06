@@ -3296,6 +3296,11 @@ mod tests {
             ("GET", format!("/api/workspaces/{workspace_id}/repos")),
             ok(json!([{ "id": Uuid::new_v4(), "name": "widgets", "target_branch": "origin/main" }])),
         );
+            routes.insert(
+                ("GET", format!("/api/workspaces/{workspace_id}/git/status")),
+                ok(json!([{ "repo_id": Uuid::new_v4(), "repo_name": "widgets", "repo_missing": false,
+                    "head_oid": "c3", "target_branch_name": "origin/main" }])),
+            );
             let (url, calls) = fake_vibe(routes).await;
 
             let outcome = VkClient::new(&url, "test/1")
@@ -3314,6 +3319,7 @@ mod tests {
                 })
             );
             assert_eq!(outcome.target_branch, "origin/main");
+            assert_eq!(outcome.checkout_sha.as_deref(), Some("c3"));
             assert!(posted(&calls, "/workspaces/start").is_empty());
             assert!(posted(&calls, "/workspaces/create").is_empty());
             assert_eq!(posted(&calls, "/links").len(), 1);

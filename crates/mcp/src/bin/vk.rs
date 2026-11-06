@@ -19,6 +19,7 @@ use db::models::requests::AutopilotWorkspaceResponse;
 use mcp::client::{
     CreateIssueInput, ReviewWorkspaceInput, SendPromptOptions, StartWorkspaceInput,
     UpdateIssueInput, VkClient, VkError, WorkspaceFilter, discover_base_url,
+    review_executor_config,
 };
 use serde_json::{Map, Value, json};
 use utils::git_ops::{self, Op, Target};
@@ -4146,11 +4147,13 @@ impl Ctx {
             }
             "ws.review" => {
                 let executor = arg_str(m, "executor").unwrap_or_else(|| "CLAUDE_CODE".to_string());
-                let executor_config = serde_json::from_value(Self::executor_config(
-                    m,
-                    &executor.replace('-', "_").to_ascii_uppercase(),
-                ))
-                .map_err(|error| VkError::message(format!("Invalid executor options: {error}")))?;
+                let executor_config = review_executor_config(
+                    &executor,
+                    arg_str(m, "variant"),
+                    arg_str(m, "model"),
+                    arg_str(m, "reasoning"),
+                    arg_str(m, "permission"),
+                )?;
                 let outcome = self
                     .client
                     .review_workspace(ReviewWorkspaceInput {
