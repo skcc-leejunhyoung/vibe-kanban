@@ -676,7 +676,7 @@ function CreateChatBoxContent({
                     />
                   }
                   onSend={handleSubmit}
-                  sendDisabled={!canSubmit}
+                  sendDisabled={reviewMode.blocked}
                   isSending={createWorkspace.isPending}
                   onStop={handleStop}
                   isStopRequested={isStopRequested}
