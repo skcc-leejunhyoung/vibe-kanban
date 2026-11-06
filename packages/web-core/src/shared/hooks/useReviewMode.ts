@@ -80,11 +80,9 @@ export function useReviewMode(
   );
   const reviewTagPresent = useMemo(() => hasReviewTag(tags), [tags]);
 
-  const issuePrUrls = useMemo(
+  const issuePrs = useMemo(
     () =>
-      projectCtx && issueId
-        ? projectCtx.getPullRequestsForIssue(issueId).map((pr) => pr.url)
-        : [],
+      projectCtx && issueId ? projectCtx.getPullRequestsForIssue(issueId) : [],
     [projectCtx, issueId]
   );
 
@@ -99,10 +97,10 @@ export function useReviewMode(
     prsReady &&
     reviewTagPresent &&
     !!repoId &&
-    issuePrUrls.length > 0;
+    issuePrs.length > 0;
 
   const prQueries = useQueries({
-    queries: issuePrUrls.map((url) => ({
+    queries: issuePrs.map(({ url }) => ({
       queryKey: ['review-mode-pr', url, getHostRequestScopeQueryKey(hostId)],
       queryFn: () => issuePrsApi.getPrInfo(url, hostId),
       enabled: canResolve,
@@ -113,13 +111,19 @@ export function useReviewMode(
   const linkedPrs = useMemo<PullRequestDetail[]>(
     () =>
       prQueries.flatMap((query) =>
-        query.data?.success === true ? [query.data.data] : []
+        !query.isError && query.data?.success === true ? [query.data.data] : []
       ),
     [prQueries]
   );
+  // A live open PR need not wait for inaccessible historical PRs.
+  const hasOpenPr = linkedPrs.some((pr) => pr.status === 'open');
+  const requiredQueries = prQueries.filter(
+    (_, index) =>
+      !hasOpenPr || !['closed', 'merged'].includes(issuePrs[index].status)
+  );
   const detailError = canResolve
-    ? (prQueries.find((query) => query.isError)?.error ??
-      prQueries.flatMap((query) =>
+    ? (requiredQueries.find((query) => query.isError)?.error ??
+      requiredQueries.flatMap((query) =>
         query.data?.success === false
           ? [new Error(query.data.message ?? 'PR lookup failed')]
           : []
@@ -129,7 +133,8 @@ export function useReviewMode(
     tagsSource?.error ||
     (reviewTagPresent && (prsSource?.error || detailError)) ||
     null;
-  const detailsPending = canResolve && prQueries.some((query) => !query.data);
+  const detailsPending =
+    canResolve && requiredQueries.some((query) => !query.data);
 
   const resolvedReview = useMemo(() => {
     if (!canResolve || error || detailsPending) return null;

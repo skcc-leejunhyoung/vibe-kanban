@@ -17,6 +17,9 @@ use crate::{
     db::pull_requests::PullRequestRepository,
 };
 
+// The rollback test changes FKs on shared tables; keep test-level DDL isolated.
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct Fixture {
     pool: PgPool,
     base: String,
@@ -194,6 +197,7 @@ impl Fixture {
 #[tokio::test]
 #[ignore = "requires PR_LINKS_TEST_DATABASE_URL and synthetic remote auth env"]
 async fn shared_pr_survives_either_workspace_unlink_and_last_unlink_cleans_up() {
+    let _guard = TEST_LOCK.lock().await;
     for first in [0, 1] {
         let f = Fixture::new().await;
         let local = [Uuid::new_v4(), Uuid::new_v4()];
@@ -236,6 +240,7 @@ async fn shared_pr_survives_either_workspace_unlink_and_last_unlink_cleans_up() 
 #[tokio::test]
 #[ignore = "requires PR_LINKS_TEST_DATABASE_URL and synthetic remote auth env"]
 async fn retries_are_idempotent_and_cannot_rebind_host_issue_or_project() {
+    let _guard = TEST_LOCK.lock().await;
     let f = Fixture::new().await;
     let local = Uuid::new_v4();
     let original = f.workspace(local, f.issues[0]).await;
@@ -294,6 +299,7 @@ async fn retries_are_idempotent_and_cannot_rebind_host_issue_or_project() {
 #[tokio::test]
 #[ignore = "requires PR_LINKS_TEST_DATABASE_URL and synthetic remote auth env"]
 async fn separate_issues_and_explicit_links_survive_workspace_cleanup() {
+    let _guard = TEST_LOCK.lock().await;
     let f = Fixture::new().await;
     let local = [Uuid::new_v4(), Uuid::new_v4()];
     for (local, issue) in local.into_iter().zip(f.issues) {
@@ -333,6 +339,7 @@ async fn separate_issues_and_explicit_links_survive_workspace_cleanup() {
 #[tokio::test]
 #[ignore = "requires PR_LINKS_TEST_DATABASE_URL and synthetic remote auth env"]
 async fn simultaneous_unlinks_and_link_unlink_races_preserve_remaining_links() {
+    let _guard = TEST_LOCK.lock().await;
     let f = Fixture::new().await;
     for _ in 0..5 {
         let local = [Uuid::new_v4(), Uuid::new_v4()];
@@ -355,6 +362,7 @@ async fn simultaneous_unlinks_and_link_unlink_races_preserve_remaining_links() {
 #[tokio::test]
 #[ignore = "requires PR_LINKS_TEST_DATABASE_URL and synthetic remote auth env"]
 async fn failed_delete_rolls_back_workspace_and_all_pr_links() {
+    let _guard = TEST_LOCK.lock().await;
     let f = Fixture::new().await;
     let local = Uuid::new_v4();
     let workspace = f.workspace(local, f.issues[0]).await;
@@ -385,6 +393,7 @@ async fn failed_delete_rolls_back_workspace_and_all_pr_links() {
 #[tokio::test]
 #[ignore = "requires PR_LINKS_TEST_DATABASE_URL and synthetic remote auth env"]
 async fn pr_workspace_relations_keep_project_and_owner_access_boundaries() {
+    let _guard = TEST_LOCK.lock().await;
     let f = Fixture::new().await;
     let other = Fixture::new().await;
     let local = Uuid::new_v4();

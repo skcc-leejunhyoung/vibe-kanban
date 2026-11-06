@@ -233,7 +233,7 @@ it('blocks when one of several linked PR lookups fails', async () => {
     ...context,
     getPullRequestsForIssue: () => [
       { url: detail.url },
-      { url: 'https://github.com/example/widgets/pull/13' },
+      { url: 'https://github.com/example/widgets/pull/13', status: 'open' },
     ],
   } as ProjectContextValue;
   vi.mocked(issuePrsApi.getPrInfo)
@@ -260,4 +260,69 @@ it('retains an explicit opt-out for the same issue through later metadata failur
   expect(state.status).toBe('disabled');
   expect(state.blocked).toBe(false);
   expect(state.prReviewPayload).toBeNull();
+});
+
+it.each(['closed', 'merged'] as const)(
+  'allows an accessible open PR when a historical %s PR lookup fails',
+  async (status) => {
+    const historicalUrl = 'https://github.com/synthetic/old-repo/pull/21';
+    context = {
+      ...context,
+      getPullRequestsForIssue: () => [
+        { url: historicalUrl, status },
+        { url: detail.url, status: 'open' },
+      ],
+    } as ProjectContextValue;
+    vi.mocked(issuePrsApi.getPrInfo).mockImplementation(async (url) => {
+      if (url === historicalUrl)
+        throw new Error('Historical repository unavailable');
+      return { success: true, data: detail };
+    });
+    await render();
+    await vi.waitFor(() => expect(state.status).toBe('ready'));
+    expect(state.blocked).toBe(false);
+    expect(state.prReviewPayload?.pr_url).toBe(detail.url);
+  }
+);
+
+it('keeps a failed historical lookup blocking when no live open PR was resolved', async () => {
+  context = {
+    ...context,
+    getPullRequestsForIssue: () => [{ url: detail.url, status: 'closed' }],
+  } as ProjectContextValue;
+  vi.mocked(issuePrsApi.getPrInfo).mockRejectedValue(
+    new Error('Lookup unavailable')
+  );
+  await render();
+  await vi.waitFor(() => expect(state.status).toBe('error'));
+  expect(state.blocked).toBe(true);
+});
+
+it('does not wait for a pending historical PR once a live open PR resolves', async () => {
+  const historicalUrl = 'https://github.com/synthetic/old-repo/pull/22';
+  context = {
+    ...context,
+    getPullRequestsForIssue: () => [
+      { url: historicalUrl, status: 'closed' },
+      { url: detail.url, status: 'open' },
+    ],
+  } as ProjectContextValue;
+  vi.mocked(issuePrsApi.getPrInfo).mockImplementation((url) =>
+    url === historicalUrl
+      ? new Promise(() => {})
+      : Promise.resolve({ success: true, data: detail })
+  );
+  await render();
+  await vi.waitFor(() => expect(state.status).toBe('ready'));
+  expect(state.prReviewPayload?.pr_url).toBe(detail.url);
+});
+
+it('still discovers a reopened PR whose central status is closed', async () => {
+  context = {
+    ...context,
+    getPullRequestsForIssue: () => [{ url: detail.url, status: 'closed' }],
+  } as ProjectContextValue;
+  await render();
+  await vi.waitFor(() => expect(state.status).toBe('ready'));
+  expect(state.prReviewPayload?.pr_url).toBe(detail.url);
 });
