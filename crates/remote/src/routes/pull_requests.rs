@@ -290,20 +290,12 @@ async fn upsert_pull_request(
     )
     .await?;
 
-    let mut tx = state.pool().begin().await.map_err(|error| {
-        tracing::error!(?error, "failed to begin transaction");
-        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-    })?;
-
-    let workspace = WorkspaceRepository::lock(&mut tx, workspace.id)
-        .await
-        .map_err(|error| db_error(error, "failed to lock workspace"))?
-        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
-
     let issue_id = workspace
         .issue_id
         .ok_or_else(|| ErrorResponse::new(StatusCode::BAD_REQUEST, "workspace has no issue"))?;
 
+    // Pool lookups stay outside the transaction: holding its connection while
+    // waiting for a second one can exhaust the pool under concurrent upserts.
     ensure_issue_access(state.pool(), ctx.user.id, issue_id).await?;
 
     let issue = IssueRepository::find_by_id(state.pool(), issue_id)
@@ -321,6 +313,18 @@ async fn upsert_pull_request(
             "issue does not belong to the workspace project",
         ));
     }
+
+    let mut tx = state.pool().begin().await.map_err(|error| {
+        tracing::error!(?error, "failed to begin transaction");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    // The issue link only changes by the issue being deleted (SET NULL).
+    let workspace = WorkspaceRepository::lock(&mut tx, workspace.id)
+        .await
+        .map_err(|error| db_error(error, "failed to lock workspace"))?
+        .filter(|locked| locked.issue_id == Some(issue_id))
+        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "workspace not found"))?;
 
     let pr = PullRequestRepository::create(
         &mut *tx,

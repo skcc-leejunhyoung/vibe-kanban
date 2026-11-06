@@ -5,7 +5,7 @@ use axum::{Extension, Router};
 use chrono::Utc;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use uuid::Uuid;
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
         JwtService, OAuthHandoffService, OAuthTokenValidator, ProviderRegistry, RequestContext,
     },
     config::RemoteServerConfig,
-    db::pull_requests::PullRequestRepository,
+    db::{issues::IssueRepository, pull_requests::PullRequestRepository},
 };
 
 // The rollback test changes FKs on shared tables; keep test-level DDL isolated.
@@ -34,9 +34,13 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_pool(PgPoolOptions::new()).await
+    }
+
+    async fn with_pool(options: PgPoolOptions) -> Self {
         let url = std::env::var("PR_LINKS_TEST_DATABASE_URL")
             .expect("provide a migrated disposable PostgreSQL database");
-        let pool = PgPool::connect(&url).await.unwrap();
+        let pool = options.connect(&url).await.unwrap();
         let user: User = sqlx::query_as("INSERT INTO users (email) VALUES ($1) RETURNING id, email, first_name, last_name, username, created_at, updated_at")
             .bind(format!("{}@example.test", Uuid::new_v4())).fetch_one(&pool).await.unwrap();
         let org = Uuid::new_v4();
@@ -440,4 +444,47 @@ async fn pr_workspace_relations_keep_project_and_owner_access_boundaries() {
     assert_eq!(other.counts().await, (1, 1, 1, 1));
     f.cleanup().await;
     other.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PR_LINKS_TEST_DATABASE_URL and synthetic remote auth env"]
+async fn upsert_never_waits_for_a_second_pool_connection() {
+    let _guard = TEST_LOCK.lock().await;
+    let f = Fixture::with_pool(
+        PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(2)),
+    )
+    .await;
+    let local = Uuid::new_v4();
+    f.workspace(local, f.issues[0]).await;
+    f.upsert(local).await;
+    assert_eq!(f.counts().await, (1, 1, 1, 1));
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PR_LINKS_TEST_DATABASE_URL and synthetic remote auth env"]
+async fn shared_pr_survives_deleting_its_original_issue() {
+    let _guard = TEST_LOCK.lock().await;
+    let f = Fixture::new().await;
+    let local = [Uuid::new_v4(), Uuid::new_v4()];
+    for (local, issue) in local.into_iter().zip(f.issues) {
+        f.workspace(local, issue).await;
+        f.upsert(local).await;
+    }
+    let original_issue = || {
+        sqlx::query_scalar::<_, Uuid>("SELECT issue_id FROM pull_requests WHERE project_id = $1")
+            .bind(f.project)
+            .fetch_one(&f.pool)
+    };
+    assert_eq!(original_issue().await.unwrap(), f.issues[0]);
+    IssueRepository::delete(&f.pool, f.issues[0]).await.unwrap();
+    assert_eq!(original_issue().await.unwrap(), f.issues[1]);
+    let (_, prs, issue_links, workspace_links) = f.counts().await;
+    assert_eq!((prs, issue_links, workspace_links), (1, 1, 1));
+    IssueRepository::delete(&f.pool, f.issues[1]).await.unwrap();
+    let (_, prs, issue_links, workspace_links) = f.counts().await;
+    assert_eq!((prs, issue_links, workspace_links), (0, 0, 0));
+    f.cleanup().await;
 }

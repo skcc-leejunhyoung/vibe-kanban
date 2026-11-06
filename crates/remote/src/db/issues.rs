@@ -512,6 +512,24 @@ impl IssueRepository {
     pub async fn delete(pool: &PgPool, id: Uuid) -> Result<DeleteResponse, IssueError> {
         let mut tx = super::begin_tx(pool).await?;
 
+        // pull_requests.issue_id cascades; hand PRs still linked to another
+        // issue of their project to it instead of deleting them.
+        sqlx::query(
+            "UPDATE pull_requests p SET issue_id = next.issue_id, updated_at = NOW()
+             FROM (
+                 SELECT DISTINCT ON (pri.pull_request_id) pri.pull_request_id, pri.issue_id
+                 FROM pull_request_issues pri
+                 JOIN pull_requests pr ON pr.id = pri.pull_request_id
+                 JOIN issues i ON i.id = pri.issue_id AND i.project_id = pr.project_id
+                 WHERE pr.issue_id = $1 AND pri.issue_id <> $1
+                 ORDER BY pri.pull_request_id, pri.issue_id
+             ) next
+             WHERE p.id = next.pull_request_id",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
         sqlx::query!("DELETE FROM issues WHERE id = $1", id)
             .execute(&mut *tx)
             .await?;
