@@ -161,8 +161,8 @@ const LinkPrByUrlDialogImpl = create<LinkPrByUrlDialogProps>((props) => {
           )}
 
           {prInfo && (
-            <div className="rounded-md border p-3 space-y-1">
-              <span className="text-sm font-medium truncate">
+            <div className="rounded-md border p-3 space-y-1 break-words">
+              <span className="block text-sm font-medium">
                 #{String(prInfo.number)}
                 {prInfo.title ? `: ${prInfo.title}` : ''}
               </span>
