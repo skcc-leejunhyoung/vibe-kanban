@@ -56,6 +56,7 @@ const usage: AgentUsage = {
   updated_at: '2030-01-01T01:00:00Z',
   reset_credits: null,
   reset_credit_expirations: [],
+  credits: null,
   next_refresh_at: '2030-01-01T01:05:00Z',
   unavailable: false,
   login_required: false,

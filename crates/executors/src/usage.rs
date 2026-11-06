@@ -13,11 +13,20 @@ pub struct AgentUsageWindow {
     pub resets_at: Option<DateTime<Utc>>,
 }
 
+/// Codex purchased-credit balance; separate from `reset_credits` (rate-limit reset count).
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+pub struct AgentUsageCredits {
+    pub has_credits: bool,
+    pub unlimited: bool,
+    pub balance: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct AgentUsageSnapshot {
     pub windows: Vec<AgentUsageWindow>,
     pub reset_credits: Option<u32>,
     pub reset_credit_expirations: Vec<Option<DateTime<Utc>>>,
+    pub credits: Option<AgentUsageCredits>,
 }
 
 pub(crate) fn parse_codex_usage(
@@ -42,6 +51,14 @@ pub(crate) fn parse_codex_usage(
         })
         .collect();
     reset_credit_expirations.sort_by_key(|expiration| (expiration.is_none(), *expiration));
+    let credits = response
+        .rate_limits
+        .credits
+        .map(|credits| AgentUsageCredits {
+            has_credits: credits.has_credits,
+            unlimited: credits.unlimited,
+            balance: credits.balance,
+        });
     let windows = [response.rate_limits.primary, response.rate_limits.secondary]
         .into_iter()
         .flatten()
@@ -67,6 +84,7 @@ pub(crate) fn parse_codex_usage(
         windows,
         reset_credits,
         reset_credit_expirations,
+        credits,
     }
 }
 
@@ -200,11 +218,22 @@ mod tests {
     #[test]
     fn codex_usage_preserves_the_authoritative_reset_count_and_weekly_only_window() {
         let response = serde_json::from_value(serde_json::json!({
-            "rateLimits": { "primary": { "usedPercent": 37, "windowDurationMins": 10080, "resetsAt": 1893628800 } },
+            "rateLimits": {
+                "primary": { "usedPercent": 37, "windowDurationMins": 10080, "resetsAt": 1893628800 },
+                "credits": { "hasCredits": true, "unlimited": false, "balance": "1234.5" }
+            },
             "rateLimitResetCredits": { "availableCount": 2, "credits": [] }
         })).unwrap();
         let usage = parse_codex_usage(response);
         assert_eq!(usage.reset_credits, Some(2));
+        assert_eq!(
+            usage.credits,
+            Some(AgentUsageCredits {
+                has_credits: true,
+                unlimited: false,
+                balance: Some("1234.5".into()),
+            })
+        );
         assert_eq!(usage.windows.len(), 1);
         assert_eq!(usage.windows[0].label, "7d");
         assert_eq!(usage.windows[0].used_percent, 37.0);
@@ -226,7 +255,10 @@ mod tests {
                 "rateLimits": {}, "rateLimitResetCredits": credits
             }))
             .unwrap();
-            assert_eq!(parse_codex_usage(response).reset_credits, expected);
+            let usage = parse_codex_usage(response);
+            assert_eq!(usage.reset_credits, expected);
+            // An absent balance stays unknown instead of becoming zero.
+            assert!(usage.credits.is_none());
         }
     }
 
