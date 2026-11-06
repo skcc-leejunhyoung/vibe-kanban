@@ -1881,10 +1881,20 @@ pub(crate) async fn setup_pr_review_workspace(
     deployment: &DeploymentImpl,
     workspace_name: Option<String>,
     pr: &PrReviewInput,
+    task_id: Option<Uuid>,
 ) -> Result<Result<Workspace, String>, ApiError> {
     let (workspace, repo, remote) = create_pr_review_rows(deployment, workspace_name, pr).await?;
     let materialising = deployment.container().lock_container(workspace.id).await;
-    let checked_out = checkout_pr_branch(deployment, &workspace, &repo, &remote, pr).await;
+    let mut checked_out = checkout_pr_branch(deployment, &workspace, &repo, &remote, pr).await;
+    // The issue link is how an agent's rerun finds this review: set it once the
+    // checkout is usable (not while it runs), and leave no review without it.
+    if checked_out.is_ok()
+        && let Some(task_id) = task_id
+        && let Err(error) =
+            Workspace::set_task_id(&deployment.db().pool, workspace.id, Some(task_id)).await
+    {
+        checked_out = Err(format!("linking the review to its issue failed: {error}"));
+    }
     if let Err(message) = &checked_out {
         fail_pr_checkout(deployment, &workspace, pr, message).await;
     }

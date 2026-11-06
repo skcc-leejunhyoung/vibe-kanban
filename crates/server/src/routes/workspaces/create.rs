@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::LazyLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock},
+};
 
 use axum::{Json, extract::State, http::HeaderMap, response::Json as ResponseJson};
 use db::models::{
@@ -545,11 +548,42 @@ async fn resolve_github_linked_target_branch(
     Ok(branch_name)
 }
 
-/// Agent review creates run one at a time: an agent reruns a lost answer and
-/// two agents may race, so the "already under review" check and the create
-/// must not interleave. People's creates (the UI) are not serialized.
-static AGENT_REVIEW_CREATES: LazyLock<tokio::sync::Mutex<()>> =
-    LazyLock::new(|| tokio::sync::Mutex::new(()));
+type ReviewKey = (Uuid, String);
+
+/// Agent review creates of one issue and PR run one at a time: an agent reruns
+/// a lost answer and two agents may race, so the "already under review" check,
+/// the create and the first turn's start must not interleave. Other reviews
+/// (a stuck checkout) and people's creates (the UI) are not held up.
+static AGENT_REVIEW_CREATES: LazyLock<
+    std::sync::Mutex<HashMap<ReviewKey, Arc<tokio::sync::Mutex<()>>>>,
+> = LazyLock::new(Default::default);
+
+/// Held by the caller until its response is ready, so a racing rerun finds the
+/// review with its turn already started.
+async fn lock_agent_review(
+    agent: bool,
+    linked_issue: Option<&LinkedIssueInfo>,
+    pr_review: Option<&PrReviewInput>,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    let review = pr_review.filter(|_| agent)?;
+    let key = (
+        linked_issue.map_or(Uuid::nil(), |issue| issue.issue_id),
+        review
+            .pr_url
+            .trim()
+            .trim_end_matches('/')
+            .to_ascii_lowercase(),
+    );
+    let lock = {
+        let mut locks = AGENT_REVIEW_CREATES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Drop entries nobody holds or waits on.
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        locks.entry(key).or_default().clone()
+    };
+    Some(lock.lock_owned().await)
+}
 
 /// The open review workspace of this issue and PR: a workspace made for the
 /// issue that carries the PR's link. Judged as the agent's workspace list
@@ -599,13 +633,6 @@ async fn create_workspace_with_repos(
         ));
     }
 
-    // One agent review per issue and PR; the agent's rerun reuses it. Held to
-    // the end: the check reads the workspace's task_id, set after the match.
-    let _one_review_at_a_time = if agent && pr_review.is_some() {
-        Some(AGENT_REVIEW_CREATES.lock().await)
-    } else {
-        None
-    };
     let managed_workspace = match review_mode::plan_branch_setup(&repos, pr_review)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?
     {
@@ -662,15 +689,17 @@ async fn create_workspace_with_repos(
             }
             // Checked out inline: the issue is marked "In review" and the prompt
             // cleared right after, so a failed checkout must stay a request error.
-            let workspace = match pr::setup_pr_review_workspace(deployment, name, review).await? {
-                Ok(workspace) => workspace,
-                Err(message) => {
-                    return Err(ApiError::BadRequest(format!(
-                        "Failed to check out PR #{} branch for review: {message}",
-                        review.pr_number
-                    )));
-                }
-            };
+            let task_id = linked_issue.map(|issue| issue.issue_id);
+            let workspace =
+                match pr::setup_pr_review_workspace(deployment, name, review, task_id).await? {
+                    Ok(workspace) => workspace,
+                    Err(message) => {
+                        return Err(ApiError::BadRequest(format!(
+                            "Failed to check out PR #{} branch for review: {message}",
+                            review.pr_number
+                        )));
+                    }
+                };
 
             deployment
                 .workspace_manager()
@@ -716,6 +745,9 @@ pub async fn create_workspace_without_starting(
         working_branch,
     } = payload;
 
+    let agent = crate::middleware::is_agent_request(&headers);
+    let _one_review_at_a_time =
+        lock_agent_review(agent, linked_issue.as_ref(), pr_review.as_ref()).await;
     let managed_workspace = create_workspace_with_repos(
         &deployment,
         name,
@@ -724,7 +756,7 @@ pub async fn create_workspace_without_starting(
         attachment_ids,
         pr_review.as_ref(),
         working_branch,
-        crate::middleware::is_agent_request(&headers),
+        agent,
     )
     .await?;
     let workspace = managed_workspace.workspace;
@@ -785,6 +817,9 @@ async fn create_and_start_workspace_inner(
         )
     })?;
 
+    // Held through the start below: a racing rerun then sees the turn.
+    let _one_review_at_a_time =
+        lock_agent_review(agent, linked_issue.as_ref(), pr_review.as_ref()).await;
     let managed_workspace = create_workspace_with_repos(
         &deployment,
         name,
@@ -1260,8 +1295,57 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ImportedIssueAttachment, open_review_workspace, rewrite_imported_issue_attachments_markdown,
+        ImportedIssueAttachment, LinkedIssueInfo, PrReviewInput, lock_agent_review,
+        open_review_workspace, rewrite_imported_issue_attachments_markdown,
     };
+
+    #[tokio::test]
+    async fn agent_review_lock_holds_only_the_same_issue_and_pr() {
+        let issue = LinkedIssueInfo {
+            remote_project_id: Uuid::new_v4(),
+            issue_id: Uuid::new_v4(),
+        };
+        let review = |url: &str| PrReviewInput {
+            repo_id: Uuid::new_v4(),
+            pr_number: 42,
+            pr_title: "Synthetic".to_string(),
+            pr_url: url.to_string(),
+            head_branch: "feature-x".to_string(),
+            base_branch: "main".to_string(),
+            remote_name: None,
+        };
+        let pr42 = review("https://github.com/acme/widgets/pull/42");
+        let pr7 = review("https://github.com/acme/widgets/pull/7");
+        let soon = std::time::Duration::from_millis(100);
+
+        let held = lock_agent_review(true, Some(&issue), Some(&pr42)).await;
+        assert!(held.is_some());
+        // People's creates and plain creates take no lock.
+        assert!(
+            lock_agent_review(false, Some(&issue), Some(&pr42))
+                .await
+                .is_none()
+        );
+        assert!(lock_agent_review(true, Some(&issue), None).await.is_none());
+        // Another PR is not held up; the same one (any URL spelling) waits.
+        assert!(
+            tokio::time::timeout(soon, lock_agent_review(true, Some(&issue), Some(&pr7)))
+                .await
+                .is_ok()
+        );
+        let same = review("https://github.com/Acme/widgets/pull/42/");
+        assert!(
+            tokio::time::timeout(soon, lock_agent_review(true, Some(&issue), Some(&same)))
+                .await
+                .is_err()
+        );
+        drop(held);
+        assert!(
+            tokio::time::timeout(soon, lock_agent_review(true, Some(&issue), Some(&same)))
+                .await
+                .is_ok()
+        );
+    }
 
     async fn workspace_with_pr(
         pool: &sqlx::SqlitePool,
