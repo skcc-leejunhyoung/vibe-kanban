@@ -293,6 +293,38 @@ mod tests {
     }
 
     #[test]
+    fn review_workspace_tool_takes_the_cli_inputs() {
+        let tool = McpServer::global_mode_router()
+            .list_all()
+            .into_iter()
+            .find(|tool| tool.name == "review_workspace")
+            .expect("review_workspace is a global tool");
+        let schema = serde_json::Value::Object((*tool.input_schema).clone());
+        let properties = schema["properties"].as_object().expect("object schema");
+        for key in [
+            "host_id",
+            "issue_id",
+            "pr",
+            "repo_id",
+            "executor",
+            "variant",
+            "model_id",
+            "reasoning_id",
+            "permission_policy",
+            "prompt",
+            "name",
+            "create_only",
+            "dry_run",
+        ] {
+            assert!(properties.contains_key(key), "missing input {key}");
+        }
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["issue_id", "executor"])
+        );
+    }
+
+    #[test]
     fn orchestrator_session_id_is_resolved_from_context() {
         let session_id = Uuid::new_v4();
         let workspace_id = Uuid::new_v4();

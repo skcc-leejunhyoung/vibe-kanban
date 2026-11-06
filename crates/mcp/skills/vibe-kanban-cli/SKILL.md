@@ -102,13 +102,20 @@ catalog has no `review_workspace` (an older host), `vk ws review` is the path.
   included, with the host's name and nothing created; rerun when it responds. A review still
   checking out is not tied to the issue yet, so let the first command return before rerunning.
 - Output: `action`, `host_id`, `workspace_id`, `branch`, `checkout` (`ready` | `pending`),
-  `checkout_sha` (HEAD on disk; `null` when the host could not read it), `session_id`,
-  `execution_process_id` (both `null` after `--create-only` or a `reused` workspace without a
-  session), `executor_config` (what the turn runs with: the config sent on `created`, the
-  session's latest coding turn on `reused`), `pr` (`number`, `url`, `status`, `head_branch`,
-  `base_branch`, `head_sha`), `repo`, `remote`, `target_branch`, `issue_status` (after a start it
-  should read "In review"; the move is best-effort on the server, as in the UI). A turn started =
-  `execution_process_id` set; a duplicate avoided = `action: "reused"` with the earlier ids.
+  `checkout_sha` (HEAD on disk; `null` when the host could not read it), `turn` (`started`;
+  `waiting_on_blockers` = the process row exists but the server holds the spawn until the
+  issue's blockers close; `none` after `--create-only`; for a reused workspace `running` |
+  `waiting_on_blockers` | `idle`), `session_id`, `execution_process_id` (both `null` after
+  `--create-only` or a `reused` workspace without a session), `executor_config` (what the turn
+  runs with: the config sent on `created`, the session's latest coding turn on `reused`), `pr`
+  (`number`, `url`, `status`, `head_branch`, `base_branch`, `head_sha`, `base_sha` — the base's
+  commit, `null` on hosts built before it), `repo`, `remote`, `target_branch`, `issue_status`
+  (after a start it should read "In review"; the move is best-effort on the server, as in the
+  UI). A turn started = `execution_process_id` set; a duplicate avoided = `action: "reused"` with
+  the earlier ids. Two agents racing to create the same review still end with one workspace:
+  the host refuses the second create (409) and the command returns the first as `reused`.
+  `--dry-run` on an existing review is the read-only re-query (`turn`, `checkout_sha`,
+  `executor_config`).
 - Errors to act on: a refusal names its fix (`--pr <url>`, `--repo <id>`, `--host <name>`, the
   tag to add or remove, the PR to reopen); "Could not read PR ... check `gh auth status`" and
   "Failed to check out PR" are the host's `gh` state — fix it there (a person's job) and rerun;
@@ -202,6 +209,8 @@ by agent access.
   `review_workspace`, `run_session_prompt`, issues, `list_events` / `wait_for_events`,
   `notify_user`). Everything else lives here. Hosts run the version they were built with:
   compare `vk --version` with the MCP catalog (`tools/list`) before relying on a newer tool, and
-  fall back to the `vk` command when the tool is missing.
+  fall back to the `vk` command when the tool is missing. A running MCP server keeps the
+  catalog it started with until the agent session restarts; `vk` runs the installed binary on
+  every call, so a host update reaches it at once.
 - Install this skill on a new machine: `vk skill install` (writes `~/.claude/skills/vibe-kanban-cli`
   and links `~/.codex/skills/vibe-kanban-cli`).

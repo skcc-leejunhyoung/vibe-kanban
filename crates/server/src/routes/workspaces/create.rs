@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::LazyLock};
 
 use axum::{Json, extract::State, http::HeaderMap, response::Json as ResponseJson};
 use db::models::{
     pending_execution_start::PendingExecutionStart,
+    pull_request::PullRequest,
     repo::Repo,
     requests::{
         CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, CreateQuickChatRequest,
@@ -544,6 +545,44 @@ async fn resolve_github_linked_target_branch(
     Ok(branch_name)
 }
 
+/// Agent review creates run one at a time: an agent reruns a lost answer and
+/// two agents may race, so the "already under review" check and the create
+/// must not interleave. People's creates (the UI) are not serialized.
+static AGENT_REVIEW_CREATES: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// The open review workspace of this issue and PR: a workspace made for the
+/// issue that carries the PR's link.
+async fn open_review_workspace(
+    pool: &sqlx::SqlitePool,
+    issue_id: Uuid,
+    pr_url: &str,
+) -> Result<Option<Uuid>, ApiError> {
+    let wanted = pr_url.trim().trim_end_matches('/');
+    for pr in PullRequest::find_all_with_workspace(pool).await? {
+        let Some(workspace_id) = pr.workspace_id else {
+            continue;
+        };
+        if !pr
+            .pr_url
+            .trim()
+            .trim_end_matches('/')
+            .eq_ignore_ascii_case(wanted)
+        {
+            continue;
+        }
+        if let Some(workspace) = Workspace::find_by_id(pool, workspace_id).await?
+            && workspace.task_id == Some(issue_id)
+            && !workspace.archived
+        {
+            return Ok(Some(workspace.id));
+        }
+    }
+    Ok(None)
+}
+
+// The request's parts plus who asks; a parameter struct would only rename them.
+#[allow(clippy::too_many_arguments)]
 async fn create_workspace_with_repos(
     deployment: &DeploymentImpl,
     name: Option<String>,
@@ -552,6 +591,7 @@ async fn create_workspace_with_repos(
     attachment_ids: Option<Vec<Uuid>>,
     pr_review: Option<&PrReviewInput>,
     working_branch: WorkingBranchInput,
+    agent: bool,
 ) -> Result<ManagedWorkspace, ApiError> {
     if repos.is_empty() {
         return Err(ApiError::BadRequest(
@@ -602,6 +642,23 @@ async fn create_workspace_with_repos(
         // Review mode: check out the existing PR head branch directly and link
         // the PR, instead of branching a new `vk/` worktree.
         BranchSetup::ExistingPrBranch(review) => {
+            // One agent review per issue and PR; the agent's rerun reuses it.
+            let _one_at_a_time = if agent {
+                Some(AGENT_REVIEW_CREATES.lock().await)
+            } else {
+                None
+            };
+            if agent
+                && let Some(linked) = linked_issue
+                && let Some(existing) =
+                    open_review_workspace(&deployment.db().pool, linked.issue_id, &review.pr_url)
+                        .await?
+            {
+                return Err(ApiError::Conflict(format!(
+                    "Workspace {existing} already reviews PR #{} for this issue; rerun the review command to reuse it",
+                    review.pr_number
+                )));
+            }
             // Checked out inline: the issue is marked "In review" and the prompt
             // cleared right after, so a failed checkout must stay a request error.
             let workspace = match pr::setup_pr_review_workspace(deployment, name, review).await? {
@@ -646,6 +703,7 @@ async fn create_workspace_with_repos(
 
 pub async fn create_workspace_without_starting(
     State(deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
     Json(payload): Json<CreateWorkspaceWithoutStartingRequest>,
 ) -> Result<ResponseJson<ApiResponse<CreateWorkspaceWithoutStartingResponse>>, ApiError> {
     let CreateWorkspaceWithoutStartingRequest {
@@ -665,6 +723,7 @@ pub async fn create_workspace_without_starting(
         attachment_ids,
         pr_review.as_ref(),
         working_branch,
+        crate::middleware::is_agent_request(&headers),
     )
     .await?;
     let workspace = managed_workspace.workspace;
@@ -691,7 +750,9 @@ pub async fn create_and_start_workspace(
             return Ok(ResponseJson(response));
         }
     };
-    let result = create_and_start_workspace_inner(State(deployment), Json(payload), origin).await;
+    let agent = crate::middleware::is_agent_request(&headers);
+    let result =
+        create_and_start_workspace_inner(State(deployment), Json(payload), origin, agent).await;
     // An error can happen after the workspace or execution record exists.
     // Keep the claim so an automatic retry cannot duplicate that side effect.
     if let Ok(response) = &result {
@@ -704,6 +765,7 @@ async fn create_and_start_workspace_inner(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateAndStartWorkspaceRequest>,
     automation_origin: Option<executors::actions::AutomationOrigin>,
+    agent: bool,
 ) -> Result<ResponseJson<ApiResponse<CreateAndStartWorkspaceResponse>>, ApiError> {
     let CreateAndStartWorkspaceRequest {
         name,
@@ -730,6 +792,7 @@ async fn create_and_start_workspace_inner(
         attachment_ids,
         pr_review.as_ref(),
         working_branch,
+        agent,
     )
     .await?;
 
@@ -1187,10 +1250,117 @@ async fn seed_autopilot_instructions(repo_path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use db::models::file::File;
+    use db::models::{
+        file::File,
+        pull_request::PullRequest,
+        workspace::{CreateWorkspace, Workspace},
+    };
+    use sqlx::sqlite::SqlitePoolOptions;
     use uuid::Uuid;
 
-    use super::{ImportedIssueAttachment, rewrite_imported_issue_attachments_markdown};
+    use super::{
+        ImportedIssueAttachment, open_review_workspace, rewrite_imported_issue_attachments_markdown,
+    };
+
+    async fn workspace_with_pr(
+        pool: &sqlx::SqlitePool,
+        task_id: Option<Uuid>,
+        archived: bool,
+        pr_url: &str,
+    ) -> Uuid {
+        let workspace = Workspace::create(
+            pool,
+            &CreateWorkspace {
+                branch: "origin/main".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        Workspace::set_task_id(pool, workspace.id, task_id)
+            .await
+            .unwrap();
+        if archived {
+            sqlx::query("UPDATE workspaces SET archived = 1 WHERE id = ?")
+                .bind(workspace.id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        PullRequest::create_for_workspace(
+            pool,
+            workspace.id,
+            Uuid::new_v4(),
+            "origin/main",
+            42,
+            pr_url,
+            Some("feature-x"),
+        )
+        .await
+        .unwrap();
+        workspace.id
+    }
+
+    #[tokio::test]
+    async fn open_review_workspace_is_the_issues_open_workspace_with_the_pr() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE workspaces (
+                id BLOB PRIMARY KEY, task_id BLOB, container_ref TEXT, branch TEXT NOT NULL,
+                setup_completed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
+                archived INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0,
+                name TEXT, worktree_deleted INTEGER NOT NULL DEFAULT 0,
+                ephemeral INTEGER NOT NULL DEFAULT 0, in_place INTEGER NOT NULL DEFAULT 0,
+                autopilot INTEGER NOT NULL DEFAULT 0, cleanup_blocked_reason TEXT,
+                status_note TEXT, status_updated_at TEXT
+            );
+            CREATE TABLE pull_requests (
+                id TEXT PRIMARY KEY NOT NULL, workspace_id BLOB, repo_id BLOB,
+                pr_url TEXT NOT NULL, pr_number INTEGER NOT NULL,
+                pr_status TEXT NOT NULL DEFAULT 'open', target_branch_name TEXT NOT NULL,
+                head_branch_name TEXT, merged_at TEXT, merge_commit_sha TEXT,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, synced_at DATETIME
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let issue = Uuid::new_v4();
+        let url = "https://github.com/acme/widgets/pull/42";
+
+        // The PR author's own workspace, a review for another issue, an archived
+        // review and a review of another PR are not it.
+        workspace_with_pr(&pool, None, false, url).await;
+        workspace_with_pr(&pool, Some(Uuid::new_v4()), false, url).await;
+        workspace_with_pr(&pool, Some(issue), true, url).await;
+        workspace_with_pr(
+            &pool,
+            Some(issue),
+            false,
+            "https://github.com/acme/widgets/pull/7",
+        )
+        .await;
+        assert_eq!(
+            open_review_workspace(&pool, issue, url).await.unwrap(),
+            None
+        );
+
+        let review = workspace_with_pr(&pool, Some(issue), false, url).await;
+        assert_eq!(
+            open_review_workspace(&pool, issue, "https://github.com/Acme/widgets/pull/42/")
+                .await
+                .unwrap(),
+            Some(review)
+        );
+    }
 
     fn imported_file(
         attachment_id: Uuid,

@@ -209,6 +209,12 @@ pub struct PullRequestDetail {
     pub updated_at: Option<DateTime<Utc>>,
     pub base_branch: String,
     pub head_branch: String,
+    /// Head and base commits as the host reports them; absent where the
+    /// provider does not expose them.
+    #[serde(default)]
+    pub head_ref_oid: Option<String>,
+    #[serde(default)]
+    pub base_ref_oid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

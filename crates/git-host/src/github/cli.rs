@@ -268,6 +268,10 @@ struct GhPrResponse {
     #[serde(default)]
     head_ref_name: Option<String>,
     #[serde(default)]
+    base_ref_oid: Option<String>,
+    #[serde(default)]
+    head_ref_oid: Option<String>,
+    #[serde(default)]
     updated_at: Option<DateTime<Utc>>,
 }
 
@@ -619,7 +623,7 @@ impl GhCli {
                 "view",
                 pr_url,
                 "--json",
-                "number,url,state,mergedAt,mergeCommit,title,body,author,assignees,reviewRequests,reviews,commits,reviewDecision,isDraft,createdAt,updatedAt,baseRefName,headRefName",
+                "number,url,state,mergedAt,mergeCommit,title,body,author,assignees,reviewRequests,reviews,commits,reviewDecision,isDraft,createdAt,updatedAt,baseRefName,headRefName,baseRefOid,headRefOid",
             ],
             None,
         )?;
@@ -1288,6 +1292,8 @@ impl GhCli {
             updated_at: None,
             base_branch: request.base_branch.clone(),
             head_branch: request.head_branch.clone(),
+            head_ref_oid: None,
+            base_ref_oid: None,
         })
     }
 
@@ -1367,6 +1373,8 @@ impl GhCli {
             updated_at: pr.updated_at,
             base_branch: pr.base_ref_name.unwrap_or_default(),
             head_branch: pr.head_ref_name.unwrap_or_default(),
+            head_ref_oid: pr.head_ref_oid,
+            base_ref_oid: pr.base_ref_oid,
         }
     }
 

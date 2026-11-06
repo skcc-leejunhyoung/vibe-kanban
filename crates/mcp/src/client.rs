@@ -1097,18 +1097,26 @@ pub struct ReviewPr {
     pub title: String,
     pub head_branch: String,
     pub base_branch: String,
-    /// The PR's head commit as the host reports it (its last commit); compare
-    /// with `checkout_sha` to see whether the review checkout is current.
+    /// The PR's head commit as the host reports it; compare with
+    /// `checkout_sha` to see whether the review checkout is current.
     #[serde(default)]
     pub head_sha: Option<String>,
+    /// The base branch's commit as the host reports it, when it does.
+    #[serde(default)]
+    pub base_sha: Option<String>,
 }
 
-/// `/repos/pr-info` as review mode reads it: the PR fields plus its commits,
-/// oldest first, whose last one is the head.
+/// `/repos/pr-info` as review mode reads it: the PR fields, the head and base
+/// commits (hosts built with them) and the commits, oldest first, whose last
+/// one is the head on older hosts.
 #[derive(Deserialize)]
 struct PrInfo {
     #[serde(flatten)]
     pr: ReviewPr,
+    #[serde(default)]
+    head_ref_oid: Option<String>,
+    #[serde(default)]
+    base_ref_oid: Option<String>,
     #[serde(default)]
     commits: Vec<PrCommit>,
 }
@@ -1120,12 +1128,38 @@ struct PrCommit {
 
 impl From<PrInfo> for ReviewPr {
     fn from(info: PrInfo) -> Self {
-        let PrInfo { mut pr, commits } = info;
-        if pr.head_sha.is_none() {
-            pr.head_sha = commits.into_iter().last().map(|c| c.oid);
-        }
+        let PrInfo {
+            mut pr,
+            head_ref_oid,
+            base_ref_oid,
+            commits,
+        } = info;
+        pr.head_sha = pr
+            .head_sha
+            .or(head_ref_oid)
+            .or_else(|| commits.into_iter().last().map(|c| c.oid));
+        pr.base_sha = pr.base_sha.or(base_ref_oid);
         pr
     }
+}
+
+/// Where the review turn stands, from the workspace's live state.
+fn turn_state(workspace: &WorkspaceListItem) -> &'static str {
+    if workspace.is_waiting_on_blockers {
+        "waiting_on_blockers"
+    } else if workspace.is_running {
+        "running"
+    } else {
+        "idle"
+    }
+}
+
+/// What a review create returned: the workspace and, after a start, the turn.
+struct CreatedReview {
+    workspace: Workspace,
+    session_id: Option<Uuid>,
+    execution_process_id: Option<Uuid>,
+    executor_config: Option<ExecutorConfig>,
 }
 
 /// HEAD of a workspace's single repo checkout (`/workspaces/{id}/git/status`).
@@ -1191,6 +1225,11 @@ pub struct ReviewWorkspaceOutcome {
     /// HEAD of the review checkout as it is on disk; equal to `pr.head_sha`
     /// when the checkout is current, `None` when the host could not say.
     pub checkout_sha: Option<String>,
+    /// The review turn: `started` (spawned now), `waiting_on_blockers` (its
+    /// process row exists, the spawn waits for the issue's blockers), `none`
+    /// (created without a turn); for a reused workspace `running`,
+    /// `waiting_on_blockers` or `idle`.
+    pub turn: Option<&'static str>,
     pub session_id: Option<Uuid>,
     pub execution_process_id: Option<Uuid>,
     /// What the review turn runs with: the config sent on `created`, the
@@ -1508,6 +1547,95 @@ impl VkClient {
             .head_oid
     }
 
+    /// The reused review's own state: branch, checkout, HEAD, session, turn
+    /// and the config of its latest coding turn.
+    async fn describe_existing_review(
+        &self,
+        outcome: &mut ReviewWorkspaceOutcome,
+        found: &WorkspaceListItem,
+    ) {
+        outcome.workspace_id = Some(found.id);
+        outcome.branch = Some(found.branch.clone());
+        outcome.checkout = Some(review_checkout_state(
+            found.id,
+            &found.branch,
+            &outcome.pr.head_branch,
+        ));
+        outcome.checkout_sha = self.checkout_head(found.id).await;
+        outcome.session_id = found.latest_session_id;
+        outcome.turn = Some(turn_state(found));
+        outcome.executor_config = match found.latest_session_id {
+            Some(session) => self.latest_executor_config(session).await,
+            None => None,
+        };
+    }
+
+    /// Whether a just-started review's first turn runs or waits for the
+    /// issue's blockers (the server keeps the process row and defers the spawn).
+    async fn turn_after_start(&self, workspace_id: Uuid) -> &'static str {
+        let filter = WorkspaceFilter {
+            archived: Some(false),
+            ..Default::default()
+        };
+        match self.list_workspaces_with(&filter, true).await {
+            Ok(listed)
+                if listed
+                    .iter()
+                    .any(|w| w.id == workspace_id && w.is_waiting_on_blockers) =>
+            {
+                "waiting_on_blockers"
+            }
+            _ => "started",
+        }
+    }
+
+    /// The UI's review create: `create_only` posts the create-without-start
+    /// body, otherwise create-and-start.
+    async fn create_review(
+        &self,
+        request: CreateAndStartWorkspaceRequest,
+        create_only: bool,
+    ) -> Result<CreatedReview, VkError> {
+        if create_only {
+            let CreateAndStartWorkspaceRequest {
+                name,
+                repos,
+                linked_issue,
+                pr_review,
+                working_branch,
+                ..
+            } = request;
+            let created: CreateWorkspaceWithoutStartingResponse = self
+                .post(
+                    "/workspaces/create",
+                    &CreateWorkspaceWithoutStartingRequest {
+                        name,
+                        repos,
+                        linked_issue,
+                        attachment_ids: None,
+                        pr_review,
+                        working_branch,
+                    },
+                )
+                .await?;
+            return Ok(CreatedReview {
+                workspace: created.workspace,
+                session_id: None,
+                execution_process_id: None,
+                executor_config: None,
+            });
+        }
+        let executor_config = request.executor_config.clone();
+        let started: CreateAndStartWorkspaceResponse =
+            self.post("/workspaces/start", &request).await?;
+        Ok(CreatedReview {
+            workspace: started.workspace,
+            session_id: started.session.as_ref().map(|s| s.id),
+            execution_process_id: Some(started.execution_process.id),
+            executor_config: Some(executor_config),
+        })
+    }
+
     /// Link like the UI does; 409 = the cloud already has this workspace's link
     /// (asking first is not possible: relayed hosts refuse `/api/remote/*`).
     async fn link_review_workspace(
@@ -1581,16 +1709,12 @@ impl VkClient {
 
         // The open review of this issue and PR, on the selected host or, when
         // that has none, on another reachable one: rerunning anywhere reuses it.
-        let workspaces = self
-            .list_workspaces_with(
-                &WorkspaceFilter {
-                    archived: Some(false),
-                    ..Default::default()
-                },
-                true,
-            )
-            .await?;
-        let (client, existing) = match find_review_workspace(&workspaces, issue.id, &pr.url) {
+        let filter = WorkspaceFilter {
+            archived: Some(false),
+            ..Default::default()
+        };
+        let workspaces = self.list_workspaces_with(&filter, true).await?;
+        let (client, mut existing) = match find_review_workspace(&workspaces, issue.id, &pr.url) {
             Some(found) => (self.clone(), Some(found.clone())),
             None => match self.review_workspace_elsewhere(issue.id, &pr.url).await? {
                 Some((client, found)) => (client, Some(found)),
@@ -1647,22 +1771,18 @@ impl VkClient {
             repo_id,
             repo: repo_name,
             remote,
-            workspace_id: existing.as_ref().map(|w| w.id),
-            branch: existing.as_ref().map(|w| w.branch.clone()),
-            checkout: existing
-                .as_ref()
-                .map(|w| review_checkout_state(w.id, &w.branch, &pr.head_branch)),
+            workspace_id: None,
+            branch: None,
+            checkout: None,
             checkout_sha: None,
-            session_id: existing.as_ref().and_then(|w| w.latest_session_id),
+            turn: None,
+            session_id: None,
             execution_process_id: None,
             executor_config: None,
             pr,
         };
         if let Some(found) = &existing {
-            outcome.checkout_sha = client.checkout_head(found.id).await;
-            if let Some(session) = found.latest_session_id {
-                outcome.executor_config = client.latest_executor_config(session).await;
-            }
+            client.describe_existing_review(&mut outcome, found).await;
         }
 
         if input.dry_run {
@@ -1670,69 +1790,61 @@ impl VkClient {
             return Ok(outcome);
         }
 
-        match existing {
-            Some(workspace) => {
-                outcome.action = "reused";
-                // Linking is the step after create; a run that lost it relinks here.
-                client.link_review_workspace(workspace.id, issue.id).await?;
-            }
-            None => {
-                let request = review_workspace_request(
-                    &issue,
-                    &outcome.pr,
-                    outcome.repo_id,
-                    &outcome.remote,
-                    input.name,
-                    input.prompt,
-                    input.executor_config,
-                );
-                let workspace = if input.create_only {
-                    let CreateAndStartWorkspaceRequest {
-                        name,
-                        repos,
-                        linked_issue,
-                        pr_review,
-                        working_branch,
-                        ..
-                    } = request;
-                    let created: CreateWorkspaceWithoutStartingResponse = client
-                        .post(
-                            "/workspaces/create",
-                            &CreateWorkspaceWithoutStartingRequest {
-                                name,
-                                repos,
-                                linked_issue,
-                                attachment_ids: None,
-                                pr_review,
-                                working_branch,
-                            },
-                        )
-                        .await?;
-                    created.workspace
-                } else {
-                    let started: CreateAndStartWorkspaceResponse =
-                        client.post("/workspaces/start", &request).await?;
-                    outcome.session_id = started.session.as_ref().map(|s| s.id);
-                    outcome.execution_process_id = Some(started.execution_process.id);
-                    outcome.executor_config = Some(request.executor_config);
-                    started.workspace
-                };
-                outcome.action = "created";
-                outcome.workspace_id = Some(workspace.id);
-                outcome.checkout = Some(review_checkout_state(
-                    workspace.id,
-                    &workspace.branch,
-                    &outcome.pr.head_branch,
-                ));
-                outcome.checkout_sha = client.checkout_head(workspace.id).await;
-                outcome.branch = Some(workspace.branch);
-                if let Err(error) = client.link_review_workspace(workspace.id, issue.id).await {
-                    return Err(VkError::message(format!(
-                        "Review workspace {} was created, but linking it to issue {} failed: {error}. Rerun the same command: it reuses the workspace and retries the link.",
-                        workspace.id, issue.simple_id
-                    )));
+        if existing.is_none() {
+            let request = review_workspace_request(
+                &issue,
+                &outcome.pr,
+                outcome.repo_id,
+                &outcome.remote,
+                input.name,
+                input.prompt,
+                input.executor_config,
+            );
+            match client.create_review(request, input.create_only).await {
+                Ok(created) => {
+                    outcome.action = "created";
+                    outcome.workspace_id = Some(created.workspace.id);
+                    outcome.checkout = Some(review_checkout_state(
+                        created.workspace.id,
+                        &created.workspace.branch,
+                        &outcome.pr.head_branch,
+                    ));
+                    outcome.checkout_sha = client.checkout_head(created.workspace.id).await;
+                    outcome.branch = Some(created.workspace.branch);
+                    outcome.session_id = created.session_id;
+                    outcome.execution_process_id = created.execution_process_id;
+                    outcome.turn = Some(match created.execution_process_id {
+                        Some(_) => client.turn_after_start(created.workspace.id).await,
+                        None => "none",
+                    });
+                    outcome.executor_config = created.executor_config;
+                    if let Err(error) = client
+                        .link_review_workspace(created.workspace.id, issue.id)
+                        .await
+                    {
+                        return Err(VkError::message(format!(
+                            "Review workspace {} was created, but linking it to issue {} failed: {error}. Rerun the same command: it reuses the workspace and retries the link.",
+                            created.workspace.id, issue.simple_id
+                        )));
+                    }
                 }
+                // The host already has this review (a rerun whose first answer
+                // was lost, or a second agent got there first): take it.
+                Err(error) if error.status() == Some(409) => {
+                    let listed = client.list_workspaces_with(&filter, true).await?;
+                    let found = find_review_workspace(&listed, issue.id, &outcome.pr.url)
+                        .cloned()
+                        .ok_or(error)?;
+                    client.describe_existing_review(&mut outcome, &found).await;
+                    existing = Some(found);
+                }
+                Err(error) => return Err(error),
             }
+        }
+        if let Some(workspace) = &existing {
+            outcome.action = "reused";
+            // Linking is the step after create; a run that lost it relinks here.
+            client.link_review_workspace(workspace.id, issue.id).await?;
         }
         let issue = self.issue(issue.id).await?;
         outcome.issue_status = self.status_name(issue.project_id, issue.status_id).await;
@@ -2804,6 +2916,7 @@ mod tests {
             head_branch: "feature-x".to_string(),
             base_branch: "main".to_string(),
             head_sha: None,
+            base_sha: None,
         }
     }
 
@@ -3320,10 +3433,54 @@ mod tests {
             );
             assert_eq!(outcome.target_branch, "origin/main");
             assert_eq!(outcome.checkout_sha.as_deref(), Some("c3"));
+            assert_eq!(outcome.turn, Some("idle"));
             assert!(posted(&calls, "/workspaces/start").is_empty());
             assert!(posted(&calls, "/workspaces/create").is_empty());
             assert_eq!(posted(&calls, "/links").len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn review_takes_the_review_another_request_made_first() {
+        let issue = review_issue();
+        let workspace_id = Uuid::new_v4();
+        let workspace = json!({
+            "id": workspace_id, "task_id": issue.id, "container_ref": "/wt/x",
+            "branch": Workspace::review_branch_name(workspace_id), "setup_completed_at": null,
+            "created_at": Utc::now(), "updated_at": Utc::now(), "archived": false, "pinned": false,
+            "name": "Fix login", "worktree_deleted": false, "ephemeral": false, "in_place": false,
+            "autopilot": false, "cleanup_blocked_reason": null, "status_note": null,
+            "status_updated_at": null,
+        });
+        let summary = json!({
+            "workspace_id": workspace_id, "latest_process_status": "running", "pr_status": "open",
+            "pr_url": review_pr(42, "open").url,
+        });
+        let (mut routes, _) = review_routes(&issue, &["review"], json!([]), json!([summary]));
+        // Nothing to reuse when we look; the host refuses our create because a
+        // concurrent request made the review meanwhile; the second look finds it.
+        routes.insert(("GET", "/api/workspaces#1".into()), ok(json!([workspace])));
+        routes.insert(
+            ("POST", "/api/workspaces/start".into()),
+            fail(409, "Workspace already reviews PR #42 for this issue"),
+        );
+        routes.insert(
+            ("POST", format!("/api/workspaces/{workspace_id}/links")),
+            fail(409, "resource already exists"),
+        );
+        let (url, calls) = fake_vibe(routes).await;
+
+        let outcome = VkClient::new(&url, "test/1")
+            .review_workspace(review_input(issue.id))
+            .await
+            .unwrap();
+        assert_eq!(outcome.action, "reused");
+        assert_eq!(outcome.workspace_id, Some(workspace_id));
+        assert_eq!(outcome.turn, Some("running"));
+        assert_eq!(outcome.checkout, Some("ready"));
+        assert_eq!(posted(&calls, "/workspaces/start").len(), 1);
+        assert!(posted(&calls, "/workspaces/create").is_empty());
+        assert_eq!(posted(&calls, "/links").len(), 1);
     }
 
     #[tokio::test]
@@ -3524,9 +3681,11 @@ mod tests {
             "cleanup_blocked_reason": null, "status_note": null, "status_updated_at": null,
         });
         let (mut routes, _) = review_routes(&issue, &["review"], json!([]), json!([]));
-        // `gh` lists the PR's commits oldest first: the last one is the head.
+        // A host built with the ref oids reports them; older hosts list the
+        // PR's commits oldest first, so the last one is the head.
         let mut pr_info = json!(review_pr(42, "open"));
         pr_info["commits"] = json!([{ "oid": "a1" }, { "oid": "b2" }]);
+        pr_info["base_ref_oid"] = json!("c3");
         routes.insert(("GET", "/api/repos/pr-info".into()), ok(pr_info));
         routes.insert(
             ("POST", "/api/workspaces/create".into()),
@@ -3556,7 +3715,9 @@ mod tests {
         assert_eq!(outcome.workspace_id, Some(workspace_id));
         assert_eq!(outcome.checkout, Some("ready"));
         assert_eq!(outcome.pr.head_sha.as_deref(), Some("b2"));
+        assert_eq!(outcome.pr.base_sha.as_deref(), Some("c3"));
         assert_eq!(outcome.checkout_sha.as_deref(), Some("b2"));
+        assert_eq!(outcome.turn, Some("none"));
         assert_eq!(outcome.session_id, None);
         assert!(outcome.executor_config.is_none());
         let creates = posted(&calls, "/workspaces/create");
