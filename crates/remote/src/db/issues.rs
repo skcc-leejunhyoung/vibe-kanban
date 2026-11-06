@@ -513,7 +513,13 @@ impl IssueRepository {
         let mut tx = super::begin_tx(pool).await?;
 
         // pull_requests.issue_id cascades; hand PRs still linked to another
-        // issue of their project to it instead of deleting them.
+        // issue of their project to it instead of deleting them. Lock the issue
+        // first so a concurrent delete of the handoff target waits for us and
+        // then sees the handed-off PR.
+        sqlx::query("SELECT id FROM issues WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(
             "UPDATE pull_requests p SET issue_id = next.issue_id, updated_at = NOW()
              FROM (
