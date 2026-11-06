@@ -995,7 +995,7 @@ export type PullRequestDetail = { number: bigint, url: string, status: MergeStat
  * Head and base commits as the host reports them; absent where the
  * provider does not expose them.
  */
-head_ref_oid: string | null, base_ref_oid: string | null, };
+head_ref_oid?: string, base_ref_oid?: string, };
 
 export type PullRequestSummary = { number: bigint, url: string, status: MergeStatus, title: string, body: string, author: string | null, assignees: Array<string>, labels: Array<string>, repository: string, is_draft: boolean, review_decision: string | null, is_review_requested: boolean, comments_count: bigint, created_at: string | null, updated_at: string | null, closed_at: string | null, };
 

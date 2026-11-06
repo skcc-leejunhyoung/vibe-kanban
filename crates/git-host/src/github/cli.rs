@@ -617,16 +617,15 @@ impl GhCli {
 
     /// Retrieve details for a pull request by URL.
     pub fn view_pr(&self, pr_url: &str) -> Result<PullRequestDetail, GhCliError> {
-        let raw = self.run(
-            [
-                "pr",
-                "view",
-                pr_url,
-                "--json",
-                "number,url,state,mergedAt,mergeCommit,title,body,author,assignees,reviewRequests,reviews,commits,reviewDecision,isDraft,createdAt,updatedAt,baseRefName,headRefName,baseRefOid,headRefOid",
-            ],
-            None,
-        )?;
+        const FIELDS: &str = "number,url,state,mergedAt,mergeCommit,title,body,author,assignees,reviewRequests,reviews,commits,reviewDecision,isDraft,createdAt,updatedAt,baseRefName,headRefName";
+        let view = |fields: &str| self.run(["pr", "view", pr_url, "--json", fields], None);
+        // gh < 2.63 rejects baseRefOid; the commit ids are optional extras.
+        let raw = match view(&format!("{FIELDS},baseRefOid,headRefOid")) {
+            Err(GhCliError::CommandFailed(err)) if err.contains("Unknown JSON field") => {
+                view(FIELDS)?
+            }
+            result => result?,
+        };
         Self::parse_pr_view(&raw)
     }
 

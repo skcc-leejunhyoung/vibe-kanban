@@ -211,9 +211,11 @@ pub struct PullRequestDetail {
     pub head_branch: String,
     /// Head and base commits as the host reports them; absent where the
     /// provider does not expose them.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub head_ref_oid: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub base_ref_oid: Option<String>,
 }
 
