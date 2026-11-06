@@ -155,9 +155,10 @@ function WorkspaceProviderContent({
     isArchivedLoadingList,
   ]);
 
+  // A shared list reload on host focus must not unmount other panes' chats.
   const {
     data: workspace,
-    isLoading: isLoadingWorkspace,
+    isLoading,
     isError: isWorkspaceLoadError,
   } = useWorkspaceRecord(workspaceId, {
     enabled: !!workspaceId && !isCreateMode,
@@ -387,8 +388,6 @@ function WorkspaceProviderContent({
     getFilesWithGitHubComments,
     getFirstCommentLineForFile,
   ]);
-
-  const isLoading = isLoadingList || isLoadingWorkspace;
 
   useEffect(() => {
     if (!workspaceId || isCreateMode) return;
