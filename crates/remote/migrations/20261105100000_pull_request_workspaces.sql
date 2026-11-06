@@ -20,6 +20,11 @@ FROM pull_requests p
 JOIN workspaces w ON w.id = p.workspace_id AND w.project_id = p.project_id
 JOIN pull_request_issues pri ON pri.pull_request_id = p.id AND pri.issue_id = w.issue_id;
 
+-- Links synced from a workspace were removed on unlink before; keep them implicit.
+UPDATE pull_request_issues pri SET is_explicit = FALSE
+FROM pull_request_workspaces prw
+WHERE prw.pull_request_id = pri.pull_request_id AND prw.issue_id = pri.issue_id;
+
 -- Preserve the legacy single-workspace projection for older clients.
 CREATE FUNCTION refresh_pull_request_workspace_projection() RETURNS TRIGGER AS $$
 BEGIN
