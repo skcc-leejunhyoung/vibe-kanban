@@ -599,6 +599,13 @@ async fn create_workspace_with_repos(
         ));
     }
 
+    // One agent review per issue and PR; the agent's rerun reuses it. Held to
+    // the end: the check reads the workspace's task_id, set after the match.
+    let _one_review_at_a_time = if agent && pr_review.is_some() {
+        Some(AGENT_REVIEW_CREATES.lock().await)
+    } else {
+        None
+    };
     let managed_workspace = match review_mode::plan_branch_setup(&repos, pr_review)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?
     {
@@ -642,12 +649,6 @@ async fn create_workspace_with_repos(
         // Review mode: check out the existing PR head branch directly and link
         // the PR, instead of branching a new `vk/` worktree.
         BranchSetup::ExistingPrBranch(review) => {
-            // One agent review per issue and PR; the agent's rerun reuses it.
-            let _one_at_a_time = if agent {
-                Some(AGENT_REVIEW_CREATES.lock().await)
-            } else {
-                None
-            };
             if agent
                 && let Some(linked) = linked_issue
                 && let Some(existing) =
