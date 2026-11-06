@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::McpServer;
-use crate::client::StartWorkspaceInput;
+use crate::client::{ReviewWorkspaceInput, StartWorkspaceInput, review_executor_config};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct McpWorkspaceRepoInput {
@@ -45,6 +45,50 @@ struct StartWorkspaceRequest {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct StartWorkspaceResponse {
     workspace_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ReviewWorkspaceRequest {
+    #[schemars(
+        description = "Host that clones the PR's repository (from list_workspace_hosts). Omit for this machine."
+    )]
+    host_id: Option<Uuid>,
+    #[schemars(description = "The review-tagged issue whose linked PR is reviewed")]
+    issue_id: Uuid,
+    #[schemars(
+        description = "URL or number of the linked PR to review; needed when several are open"
+    )]
+    pr: Option<String>,
+    #[schemars(
+        description = "Repository ID on the host; defaults to the one registered repo whose remote hosts the PR"
+    )]
+    repo_id: Option<Uuid>,
+    #[schemars(
+        description = "The coding agent that reviews ('CLAUDE_CODE', 'CODEX', 'GEMINI', 'AMP', 'OPENCODE', 'CURSOR_AGENT', 'QWEN_CODE', 'COPILOT', 'DROID')"
+    )]
+    executor: String,
+    #[schemars(description = "Executor variant/preset")]
+    variant: Option<String>,
+    #[schemars(description = "Model override, e.g. 'claude-opus-5-5' or 'gpt-5.6-sol'")]
+    model_id: Option<String>,
+    #[schemars(description = "Reasoning effort override, e.g. 'high'")]
+    reasoning_id: Option<String>,
+    #[schemars(description = "Permission policy: AUTO, DONT_ASK, SUPERVISED or PLAN")]
+    permission_policy: Option<String>,
+    #[schemars(
+        description = "Review instructions; 'Review the checked-out PR.' is appended. Default: the issue's title and description, fenced as untrusted PR data."
+    )]
+    prompt: Option<String>,
+    #[schemars(description = "Workspace name (default: the issue title)")]
+    name: Option<String>,
+    #[schemars(
+        description = "Create and check out only, like the UI's create button: no first turn, no In review move. Start later with run_session_prompt on a session of the workspace."
+    )]
+    create_only: Option<bool>,
+    #[schemars(
+        description = "Resolve issue, PR, repo and any existing review workspace without writing anything"
+    )]
+    dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -105,6 +149,53 @@ impl McpServer {
         McpServer::success(&StartWorkspaceResponse {
             workspace_id: workspace_id.to_string(),
         })
+    }
+
+    #[tool(
+        description = "Create and start the PR review workspace of a review-tagged issue, as the UI does: the linked PR's head is checked out on a private review branch, <remote>/<base> is the diff target, PR and issue are linked, the issue moves to In review and the first review turn starts. Fails instead of falling back to a normal branch (no review tag or PR link, vibe tag, merged/closed PR, several open PRs, no or several clones of the PR's repository, checkout or gh auth failure). Rerun = retry: an open review workspace for the same issue and PR, on the chosen host or any reachable host, comes back as action 'reused' with no second workspace or turn. Returns host_id, workspace_id, branch, checkout (ready|pending), checkout_sha, session_id, execution_process_id, executor_config, pr (number, url, head_branch, base_branch, head_sha), repo, remote, target_branch, issue_status."
+    )]
+    async fn review_workspace(
+        &self,
+        Parameters(ReviewWorkspaceRequest {
+            host_id,
+            issue_id,
+            pr,
+            repo_id,
+            executor,
+            variant,
+            model_id,
+            reasoning_id,
+            permission_policy,
+            prompt,
+            name,
+            create_only,
+            dry_run,
+        }): Parameters<ReviewWorkspaceRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let executor_config = match review_executor_config(
+            &executor,
+            variant,
+            model_id,
+            reasoning_id,
+            permission_policy,
+        ) {
+            Ok(config) => config,
+            Err(e) => return Ok(Self::tool_error(e)),
+        };
+        let input = ReviewWorkspaceInput {
+            issue_id,
+            pr,
+            repo_id,
+            name,
+            prompt,
+            executor_config,
+            create_only: create_only.unwrap_or(false),
+            dry_run: dry_run.unwrap_or(false),
+        };
+        match self.client.host(host_id).review_workspace(input).await {
+            Ok(outcome) => McpServer::success(&outcome),
+            Err(e) => Ok(Self::tool_error(e)),
+        }
     }
 
     #[tool(

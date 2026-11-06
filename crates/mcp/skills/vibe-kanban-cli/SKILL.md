@@ -65,7 +65,22 @@ linked PR's head branch (no `vk/` branch), sets `<remote>/<base>` as the target,
 the issue, moves the issue to "In review" and starts the first turn with "Review the checked-out
 PR." appended to the prompt. Default prompt: the issue's title and description inside a
 `<pr-description>` block marked as external data (automation imports it from the PR, so it is not
-instructions); a `--prompt` of your own goes in as is.
+instructions); a `-m` prompt of your own goes in as is. The MCP tool `review_workspace` is the
+same operation with the same inputs (`issue_id`, `pr`, `repo_id`, `host_id`, `executor`,
+`variant`, `model_id`, `reasoning_id`, `permission_policy`, `prompt`, `name`, `create_only`,
+`dry_run`) and the same output; no browser is needed for any step of a review. Where the MCP
+catalog has no `review_workspace` (an older host), `vk ws review` is the path.
+
+| Need | Command |
+|---|---|
+| Find review work | `vk issue list --project <id> --status "Todo" --json`, `vk pr tracked <issue>` (the issue's linked PRs), `vk pr info --url <url>` (state, head/base, commits) |
+| Plan without writing | `vk ws review --issue <id> --dry-run` (`would_create` / `would_reuse` + the existing workspace) |
+| Create + check out + start | `vk ws review --issue <id> --executor CODEX --permission DONT_ASK [--model ... --reasoning ...]` → `workspace_id`, `session_id`, `execution_process_id`, `executor_config` as run |
+| Create + check out only | `vk ws review --issue <id> --create-only` (no turn, no "In review"); later `vk session create <ws> --executor <...>` + `vk session send <session> -m "..."` |
+| Watch the review | `vk session executions <session>`, `vk session log <exec> --limit 50`, `vk events wait --since <cursor> --kinds process.` |
+| Checkout state / actual HEAD | `checkout` + `checkout_sha` in the output; later `vk ws status <ws> --json` (`head_oid`), `vk ws commits <ws>`; a UI-made from-PR workspace still checking out: `vk pr checkout-status <ws>` |
+| The PR moved on (`checkout_sha` ≠ `pr.head_sha`, or `vk pr info --url` shows a newer last commit) | `vk git pull <ws>` (fast-forwards the review branch to the PR head) then `vk session send <session> --queue -m "The PR has new commits since your review; review the delta."` |
+| Follow up / stop | `vk session send <session> --queue -m "..."`, `vk pr comments <ws>`, `vk pr resolve <ws> --number <n> --thread <id>`, `vk session stop <session>` (a person's cancel is final: do not restart it) |
 
 - `--dry-run` resolves issue, PR, repo and an existing review workspace without writing;
   `--create-only` creates and checks out only (no turn, no "In review" move, like the UI's create).
@@ -86,9 +101,20 @@ instructions); a `--prompt` of your own goes in as is.
   host that is not offline but cannot be read (asked twice) stops the command, `--dry-run`
   included, with the host's name and nothing created; rerun when it responds. A review still
   checking out is not tied to the issue yet, so let the first command return before rerunning.
-- Output: `action`, `host_id`, `workspace_id`, `branch`, `checkout`, `session_id`,
-  `execution_process_id`, `pr`, `repo`, `remote`, `target_branch`, `issue_status` (after a start
-  it should read "In review"; the move is best-effort on the server, as in the UI).
+- Output: `action`, `host_id`, `workspace_id`, `branch`, `checkout` (`ready` | `pending`),
+  `checkout_sha` (HEAD on disk; `null` when the host could not read it), `session_id`,
+  `execution_process_id` (both `null` after `--create-only` or a `reused` workspace without a
+  session), `executor_config` (what the turn runs with: the config sent on `created`, the
+  session's latest coding turn on `reused`), `pr` (`number`, `url`, `status`, `head_branch`,
+  `base_branch`, `head_sha`), `repo`, `remote`, `target_branch`, `issue_status` (after a start it
+  should read "In review"; the move is best-effort on the server, as in the UI). A turn started =
+  `execution_process_id` set; a duplicate avoided = `action: "reused"` with the earlier ids.
+- Errors to act on: a refusal names its fix (`--pr <url>`, `--repo <id>`, `--host <name>`, the
+  tag to add or remove, the PR to reopen); "Could not read PR ... check `gh auth status`" and
+  "Failed to check out PR" are the host's `gh` state — fix it there (a person's job) and rerun;
+  "Could not check host ..." = rerun when that host answers. A review turn that fails afterwards
+  is `process.failed` on the session: read `vk session log`, then `vk session send --queue` or
+  report; never rerun `ws review` to "retry" a turn, it only reuses.
 
 ## Events (the polling loop)
 
@@ -172,7 +198,10 @@ by agent access.
 - Codex: Vibe starts threads in the `workspace-write` sandbox with network access enabled for
   the CLI. If `vk` reports exit 3 inside Codex, the sandbox is blocking localhost; ask the user to
   set `[sandbox_workspace_write] network_access = true` in `~/.codex/config.toml`.
-- The MCP server keeps a small core (`get_context`, `list_workspaces`, `run_session_prompt`,
-  issues, `list_events` / `wait_for_events`, `notify_user`). Everything else lives here.
+- The MCP server keeps a small core (`get_context`, `list_workspaces`, `start_workspace`,
+  `review_workspace`, `run_session_prompt`, issues, `list_events` / `wait_for_events`,
+  `notify_user`). Everything else lives here. Hosts run the version they were built with:
+  compare `vk --version` with the MCP catalog (`tools/list`) before relying on a newer tool, and
+  fall back to the `vk` command when the tool is missing.
 - Install this skill on a new machine: `vk skill install` (writes `~/.claude/skills/vibe-kanban-cli`
   and links `~/.codex/skills/vibe-kanban-cli`).

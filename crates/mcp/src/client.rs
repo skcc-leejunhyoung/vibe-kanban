@@ -1097,6 +1097,70 @@ pub struct ReviewPr {
     pub title: String,
     pub head_branch: String,
     pub base_branch: String,
+    /// The PR's head commit as the host reports it (its last commit); compare
+    /// with `checkout_sha` to see whether the review checkout is current.
+    #[serde(default)]
+    pub head_sha: Option<String>,
+}
+
+/// `/repos/pr-info` as review mode reads it: the PR fields plus its commits,
+/// oldest first, whose last one is the head.
+#[derive(Deserialize)]
+struct PrInfo {
+    #[serde(flatten)]
+    pr: ReviewPr,
+    #[serde(default)]
+    commits: Vec<PrCommit>,
+}
+
+#[derive(Deserialize)]
+struct PrCommit {
+    oid: String,
+}
+
+impl From<PrInfo> for ReviewPr {
+    fn from(info: PrInfo) -> Self {
+        let PrInfo { mut pr, commits } = info;
+        if pr.head_sha.is_none() {
+            pr.head_sha = commits.into_iter().last().map(|c| c.oid);
+        }
+        pr
+    }
+}
+
+/// HEAD of a workspace's single repo checkout (`/workspaces/{id}/git/status`).
+#[derive(Deserialize)]
+struct CheckoutHead {
+    head_oid: Option<String>,
+}
+
+/// The executor config of a review turn from its parts, as `vk ws review`
+/// and the MCP `review_workspace` tool take them.
+pub fn review_executor_config(
+    executor: &str,
+    variant: Option<String>,
+    model_id: Option<String>,
+    reasoning_id: Option<String>,
+    permission_policy: Option<String>,
+) -> Result<ExecutorConfig, VkError> {
+    let mut config = json!({ "executor": parse_executor_agent(executor)?.to_string() });
+    for (key, value) in [
+        ("variant", variant.and_then(non_empty)),
+        ("model_id", model_id.and_then(non_empty)),
+        ("reasoning_id", reasoning_id.and_then(non_empty)),
+        (
+            "permission_policy",
+            permission_policy
+                .and_then(non_empty)
+                .map(|p| p.replace('-', "_").to_ascii_uppercase()),
+        ),
+    ] {
+        if let Some(value) = value {
+            config[key] = json!(value);
+        }
+    }
+    serde_json::from_value(config)
+        .map_err(|error| VkError::message(format!("Invalid executor options: {error}")))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1124,8 +1188,14 @@ pub struct ReviewWorkspaceOutcome {
     pub branch: Option<String>,
     /// `ready` once the PR head is checked out, `pending` while that still runs.
     pub checkout: Option<&'static str>,
+    /// HEAD of the review checkout as it is on disk; equal to `pr.head_sha`
+    /// when the checkout is current, `None` when the host could not say.
+    pub checkout_sha: Option<String>,
     pub session_id: Option<Uuid>,
     pub execution_process_id: Option<Uuid>,
+    /// What the review turn runs with: the config sent on `created`, the
+    /// session's latest coding turn on `reused`; absent without a turn.
+    pub executor_config: Option<ExecutorConfig>,
 }
 
 fn review_checkout_state(workspace_id: Uuid, branch: &str, pr_head: &str) -> &'static str {
@@ -1427,6 +1497,17 @@ impl VkClient {
         Ok(None)
     }
 
+    /// HEAD of the review checkout on disk, `None` when the host cannot say
+    /// (missing worktree, status call failed): a reading, never a refusal.
+    async fn checkout_head(&self, workspace_id: Uuid) -> Option<String> {
+        self.get::<Vec<CheckoutHead>>(&format!("/workspaces/{workspace_id}/git/status"))
+            .await
+            .ok()?
+            .into_iter()
+            .next()?
+            .head_oid
+    }
+
     /// Link like the UI does; 409 = the cloud already has this workspace's link
     /// (asking first is not possible: relayed hosts refuse `/api/remote/*`).
     async fn link_review_workspace(
@@ -1485,7 +1566,7 @@ impl VkClient {
         };
         let mut details = Vec::new();
         for url in urls {
-            let detail: ReviewPr = self
+            let detail: PrInfo = self
                 .get_with("/repos/pr-info", &[("url", url.to_string())])
                 .await
                 .map_err(|error| match error {
@@ -1494,7 +1575,7 @@ impl VkClient {
                     )),
                     other => other,
                 })?;
-            details.push(detail);
+            details.push(detail.into());
         }
         let pr = pick_open_review_pr(details)?;
 
@@ -1571,10 +1652,18 @@ impl VkClient {
             checkout: existing
                 .as_ref()
                 .map(|w| review_checkout_state(w.id, &w.branch, &pr.head_branch)),
+            checkout_sha: None,
             session_id: existing.as_ref().and_then(|w| w.latest_session_id),
             execution_process_id: None,
+            executor_config: None,
             pr,
         };
+        if let Some(found) = &existing {
+            outcome.checkout_sha = client.checkout_head(found.id).await;
+            if let Some(session) = found.latest_session_id {
+                outcome.executor_config = client.latest_executor_config(session).await;
+            }
+        }
 
         if input.dry_run {
             outcome.issue_status = self.status_name(issue.project_id, issue.status_id).await;
@@ -1625,6 +1714,7 @@ impl VkClient {
                         client.post("/workspaces/start", &request).await?;
                     outcome.session_id = started.session.as_ref().map(|s| s.id);
                     outcome.execution_process_id = Some(started.execution_process.id);
+                    outcome.executor_config = Some(request.executor_config);
                     started.workspace
                 };
                 outcome.action = "created";
@@ -1634,6 +1724,7 @@ impl VkClient {
                     &workspace.branch,
                     &outcome.pr.head_branch,
                 ));
+                outcome.checkout_sha = client.checkout_head(workspace.id).await;
                 outcome.branch = Some(workspace.branch);
                 if let Err(error) = client.link_review_workspace(workspace.id, issue.id).await {
                     return Err(VkError::message(format!(
@@ -2712,6 +2803,7 @@ mod tests {
             title: format!("PR {number}"),
             head_branch: "feature-x".to_string(),
             base_branch: "main".to_string(),
+            head_sha: None,
         }
     }
 
@@ -3389,6 +3481,31 @@ mod tests {
         assert!(posted(&calls, "/workspaces/create").is_empty());
     }
 
+    #[test]
+    fn review_executor_config_normalizes_its_parts() {
+        let config = review_executor_config(
+            "codex",
+            Some(" ".to_string()),
+            Some("gpt-5.6-sol".to_string()),
+            Some("high".to_string()),
+            Some("dont-ask".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&config).unwrap(),
+            json!({ "executor": "CODEX", "model_id": "gpt-5.6-sol", "reasoning_id": "high",
+                "permission_policy": "DONT_ASK" })
+        );
+        let unknown = review_executor_config("nope", None, None, None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(unknown.contains("Unknown executor"), "{unknown}");
+        let policy = review_executor_config("CODEX", None, None, None, Some("maybe".into()))
+            .unwrap_err()
+            .to_string();
+        assert!(policy.contains("Invalid executor options"), "{policy}");
+    }
+
     #[tokio::test]
     async fn review_create_only_checks_out_and_links_without_a_turn() {
         let issue = review_issue();
@@ -3401,6 +3518,10 @@ mod tests {
             "cleanup_blocked_reason": null, "status_note": null, "status_updated_at": null,
         });
         let (mut routes, _) = review_routes(&issue, &["review"], json!([]), json!([]));
+        // `gh` lists the PR's commits oldest first: the last one is the head.
+        let mut pr_info = json!(review_pr(42, "open"));
+        pr_info["commits"] = json!([{ "oid": "a1" }, { "oid": "b2" }]);
+        routes.insert(("GET", "/api/repos/pr-info".into()), ok(pr_info));
         routes.insert(
             ("POST", "/api/workspaces/create".into()),
             ok(json!({ "workspace": created })),
@@ -3408,6 +3529,13 @@ mod tests {
         routes.insert(
             ("POST", format!("/api/workspaces/{workspace_id}/links")),
             ok(Value::Null),
+        );
+        routes.insert(
+            ("GET", format!("/api/workspaces/{workspace_id}/git/status")),
+            ok(
+                json!([{ "repo_id": Uuid::new_v4(), "repo_name": "widgets", "repo_missing": false,
+                "head_oid": "b2", "target_branch_name": "origin/main" }]),
+            ),
         );
         let (url, calls) = fake_vibe(routes).await;
 
@@ -3421,7 +3549,10 @@ mod tests {
         assert_eq!(outcome.action, "created");
         assert_eq!(outcome.workspace_id, Some(workspace_id));
         assert_eq!(outcome.checkout, Some("ready"));
+        assert_eq!(outcome.pr.head_sha.as_deref(), Some("b2"));
+        assert_eq!(outcome.checkout_sha.as_deref(), Some("b2"));
         assert_eq!(outcome.session_id, None);
+        assert!(outcome.executor_config.is_none());
         let creates = posted(&calls, "/workspaces/create");
         assert_eq!(creates.len(), 1);
         assert_eq!(creates[0]["pr_review"]["head_branch"], "feature-x");

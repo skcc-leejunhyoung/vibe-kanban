@@ -74,6 +74,7 @@ pub const GLOBAL_TOOLS: &[&str] = &[
     "get_execution",
     "run_session_prompt",
     "start_workspace",
+    "review_workspace",
     "link_workspace_issue",
     "create_issue",
     "update_issue",
@@ -268,11 +269,11 @@ mod tests {
     }
 
     #[test]
-    fn global_mode_is_the_sixteen_core_tools() {
+    fn global_mode_is_the_seventeen_core_tools() {
         let actual = tool_names(McpServer::global_mode_router());
         let expected: BTreeSet<String> = GLOBAL_TOOLS.iter().map(|s| s.to_string()).collect();
         assert_eq!(actual, expected);
-        assert!(actual.len() <= 16);
+        assert!(actual.len() <= 17);
         for retired in [
             "delete_workspace",
             "list_repos",

@@ -73,9 +73,12 @@ Many tools accept an optional `project_id` parameter. When running inside a work
 | `list_workspace_hosts` | List your other hosts | None | None | Hosts with IDs, names, `status` and `auth_mode` |
 | `list_workspaces` | List workspaces with their live state | None | `host_id`<br/>`archived`<br/>`pinned`<br/>`running`<br/>`branch`<br/>`name_search`<br/>`limit`<br/>`offset` | Workspaces with `status_note`, `is_running`, `latest_process_status`, `has_pending_approval`, `is_waiting_on_blockers`, PR state |
 | `start_workspace` | Create a workspace and start its first coding-agent session | `name`<br/>`executor`<br/>`repositories` | `host_id`<br/>`prompt`<br/>`variant`<br/>`issue_id` | Workspace ID |
+| `review_workspace` | Create and start the PR review workspace of a `review`-tagged issue, as the UI does (same as `vk ws review`) | `issue_id`<br/>`executor` | `host_id`<br/>`pr`<br/>`repo_id`<br/>`variant`<br/>`model_id`<br/>`reasoning_id`<br/>`permission_policy`<br/>`prompt`<br/>`name`<br/>`create_only`<br/>`dry_run` | `action` (`created`, `reused`, `would_create`, `would_reuse`), `host_id`, `workspace_id`, `branch`, `checkout`, `checkout_sha`, `session_id`, `execution_process_id`, `executor_config`, `pr` (with `head_sha`), `repo`, `remote`, `target_branch`, `issue_status` |
 | `link_workspace_issue` | Link a workspace to a remote issue | `workspace_id`<br/>`issue_id` | `host_id` | Link confirmation |
 
 The `repositories` parameter is an array of objects with `repo_id` (UUID) and `branch`. When `issue_id` is provided, the workspace is linked to the issue; if `prompt` is omitted, the issue's title and description become the prompt.
+
+`review_workspace` checks out the linked PR's head on a private review branch with `<remote>/<base>` as the diff target, links PR and issue, moves the issue to "In review" and starts the review turn. It refuses, before writing anything, when the issue lacks the `review` tag or a structural PR link, also carries the `vibe` tag, the PR is merged or closed, several PRs are open (pass `pr`), or no or several registered repositories clone the PR's repository (pass `repo_id` or another `host_id`); a failed checkout or `gh` authentication comes back as the server's error and leaves no workspace. Calling it again is the retry: an open review workspace for the same issue and PR, on the chosen host or any reachable host, is returned as `reused` without a second workspace or turn, and `dry_run` reports the plan. `create_only` creates and checks out only (no turn, no "In review" move); start the review with `run_session_prompt`. Compare `checkout_sha` with `pr.head_sha` to see whether the checkout is current; when the PR moved on, `sync_workspace_branch` with `mode: "pull"` fast-forwards it before a follow-up prompt.
 
 ### Sessions
 
@@ -131,6 +134,7 @@ When using `start_workspace`, the following executors are supported (case-insens
 
 ```
 vk ws list --json                     # workspaces with status note and run state
+vk ws review --issue <id> --executor CODEX   # PR review workspace of a review-tagged issue (--dry-run, --create-only)
 vk session send <session> -m "..."    # run a prompt; --queue / --steer when busy
 vk session log <execution> --limit 50 # normalized conversation, paged
 vk git push <ws>                      # git on a workspace branch
