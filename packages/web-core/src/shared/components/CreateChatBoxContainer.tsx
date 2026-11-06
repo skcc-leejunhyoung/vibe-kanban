@@ -60,10 +60,20 @@ interface CreateChatBoxContainerProps {
 export function CreateChatBoxContainer(props: CreateChatBoxContainerProps) {
   const { linkedIssue } = useCreateMode();
   const project = useContext(ProjectContext);
-  // Resumed drafts can open outside the project board.
-  if (linkedIssue && project?.projectId !== linkedIssue.remoteProjectId) {
+  const linkedProjectId = linkedIssue?.remoteProjectId ?? null;
+  // Resumed drafts can open outside the project board. Once wrapped, stay
+  // wrapped (following the linked issue's project): unwrapping on issue
+  // removal would remount the form and drop its in-flight create state.
+  const [scopedProjectId, setScopedProjectId] = useState<string | null>(null);
+  const targetProjectId =
+    linkedProjectId &&
+    (scopedProjectId !== null || project?.projectId !== linkedProjectId)
+      ? linkedProjectId
+      : scopedProjectId;
+  if (targetProjectId !== scopedProjectId) setScopedProjectId(targetProjectId);
+  if (targetProjectId) {
     return (
-      <ProjectProvider projectId={linkedIssue.remoteProjectId}>
+      <ProjectProvider projectId={targetProjectId}>
         <CreateChatBoxContent {...props} />
       </ProjectProvider>
     );

@@ -1,4 +1,4 @@
-import { act } from 'react';
+import { act, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { installFakeDomReact } from '@/shared/lib/electric/electricTestKit';
@@ -16,15 +16,26 @@ type ChatProps = {
 };
 const env = vi.hoisted(() => ({
   chat: null as ChatProps | null,
+  mounts: 0,
+  linkedIssue: null as { remoteProjectId: string; issueId: string } | null,
   create: vi.fn(),
   only: vi.fn(),
   repos: [{ id: 'repo-test', name: 'Widgets' }],
 }));
-vi.mock('@vibe/ui/components/CreateChatBox', () => ({
-  CreateChatBox: (props: ChatProps) => {
-    env.chat = props;
-    return null;
-  },
+vi.mock('@vibe/ui/components/CreateChatBox', async () => {
+  const { useEffect } = await import('react');
+  return {
+    CreateChatBox: (props: ChatProps) => {
+      env.chat = props;
+      useEffect(() => {
+        env.mounts += 1;
+      }, []);
+      return null;
+    },
+  };
+});
+vi.mock('@/shared/providers/remote/ProjectProvider', () => ({
+  ProjectProvider: ({ children }: { children: ReactNode }) => children,
 }));
 vi.mock('@/shared/lib/api', () => ({
   issuePrsApi: { getPrInfo: vi.fn() },
@@ -38,7 +49,7 @@ vi.mock('@/features/create-mode/model/useCreateMode', () => ({
     message: 'Synthetic review description',
     hasInitialValue: true,
     hasResolvedInitialRepoDefaults: true,
-    linkedIssue: { remoteProjectId: 'project-test', issueId: 'issue-test' },
+    linkedIssue: env.linkedIssue,
     workingBranch: { mode: 'auto' },
     clearDraft: vi.fn(),
     setAttachments: vi.fn(),
@@ -118,6 +129,8 @@ beforeEach(() => {
   dom = installFakeDomReact();
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   env.chat = null;
+  env.mounts = 0;
+  env.linkedIssue = { remoteProjectId: 'project-test', issueId: 'issue-test' };
   env.repos = [{ id: 'repo-test', name: 'Widgets' }];
   env.create
     .mockReset()
@@ -220,3 +233,20 @@ it.each(['only', 'start'] as const)(
       );
   }
 );
+
+it('keeps the form mounted when an out-of-project linked issue is removed', async () => {
+  const board = { projectId: 'project-board' } as ProjectContextValue;
+  const tree = () => (
+    <QueryClientProvider client={client}>
+      <ProjectContext.Provider value={board}>
+        <CreateChatBoxContainer onWorkspaceCreated={vi.fn()} />
+      </ProjectContext.Provider>
+    </QueryClientProvider>
+  );
+  await dom.render(tree());
+  await vi.waitFor(() => expect(env.mounts).toBe(1));
+  env.linkedIssue = null;
+  await dom.render(tree());
+  await dom.render(tree());
+  expect(env.mounts).toBe(1);
+});
