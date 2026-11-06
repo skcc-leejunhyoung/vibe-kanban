@@ -109,11 +109,12 @@ catalog has no `review_workspace` (an older host), `vk ws review` is the path.
   `--create-only` or a `reused` workspace without a session), `executor_config` (what the turn
   runs with: the config sent on `created`, the session's latest coding turn on `reused`), `pr`
   (`number`, `url`, `status`, `head_branch`, `base_branch`, `head_sha`, `base_sha` — the base's
-  commit, `null` on hosts built before it), `repo`, `remote`, `target_branch`, `issue_status`
+  commit; both `null` on Azure DevOps and on hosts built before them), `repo`, `remote`, `target_branch`, `issue_status`
   (after a start it should read "In review"; the move is best-effort on the server, as in the
   UI). A turn started = `execution_process_id` set; a duplicate avoided = `action: "reused"` with
-  the earlier ids. Two agents racing to create the same review still end with one workspace:
-  the host refuses the second create (409) and the command returns the first as `reused`.
+  the earlier ids (its `execution_process_id` stays `null`). Two agents racing to create the same
+  review on one host still end with one workspace: that host refuses the second create (409) and
+  the command returns the first as `reused`.
   `--dry-run` on an existing review is the read-only re-query (`turn`, `checkout_sha`,
   `executor_config`).
 - Errors to act on: a refusal names its fix (`--pr <url>`, `--repo <id>`, `--host <name>`, the

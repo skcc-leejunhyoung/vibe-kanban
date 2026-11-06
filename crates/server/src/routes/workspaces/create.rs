@@ -552,28 +552,28 @@ static AGENT_REVIEW_CREATES: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// The open review workspace of this issue and PR: a workspace made for the
-/// issue that carries the PR's link.
+/// issue that carries the PR's link. Judged as the agent's workspace list
+/// shows it (latest PR per workspace, no in-place workspaces), so the client
+/// can always find the workspace a 409 names.
 async fn open_review_workspace(
     pool: &sqlx::SqlitePool,
     issue_id: Uuid,
     pr_url: &str,
 ) -> Result<Option<Uuid>, ApiError> {
     let wanted = pr_url.trim().trim_end_matches('/');
-    for pr in PullRequest::find_all_with_workspace(pool).await? {
-        let Some(workspace_id) = pr.workspace_id else {
-            continue;
-        };
-        if !pr
-            .pr_url
-            .trim()
-            .trim_end_matches('/')
-            .eq_ignore_ascii_case(wanted)
-        {
+    for (workspace_id, prs) in PullRequest::get_for_workspaces(pool).await? {
+        if !prs.first().is_some_and(|pr| {
+            pr.pr_url
+                .trim()
+                .trim_end_matches('/')
+                .eq_ignore_ascii_case(wanted)
+        }) {
             continue;
         }
         if let Some(workspace) = Workspace::find_by_id(pool, workspace_id).await?
             && workspace.task_id == Some(issue_id)
             && !workspace.archived
+            && !workspace.in_place
         {
             return Ok(Some(workspace.id));
         }
@@ -1338,7 +1338,8 @@ mod tests {
         let url = "https://github.com/acme/widgets/pull/42";
 
         // The PR author's own workspace, a review for another issue, an archived
-        // review and a review of another PR are not it.
+        // review, a review of another PR, an in-place workspace and one whose
+        // latest PR is another (the agent's list shows that one) are not it.
         workspace_with_pr(&pool, None, false, url).await;
         workspace_with_pr(&pool, Some(Uuid::new_v4()), false, url).await;
         workspace_with_pr(&pool, Some(issue), true, url).await;
@@ -1349,6 +1350,31 @@ mod tests {
             "https://github.com/acme/widgets/pull/7",
         )
         .await;
+        let in_place = workspace_with_pr(&pool, Some(issue), false, url).await;
+        sqlx::query("UPDATE workspaces SET in_place = 1 WHERE id = ?")
+            .bind(in_place)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let moved_on = workspace_with_pr(&pool, Some(issue), false, url).await;
+        sqlx::query(
+            "UPDATE pull_requests SET created_at = '2000-01-01 00:00:00' WHERE workspace_id = ?",
+        )
+        .bind(moved_on)
+        .execute(&pool)
+        .await
+        .unwrap();
+        PullRequest::create_for_workspace(
+            &pool,
+            moved_on,
+            Uuid::new_v4(),
+            "origin/main",
+            43,
+            "https://github.com/acme/widgets/pull/43",
+            Some("feature-y"),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             open_review_workspace(&pool, issue, url).await.unwrap(),
             None

@@ -1538,7 +1538,19 @@ impl VkClient {
 
     /// HEAD of the review checkout on disk, `None` when the host cannot say
     /// (missing worktree, status call failed): a reading, never a refusal.
+    /// Git status re-creates a cleaned-up worktree, so that case is skipped.
     async fn checkout_head(&self, workspace_id: Uuid) -> Option<String> {
+        #[derive(Deserialize)]
+        struct Worktree {
+            worktree_deleted: bool,
+        }
+        let workspace: Worktree = self
+            .get(&format!("/workspaces/{workspace_id}"))
+            .await
+            .ok()?;
+        if workspace.worktree_deleted {
+            return None;
+        }
         self.get::<Vec<CheckoutHead>>(&format!("/workspaces/{workspace_id}/git/status"))
             .await
             .ok()?
@@ -3377,13 +3389,13 @@ mod tests {
 
     #[tokio::test]
     async fn review_rerun_reuses_the_workspace_without_a_second_turn() {
-        for branch_kind in ["legacy", "private", "pending", "other-review"] {
+        for branch_kind in ["legacy", "private", "pending", "other-review", "cleaned"] {
             let issue = review_issue();
             let workspace_id = Uuid::new_v4();
             let session_id = Uuid::new_v4();
             let branch = match branch_kind {
                 "legacy" => "feature-x".to_string(),
-                "private" => Workspace::review_branch_name(workspace_id),
+                "private" | "cleaned" => Workspace::review_branch_name(workspace_id),
                 "pending" => "origin/main".to_string(),
                 _ => Workspace::review_branch_name(Uuid::new_v4()),
             };
@@ -3391,8 +3403,9 @@ mod tests {
                 "id": workspace_id, "task_id": issue.id, "container_ref": null,
                 "branch": branch, "setup_completed_at": null, "created_at": Utc::now(),
                 "updated_at": Utc::now(), "archived": false, "pinned": false, "name": "Fix login",
-                "worktree_deleted": false, "ephemeral": false, "in_place": false, "autopilot": false,
-                "cleanup_blocked_reason": null, "status_note": null, "status_updated_at": null,
+                "worktree_deleted": branch_kind == "cleaned", "ephemeral": false, "in_place": false,
+                "autopilot": false, "cleanup_blocked_reason": null, "status_note": null,
+                "status_updated_at": null,
             });
             let summary = json!({
                 "workspace_id": workspace_id, "latest_session_id": session_id,
@@ -3410,6 +3423,10 @@ mod tests {
             ok(json!([{ "id": Uuid::new_v4(), "name": "widgets", "target_branch": "origin/main" }])),
         );
             routes.insert(
+                ("GET", format!("/api/workspaces/{workspace_id}")),
+                ok(workspace.clone()),
+            );
+            routes.insert(
                 ("GET", format!("/api/workspaces/{workspace_id}/git/status")),
                 ok(json!([{ "repo_id": Uuid::new_v4(), "repo_name": "widgets", "repo_missing": false,
                     "head_oid": "c3", "target_branch_name": "origin/main" }])),
@@ -3425,14 +3442,22 @@ mod tests {
             assert_eq!(outcome.session_id, Some(session_id));
             assert_eq!(
                 outcome.checkout,
-                Some(if matches!(branch_kind, "legacy" | "private") {
+                Some(if matches!(branch_kind, "legacy" | "private" | "cleaned") {
                     "ready"
                 } else {
                     "pending"
                 })
             );
             assert_eq!(outcome.target_branch, "origin/main");
-            assert_eq!(outcome.checkout_sha.as_deref(), Some("c3"));
+            // Git status would re-create a cleaned-up worktree; it is not read.
+            let cleaned = branch_kind == "cleaned";
+            assert_eq!(outcome.checkout_sha.as_deref(), (!cleaned).then_some("c3"));
+            let read_status = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, path, _)| method == "GET" && path.ends_with("/git/status"));
+            assert_eq!(read_status, !cleaned);
             assert_eq!(outcome.turn, Some("idle"));
             assert!(posted(&calls, "/workspaces/start").is_empty());
             assert!(posted(&calls, "/workspaces/create").is_empty());
@@ -3694,6 +3719,10 @@ mod tests {
         routes.insert(
             ("POST", format!("/api/workspaces/{workspace_id}/links")),
             ok(Value::Null),
+        );
+        routes.insert(
+            ("GET", format!("/api/workspaces/{workspace_id}")),
+            ok(created.clone()),
         );
         routes.insert(
             ("GET", format!("/api/workspaces/{workspace_id}/git/status")),
