@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use executors::{
     executors::{BaseCodingAgent, CodingAgent, ExecutorError},
     profile::{ExecutorConfigs, ExecutorProfileId},
-    usage::{AgentUsageCredits, AgentUsageSnapshot, AgentUsageWindow},
+    usage::{AgentUsageSnapshot, AgentUsageWindow},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,8 +28,6 @@ pub struct AgentUsage {
     pub windows: Vec<AgentUsageWindow>,
     pub reset_credits: Option<u32>,
     pub reset_credit_expirations: Vec<Option<DateTime<Utc>>>,
-    /// Codex credit balance from the same probe as `updated_at`.
-    pub credits: Option<AgentUsageCredits>,
     pub updated_at: Option<DateTime<Utc>>,
     pub next_refresh_at: DateTime<Utc>,
     pub unavailable: bool,
@@ -78,7 +76,6 @@ async fn get_usage(
                         windows,
                         reset_credits: None,
                         reset_credit_expirations: Vec::new(),
-                        credits: None,
                     })
             }
             Some(CodingAgent::Codex(codex)) if !codex.oss.unwrap_or(false) => {
@@ -118,7 +115,6 @@ async fn cached_usage(
         windows: Vec::new(),
         reset_credits: None,
         reset_credit_expirations: Vec::new(),
-        credits: None,
         updated_at: None,
         next_refresh_at: now,
         unavailable: false,
@@ -126,15 +122,10 @@ async fn cached_usage(
     });
     value.login_required = matches!(&result, Err(ExecutorError::AuthRequired(_)));
     let delay = match result {
-        Ok(usage)
-            if !usage.windows.is_empty()
-                || usage.reset_credits.is_some()
-                || usage.credits.is_some() =>
-        {
+        Ok(usage) if !usage.windows.is_empty() || usage.reset_credits.is_some() => {
             value.windows = usage.windows;
             value.reset_credits = usage.reset_credits;
             value.reset_credit_expirations = usage.reset_credit_expirations;
-            value.credits = usage.credits;
             value.updated_at = Some(now);
             value.unavailable = false;
             cache.failures = 0;
@@ -176,51 +167,7 @@ mod tests {
             }],
             reset_credits: Some(2),
             reset_credit_expirations: vec![DateTime::from_timestamp(1893456000, 0)],
-            credits: Some(credits("100.5")),
         }
-    }
-
-    fn credits(balance: &str) -> AgentUsageCredits {
-        AgentUsageCredits {
-            has_credits: true,
-            unlimited: false,
-            balance: Some(balance.into()),
-        }
-    }
-
-    #[tokio::test]
-    async fn usage_refresh_replaces_credit_balance_and_failure_keeps_its_check_time() {
-        let cache = Mutex::new(UsageCache::default());
-        let first = cached_usage(&cache, [0; 32], async { Ok(usage()) }).await;
-        cache.lock().await.next_attempt = None;
-        let changed = cached_usage(&cache, [0; 32], async {
-            Ok(AgentUsageSnapshot {
-                credits: Some(credits("90.25")),
-                ..usage()
-            })
-        })
-        .await;
-        assert_eq!(changed.credits, Some(credits("90.25")));
-        assert!(changed.updated_at > first.updated_at);
-        cache.lock().await.next_attempt = None;
-        let failed = cached_usage(&cache, [0; 32], async {
-            Err(ExecutorError::Io(std::io::Error::other("test unavailable")))
-        })
-        .await;
-        // The last balance stays tied to its own check time and is marked unavailable.
-        assert!(failed.unavailable);
-        assert_eq!(failed.credits, changed.credits);
-        assert_eq!(failed.updated_at, changed.updated_at);
-        cache.lock().await.next_attempt = None;
-        let missing = cached_usage(&cache, [0; 32], async {
-            Ok(AgentUsageSnapshot {
-                credits: None,
-                ..usage()
-            })
-        })
-        .await;
-        assert!(!missing.unavailable);
-        assert!(missing.credits.is_none());
     }
 
     #[tokio::test]
@@ -326,7 +273,6 @@ mod tests {
         assert!(changed.windows.is_empty());
         assert!(changed.reset_credits.is_none());
         assert!(changed.reset_credit_expirations.is_empty());
-        assert!(changed.credits.is_none());
         assert!(changed.updated_at.is_none());
     }
 
@@ -358,7 +304,6 @@ mod tests {
                 windows: Vec::new(),
                 reset_credits: Some(0),
                 reset_credit_expirations: Vec::new(),
-                credits: None,
             })
         })
         .await;

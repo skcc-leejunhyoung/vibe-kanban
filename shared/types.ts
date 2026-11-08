@@ -576,15 +576,9 @@ capabilities: { [key in string]?: Array<BaseAgentCapability> }, shared_api_base:
 
 export type HostAppearance = { primary_color: string, };
 
-export type AgentUsage = { windows: Array<AgentUsageWindow>, reset_credits: number | null, reset_credit_expirations: Array<string | null>,
-/**
- * Codex credit balance from the same probe as `updated_at`.
- */
-credits: AgentUsageCredits | null, updated_at: string | null, next_refresh_at: string, unavailable: boolean, login_required: boolean, };
+export type AgentUsage = { windows: Array<AgentUsageWindow>, reset_credits: number | null, reset_credit_expirations: Array<string | null>, updated_at: string | null, next_refresh_at: string, unavailable: boolean, login_required: boolean, };
 
 export type AgentUsageWindow = { label: string, used_percent: number, reset_description: string | null, resets_at: string | null, };
-
-export type AgentUsageCredits = { has_credits: boolean, unlimited: boolean, balance: string | null, };
 
 export type Environment = { os_type: string, os_version: string, os_architecture: string, bitness: string, };
 

@@ -224,10 +224,7 @@ For periodic publication without starting an agent, use an existing Routine with
 enabled script Rule. The Rule can read the bound host's existing usage API with
 `ctx.actions.vibe.readAgentUsage('CLAUDE_CODE')` or `'CODEX'`, then publish only
 the display fields. Usage reads retain the API's five-minute cache and its
-unavailable/login state; do not turn unavailable usage into zero. Codex usage
-also includes `credits` (`has_credits`, `unlimited`, `balance`), the purchased
-credit balance from the same read as `updated_at`. It is separate from
-`reset_credits`, which counts rate-limit resets. Scheduled Rules
+unavailable/login state; do not turn unavailable usage into zero. Scheduled Rules
 retain the existing retry policy, so scripts with side effects must remain
 idempotent. Never publish connector credentials or raw CLI diagnostics.
 
