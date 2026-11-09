@@ -1449,7 +1449,11 @@ function pollConnector(id, manual) {
     // Interval ticks skip a busy connector; a manual poll awaits the live run
     // so the API still returns a real result rather than a duplicate run.
     if (!manual) return Promise.resolve({ ok: true, skipped: 'in-flight' });
-    return existing;
+    // A joined interval GitHub run may have skipped the throttled issue sync
+    // (linksSynced null); a manual poll always syncs, so poll again after it.
+    return existing.then((result) =>
+      result?.linksSynced === null ? pollConnector(id, true) : result
+    );
   }
   const run = runPoll(id, manual).finally(() => pollInFlight.delete(id));
   pollInFlight.set(id, run);

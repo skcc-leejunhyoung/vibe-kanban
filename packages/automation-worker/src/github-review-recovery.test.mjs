@@ -926,3 +926,23 @@ test("activity searches bound historical PRs while request discovery remains cur
   await fresh.poll();
   assert.equal(fresh.store.issues.size, 1);
 });
+
+test("a manual poll joining an interval run that skipped the issue sync polls again", async () => {
+  const runs = [];
+  const context = vm.createContext({
+    pollInFlight: new Map(),
+    runPoll: async (id, manual) => {
+      runs.push(manual);
+      await new Promise((resolve) => setImmediate(resolve));
+      return { ok: true, linksSynced: manual ? 3 : null };
+    },
+  });
+  vm.runInContext(functionSource("pollConnector"), context);
+  const interval = context.pollConnector("github", false);
+  const manual = context.pollConnector("github", true);
+  const second = context.pollConnector("github", true);
+  assert.equal((await interval).linksSynced, null);
+  assert.equal((await manual).linksSynced, 3);
+  assert.equal((await second).linksSynced, 3);
+  assert.deepEqual(runs, [false, true]);
+});
