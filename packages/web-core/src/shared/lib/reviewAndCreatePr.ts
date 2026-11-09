@@ -130,6 +130,21 @@ async function continueReviewAndCreatePr(
   hostId: string | null | undefined
 ): Promise<boolean> {
   await waitForVibeReviewCompletion(reviewSessionId, hostId);
+  try {
+    return await pushAndCreatePr(workspaceId, hostId);
+  } catch (error) {
+    // The review already merged, so a failure from here on is final. Keeping
+    // the pending entry would retry the push and repeat the same error every
+    // time the workspace is reopened.
+    clearPending(workspaceId, hostId);
+    throw error;
+  }
+}
+
+async function pushAndCreatePr(
+  workspaceId: string,
+  hostId: string | null | undefined
+): Promise<boolean> {
   const [workspace, repos, branchStatuses] = await Promise.all([
     workspacesApi.get(workspaceId, hostId),
     workspacesApi.getRepos(workspaceId, hostId),

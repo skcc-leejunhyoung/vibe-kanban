@@ -358,4 +358,63 @@ describe('runReviewAndCreatePr', () => {
     await resumeReviewAndCreatePr('workspace-1', null);
     expect(sessionsApi.getVibeReviewStatus).toHaveBeenCalledOnce();
   });
+
+  it('clears the workflow after a post-review push failure so reopening does not retry it', async () => {
+    seedPendingReview();
+    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
+      phase: 'done',
+    } as never);
+    vi.mocked(workspacesApi.get).mockResolvedValue({
+      branch: 'vk/work-branch',
+    } as never);
+    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
+      { id: 'repo-1', name: 'repo-1', target_branch: 'feature' },
+    ] as never);
+    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
+      { repo_id: 'repo-1', is_target_remote: false, merges: [] },
+    ] as never);
+    vi.mocked(workspacesApi.pushTargetBranch).mockResolvedValue({
+      success: false,
+      message: 'pre-push hook rejected the push',
+    } as never);
+
+    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
+      false
+    );
+
+    expect(localStorage.getItem('vibe-review-and-create-pr')).toBe('{}');
+    await resumeReviewAndCreatePr('workspace-1', null);
+    expect(workspacesApi.pushTargetBranch).toHaveBeenCalledOnce();
+    expect(PushErrorDialog.show).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the workflow when waiting for the review fails so reopening resumes it', async () => {
+    seedPendingReview();
+    vi.mocked(sessionsApi.getVibeReviewStatus).mockRejectedValue(
+      new Error('Failed to fetch')
+    );
+
+    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
+      false
+    );
+
+    expect(localStorage.getItem('vibe-review-and-create-pr')).toContain(
+      'local:workspace-1'
+    );
+    await resumeReviewAndCreatePr('workspace-1', null);
+    expect(sessionsApi.getVibeReviewStatus).toHaveBeenCalledTimes(2);
+  });
 });
+
+function seedPendingReview() {
+  localStorage.setItem(
+    'vibe-review-and-create-pr',
+    JSON.stringify({
+      'local:workspace-1': {
+        workspaceId: 'workspace-1',
+        reviewSessionId: 'review-session-1',
+        hostId: null,
+      },
+    })
+  );
+}
