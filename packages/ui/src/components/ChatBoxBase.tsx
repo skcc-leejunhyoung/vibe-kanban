@@ -261,6 +261,8 @@ interface ChatActionButtonProps {
   onClick?: () => void;
   disabled?: boolean;
   variant?: 'primary' | 'secondary';
+  /** Cmd+Enter anywhere in an enclosing dialog presses this button. */
+  dialogPrimary?: boolean;
 }
 
 /** Round icon-only composer action (send / queue / stop). */
@@ -270,6 +272,7 @@ export function ChatActionButton({
   onClick,
   disabled,
   variant = 'primary',
+  dialogPrimary,
 }: ChatActionButtonProps) {
   return (
     // The span keeps the tooltip reachable while the button is disabled:
@@ -283,6 +286,7 @@ export function ChatActionButton({
           aria-label={label}
           onClick={onClick}
           disabled={disabled}
+          data-dialog-primary={dialogPrimary ? '' : undefined}
           className={cn(
             'flex h-cta aspect-square shrink-0 items-center justify-center rounded-full transition-colors',
             disabled

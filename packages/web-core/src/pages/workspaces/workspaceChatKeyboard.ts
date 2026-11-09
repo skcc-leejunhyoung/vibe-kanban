@@ -74,12 +74,54 @@ export function shouldSubmitChatFromFocus(
   );
 }
 
-interface UnfocusedChatKeyTarget {
-  scrollConversationBy: (delta: number) => boolean;
-  focusComposer: () => boolean;
+export interface ChatSubmitTarget {
   /** Chat region whose non-text controls also accept the submit key. */
   getChatScope: () => Element | null;
+  /** Returns false when there was nothing to submit to. */
   submitComposer: (steer: boolean) => boolean;
+}
+
+/**
+ * Window capture listener for the chat submit key. Capture phase: a focused
+ * chat box button (Radix trigger) would otherwise take Cmd+Enter as a plain
+ * Enter and open its menu first. `enabled` must fold in the caller's
+ * active-pane condition, since panes register one listener each.
+ */
+export function useChatSubmitKey(
+  targetRef: RefObject<ChatSubmitTarget | null>,
+  enabled: boolean
+) {
+  useEffect(() => {
+    if (!enabled) return;
+
+    const handleSubmitKey = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
+      const submit = resolveChatSubmitKey(event);
+      const target = targetRef.current;
+      if (!submit || !target) return;
+      const scope = target.getChatScope();
+      // Mounted but hidden (an inactive mobile tab) — not on screen to send.
+      if (!scope || scope.getClientRects().length === 0) return;
+      if (
+        !shouldSubmitChatFromFocus(document.activeElement, scope) ||
+        !target.submitComposer(submit.steer)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener('keydown', handleSubmitKey, true);
+    return () => {
+      window.removeEventListener('keydown', handleSubmitKey, true);
+    };
+  }, [enabled, targetRef]);
+}
+
+interface UnfocusedChatKeyTarget extends ChatSubmitTarget {
+  scrollConversationBy: (delta: number) => boolean;
+  focusComposer: () => boolean;
 }
 
 /**
@@ -107,6 +149,8 @@ export function useUnfocusedChatKeys(
   targetRef: RefObject<UnfocusedChatKeyTarget | null>,
   enabled: boolean
 ) {
+  useChatSubmitKey(targetRef, enabled);
+
   useEffect(() => {
     if (!enabled) return;
 
@@ -131,32 +175,9 @@ export function useUnfocusedChatKeys(
       }
     };
 
-    // Capture phase: a focused chat box button (Radix trigger) would otherwise
-    // take Cmd+Enter as a plain Enter and open its menu first.
-    const handleSubmitKey = (event: KeyboardEvent) => {
-      if (isModalKeyboardActive()) return;
-      const submit = resolveChatSubmitKey(event);
-      const target = targetRef.current;
-      if (
-        !submit ||
-        !target ||
-        !shouldSubmitChatFromFocus(
-          document.activeElement,
-          target.getChatScope()
-        ) ||
-        !target.submitComposer(submit.steer)
-      ) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-    };
-
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keydown', handleSubmitKey, true);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keydown', handleSubmitKey, true);
     };
   }, [enabled, targetRef]);
 }

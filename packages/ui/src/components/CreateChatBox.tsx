@@ -1,4 +1,4 @@
-import { type ReactNode, useRef } from 'react';
+import { type ReactNode, type Ref, useImperativeHandle, useRef } from 'react';
 import {
   ArrowUpIcon,
   CheckIcon,
@@ -110,6 +110,8 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
    * being pushed off-screen. Requires a height-bounded parent.
    */
   fillHeight?: boolean;
+  /** Receives the Cmd+Enter submit for page-level shortcuts. */
+  submitRef?: Ref<() => void>;
 }
 
 /**
@@ -154,18 +156,21 @@ export function CreateChatBox<TExecutor extends string = string>({
   sendLabel,
   sendingLabel,
   fillHeight = false,
+  submitRef,
 }: CreateChatBoxProps<TExecutor>) {
   const { t } = useTranslation(['common', 'tasks']);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isSecondaryPending = secondaryAction?.isPending ?? false;
   const isDisabled = disabled || isSending || isSecondaryPending;
-  const canSend = editor.value.trim().length > 0 && !isDisabled && !sendDisabled;
+  const canSend =
+    editor.value.trim().length > 0 && !isDisabled && !sendDisabled;
 
   const handleCmdEnter = () => {
     if (canSend) {
       onSend();
     }
   };
+  useImperativeHandle(submitRef, () => handleCmdEnter);
 
   const handleKeyDownCapture = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
@@ -352,6 +357,8 @@ export function CreateChatBox<TExecutor extends string = string>({
             }
             onClick={onSend}
             disabled={!canSend}
+            // Quick chat: Cmd+Enter from a tab or the dialog itself sends.
+            dialogPrimary
           />
         </>
       }

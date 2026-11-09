@@ -38,6 +38,10 @@ import { ReviewModeBanner } from './ReviewModeBanner';
 import { GithubLinkedBranchBanner } from './GithubLinkedBranchBanner';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
+import {
+  type ChatSubmitTarget,
+  useChatSubmitKey,
+} from '@/pages/workspaces/workspaceChatKeyboard';
 import { ProjectContext } from '@/shared/hooks/useProjectContext';
 import { ProjectProvider } from '@/shared/providers/remote/ProjectProvider';
 
@@ -88,6 +92,19 @@ function CreateChatBoxContent({
   // A create form mounting in a background pane (reload, sibling navigation)
   // must not pull focus; pane activation follows DOM focus.
   const isActivePane = useIsActivePane();
+  // Cmd+Enter with nothing focused, or on a non-text control of this form,
+  // creates like the editor's Cmd+Enter. No "send now" variant here.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const submitRef = useRef<() => void>(null);
+  const submitTargetRef = useRef<ChatSubmitTarget>({
+    getChatScope: () => rootRef.current,
+    submitComposer: (steer) => {
+      if (steer || !submitRef.current) return false;
+      submitRef.current();
+      return true;
+    },
+  });
+  useChatSubmitKey(submitTargetRef, isActivePane);
   const { profiles, config } = useUserSystem();
   const {
     repos,
@@ -584,7 +601,10 @@ function CreateChatBoxContent({
   }
 
   return (
-    <div className="relative flex flex-1 flex-col bg-primary h-full">
+    <div
+      ref={rootRef}
+      className="relative flex flex-1 flex-col bg-primary h-full"
+    >
       {/* `max-h-full` caps the box to the viewport; the chat box then flexes
           (see `fillHeight`) so the prompt editor shrinks to fit instead of
           pushing the create button off-screen on short mobile heights / when
@@ -641,6 +661,7 @@ function CreateChatBoxContent({
               <div className="flex min-h-0 flex-1 justify-center @container">
                 <CreateChatBox
                   fillHeight
+                  submitRef={submitRef}
                   editor={{
                     value: message,
                     onChange: setMessage,
