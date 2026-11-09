@@ -293,6 +293,48 @@ describe('runReviewAndCreatePr', () => {
     expect(PushErrorDialog.show).not.toHaveBeenCalled();
   });
 
+  it('shows the full multi-line push output in the push error dialog', async () => {
+    localStorage.setItem(
+      'vibe-review-and-create-pr',
+      JSON.stringify({
+        'local:workspace-1': {
+          workspaceId: 'workspace-1',
+          reviewSessionId: 'review-session-1',
+          hostId: null,
+        },
+      })
+    );
+    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
+      phase: 'done',
+    } as never);
+    vi.mocked(workspacesApi.get).mockResolvedValue({
+      branch: 'vk/work-branch',
+    } as never);
+    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
+      { id: 'repo-1', name: 'repo-1', target_branch: 'feature' },
+    ] as never);
+    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
+      { repo_id: 'repo-1', is_target_remote: false, merges: [] },
+    ] as never);
+    const hookOutput = Array.from(
+      { length: 2000 },
+      (_, i) => `pre-push hook: check ${i} failed`
+    ).join('\n');
+    vi.mocked(workspacesApi.pushTargetBranch).mockResolvedValue({
+      success: false,
+      message: hookOutput,
+    } as never);
+
+    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
+      false
+    );
+
+    expect(PushErrorDialog.show).toHaveBeenCalledWith({
+      title: 'Review and create PR from ai failed',
+      message: hookOutput,
+    });
+  });
+
   it('clears a blocked review so reopening the workspace does not retry it', async () => {
     localStorage.setItem(
       'vibe-review-and-create-pr',
