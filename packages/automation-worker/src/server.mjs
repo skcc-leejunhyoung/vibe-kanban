@@ -1455,15 +1455,31 @@ function pollConnector(id, manual) {
     // Interval ticks skip a busy connector; a manual poll awaits the live run
     // so the API still returns a real result rather than a duplicate run.
     if (!manual) return Promise.resolve({ ok: true, skipped: 'in-flight' });
-    // A joined interval GitHub run never waits for the issue sync (linksSynced
-    // null); a manual poll always syncs, so poll again after it.
+    // A joined interval GitHub run leaves no issue sync to wait for
+    // (issueSync null); a manual poll always syncs, so poll again after it.
     return existing.then((result) =>
-      result?.linksSynced === null ? pollConnector(id, true) : result
+      result?.issueSync === null
+        ? pollConnector(id, true)
+        : withIssueSyncResult(result)
     );
   }
   const run = runPoll(id, manual).finally(() => pollInFlight.delete(id));
   pollInFlight.set(id, run);
-  return run;
+  return manual ? run.then(withIssueSyncResult) : run;
+}
+
+// A manual GitHub poll waits for its issue sync (minutes) only after its poll
+// has left pollInFlight, so interval review polls keep running meanwhile.
+async function withIssueSyncResult(result) {
+  if (!result?.issueSync) return result;
+  const { issueSync, ...rest } = result;
+  const sync = await issueSync;
+  return {
+    ...rest,
+    linksSynced: sync.synced,
+    linksRecovered: sync.recovered,
+    linksBackfilled: sync.backfilled,
+  };
 }
 
 async function runPoll(id, manual) {
@@ -2431,9 +2447,9 @@ async function pollGithub(connector, manual) {
   }
 
   // The sync takes minutes; an interval poll leaves it running so the next
-  // review poll is not stuck behind it. A manual poll waits for the result
-  // below, after this poll's seen sets are saved, so a failed sync cannot
-  // cause the issues imported above to be imported again.
+  // review poll is not stuck behind it. A manual poll hands it back as
+  // issueSync, awaited once this poll has saved its seen sets (so a failed sync
+  // cannot re-import the issues above) and left pollInFlight.
   let sync = null;
   if (issueSyncDue) {
     // Stamp the decision time, not now (after the board read), so rounds
@@ -2466,7 +2482,6 @@ async function pollGithub(connector, manual) {
       processed,
     });
   }
-  const syncResult = manual && sync ? await sync : null;
   return {
     ok: true,
     processed: processed + reviewResult.processed,
@@ -2476,10 +2491,9 @@ async function pollGithub(connector, manual) {
     reviewReconciliation: config.reviewPrReconciliation || null,
     commentsProcessed: commentResult.processed,
     commentsSeeded: commentResult.seeded,
-    // null unless this was a manual poll, which waits for the issue sync.
-    linksSynced: syncResult?.synced ?? null,
-    linksRecovered: syncResult?.recovered ?? null,
-    linksBackfilled: syncResult?.backfilled ?? null,
+    // Resolved into linksSynced/... by withIssueSyncResult; null on interval
+    // polls, which never wait for the sync.
+    issueSync: manual ? sync : null,
   };
 }
 

@@ -938,17 +938,54 @@ test("a manual poll joining an interval run that skipped the issue sync polls ag
     runPoll: async (id, manual) => {
       runs.push(manual);
       await new Promise((resolve) => setImmediate(resolve));
-      return { ok: true, linksSynced: manual ? 3 : null };
+      return {
+        ok: true,
+        issueSync: manual ? Promise.resolve({ synced: 3 }) : null,
+      };
     },
   });
   vm.runInContext(functionSource("pollConnector"), context);
+  vm.runInContext(functionSource("withIssueSyncResult"), context);
   const interval = context.pollConnector("github", false);
   const manual = context.pollConnector("github", true);
   const second = context.pollConnector("github", true);
-  assert.equal((await interval).linksSynced, null);
+  assert.equal((await interval).issueSync, null);
   assert.equal((await manual).linksSynced, 3);
   assert.equal((await second).linksSynced, 3);
+  assert.equal("issueSync" in (await manual), false);
   assert.deepEqual(runs, [false, true]);
+});
+
+test("a manual poll waits for its issue sync outside the connector's poll slot", async () => {
+  let release;
+  const sync = new Promise((resolve) => (release = resolve));
+  const runs = [];
+  const context = vm.createContext({
+    pollInFlight: new Map(),
+    runPoll: async (id, manual) => {
+      runs.push(manual);
+      return { ok: true, issueSync: manual ? sync : null };
+    },
+  });
+  vm.runInContext(functionSource("pollConnector"), context);
+  vm.runInContext(functionSource("withIssueSyncResult"), context);
+  let manualDone = false;
+  const manual = context.pollConnector("github", true).then((result) => {
+    manualDone = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  // The sync is still running, yet interval polls are no longer skipped.
+  assert.equal(manualDone, false);
+  assert.equal(context.pollInFlight.size, 0);
+  assert.equal((await context.pollConnector("github", false)).skipped, undefined);
+  release({ synced: 7, recovered: 1, backfilled: 2 });
+  const result = await manual;
+  assert.deepEqual(
+    [result.linksSynced, result.linksRecovered, result.linksBackfilled],
+    [7, 1, 2],
+  );
+  assert.deepEqual(runs, [true, false]);
 });
 
 test("issue-sync rounds read the board, leave the sync running, and a manual poll gets a fresh sync", async () => {
@@ -975,22 +1012,22 @@ test("issue-sync rounds read the board, leave the sync running, and a manual pol
   h.context.reconcileGithubIssueRules = () => gates[syncs++];
   const settle = () => new Promise((resolve) => setImmediate(resolve));
   // Due round: reads the board and starts the sync without waiting for it.
-  assert.equal((await h.context.pollGithub(h.github)).linksSynced, null);
+  assert.equal((await h.context.pollGithub(h.github)).issueSync, null);
   // Within the interval: neither the board nor the sync.
   await h.context.pollGithub(h.github);
   // Past the interval while that sync still runs: still no new round.
   h.context.githubIssueSyncLastRunAt.set(h.github.id, Date.now() - 600_000);
   await h.context.pollGithub(h.github);
   assert.deepEqual([boardReads, syncs], [1, 1]);
-  // A manual poll waits for the running sync, then runs a fresh one.
-  const manual = h.context.pollGithub(h.github, true);
-  await settle();
+  // A manual poll returns without blocking on the sync; its issueSync waits
+  // for the running sync, then runs a fresh one.
+  const manual = await h.context.pollGithub(h.github, true);
   assert.deepEqual([boardReads, syncs], [2, 1]);
   releases[0]({ synced: 4, recovered: 0, backfilled: 0 });
   await settle();
   assert.equal(syncs, 2);
   releases[1]({ synced: 5, recovered: 0, backfilled: 0 });
-  assert.equal((await manual).linksSynced, 5);
+  assert.equal((await manual.issueSync).synced, 5);
 });
 
 test("a seeding poll reads the board even within the issue-sync interval", async () => {
