@@ -986,3 +986,26 @@ test("an issue-sync round reads the board once and leaves the sync running besid
   assert.equal((await manual).linksSynced, 4);
   assert.deepEqual([boardReads, syncs], [2, 1]);
 });
+
+test("a seeding poll reads the board even within the issue-sync interval", async () => {
+  const h = harness();
+  h.state.rules.push({
+    id: "sync",
+    enabled: true,
+    kind: "github_issue_sync",
+    config: { githubConnectorId: h.github.id, githubProjectId: "project-1" },
+  });
+  h.context.pollGithubReviews = async () => ({ processed: 0 });
+  h.context.reconcileGithubIssueRules = async () => ({ synced: 0 });
+  h.context.githubGraphql = async () => ({});
+  let boardReads = 0;
+  h.context.loadGithubProjectIssues = async () => {
+    boardReads += 1;
+    return [];
+  };
+  h.context.githubIssueSyncLastRunAt.set(h.github.id, Date.now());
+  h.github.config.cursorTs = undefined;
+  h.github.config.seenIds = [];
+  await h.context.pollGithub(h.github);
+  assert.equal(boardReads, 1);
+});

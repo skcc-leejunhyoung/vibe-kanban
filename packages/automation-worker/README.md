@@ -71,6 +71,11 @@ miss would never be re-tried.
   A GitHub Project sync rule normally imports only issues from the connector's
   repository. Enable `includeIssuesFromOtherRepositories` on the rule to import
   assigned issues from other repositories on the selected Project as well.
+  Reading the Project board and syncing linked issues are slow on large
+  boards, so they run at most every 5 minutes (always on the first poll after
+  a restart, a seeding poll, and a manual poll), and the sync runs beside the
+  poll instead of inside it; review requests, comments, and assigned issues
+  are still polled every interval.
   Set `reviewPrs: true` to also import open, non-draft PRs where review is
   requested from the user (Search API). Set `reviewRepositories` to an explicit
   allowlist such as `["example/app", "example/search"]`; an absent or empty

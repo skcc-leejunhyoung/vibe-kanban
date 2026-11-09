@@ -2274,11 +2274,16 @@ async function pollGithub(connector, manual) {
   const repository = `${config.owner}/${config.repo}`;
   // Paging a whole Project board takes over a minute on large boards, so read
   // it only on issue-sync rounds; REST still lists assigned issues every poll.
-  const issueSyncDue = shouldReconcileGithubIssues({
-    lastRunAt: githubIssueSyncLastRunAt.get(connector.id),
-    now: Date.now(),
-    manual,
-  });
+  // A seeding poll always reads it, or the board's backlog would be imported
+  // by the next round instead of seeded.
+  const issueSyncCheckedAt = Date.now();
+  const issueSyncDue =
+    seeding ||
+    shouldReconcileGithubIssues({
+      lastRunAt: githubIssueSyncLastRunAt.get(connector.id),
+      now: issueSyncCheckedAt,
+      manual,
+    });
   const projectSources = new Map();
   for (const rule of issueSyncDue ? state.rules : []) {
     if (
@@ -2427,7 +2432,9 @@ async function pollGithub(connector, manual) {
   // cause the issues imported above to be imported again.
   let sync = null;
   if (issueSyncDue) {
-    githubIssueSyncLastRunAt.set(connector.id, Date.now());
+    // Stamp the decision time, not now (after the board read), so rounds
+    // stay about one interval apart instead of interval + board read.
+    githubIssueSyncLastRunAt.set(connector.id, issueSyncCheckedAt);
     sync = startGithubIssueSync(connector);
     sync.catch((error) =>
       log('error', 'github issue links sync failed', {
