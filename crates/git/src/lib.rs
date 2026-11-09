@@ -2690,15 +2690,22 @@ impl GitService {
         no_verify: bool,
     ) -> Result<(), GitServiceError> {
         let git_cli = GitCli::new();
-        let worktrees = git_cli.list_worktrees(repo_path).map_err(|e| {
-            GitServiceError::InvalidRepository(format!("git worktree list failed: {e}"))
-        })?;
-        let tip = self.get_branch_oid(repo_path, branch_name)?;
-        let checkout = worktrees
-            .iter()
-            .find(|wt| wt.branch.as_deref() == Some(branch_name))
-            .or_else(|| worktrees.iter().find(|wt| wt.head == tip))
-            .map(|wt| PathBuf::from(&wt.path));
+        // A registered worktree whose directory is gone cannot host git.
+        let mut checkout = self
+            .find_checkout_path_for_branch(repo_path, branch_name)?
+            .filter(|path| path.is_dir());
+        if checkout.is_none() {
+            let tip = self.get_branch_oid(repo_path, branch_name)?;
+            checkout = git_cli
+                .list_worktrees(repo_path)
+                .map_err(|e| {
+                    GitServiceError::InvalidRepository(format!("git worktree list failed: {e}"))
+                })?
+                .into_iter()
+                .filter(|wt| wt.head == tip)
+                .map(|wt| PathBuf::from(wt.path))
+                .find(|path| path.is_dir());
+        }
         let hooks_elsewhere = checkout.is_none() && !no_verify;
         if hooks_elsewhere {
             tracing::warn!(

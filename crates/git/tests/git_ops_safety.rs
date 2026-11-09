@@ -2418,25 +2418,17 @@ fn push_runs_pre_push_hook_in_checkout_of_pushed_commit() {
         .unwrap();
     assert_eq!(hook_head(), work_tip);
 
-    // 3. No checkout holds the tip: the push still succeeds from `repo_path`
-    //    (whose tree the hook then inspects).
+    // 3. The only checkout of `target` is a stale registration whose directory
+    //    is gone and no other worktree holds the tip: the push falls back to
+    //    `repo_path` (whose tree the hook then inspects) instead of failing.
     service.remove_worktree(&repo_path, &work_wt, true).unwrap();
-    let parent = repo
-        .find_branch("target", git2::BranchType::Local)
-        .unwrap()
-        .get()
-        .peel_to_commit()
+    let stale_wt = temp_dir.path().join("stale-wt");
+    service
+        .add_worktree(&repo_path, &stale_wt, "target", false)
         .unwrap();
-    let sig = repo.signature().unwrap();
-    repo.commit(
-        Some("refs/heads/target"),
-        &sig,
-        &sig,
-        "empty",
-        &parent.tree().unwrap(),
-        &[&parent],
-    )
-    .unwrap();
+    write_file(&stale_wt, "stale.txt", "later work\n");
+    commit_all(&Repository::open(&stale_wt).unwrap(), "later commit");
+    fs::remove_dir_all(&stale_wt).unwrap();
 
     service
         .push_branch_to_named_remote(&repo_path, "target", "origin", false, false)
