@@ -73,7 +73,7 @@ import {
   scheduleOccurrence,
   validateRoutineScope,
 } from './routines.mjs';
-import { fetchWithRetry } from './fetch-retry.mjs';
+import { fetchWithRetry, withGithubConditionalGet } from './fetch-retry.mjs';
 import { createArtifactChannels } from './artifact-channels.mjs';
 import {
   DEFAULT_KINDS,
@@ -89,7 +89,10 @@ import {
 
 // Every worker call (GitHub, Vibe remote, token endpoint, Slack) shares one
 // timeout/retry policy; shadowing the global keeps the call sites unchanged.
-const fetch = (url, options) => fetchWithRetry(url, options);
+// GitHub GETs are also made conditional so unchanged reads are rate-limit free.
+const fetch = withGithubConditionalGet((url, options) =>
+  fetchWithRetry(url, options)
+);
 
 const PORT = Number(process.env.PORT || 8787);
 const DATA_DIR = process.env.AUTOMATION_DATA_DIR || path.resolve('data');

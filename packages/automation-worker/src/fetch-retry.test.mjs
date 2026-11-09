@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { fetchWithRetry } from './fetch-retry.mjs';
+import { fetchWithRetry, withGithubConditionalGet } from './fetch-retry.mjs';
 
 const networkError = (code) =>
   Object.assign(new TypeError('fetch failed'), { cause: { code } });
@@ -77,4 +77,33 @@ test('non-network errors are not retried', async () => {
   const fake = fakeFetch(new TypeError('Invalid URL'));
   await assert.rejects(fetchWithRetry('https://api.github.com/user', {}, fake));
   assert.equal(fake.calls.length, 1);
+});
+
+test('GitHub GETs replay the cached body on 304 and leave other requests alone', async () => {
+  const sent = [];
+  const replies = [
+    new Response('{"n":1}', { status: 200, headers: { etag: 'W/"a"' } }),
+    new Response(null, { status: 304 }),
+    new Response('{"n":2}', { status: 200, headers: { etag: 'W/"b"' } }),
+  ];
+  const get = withGithubConditionalGet(async (url, options) => {
+    sent.push(options.headers?.['if-none-match'] ?? null);
+    return replies.shift();
+  });
+  const url = 'https://api.github.com/repos/o/r/issues/1';
+  const headers = { authorization: 'Bearer t', 'x-github-api-version': '2022-11-28' };
+  assert.deepEqual(await (await get(url, { headers })).json(), { n: 1 });
+  const unchanged = await get(url, { headers });
+  assert.equal(unchanged.status, 200);
+  assert.deepEqual(await unchanged.json(), { n: 1 });
+  assert.deepEqual(await (await get(url, { headers })).json(), { n: 2 });
+  assert.deepEqual(sent, [null, 'W/"a"', 'W/"a"']);
+
+  const reply = { ok: true };
+  const plain = withGithubConditionalGet(async (_, options) => {
+    assert.equal(options.headers?.['if-none-match'], undefined);
+    return reply;
+  });
+  assert.equal(await plain(url, { method: 'PATCH', headers }), reply);
+  assert.equal(await plain('https://vibe.example/v1/issues', {}), reply);
 });
