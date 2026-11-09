@@ -2324,3 +2324,122 @@ fn merge_base_ahead_of_task_should_error() {
         "Merge should error when base branch is ahead of task branch"
     );
 }
+
+/// Git runs the pre-push hook in `git push`'s working tree, so a branch that is
+/// not checked out in `repo_path` must be pushed from the checkout holding the
+/// pushed commit; otherwise a hook such as pre-commit lints the wrong tree.
+#[cfg(unix)]
+#[test]
+fn push_runs_pre_push_hook_in_checkout_of_pushed_commit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = TempDir::new().unwrap();
+    let remote_path = temp_dir.path().join("remote.git");
+    Repository::init_bare(&remote_path).unwrap();
+    let remote_url = remote_path.to_str().unwrap();
+
+    let service = GitService::new();
+    let repo_path = temp_dir.path().join("repo");
+    service
+        .initialize_repo_with_main_branch(&repo_path)
+        .unwrap();
+    let repo = Repository::open(&repo_path).unwrap();
+    configure_user(&repo);
+    write_file(&repo_path, "file.txt", "initial\n");
+    commit_all(&repo, "initial commit");
+    repo.remote("origin", remote_url).unwrap();
+    let main_tip = repo.head().unwrap().target().unwrap().to_string();
+
+    // The hook records the HEAD of the working tree it runs in.
+    let hooks_dir = temp_dir.path().join("hooks");
+    let recorded = temp_dir.path().join("hook-head");
+    fs::create_dir_all(&hooks_dir).unwrap();
+    let hook = hooks_dir.join("pre-push");
+    fs::write(
+        &hook,
+        format!("#!/bin/sh\ngit rev-parse HEAD > '{}'\n", recorded.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    repo.config()
+        .unwrap()
+        .set_str("core.hooksPath", hooks_dir.to_str().unwrap())
+        .unwrap();
+    let hook_head = || fs::read_to_string(&recorded).unwrap().trim().to_string();
+
+    // 1. `target` is checked out in a worktree while the main checkout stays on
+    //    `main` at the older commit: the hook runs in that worktree.
+    create_branch_from_head(&repo, "target");
+    let target_wt = temp_dir.path().join("target-wt");
+    service
+        .add_worktree(&repo_path, &target_wt, "target", false)
+        .unwrap();
+    let target_repo = Repository::open(&target_wt).unwrap();
+    write_file(&target_wt, "target.txt", "target work\n");
+    commit_all(&target_repo, "target commit");
+    let target_tip = target_repo.head().unwrap().target().unwrap().to_string();
+    assert_ne!(target_tip, main_tip);
+
+    service
+        .push_branch_to_named_remote(&repo_path, "target", "origin", false, false)
+        .unwrap();
+    assert_eq!(hook_head(), target_tip);
+
+    // 2. `target` is checked out nowhere, but a work branch's worktree sits at
+    //    its tip after a fast-forward merge: the hook runs in that worktree.
+    service
+        .remove_worktree(&repo_path, &target_wt, true)
+        .unwrap();
+    repo.branch(
+        "work",
+        &repo
+            .find_commit(git2::Oid::from_str(&target_tip).unwrap())
+            .unwrap(),
+        true,
+    )
+    .unwrap();
+    let work_wt = temp_dir.path().join("work-wt");
+    service
+        .add_worktree(&repo_path, &work_wt, "work", false)
+        .unwrap();
+    let work_repo = Repository::open(&work_wt).unwrap();
+    write_file(&work_wt, "work.txt", "more work\n");
+    commit_all(&work_repo, "work commit");
+    let work_tip = work_repo.head().unwrap().target().unwrap().to_string();
+    assert_eq!(
+        service
+            .merge_changes(&repo_path, &work_wt, "work", "target")
+            .unwrap(),
+        work_tip
+    );
+
+    service
+        .push_branch_to_named_remote(&repo_path, "target", "origin", false, false)
+        .unwrap();
+    assert_eq!(hook_head(), work_tip);
+
+    // 3. No checkout holds the tip: the push still succeeds from `repo_path`
+    //    (whose tree the hook then inspects).
+    service.remove_worktree(&repo_path, &work_wt, true).unwrap();
+    let parent = repo
+        .find_branch("target", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .peel_to_commit()
+        .unwrap();
+    let sig = repo.signature().unwrap();
+    repo.commit(
+        Some("refs/heads/target"),
+        &sig,
+        &sig,
+        "empty",
+        &parent.tree().unwrap(),
+        &[&parent],
+    )
+    .unwrap();
+
+    service
+        .push_branch_to_named_remote(&repo_path, "target", "origin", false, false)
+        .unwrap();
+    assert_eq!(hook_head(), main_tip);
+}

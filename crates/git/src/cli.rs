@@ -96,6 +96,8 @@ pub struct NumstatDiffEntry {
 #[derive(Debug, Clone)]
 pub struct WorktreeEntry {
     pub path: String,
+    /// Commit the worktree has checked out (full hash).
+    pub head: String,
     pub branch: Option<String>,
 }
 
@@ -690,9 +692,10 @@ impl GitCli {
 
             if line.is_empty() {
                 // End of current worktree entry, save it if we have required data
-                if let (Some(path), Some(_head)) = (current_path.take(), current_head.take()) {
+                if let (Some(path), Some(head)) = (current_path.take(), current_head.take()) {
                     entries.push(WorktreeEntry {
                         path,
+                        head,
                         branch: current_branch.take(),
                     });
                 }
@@ -709,9 +712,10 @@ impl GitCli {
         }
 
         // Handle the last entry if no trailing empty line
-        if let (Some(path), Some(_head)) = (current_path, current_head) {
+        if let (Some(path), Some(head)) = (current_path, current_head) {
             entries.push(WorktreeEntry {
                 path,
+                head,
                 branch: current_branch,
             });
         }

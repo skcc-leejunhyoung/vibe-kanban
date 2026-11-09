@@ -1521,8 +1521,9 @@ pub async fn fetch_target_branch(
 }
 
 /// Push the workspace's target (base) branch to the repo's primary remote. This
-/// pushes the committed branch tip in the source repo (not the workspace
-/// worktree), matching plain `git push` semantics.
+/// pushes the committed branch tip, matching plain `git push` semantics; git
+/// runs from the checkout holding that tip so pre-push hooks inspect the pushed
+/// commit rather than the main checkout's working tree.
 #[axum::debug_handler]
 pub async fn push_target_branch(
     Extension(workspace): Extension<Workspace>,

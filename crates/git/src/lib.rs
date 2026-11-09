@@ -2615,9 +2615,10 @@ impl GitService {
             remote.url()?.to_string()
         };
 
-        let git_cli = GitCli::new();
-        if let Err(e) = git_cli.push(repo_path, &remote_url, branch_name, force, no_verify) {
-            if !force && matches!(e, GitCliError::PushRejected(_)) {
+        if let Err(e) =
+            self.push_from_branch_checkout(repo_path, &remote_url, branch_name, force, no_verify)
+        {
+            if !force && matches!(e, GitServiceError::GitCLI(GitCliError::PushRejected(_))) {
                 self.fetch_remote(repo_path, remote_name)?;
                 match self.fast_forward_local_branch_to_remote(
                     repo_path,
@@ -2625,16 +2626,22 @@ impl GitService {
                     remote_name,
                 )? {
                     PullOutcome::FastForwarded { .. } => {
-                        git_cli.push(repo_path, &remote_url, branch_name, false, no_verify)?;
+                        self.push_from_branch_checkout(
+                            repo_path,
+                            &remote_url,
+                            branch_name,
+                            false,
+                            no_verify,
+                        )?;
                     }
                     PullOutcome::Diverged { ahead, behind } => {
                         return Err(GitServiceError::PushDiverged { ahead, behind });
                     }
-                    PullOutcome::UpToDate => return Err(e.into()),
+                    PullOutcome::UpToDate => return Err(e),
                 }
             } else {
                 tracing::error!("Push to remote '{remote_name}' failed: {}", e);
-                return Err(e.into());
+                return Err(e);
             }
         }
 
@@ -2665,6 +2672,52 @@ impl GitService {
             branch.set_upstream(Some(&format!("{remote_name}/{branch_name}")))?;
         }
 
+        Ok(())
+    }
+
+    /// `git push` of `branch_name`, run where its tip is checked out: the
+    /// branch's own checkout, else any worktree whose HEAD is the tip (a
+    /// workspace right after a fast-forward merge). Git runs the pre-push hook
+    /// in the cwd's working tree, so pushing from another checkout makes a hook
+    /// such as pre-commit lint that tree instead of the pushed commit. Falls
+    /// back to `repo_path` with a warning when no checkout holds the tip.
+    fn push_from_branch_checkout(
+        &self,
+        repo_path: &Path,
+        remote_url: &str,
+        branch_name: &str,
+        force: bool,
+        no_verify: bool,
+    ) -> Result<(), GitServiceError> {
+        let git_cli = GitCli::new();
+        let worktrees = git_cli.list_worktrees(repo_path).map_err(|e| {
+            GitServiceError::InvalidRepository(format!("git worktree list failed: {e}"))
+        })?;
+        let tip = self.get_branch_oid(repo_path, branch_name)?;
+        let checkout = worktrees
+            .iter()
+            .find(|wt| wt.branch.as_deref() == Some(branch_name))
+            .or_else(|| worktrees.iter().find(|wt| wt.head == tip))
+            .map(|wt| PathBuf::from(&wt.path));
+        let hooks_elsewhere = checkout.is_none() && !no_verify;
+        if hooks_elsewhere {
+            tracing::warn!(
+                "No checkout holds the tip of '{branch_name}'; pushing from {} whose working tree the pre-push hook inspects instead of the pushed commit",
+                repo_path.display()
+            );
+        }
+        let cwd = checkout.unwrap_or_else(|| repo_path.to_path_buf());
+        git_cli
+            .push(&cwd, remote_url, branch_name, force, no_verify)
+            .map_err(|e| match e {
+                GitCliError::CommandFailed(msg) if hooks_elsewhere => {
+                    GitCliError::CommandFailed(format!(
+                        "{msg}\nnote: the pre-push hook ran in {}, which does not have the pushed commit checked out, so it may have inspected a different working tree.",
+                        repo_path.display()
+                    ))
+                }
+                e => e,
+            })?;
         Ok(())
     }
 
