@@ -1,6 +1,6 @@
 import { installVSCodeIframeKeyboardBridge } from '@/integrations/vscode/bridge';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type Ref, useCallback, useEffect, useRef, useState } from 'react';
 import type { Session } from 'shared/types';
 import { useTranslation } from 'react-i18next';
 import { AppWithStyleOverride } from '@/shared/lib/StyleOverride';
@@ -11,6 +11,11 @@ import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useDiffStats } from '@/shared/stores/useWorkspaceDiffStore';
 import { usePageTitle } from '@/shared/hooks/usePageTitle';
 import { SessionChatBoxContainer } from '@/features/workspace-chat/ui/SessionChatBoxContainer';
+import type { SessionChatBoxSubmit } from '@vibe/ui/components/SessionChatBox';
+import {
+  type ChatSubmitTarget,
+  useChatSubmitKey,
+} from './workspaceChatKeyboard';
 import { WorkspaceStatusStripContainer } from '@/features/workspace-chat/ui/WorkspaceStatusStripContainer';
 import {
   ConversationList,
@@ -35,6 +40,7 @@ function VSCodeChatBox({
   onScrollToBottom,
   onScrollToUserMessage,
   getActiveTurnPatchKey,
+  submitRef,
 }: {
   session: Session | undefined;
   workspaceId: string | undefined;
@@ -47,6 +53,7 @@ function VSCodeChatBox({
   onScrollToBottom: (behavior?: 'auto' | 'smooth') => void;
   onScrollToUserMessage: (patchKey: string) => void;
   getActiveTurnPatchKey: () => string | null;
+  submitRef: Ref<SessionChatBoxSubmit>;
 }) {
   const diffStats = useDiffStats();
 
@@ -78,6 +85,7 @@ function VSCodeChatBox({
       onScrollToBottom={onScrollToBottom}
       onScrollToUserMessage={onScrollToUserMessage}
       getActiveTurnPatchKey={getActiveTurnPatchKey}
+      submitRef={submitRef}
     />
   );
 }
@@ -89,6 +97,20 @@ export function VSCodeWorkspacePage() {
   const [isAtBottom, setIsAtBottom] = useState(true);
 
   useEffect(() => installVSCodeIframeKeyboardBridge(), []);
+
+  // The webview is a single panel: Cmd+Enter with nothing focused or on a
+  // non-text control anywhere in it sends, like the editor's Cmd+Enter.
+  const mainRef = useRef<HTMLElement>(null);
+  const chatSubmitRef = useRef<SessionChatBoxSubmit>(null);
+  const submitTargetRef = useRef<ChatSubmitTarget>({
+    getChatScope: () => mainRef.current,
+    submitComposer: (steer) => {
+      if (!chatSubmitRef.current) return false;
+      chatSubmitRef.current(steer);
+      return true;
+    },
+  });
+  useChatSubmitKey(submitTargetRef, true);
 
   const {
     workspace,
@@ -143,7 +165,10 @@ export function VSCodeWorkspacePage() {
       <div className="h-dvh flex flex-col bg-primary">
         <WebviewContextMenu />
 
-        <main className="relative flex flex-1 flex-col h-full min-h-0">
+        <main
+          ref={mainRef}
+          className="relative flex flex-1 flex-col h-full min-h-0"
+        >
           <ApprovalFeedbackProvider>
             <EntriesProvider
               key={
@@ -229,6 +254,7 @@ export function VSCodeWorkspacePage() {
                       onScrollToBottom={handleScrollToBottom}
                       onScrollToUserMessage={handleScrollToUserMessage}
                       getActiveTurnPatchKey={handleGetActiveTurnPatchKey}
+                      submitRef={chatSubmitRef}
                     />
                   </div>
                 </MessageEditProvider>
