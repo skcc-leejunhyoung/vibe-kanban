@@ -36,6 +36,7 @@ import {
   selectGithubImportCandidates,
   selectGithubPollCandidates,
   shouldReconcileGithubIssueLink,
+  shouldReconcileGithubIssues,
   shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
   withCommentMarker,
@@ -296,6 +297,9 @@ const vibeTokenInflight = new Map();
 // One in-flight poll per connector. This is used during bootstrap's initial
 // scheduleAll() call, so it must be initialized before bootstrap starts.
 const pollInFlight = new Map();
+// connectorId -> start time of the last completed issue sync (see
+// shouldReconcileGithubIssues). In memory only, so a restart syncs at once.
+const githubIssueSyncLastRunAt = new Map();
 // Retry-queue item ids currently being executed, so an overlapping manual
 // trigger and poll-driven pass never run the same item (and its side effect)
 // twice.
@@ -1459,7 +1463,7 @@ async function runPoll(id, manual) {
   // ones, so every poll cycle is also a retry cycle.
   await processRetryQueue({ connectorId: id });
   if (connector.type === 'slack') return pollSlack(connector);
-  if (connector.type === 'github') return pollGithub(connector);
+  if (connector.type === 'github') return pollGithub(connector, manual);
   if (connector.type === 'vibe_events') return pollVibeEvents(connector);
   throw new Error(`poll not supported for ${connector.type}`);
 }
@@ -2190,7 +2194,7 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
   return { processed: pending.length, seeded: 0 };
 }
 
-async function pollGithub(connector) {
+async function pollGithub(connector, manual) {
   const config = connector.config || {};
   if (!config.token || !config.owner || !config.repo) {
     throw new Error('GitHub token, owner, and repo are required');
@@ -2403,7 +2407,25 @@ async function pollGithub(connector) {
     }
   }
 
-  const syncResult = await reconcileGithubIssueRules(connector);
+  let syncResult = null;
+  const syncStartedAt = Date.now();
+  if (
+    shouldReconcileGithubIssues({
+      lastRunAt: githubIssueSyncLastRunAt.get(connector.id),
+      now: syncStartedAt,
+      manual,
+    })
+  ) {
+    syncResult = await reconcileGithubIssueRules(connector);
+    githubIssueSyncLastRunAt.set(connector.id, syncStartedAt);
+    await log('info', 'github issue links synced', {
+      connectorId: connector.id,
+      linksSynced: syncResult.synced,
+      linksRecovered: syncResult.recovered,
+      linksBackfilled: syncResult.backfilled,
+      durationMs: Date.now() - syncStartedAt,
+    });
+  }
   connector.config.cursorTs = latest;
   connector.config.seenIds = Array.from(seen).slice(-1000);
   connector.config.seenNumbers = Array.from(seenNumbers).slice(-1000);
@@ -2432,9 +2454,10 @@ async function pollGithub(connector) {
     reviewReconciliation: config.reviewPrReconciliation || null,
     commentsProcessed: commentResult.processed,
     commentsSeeded: commentResult.seeded,
-    linksSynced: syncResult.synced,
-    linksRecovered: syncResult.recovered,
-    linksBackfilled: syncResult.backfilled,
+    // null when this poll skipped the throttled issue sync.
+    linksSynced: syncResult?.synced ?? null,
+    linksRecovered: syncResult?.recovered ?? null,
+    linksBackfilled: syncResult?.backfilled ?? null,
   };
 }
 

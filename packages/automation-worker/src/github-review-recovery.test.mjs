@@ -20,6 +20,7 @@ import {
   selectGithubPollCandidates,
   selectGithubImportCandidates,
   markGithubIssueSeen,
+  shouldReconcileGithubIssues,
 } from "./github-issue-sync.mjs";
 
 const source = await readFile(new URL("./server.mjs", import.meta.url), "utf8");
@@ -137,6 +138,8 @@ function harness(options = {}) {
     selectGithubPollCandidates,
     selectGithubImportCandidates,
     markGithubIssueSeen,
+    shouldReconcileGithubIssues,
+    githubIssueSyncLastRunAt: new Map(),
     RETRY_MAX_ATTEMPTS: 5,
     RULE_TIMEOUT_MS: 10000,
     state,

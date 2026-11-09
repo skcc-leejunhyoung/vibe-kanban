@@ -160,6 +160,17 @@ export function githubIssuePollSince(config, field) {
   return String(cursorTs);
 }
 
+// Syncing every linked issue takes minutes (one GitHub round trip per link),
+// and a poll runs it at the end, so running it every poll stretched the 60s
+// review-request poll to 4-5 minutes. Run it at most once per interval; the
+// first poll after a restart (no last run) and manual polls always run it.
+export const GITHUB_ISSUE_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+
+export function shouldReconcileGithubIssues({ lastRunAt, now, manual }) {
+  if (manual || lastRunAt == null) return true;
+  return now - lastRunAt >= GITHUB_ISSUE_SYNC_INTERVAL_MS;
+}
+
 // The first poll only seeds the dedup sets so enabling a connector never floods
 // the board with an existing backlog. Project items are no exception: exempting
 // them made seeding import the entire board — the one moment the guard matters

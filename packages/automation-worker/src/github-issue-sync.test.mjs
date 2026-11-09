@@ -24,6 +24,8 @@ import {
   retryPendingGithubIssueLinkOperations,
   selectGithubPollCandidates,
   shouldReconcileGithubIssueLink,
+  shouldReconcileGithubIssues,
+  GITHUB_ISSUE_SYNC_INTERVAL_MS,
   shouldRunGithubIssueSyncRule,
   shouldSyncGithubProjectStatus,
   withCommentMarker,
@@ -843,6 +845,16 @@ test('seeding poll imports nothing and seeds every source', () => {
     selectGithubImportCandidates({ candidates, seeding: false }),
     { importCandidates: candidates, seedOnly: [] }
   );
+});
+
+test('issue sync runs after a restart, on manual polls, and once per interval', () => {
+  const now = 1_000_000_000;
+  const recent = now - GITHUB_ISSUE_SYNC_INTERVAL_MS + 1;
+  const due = now - GITHUB_ISSUE_SYNC_INTERVAL_MS;
+  assert.equal(shouldReconcileGithubIssues({ lastRunAt: undefined, now }), true);
+  assert.equal(shouldReconcileGithubIssues({ lastRunAt: recent, now }), false);
+  assert.equal(shouldReconcileGithubIssues({ lastRunAt: recent, now, manual: true }), true);
+  assert.equal(shouldReconcileGithubIssues({ lastRunAt: due, now }), true);
 });
 
 test('comment marker round-trips and survives edited bodies', () => {
