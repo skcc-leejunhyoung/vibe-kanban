@@ -1,7 +1,9 @@
 import {
   type ChangeEvent,
   type ReactNode,
+  type Ref,
   useEffect,
+  useImperativeHandle,
   useRef,
   useState,
 } from 'react';
@@ -295,7 +297,14 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
    * to cover the conversation. Requires a height-capped wrapper.
    */
   fillHeight?: boolean;
+  /**
+   * Receives the editor's Cmd+Enter (`steer` = Shift+Cmd+Enter) submit, so a
+   * page can send the composer while focus is elsewhere in the chat.
+   */
+  submitRef?: Ref<SessionChatBoxSubmit>;
 }
+
+export type SessionChatBoxSubmit = (steer: boolean) => void;
 
 function defaultExecutorLabel(executor: string) {
   return executor
@@ -369,6 +378,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   autoResume,
   dropzone,
   fillHeight,
+  submitRef,
 }: SessionChatBoxProps<TExecutor>) {
   const { t } = useTranslation('tasks');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -482,6 +492,11 @@ export function SessionChatBox<TExecutor extends string = string>({
       handleCmdEnter();
     }
   };
+
+  useImperativeHandle(
+    submitRef,
+    () => (steer: boolean) => (steer ? handleShiftCmdEnter() : handleCmdEnter())
+  );
 
   // Reorder the queue when a drag-handle drop finishes, pushing the new order up.
   const handleQueueDragEnd = (result: DropResult) => {

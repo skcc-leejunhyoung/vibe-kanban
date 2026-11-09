@@ -1,4 +1,5 @@
 import {
+  type RefObject,
   forwardRef,
   useCallback,
   useImperativeHandle,
@@ -9,6 +10,7 @@ import {
 import type { Workspace, Session, RepoWithTargetBranch } from 'shared/types';
 import { createWorkspaceWithSession } from '@/shared/types/attempt';
 import { WorkspacesMain } from '@vibe/ui/components/WorkspacesMain';
+import type { SessionChatBoxSubmit } from '@vibe/ui/components/SessionChatBox';
 import {
   ConversationList,
   type ConversationListHandle,
@@ -42,6 +44,7 @@ function ChatBoxWithDiffStats({
   onScrollToUserMessage,
   getActiveTurnPatchKey,
   autoFocus,
+  submitRef,
 }: {
   session: Session | undefined;
   workspaceId: string | undefined;
@@ -55,6 +58,7 @@ function ChatBoxWithDiffStats({
   onScrollToUserMessage: (patchKey: string) => void;
   getActiveTurnPatchKey: () => string | null;
   autoFocus: boolean;
+  submitRef: RefObject<SessionChatBoxSubmit>;
 }) {
   const diffStats = useDiffStats();
 
@@ -87,6 +91,7 @@ function ChatBoxWithDiffStats({
       onScrollToUserMessage={onScrollToUserMessage}
       getActiveTurnPatchKey={getActiveTurnPatchKey}
       autoFocus={autoFocus}
+      submitRef={submitRef}
     />
   );
 }
@@ -95,6 +100,8 @@ export interface WorkspacesMainContainerHandle {
   scrollToBottom: (behavior?: 'auto' | 'smooth') => void;
   scrollConversationBy: (delta: number) => boolean;
   focusComposer: () => boolean;
+  getChatScope: () => Element | null;
+  submitComposer: (steer: boolean) => boolean;
 }
 
 interface WorkspacesMainContainerProps {
@@ -133,6 +140,7 @@ export const WorkspacesMainContainer = forwardRef<
 ) {
   const containerRef = useRef<HTMLElement>(null);
   const conversationListRef = useRef<ConversationListHandle>(null);
+  const chatSubmitRef = useRef<SessionChatBoxSubmit>(null);
 
   const workspaceWithSession = useMemo(() => {
     if (!selectedWorkspace) return undefined;
@@ -211,6 +219,7 @@ export const WorkspacesMainContainer = forwardRef<
       onScrollToUserMessage={handleScrollToUserMessage}
       getActiveTurnPatchKey={handleGetActiveTurnPatchKey}
       autoFocus={autoFocus}
+      submitRef={chatSubmitRef}
     />
   );
 
@@ -232,6 +241,12 @@ export const WorkspacesMainContainer = forwardRef<
         );
         if (!editor) return false;
         editor.focus();
+        return true;
+      },
+      getChatScope: () => containerRef.current,
+      submitComposer: (steer) => {
+        if (!chatSubmitRef.current) return false;
+        chatSubmitRef.current(steer);
         return true;
       },
     }),

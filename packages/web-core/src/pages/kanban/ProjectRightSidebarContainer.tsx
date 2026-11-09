@@ -40,7 +40,12 @@ import { useOpenInSplitPane } from '@/shared/lib/openInSplitPane';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
-import { resolveUnfocusedChatKeyAction } from '@/pages/workspaces/workspaceChatKeyboard';
+import {
+  resolveChatSubmitKey,
+  resolveUnfocusedChatKeyAction,
+  shouldSubmitChatFromFocus,
+} from '@/pages/workspaces/workspaceChatKeyboard';
+import type { SessionChatBoxSubmit } from '@vibe/ui/components/SessionChatBox';
 import {
   buildKanbanIssueComposerKey,
   closeKanbanIssueComposer,
@@ -173,6 +178,7 @@ function WorkspaceSessionPanel({
   const isActivePane = useIsActivePane();
   const conversationListRef = useRef<ConversationListHandle>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const chatSubmitRef = useRef<SessionChatBoxSubmit>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const { data: workspace, isLoading: isWorkspaceLoading } = useWorkspaceRecord(
     workspaceId,
@@ -264,6 +270,22 @@ function WorkspaceSessionPanel({
     const handleUnfocusedChatKeyDown = (event: KeyboardEvent) => {
       if (isModalKeyboardActive()) return;
       const activeElement = document.activeElement;
+
+      const submit = resolveChatSubmitKey(event);
+      if (submit) {
+        if (
+          !chatSubmitRef.current ||
+          !shouldSubmitChatFromFocus(activeElement, panelRef.current)
+        ) {
+          return;
+        }
+        chatSubmitRef.current(submit.steer);
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        return;
+      }
+
       const hasNoFocusedControl =
         activeElement === null ||
         activeElement === document.body ||
@@ -444,6 +466,7 @@ function WorkspaceSessionPanel({
                     // grab focus when it mounts or remounts (feedback mode,
                     // session switch).
                     autoFocus={isActivePane}
+                    submitRef={chatSubmitRef}
                     sessions={sessions}
                     filesChanged={workspaceSummary?.filesChanged ?? 0}
                     linesAdded={workspaceSummary?.linesAdded ?? 0}

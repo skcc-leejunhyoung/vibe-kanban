@@ -1,4 +1,5 @@
 import {
+  type Ref,
   useCallback,
   useEffect,
   useMemo,
@@ -77,6 +78,7 @@ import {
   SessionChatBox,
   type ExecutionStatus,
   type SessionChatBoxEditorRenderProps,
+  type SessionChatBoxSubmit,
 } from '@vibe/ui/components/SessionChatBox';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import {
@@ -233,6 +235,8 @@ interface SharedProps {
   disableViewCode: boolean;
   /** Replace diff stats with an "Open Workspace" button in header */
   showOpenWorkspaceButton: boolean;
+  /** Receives the composer's Cmd+Enter submit for page-level shortcuts */
+  submitRef?: Ref<SessionChatBoxSubmit>;
 }
 
 /** Props for existing session mode */
@@ -303,6 +307,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     disableViewCode = false,
     showOpenWorkspaceButton,
     autoFocus = true,
+    submitRef,
   } = props;
 
   // Extract mode-specific values
@@ -2477,6 +2482,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     <SessionChatBox<BaseCodingAgent>
       status={status}
       fillHeight
+      submitRef={submitRef}
       onViewCode={disableViewCode ? undefined : handleViewCode}
       onOpenWorkspace={
         showOpenWorkspaceButton && workspaceId ? handleOpenWorkspace : undefined

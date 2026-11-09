@@ -242,7 +242,8 @@ export const AskUserQuestionBanner = forwardRef<
   if (submitted && !isSubmitting && !error) return null;
 
   return (
-    <div className="border-b">
+    // Page-level Cmd+Enter (workspaceChatKeyboard) defers to this banner.
+    <div className="border-b" data-ask-user-question>
       {/* Header */}
       <div className="flex items-center gap-base px-plusfifty py-base">
         <QuestionIcon className="h-4 w-4 text-brand flex-shrink-0" />

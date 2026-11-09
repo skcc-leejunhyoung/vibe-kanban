@@ -36,9 +36,50 @@ export function resolveUnfocusedChatKeyAction(
   return null;
 }
 
+/**
+ * Cmd/Ctrl+Enter sends the composer from outside the editor, too; Shift adds
+ * the editor's "steer" (send now) variant.
+ */
+export function resolveChatSubmitKey(
+  event: WorkspaceChatKeyEvent
+): { steer: boolean } | null {
+  if (
+    event.key !== 'Enter' ||
+    !(event.metaKey || event.ctrlKey) ||
+    event.altKey ||
+    event.defaultPrevented ||
+    event.isComposing
+  ) {
+    return null;
+  }
+  return { steer: event.shiftKey };
+}
+
+/**
+ * The submit key works while the user moves around the chat by keyboard:
+ * nothing focused, or a non-text control inside the chat (a chat box button,
+ * a conversation entry). Text fields keep their own Cmd+Enter, and the agent
+ * question banner confirms its own selection with it.
+ */
+export function shouldSubmitChatFromFocus(
+  activeElement: Element | null,
+  chatScope: Element | null
+): boolean {
+  if (shouldHandleUnfocusedChatKey(activeElement)) return true;
+  if (!activeElement || !chatScope?.contains(activeElement)) return false;
+  if ((activeElement as HTMLElement).isContentEditable) return false;
+  return (
+    !activeElement.matches('input, textarea, select') &&
+    !activeElement.closest('[data-ask-user-question]')
+  );
+}
+
 interface UnfocusedChatKeyTarget {
   scrollConversationBy: (delta: number) => boolean;
   focusComposer: () => boolean;
+  /** Chat region whose non-text controls also accept the submit key. */
+  getChatScope: () => Element | null;
+  submitComposer: (steer: boolean) => boolean;
 }
 
 /**
@@ -58,8 +99,9 @@ export function shouldHandleUnfocusedChatKey(
 
 /**
  * Window-level ArrowUp/ArrowDown/Enter handling for the chat while no control
- * is focused. `enabled` must fold in every caller-side condition (visible
- * chat, active pane, mobile tab), since panes register one listener each.
+ * is focused, plus Cmd+Enter submit (see `shouldSubmitChatFromFocus`).
+ * `enabled` must fold in every caller-side condition (visible chat, active
+ * pane, mobile tab), since panes register one listener each.
  */
 export function useUnfocusedChatKeys(
   targetRef: RefObject<UnfocusedChatKeyTarget | null>,
@@ -89,9 +131,32 @@ export function useUnfocusedChatKeys(
       }
     };
 
+    // Capture phase: a focused chat box button (Radix trigger) would otherwise
+    // take Cmd+Enter as a plain Enter and open its menu first.
+    const handleSubmitKey = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
+      const submit = resolveChatSubmitKey(event);
+      const target = targetRef.current;
+      if (
+        !submit ||
+        !target ||
+        !shouldSubmitChatFromFocus(
+          document.activeElement,
+          target.getChatScope()
+        ) ||
+        !target.submitComposer(submit.steer)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleSubmitKey, true);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleSubmitKey, true);
     };
   }, [enabled, targetRef]);
 }
