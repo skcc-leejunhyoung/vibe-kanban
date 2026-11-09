@@ -21,6 +21,7 @@ import {
   selectGithubImportCandidates,
   markGithubIssueSeen,
   shouldReconcileGithubIssues,
+  runSingleFlight,
 } from "./github-issue-sync.mjs";
 
 const source = await readFile(new URL("./server.mjs", import.meta.url), "utf8");
@@ -59,6 +60,7 @@ const names = [
   "runRule",
   "createRuleContext",
   "pollGithub",
+  "startGithubIssueSync",
   "pollGithubPrComments",
   "pollGithubRepositoryPrComments",
   "githubCommentPrNumber",
@@ -140,6 +142,8 @@ function harness(options = {}) {
     markGithubIssueSeen,
     shouldReconcileGithubIssues,
     githubIssueSyncLastRunAt: new Map(),
+    githubIssueSyncInFlight: new Map(),
+    runSingleFlight,
     RETRY_MAX_ATTEMPTS: 5,
     RULE_TIMEOUT_MS: 10000,
     state,
@@ -945,4 +949,40 @@ test("a manual poll joining an interval run that skipped the issue sync polls ag
   assert.equal((await manual).linksSynced, 3);
   assert.equal((await second).linksSynced, 3);
   assert.deepEqual(runs, [false, true]);
+});
+
+test("an issue-sync round reads the board once and leaves the sync running beside the poll", async () => {
+  const h = harness();
+  h.state.rules.push({
+    id: "sync",
+    enabled: true,
+    kind: "github_issue_sync",
+    config: { githubConnectorId: h.github.id, githubProjectId: "project-1" },
+  });
+  h.context.pollGithubReviews = async () => ({ processed: 0 });
+  h.context.runRules = async () => {};
+  h.context.githubGraphql = async () => ({});
+  let boardReads = 0;
+  h.context.loadGithubProjectIssues = async () => {
+    boardReads += 1;
+    return [];
+  };
+  let syncs = 0;
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  h.context.reconcileGithubIssueRules = () => {
+    syncs += 1;
+    return gate;
+  };
+  // Due round: reads the board and starts the sync without waiting for it.
+  assert.equal((await h.context.pollGithub(h.github)).linksSynced, null);
+  // Within the interval: neither the board nor the sync.
+  await h.context.pollGithub(h.github);
+  assert.deepEqual([boardReads, syncs], [1, 1]);
+  // A manual poll joins the running sync and waits for its result.
+  const manual = h.context.pollGithub(h.github, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  release({ synced: 4, recovered: 0, backfilled: 0 });
+  assert.equal((await manual).linksSynced, 4);
+  assert.deepEqual([boardReads, syncs], [2, 1]);
 });

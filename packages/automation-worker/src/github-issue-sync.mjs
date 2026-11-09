@@ -160,10 +160,11 @@ export function githubIssuePollSince(config, field) {
   return String(cursorTs);
 }
 
-// Syncing every linked issue takes minutes (one GitHub round trip per link),
-// and a poll runs it at the end, so running it every poll stretched the 60s
-// review-request poll to 4-5 minutes. Run it at most once per interval; the
-// first poll after a restart (no last run) and manual polls always run it.
+// An issue-sync round reads the Project board (over a minute on large boards)
+// and syncs every linked issue (minutes, one GitHub round trip per link). Doing
+// that every poll stretched the 60s review-request poll to 4-5 minutes, so run
+// a round at most once per interval; the first poll after a restart (no last
+// run) and manual polls always run one.
 export const GITHUB_ISSUE_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 
 export function shouldReconcileGithubIssues({ lastRunAt, now, manual }) {

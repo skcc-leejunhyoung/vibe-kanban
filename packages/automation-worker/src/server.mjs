@@ -297,9 +297,12 @@ const vibeTokenInflight = new Map();
 // One in-flight poll per connector. This is used during bootstrap's initial
 // scheduleAll() call, so it must be initialized before bootstrap starts.
 const pollInFlight = new Map();
-// connectorId -> start time of the last completed issue sync (see
+// connectorId -> start time of the last issue-sync round (see
 // shouldReconcileGithubIssues). In memory only, so a restart syncs at once.
 const githubIssueSyncLastRunAt = new Map();
+// connectorId -> running issue sync, which runs beside the polls (see
+// startGithubIssueSync).
+const githubIssueSyncInFlight = new Map();
 // Retry-queue item ids currently being executed, so an overlapping manual
 // trigger and poll-driven pass never run the same item (and its side effect)
 // twice.
@@ -1449,8 +1452,8 @@ function pollConnector(id, manual) {
     // Interval ticks skip a busy connector; a manual poll awaits the live run
     // so the API still returns a real result rather than a duplicate run.
     if (!manual) return Promise.resolve({ ok: true, skipped: 'in-flight' });
-    // A joined interval GitHub run may have skipped the throttled issue sync
-    // (linksSynced null); a manual poll always syncs, so poll again after it.
+    // A joined interval GitHub run never waits for the issue sync (linksSynced
+    // null); a manual poll always syncs, so poll again after it.
     return existing.then((result) =>
       result?.linksSynced === null ? pollConnector(id, true) : result
     );
@@ -2269,8 +2272,15 @@ async function pollGithub(connector, manual) {
   let latest = config.cursorTs || '';
 
   const repository = `${config.owner}/${config.repo}`;
+  // Paging a whole Project board takes over a minute on large boards, so read
+  // it only on issue-sync rounds; REST still lists assigned issues every poll.
+  const issueSyncDue = shouldReconcileGithubIssues({
+    lastRunAt: githubIssueSyncLastRunAt.get(connector.id),
+    now: Date.now(),
+    manual,
+  });
   const projectSources = new Map();
-  for (const rule of state.rules) {
+  for (const rule of issueSyncDue ? state.rules : []) {
     if (
       rule.enabled &&
       rule.kind === 'github_issue_sync' &&
@@ -2411,24 +2421,20 @@ async function pollGithub(connector, manual) {
     }
   }
 
-  let syncResult = null;
-  const syncStartedAt = Date.now();
-  if (
-    shouldReconcileGithubIssues({
-      lastRunAt: githubIssueSyncLastRunAt.get(connector.id),
-      now: syncStartedAt,
-      manual,
-    })
-  ) {
-    syncResult = await reconcileGithubIssueRules(connector);
-    githubIssueSyncLastRunAt.set(connector.id, syncStartedAt);
-    await log('info', 'github issue links synced', {
-      connectorId: connector.id,
-      linksSynced: syncResult.synced,
-      linksRecovered: syncResult.recovered,
-      linksBackfilled: syncResult.backfilled,
-      durationMs: Date.now() - syncStartedAt,
-    });
+  // The sync takes minutes; an interval poll leaves it running so the next
+  // review poll is not stuck behind it. A manual poll waits for the result
+  // below, after this poll's seen sets are saved, so a failed sync cannot
+  // cause the issues imported above to be imported again.
+  let sync = null;
+  if (issueSyncDue) {
+    githubIssueSyncLastRunAt.set(connector.id, Date.now());
+    sync = startGithubIssueSync(connector);
+    sync.catch((error) =>
+      log('error', 'github issue links sync failed', {
+        connectorId: connector.id,
+        error: errorMessage(error),
+      })
+    );
   }
   connector.config.cursorTs = latest;
   connector.config.seenIds = Array.from(seen).slice(-1000);
@@ -2449,6 +2455,7 @@ async function pollGithub(connector, manual) {
       processed,
     });
   }
+  const syncResult = manual && sync ? await sync : null;
   return {
     ok: true,
     processed: processed + reviewResult.processed,
@@ -2458,7 +2465,7 @@ async function pollGithub(connector, manual) {
     reviewReconciliation: config.reviewPrReconciliation || null,
     commentsProcessed: commentResult.processed,
     commentsSeeded: commentResult.seeded,
-    // null when this poll skipped the throttled issue sync.
+    // null unless this was a manual poll, which waits for the issue sync.
     linksSynced: syncResult?.synced ?? null,
     linksRecovered: syncResult?.recovered ?? null,
     linksBackfilled: syncResult?.backfilled ?? null,
@@ -3340,6 +3347,26 @@ async function backfillGithubIssueMapLinks({
   });
   if (skipStateChanged) await persistState();
   return result.linked;
+}
+
+// One issue sync per connector at a time; a caller arriving mid-run joins it.
+// It runs outside the connector's poll so review polling keeps its interval.
+// It never touches the poll's seen sets or cursors, and link creation is
+// single-flighted per issue (linkGithubIssue), so overlapping a poll is safe.
+function startGithubIssueSync(connector) {
+  return runSingleFlight(githubIssueSyncInFlight, connector.id, async () => {
+    const startedAt = Date.now();
+    const result = await reconcileGithubIssueRules(connector);
+    await persistState();
+    await log('info', 'github issue links synced', {
+      connectorId: connector.id,
+      linksSynced: result.synced,
+      linksRecovered: result.recovered,
+      linksBackfilled: result.backfilled,
+      durationMs: Date.now() - startedAt,
+    });
+    return result;
+  });
 }
 
 async function reconcileGithubIssueRules(githubConnector) {
