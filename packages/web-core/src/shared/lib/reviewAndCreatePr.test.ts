@@ -1,18 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { QueryClient } from '@tanstack/react-query';
-import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
+import { PushErrorDialog } from '@/shared/dialogs/command-bar/PushErrorDialog';
 import type { ExecutorConfig } from 'shared/types';
 import {
   resumeReviewAndCreatePr,
   runReviewAndCreatePr,
 } from './reviewAndCreatePr';
 
-vi.mock('@vibe/ui/components/ErrorDialog', () => ({
-  ErrorDialog: { show: vi.fn() },
+vi.mock('@/shared/dialogs/command-bar/PushErrorDialog', () => ({
+  PushErrorDialog: { show: vi.fn() },
 }));
 
 vi.mock('@/shared/dialogs/command-bar/PullFirstDialog', () => ({
@@ -99,7 +99,7 @@ describe('runReviewAndCreatePr', () => {
       })
     ).resolves.toBe(false);
 
-    expect(ErrorDialog.show).toHaveBeenCalledWith({
+    expect(PushErrorDialog.show).toHaveBeenCalledWith({
       title: 'Review and create PR from ai failed',
       message: 'Review could not be started',
     });
@@ -161,7 +161,7 @@ describe('runReviewAndCreatePr', () => {
       'feature',
       undefined
     );
-    expect(ErrorDialog.show).not.toHaveBeenCalled();
+    expect(PushErrorDialog.show).not.toHaveBeenCalled();
   });
 
   it('does not create an AI PR when the unpushed-work-branch warning is cancelled', async () => {
@@ -290,7 +290,7 @@ describe('runReviewAndCreatePr', () => {
 
     expect(workspacesApi.pushTargetBranch).toHaveBeenCalledTimes(2);
     expect(startCreateFromAi).toHaveBeenCalledOnce();
-    expect(ErrorDialog.show).not.toHaveBeenCalled();
+    expect(PushErrorDialog.show).not.toHaveBeenCalled();
   });
 
   it('clears a blocked review so reopening the workspace does not retry it', async () => {

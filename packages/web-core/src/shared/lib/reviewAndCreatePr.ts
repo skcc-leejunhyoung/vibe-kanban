@@ -1,8 +1,8 @@
 import type { QueryClient } from '@tanstack/react-query';
-import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
+import { PushErrorDialog } from '@/shared/dialogs/command-bar/PushErrorDialog';
 import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 import type { ExecutorConfig, Session } from 'shared/types';
@@ -233,7 +233,7 @@ export async function runReviewAndCreatePr(
     if (error instanceof VibeReviewBlockedError) {
       clearPending(options.workspaceId, options.hostId);
     }
-    void ErrorDialog.show({
+    void PushErrorDialog.show({
       title: 'Review and create PR from ai failed',
       message:
         error instanceof Error
@@ -271,7 +271,7 @@ export async function resumeReviewAndCreatePr(
     if (error instanceof VibeReviewBlockedError) {
       clearPending(workspaceId, hostId);
     }
-    void ErrorDialog.show({
+    void PushErrorDialog.show({
       title: 'Review and create PR from ai failed',
       message:
         error instanceof Error

@@ -38,7 +38,7 @@ const ErrorDialogImpl = NiceModal.create<ErrorDialogProps>((props) => {
             <WarningIcon className="h-6 w-6 text-destructive" />
             <DialogTitle>{title}</DialogTitle>
           </div>
-          <DialogDescription className="text-left pt-2">
+          <DialogDescription className="text-left pt-2 max-h-[50vh] overflow-auto whitespace-pre-wrap break-words">
             {message}
           </DialogDescription>
         </DialogHeader>
