@@ -128,6 +128,22 @@ export function ImeDeleteGuardPlugin() {
         isNativeComposing = false;
       };
 
+      // WebKit dispatches a legacy `textInput` event right before the
+      // `beforeinput` of every text insertion. iOS dictation's final result
+      // (inserted via `insertText:alternatives:`, a DictationCommand) reaches
+      // `beforeinput` with an empty `inputType` and no `data`, so this is the
+      // only place the dictated text is visible to the page.
+      let lastTextInput: { data: string; timeStamp: number } | null = null;
+
+      const handleTextInputCapture = (event: Event) => {
+        const data = (event as Event & { data?: unknown }).data;
+        logImeDebug('textInput', { data });
+        lastTextInput =
+          typeof data === 'string' && data
+            ? { data, timeStamp: event.timeStamp }
+            : null;
+      };
+
       const handleKeyDownCapture = (event: KeyboardEvent) => {
         logImeDebug('keydown', {
           editorIsComposing: editor.isComposing(),
@@ -179,14 +195,16 @@ export function ImeDeleteGuardPlugin() {
        * Returns true when it took over handling so the caller can prevent the
        * default action and stop Lexical.
        */
-      const applyReplacementText = (event: InputEvent): boolean => {
+      const applyReplacementText = (
+        event: InputEvent,
+        replacement = event.dataTransfer?.getData('text/plain') ||
+          event.data ||
+          ''
+      ): boolean => {
         const targetRange = event.getTargetRanges?.()[0];
         if (!targetRange) {
           return false;
         }
-
-        const replacement =
-          event.dataTransfer?.getData('text/plain') || event.data || '';
 
         let applied = false;
         editor.update(() => {
@@ -195,7 +213,11 @@ export function ImeDeleteGuardPlugin() {
             return;
           }
           selection.applyDOMRange(targetRange);
-          selection.insertText(replacement);
+          if (/[\n\t]/.test(replacement)) {
+            selection.insertRawText(replacement);
+          } else {
+            selection.insertText(replacement);
+          }
           applied = true;
         });
         return applied;
@@ -209,6 +231,12 @@ export function ImeDeleteGuardPlugin() {
           isComposing: event.isComposing,
           isNativeComposing,
         });
+
+        // Every beforeinput consumes the `textInput` payload, so a stale one
+        // never leaks into a later unrelated edit; the pair arrives within
+        // the same task.
+        const textInput = lastTextInput;
+        lastTextInput = null;
 
         if (
           IS_MAC_SAFARI &&
@@ -237,6 +265,27 @@ export function ImeDeleteGuardPlugin() {
           // words vanished when iOS dictation finalized (facebook/lexical#6940).
           if (applyReplacementText(event)) {
             logImeDebug('beforeinput:apply-target-range', { data: event.data });
+            event.preventDefault();
+            stopLexicalEvent(event);
+          }
+          return;
+        }
+
+        if (
+          event.inputType === '' &&
+          !event.data &&
+          textInput &&
+          event.timeStamp - textInput.timeStamp < 100 &&
+          !isComposing(event)
+        ) {
+          // iOS dictation's final result: WebKit maps EditAction::Dictation to
+          // an empty inputType with no data, which Lexical cancels and ignores,
+          // so every word that arrived this way vanished when dictation ended.
+          // Insert the text from the preceding `textInput` event ourselves.
+          if (applyReplacementText(event, textInput.data)) {
+            logImeDebug('beforeinput:apply-dictation', {
+              data: textInput.data,
+            });
             event.preventDefault();
             stopLexicalEvent(event);
           }
@@ -280,6 +329,9 @@ export function ImeDeleteGuardPlugin() {
         handleCompositionUpdate
       );
       rootElement.addEventListener('compositionend', handleCompositionEnd);
+      rootElement.addEventListener('textInput', handleTextInputCapture, {
+        capture: true,
+      });
       rootElement.addEventListener('blur', handleBlurCapture, {
         capture: true,
       });
@@ -303,6 +355,9 @@ export function ImeDeleteGuardPlugin() {
           handleCompositionUpdate
         );
         rootElement.removeEventListener('compositionend', handleCompositionEnd);
+        rootElement.removeEventListener('textInput', handleTextInputCapture, {
+          capture: true,
+        });
         rootElement.removeEventListener('blur', handleBlurCapture, {
           capture: true,
         });
