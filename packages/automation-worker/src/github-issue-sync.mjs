@@ -167,8 +167,12 @@ export function githubIssuePollSince(config, field) {
 // run) and manual polls always run one.
 export const GITHUB_ISSUE_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 
-export function shouldReconcileGithubIssues({ lastRunAt, now, manual }) {
-  if (manual || lastRunAt == null) return true;
+export function shouldReconcileGithubIssues({ lastRunAt, now, manual, running }) {
+  if (manual) return true;
+  // A round while the previous sync still runs would only re-read the board
+  // and push the next fresh sync back, so wait for that sync to finish.
+  if (running) return false;
+  if (lastRunAt == null) return true;
   return now - lastRunAt >= GITHUB_ISSUE_SYNC_INTERVAL_MS;
 }
 

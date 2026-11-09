@@ -2286,6 +2286,7 @@ async function pollGithub(connector, manual) {
       lastRunAt: githubIssueSyncLastRunAt.get(connector.id),
       now: issueSyncCheckedAt,
       manual,
+      running: githubIssueSyncInFlight.has(connector.id),
     });
   const projectSources = new Map();
   for (const rule of issueSyncDue ? state.rules : []) {
@@ -3359,12 +3360,18 @@ async function backfillGithubIssueMapLinks({
   return result.linked;
 }
 
-// One issue sync per connector at a time; a caller arriving mid-run joins it.
-// It runs outside the connector's poll so review polling keeps its interval.
-// It never touches the poll's seen sets or cursors, and link creation is
-// single-flighted per issue (linkGithubIssue), so overlapping a poll is safe.
+// One issue sync per connector at a time. It runs outside the connector's
+// poll so review polling keeps its interval. It never touches the poll's seen
+// sets or cursors, and link creation is single-flighted per issue
+// (linkGithubIssue), so overlapping a poll is safe. A caller arriving while a
+// sync runs (a manual or seeding poll) queues a fresh one after it: the running
+// sync read its links before that caller's changes.
 function startGithubIssueSync(connector) {
-  return runSingleFlight(githubIssueSyncInFlight, connector.id, async () => {
+  const running = githubIssueSyncInFlight.get(connector.id);
+  const start = () =>
+    runSingleFlight(githubIssueSyncInFlight, connector.id, syncTask);
+  return running ? running.then(start, start) : start();
+  async function syncTask() {
     const startedAt = Date.now();
     const result = await reconcileGithubIssueRules(connector);
     await persistState();
@@ -3376,7 +3383,7 @@ function startGithubIssueSync(connector) {
       durationMs: Date.now() - startedAt,
     });
     return result;
-  });
+  }
 }
 
 async function reconcileGithubIssueRules(githubConnector) {

@@ -951,7 +951,7 @@ test("a manual poll joining an interval run that skipped the issue sync polls ag
   assert.deepEqual(runs, [false, true]);
 });
 
-test("an issue-sync round reads the board once and leaves the sync running beside the poll", async () => {
+test("issue-sync rounds read the board, leave the sync running, and a manual poll gets a fresh sync", async () => {
   const h = harness();
   h.state.rules.push({
     id: "sync",
@@ -967,24 +967,30 @@ test("an issue-sync round reads the board once and leaves the sync running besid
     boardReads += 1;
     return [];
   };
+  const releases = [];
+  const gates = [0, 1].map(
+    (i) => new Promise((resolve) => (releases[i] = resolve)),
+  );
   let syncs = 0;
-  let release;
-  const gate = new Promise((resolve) => (release = resolve));
-  h.context.reconcileGithubIssueRules = () => {
-    syncs += 1;
-    return gate;
-  };
+  h.context.reconcileGithubIssueRules = () => gates[syncs++];
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
   // Due round: reads the board and starts the sync without waiting for it.
   assert.equal((await h.context.pollGithub(h.github)).linksSynced, null);
   // Within the interval: neither the board nor the sync.
   await h.context.pollGithub(h.github);
+  // Past the interval while that sync still runs: still no new round.
+  h.context.githubIssueSyncLastRunAt.set(h.github.id, Date.now() - 600_000);
+  await h.context.pollGithub(h.github);
   assert.deepEqual([boardReads, syncs], [1, 1]);
-  // A manual poll joins the running sync and waits for its result.
+  // A manual poll waits for the running sync, then runs a fresh one.
   const manual = h.context.pollGithub(h.github, true);
-  await new Promise((resolve) => setImmediate(resolve));
-  release({ synced: 4, recovered: 0, backfilled: 0 });
-  assert.equal((await manual).linksSynced, 4);
+  await settle();
   assert.deepEqual([boardReads, syncs], [2, 1]);
+  releases[0]({ synced: 4, recovered: 0, backfilled: 0 });
+  await settle();
+  assert.equal(syncs, 2);
+  releases[1]({ synced: 5, recovered: 0, backfilled: 0 });
+  assert.equal((await manual).linksSynced, 5);
 });
 
 test("a seeding poll reads the board even within the issue-sync interval", async () => {

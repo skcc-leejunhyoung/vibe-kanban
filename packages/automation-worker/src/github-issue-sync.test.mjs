@@ -855,6 +855,9 @@ test('issue sync runs after a restart, on manual polls, and once per interval', 
   assert.equal(shouldReconcileGithubIssues({ lastRunAt: recent, now }), false);
   assert.equal(shouldReconcileGithubIssues({ lastRunAt: recent, now, manual: true }), true);
   assert.equal(shouldReconcileGithubIssues({ lastRunAt: due, now }), true);
+  // While the previous sync still runs only a manual poll starts a round.
+  assert.equal(shouldReconcileGithubIssues({ lastRunAt: due, now, running: true }), false);
+  assert.equal(shouldReconcileGithubIssues({ lastRunAt: due, now, manual: true, running: true }), true);
 });
 
 test('comment marker round-trips and survives edited bodies', () => {
