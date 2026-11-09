@@ -388,6 +388,41 @@ describe('runReviewAndCreatePr', () => {
     expect(PushErrorDialog.show).toHaveBeenCalledOnce();
   });
 
+  it('settles a caller that joins a failing run in flight instead of rejecting', async () => {
+    seedPendingReview();
+    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
+      phase: 'done',
+    } as never);
+    vi.mocked(workspacesApi.get).mockResolvedValue({
+      branch: 'vk/work-branch',
+    } as never);
+    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
+      { id: 'repo-1', name: 'repo-1', target_branch: 'feature' },
+    ] as never);
+    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
+      { repo_id: 'repo-1', is_target_remote: false, merges: [] },
+    ] as never);
+    vi.mocked(workspacesApi.pushTargetBranch).mockResolvedValue({
+      success: false,
+      message: 'pre-push hook rejected the push',
+    } as never);
+
+    const resumed = resumeReviewAndCreatePr('workspace-1', null);
+    const clicked = runReviewAndCreatePr({
+      workspaceId: 'workspace-1',
+      sessionId: 'session-1',
+      queryClient,
+    });
+
+    await expect(Promise.all([resumed, clicked])).resolves.toEqual([
+      false,
+      false,
+    ]);
+    expect(sessionsApi.vibeReview).not.toHaveBeenCalled();
+    expect(workspacesApi.pushTargetBranch).toHaveBeenCalledOnce();
+    expect(PushErrorDialog.show).toHaveBeenCalledOnce();
+  });
+
   it('keeps the workflow when waiting for the review fails so reopening resumes it', async () => {
     seedPendingReview();
     vi.mocked(sessionsApi.getVibeReviewStatus).mockRejectedValue(

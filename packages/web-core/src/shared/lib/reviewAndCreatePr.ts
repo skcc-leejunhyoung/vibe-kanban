@@ -231,53 +231,31 @@ async function pushAndCreatePr(
   return true;
 }
 
-export async function runReviewAndCreatePr(
-  options: ReviewAndCreatePrOptions
+// Every caller of a workflow, including one that joins a run already in
+// flight, gets the settled result: `false` on failure, with the dialog shown
+// once. Sharing the raw run instead left later callers with an unhandled
+// rejection.
+function trackWorkflow(
+  workspaceId: string,
+  hostId: string | null | undefined,
+  start: () => Promise<boolean>
 ): Promise<boolean> {
-  const key = workflowKey(options.workspaceId, options.hostId);
+  const key = workflowKey(workspaceId, hostId);
   const existing = inFlight.get(key);
   if (existing) return existing;
 
-  const run = executeReviewAndCreatePr(options);
+  const run = settleWorkflow(start(), workspaceId, hostId).finally(() =>
+    inFlight.delete(key)
+  );
   inFlight.set(key, run);
-  try {
-    const completed = await run;
-    clearPending(options.workspaceId, options.hostId);
-    return completed;
-  } catch (error) {
-    if (error instanceof VibeReviewBlockedError) {
-      clearPending(options.workspaceId, options.hostId);
-    }
-    void PushErrorDialog.show({
-      title: 'Review and create PR from ai failed',
-      message:
-        error instanceof Error
-          ? error.message
-          : 'The review and pull request workflow failed.',
-    });
-    return false;
-  } finally {
-    inFlight.delete(key);
-  }
+  return run;
 }
 
-export async function resumeReviewAndCreatePr(
+async function settleWorkflow(
+  run: Promise<boolean>,
   workspaceId: string,
   hostId: string | null | undefined
 ): Promise<boolean> {
-  const key = workflowKey(workspaceId, hostId);
-  const pending = readPending()[key];
-  if (!pending) return false;
-
-  const existing = inFlight.get(key);
-  if (existing) return existing;
-
-  const run = continueReviewAndCreatePr(
-    workspaceId,
-    pending.reviewSessionId,
-    hostId
-  );
-  inFlight.set(key, run);
   try {
     const completed = await run;
     clearPending(workspaceId, hostId);
@@ -294,7 +272,25 @@ export async function resumeReviewAndCreatePr(
           : 'The review and pull request workflow failed.',
     });
     return false;
-  } finally {
-    inFlight.delete(key);
   }
+}
+
+export function runReviewAndCreatePr(
+  options: ReviewAndCreatePrOptions
+): Promise<boolean> {
+  return trackWorkflow(options.workspaceId, options.hostId, () =>
+    executeReviewAndCreatePr(options)
+  );
+}
+
+export async function resumeReviewAndCreatePr(
+  workspaceId: string,
+  hostId: string | null | undefined
+): Promise<boolean> {
+  const pending = readPending()[workflowKey(workspaceId, hostId)];
+  if (!pending) return false;
+
+  return trackWorkflow(workspaceId, hostId, () =>
+    continueReviewAndCreatePr(workspaceId, pending.reviewSessionId, hostId)
+  );
 }
