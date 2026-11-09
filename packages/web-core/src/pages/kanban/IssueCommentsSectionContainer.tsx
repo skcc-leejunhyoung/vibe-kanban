@@ -11,6 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { IssueProvider } from '@/integrations/remote/IssueProvider';
 import { useIssueContext } from '@/shared/hooks/useIssueContext';
 import { useScratch } from '@/shared/hooks/useScratch';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
 import { useOrgContext } from '@/shared/hooks/useOrgContext';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
@@ -36,6 +37,7 @@ import WYSIWYGEditor, {
 } from '@/shared/components/WYSIWYGEditor';
 import { MemberRole } from 'shared/remote-types';
 import { ScratchType } from 'shared/types';
+import { getIssueCommentDraftId } from './issueCommentDraft';
 
 interface IssueCommentsSectionContainerProps {
   issueId: string;
@@ -78,7 +80,8 @@ function IssueCommentsSectionContent({
 
   // UI state for comment input
   const [commentInput, setCommentInput] = useState('');
-  const commentDraftId = `issue-comment:${issueContext.issueId}`;
+  const runtime = useAppRuntime();
+  const commentDraftId = getIssueCommentDraftId(issueContext.issueId, runtime);
   const {
     scratch: commentDraftScratch,
     updateScratch: updateCommentDraft,
