@@ -84,14 +84,17 @@ export function withGithubConditionalGet(fetchImpl, { maxEntries = 1000 } = {}) 
         ? { ...options, headers: { ...headers, 'if-none-match': cached.etag } }
         : options
     );
-    cache.delete(key);
+    // Errors (rate limit, 5xx) keep the old entry: a later 304 against it is
+    // still correct, and dropping it would make the next read a paid one.
     if (response.status === 304 && cached) {
+      cache.delete(key);
       cache.set(key, cached);
       return new Response(cached.body, { status: 200 });
     }
     const etag = response.status === 200 && response.headers?.get('etag');
     if (!etag) return response;
     const body = await response.text();
+    cache.delete(key);
     cache.set(key, { etag, body });
     if (cache.size > maxEntries) cache.delete(cache.keys().next().value);
     return new Response(body, { status: 200 });

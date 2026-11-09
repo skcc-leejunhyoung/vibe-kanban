@@ -84,6 +84,8 @@ test('GitHub GETs replay the cached body on 304 and leave other requests alone',
   const replies = [
     new Response('{"n":1}', { status: 200, headers: { etag: 'W/"a"' } }),
     new Response(null, { status: 304 }),
+    new Response('rate limited', { status: 403 }),
+    new Response(null, { status: 304 }),
     new Response('{"n":2}', { status: 200, headers: { etag: 'W/"b"' } }),
   ];
   const get = withGithubConditionalGet(async (url, options) => {
@@ -96,8 +98,11 @@ test('GitHub GETs replay the cached body on 304 and leave other requests alone',
   const unchanged = await get(url, { headers });
   assert.equal(unchanged.status, 200);
   assert.deepEqual(await unchanged.json(), { n: 1 });
+  // A failed read is passed through and keeps the cached ETag.
+  assert.equal((await get(url, { headers })).status, 403);
+  assert.deepEqual(await (await get(url, { headers })).json(), { n: 1 });
   assert.deepEqual(await (await get(url, { headers })).json(), { n: 2 });
-  assert.deepEqual(sent, [null, 'W/"a"', 'W/"a"']);
+  assert.deepEqual(sent, [null, 'W/"a"', 'W/"a"', 'W/"a"', 'W/"a"']);
 
   const reply = { ok: true };
   const plain = withGithubConditionalGet(async (_, options) => {
