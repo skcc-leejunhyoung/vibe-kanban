@@ -330,6 +330,8 @@ pub trait ContainerService {
 
     async fn create(&self, workspace: &Workspace) -> Result<ContainerRef, ContainerError>;
 
+    /// Server shutdown: kill every running process, keeping session queues
+    /// for the next start (see `QueuedMessageService::begin_shutdown`).
     async fn kill_all_running_processes(&self) -> Result<(), ContainerError>;
 
     async fn delete(&self, workspace: &Workspace) -> Result<(), ContainerError>;

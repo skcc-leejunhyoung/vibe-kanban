@@ -4592,6 +4592,8 @@ impl ContainerService for LocalContainerService {
 
     async fn kill_all_running_processes(&self) -> Result<(), ContainerError> {
         tracing::info!("Killing all running processes");
+        // Before any kill: its exit handler must find the queue kept.
+        self.queued_message_service.begin_shutdown();
         let running_processes = ExecutionProcess::find_running(&self.db.pool).await?;
 
         tracing::info!(
@@ -7500,6 +7502,129 @@ done
             assert!(!container.queued_message_service.has_queued(session.id));
             assert!(container.queued_message_service.has_queued(sibling.id));
             assert!(!container.has_live_child(record.id).await);
+        }
+    }
+
+    /// A server shutdown kills running turns, but that isn't the user's stop:
+    /// the queue behind each stays in `session_queued_messages`, no start
+    /// touches it, and the next start restores it in order with its executor
+    /// settings, front held. Covers a cleanup whose exit handler finalizes the
+    /// kill, a parallel setup whose exit handler drains the queue instead, and
+    /// a turn whose child never registered.
+    #[tokio::test]
+    async fn shutdown_kill_keeps_the_queue_for_the_next_start() {
+        use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+
+        let (mut container, _, mut workspace) = queue_test_container().await;
+        let pool = container.db.pool.clone();
+        container.queued_message_service = QueuedMessageService::load(pool.clone()).await;
+        add_test_repo(&container, &workspace).await;
+        let dir = tempfile::tempdir().unwrap();
+        workspace.container_ref = Some(dir.path().to_string_lossy().into_owned());
+        let script = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "sleep 60".into(),
+                language: ScriptRequestLanguage::Bash,
+                // Avoid background QoS starving the test on a loaded host.
+                context: ScriptContext::ToolInstallScript,
+                working_dir: None,
+            }),
+            None,
+        );
+        // Codex fails to start in these Claude Code sessions, so a start
+        // attempt would leave its error on the front message.
+        let mut tuned = follow_up("second", BaseCodingAgent::Codex);
+        tuned.executor_config.model_id = Some("gpt-test".into());
+        tuned.executor_config.reasoning_id = Some("high".into());
+
+        let mut turns = Vec::new();
+        let mut monitors = Vec::new();
+        let mut _logs = Vec::new();
+        for (reason, spawned) in [
+            (ExecutionProcessRunReason::CleanupScript, true),
+            (ExecutionProcessRunReason::SetupScript, true),
+            (ExecutionProcessRunReason::SetupScript, false),
+        ] {
+            let session = Session::create(
+                &pool,
+                &CreateSession {
+                    executor: Some(BaseCodingAgent::ClaudeCode.to_string()),
+                    variant: None,
+                    name: None,
+                },
+                Uuid::new_v4(),
+                workspace.id,
+            )
+            .await
+            .unwrap();
+            _logs.push(SessionLogDir(session.id));
+            let record = container
+                .create_execution_record(&workspace, &session, &script, &reason)
+                .await
+                .unwrap();
+            if spawned {
+                container
+                    .finish_execution_spawn(&workspace, &session, &record, &script)
+                    .await
+                    .unwrap();
+                monitors.push(record.id);
+            }
+            let mut sent = Vec::new();
+            for data in [follow_up("first", BaseCodingAgent::Codex), tuned.clone()] {
+                sent.push(
+                    container
+                        .queued_message_service
+                        .enqueue_durable(session.id, data)
+                        .await
+                        .unwrap(),
+                );
+            }
+            turns.push((session.id, sent));
+        }
+
+        container.kill_all_running_processes().await.unwrap();
+        for id in monitors {
+            let monitor = container.take_exit_monitor_handle(&id).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(60), monitor)
+                .await
+                .expect("killed script did not finalize")
+                .unwrap();
+        }
+
+        let mut after = Vec::new();
+        for (session, _) in &turns {
+            let statuses: Vec<_> = ExecutionProcess::find_by_session_id(&pool, *session, false)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|process| process.status)
+                .collect();
+            after.push((statuses, queue_state(&container, *session)));
+            // Anything still pending reaches the DB before it's read back.
+            container
+                .queued_message_service
+                .flush(*session)
+                .await
+                .unwrap();
+        }
+        let kept = (
+            vec![ExecutionProcessStatus::Killed],
+            (vec!["first".to_string(), "second".to_string()], false),
+        );
+        assert_eq!(after, vec![kept.clone(), kept.clone(), kept]);
+
+        let restored = QueuedMessageService::load(pool).await;
+        for (session, sent) in turns {
+            let back = restored.get_queued(session);
+            assert_eq!(
+                back.iter()
+                    .map(|m| (m.id, &m.data.executor_config))
+                    .collect::<Vec<_>>(),
+                sent.iter()
+                    .map(|m| (m.id, &m.data.executor_config))
+                    .collect::<Vec<_>>(),
+            );
+            assert!(back[0].start_error.is_some(), "a restored queue waits");
         }
     }
 

@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use chrono::{DateTime, Utc};
@@ -69,6 +72,8 @@ pub struct QueuedMessageService {
     /// session id -> live [`DrainHold`]s: processes that will drain (or
     /// discard) the queue themselves when they finish.
     drain_holds: Arc<DashMap<Uuid, usize>>,
+    /// Set by [`Self::begin_shutdown`].
+    shutting_down: Arc<AtomicBool>,
     /// Sessions whose queue changed, for the DB writer. `None` keeps the
     /// queue in memory only.
     persist: Option<mpsc::UnboundedSender<QueueWrite>>,
@@ -106,6 +111,7 @@ impl QueuedMessageService {
             notification_handoff_lock: Arc::new(Mutex::new(())),
             steering: Arc::new(DashMap::new()),
             drain_holds: Arc::new(DashMap::new()),
+            shutting_down: Arc::new(AtomicBool::new(false)),
             persist: None,
         }
     }
@@ -156,6 +162,17 @@ impl QueuedMessageService {
         }
         tokio::spawn(write_queues(svc.queue.clone(), pool, rx));
         svc
+    }
+
+    /// The server is stopping. Its kills aren't the user's stop: every queue
+    /// stays as it is for the next start (see [`Self::load`]), and nothing
+    /// is taken from one to start a turn the shutdown would only kill.
+    pub fn begin_shutdown(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
     }
 
     /// Tell the DB writer `session_id`'s queue changed. Call after the change.
@@ -382,7 +399,9 @@ impl QueuedMessageService {
     /// Pop the front message unless it failed to start (see
     /// [`Self::restore_failed`]); that one waits for an explicit retry.
     fn pop_ready(&self, q: &mut VecDeque<QueuedMessage>) -> Option<QueuedMessage> {
-        if q.front()?.start_error.is_some() || self.pending_persistence.contains_key(&q.front()?.id)
+        if self.is_shutting_down()
+            || q.front()?.start_error.is_some()
+            || self.pending_persistence.contains_key(&q.front()?.id)
         {
             return None;
         }
@@ -415,6 +434,9 @@ impl QueuedMessageService {
         session_id: Uuid,
         message_id: Uuid,
     ) -> Option<QueuedMessage> {
+        if self.is_shutting_down() {
+            return None;
+        }
         let msg = self.queue.get_mut(&session_id).and_then(|mut q| {
             match q.iter().position(|m| m.id == message_id) {
                 Some(pos) if self.pending_persistence.contains_key(&q[pos].id) => None,
@@ -539,11 +561,15 @@ impl QueuedMessageService {
     /// the ones it would have run — and keep those sent after it ended (the
     /// follow-up route queues a send while the turn finishes), which the
     /// turn's drain then starts. `None` (end unknown) removes them all.
+    /// A turn the shutdown killed discards nothing.
     pub async fn discard_queued_by(
         &self,
         session_id: Uuid,
         ended_at: Option<DateTime<Utc>>,
     ) -> anyhow::Result<Vec<QueuedMessage>> {
+        if self.is_shutting_down() {
+            return Ok(Vec::new());
+        }
         let _hold = self.hold_drain(session_id);
         let Some(ended_at) = ended_at else {
             return self.clear_queue(session_id).await;
@@ -655,6 +681,7 @@ impl QueuedMessageService {
             })
         }) && !self.is_steering(session_id)
             && !self.is_drain_held(session_id)
+            && !self.is_shutting_down()
     }
 
     pub(super) fn new_message(session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
