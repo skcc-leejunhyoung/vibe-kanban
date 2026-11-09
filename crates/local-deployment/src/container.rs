@@ -7508,14 +7508,16 @@ done
     /// A server shutdown kills running turns, but that isn't the user's stop:
     /// the queue behind each stays in `session_queued_messages`, no start
     /// touches it, and the next start restores it in order with its executor
-    /// settings, front held. Covers a cleanup whose exit handler finalizes the
-    /// kill, a parallel setup whose exit handler drains the queue instead, and
-    /// a turn whose child never registered.
+    /// settings, front held. Covers every kill: a cleanup whose exit handler
+    /// finalizes it, a parallel setup whose exit handler drains the queue
+    /// instead, a coding turn whose child never registered and one whose
+    /// start is still pending.
     #[tokio::test]
     async fn shutdown_kill_keeps_the_queue_for_the_next_start() {
+        use db::models::pending_execution_start::PendingExecutionStart;
         use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
 
-        let (mut container, _, mut workspace) = queue_test_container().await;
+        let (mut container, base, mut workspace) = queue_test_container().await;
         let pool = container.db.pool.clone();
         container.queued_message_service = QueuedMessageService::load(pool.clone()).await;
         add_test_repo(&container, &workspace).await;
@@ -7531,6 +7533,11 @@ done
             }),
             None,
         );
+        let coding = finished_turn(&base, &workspace, ExecutionProcessStatus::Completed)
+            .execution_process
+            .executor_action()
+            .unwrap()
+            .clone();
         // Codex fails to start in these Claude Code sessions, so a start
         // attempt would leave its error on the front message.
         let mut tuned = follow_up("second", BaseCodingAgent::Codex);
@@ -7540,10 +7547,11 @@ done
         let mut turns = Vec::new();
         let mut monitors = Vec::new();
         let mut _logs = Vec::new();
-        for (reason, spawned) in [
-            (ExecutionProcessRunReason::CleanupScript, true),
-            (ExecutionProcessRunReason::SetupScript, true),
-            (ExecutionProcessRunReason::SetupScript, false),
+        for (reason, start) in [
+            (ExecutionProcessRunReason::CleanupScript, "spawned"),
+            (ExecutionProcessRunReason::SetupScript, "spawned"),
+            (ExecutionProcessRunReason::CodingAgent, "unstarted"),
+            (ExecutionProcessRunReason::CodingAgent, "pending"),
         ] {
             let session = Session::create(
                 &pool,
@@ -7558,16 +7566,31 @@ done
             .await
             .unwrap();
             _logs.push(SessionLogDir(session.id));
+            let action = if start == "spawned" { &script } else { &coding };
             let record = container
-                .create_execution_record(&workspace, &session, &script, &reason)
+                .create_execution_record(&workspace, &session, action, &reason)
                 .await
                 .unwrap();
-            if spawned {
-                container
-                    .finish_execution_spawn(&workspace, &session, &record, &script)
+            match start {
+                "spawned" => {
+                    container
+                        .finish_execution_spawn(&workspace, &session, &record, action)
+                        .await
+                        .unwrap();
+                    monitors.push(record.id);
+                }
+                "pending" => {
+                    PendingExecutionStart::create(
+                        &pool,
+                        record.id,
+                        workspace.id,
+                        session.id,
+                        Uuid::new_v4(),
+                    )
                     .await
                     .unwrap();
-                monitors.push(record.id);
+                }
+                _ => {}
             }
             let mut sent = Vec::new();
             for data in [follow_up("first", BaseCodingAgent::Codex), tuned.clone()] {
@@ -7611,7 +7634,7 @@ done
             vec![ExecutionProcessStatus::Killed],
             (vec!["first".to_string(), "second".to_string()], false),
         );
-        assert_eq!(after, vec![kept.clone(), kept.clone(), kept]);
+        assert_eq!(after, vec![kept; 4]);
 
         let restored = QueuedMessageService::load(pool).await;
         for (session, sent) in turns {
