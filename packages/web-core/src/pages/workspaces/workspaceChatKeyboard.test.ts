@@ -119,8 +119,11 @@ describe('shouldSubmitChatFromFocus', () => {
       matches: () => ['INPUT', 'TEXTAREA', 'SELECT'].includes(nodeName),
       closest: () => (inBanner ? {} : null),
     }) as unknown as Element;
-  const scopeOf = (...inside: Element[]): Element =>
-    ({ contains: (el: Element) => inside.includes(el) }) as unknown as Element;
+  const scopeOf = (inside: Element[], pane: Element | null = null): Element =>
+    ({
+      contains: (el: Element) => inside.includes(el),
+      closest: () => pane,
+    }) as unknown as Element;
 
   it('submits with nothing focused, even without a chat scope', () => {
     expect(shouldSubmitChatFromFocus(null, null)).toBe(true);
@@ -129,14 +132,21 @@ describe('shouldSubmitChatFromFocus', () => {
 
   it('submits from a non-text control inside the chat', () => {
     const button = control();
-    expect(shouldSubmitChatFromFocus(button, scopeOf(button))).toBe(true);
+    expect(shouldSubmitChatFromFocus(button, scopeOf([button]))).toBe(true);
   });
 
-  it('leaves text fields, the question banner, and the rest of the page alone', () => {
+  it('counts the whole split pane the chat sits in', () => {
+    const header = control();
+    const pane = scopeOf([header]);
+    expect(shouldSubmitChatFromFocus(header, scopeOf([], pane))).toBe(true);
+    expect(shouldSubmitChatFromFocus(header, scopeOf([]))).toBe(false);
+  });
+
+  it('leaves text fields, the question banner, and other panels alone', () => {
     const editor = control({ nodeName: 'DIV', editable: true });
     const input = control({ nodeName: 'INPUT' });
     const option = control({ inBanner: true });
-    const scope = scopeOf(editor, input, option);
+    const scope = scopeOf([editor, input, option]);
     expect(shouldSubmitChatFromFocus(editor, scope)).toBe(false);
     expect(shouldSubmitChatFromFocus(input, scope)).toBe(false);
     expect(shouldSubmitChatFromFocus(option, scope)).toBe(false);

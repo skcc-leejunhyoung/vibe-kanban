@@ -56,17 +56,19 @@ export function resolveChatSubmitKey(
 }
 
 /**
- * The submit key works while the user moves around the chat by keyboard:
- * nothing focused, or a non-text control inside the chat (a chat box button,
- * a conversation entry). Text fields keep their own Cmd+Enter, and the agent
- * question banner confirms its own selection with it.
+ * The submit key works while the chat's panel has focus: nothing focused (the
+ * active panel), or a non-text control in that panel — in a split pane the
+ * whole pane counts (header, changes view, board), elsewhere the chat region.
+ * Text fields keep their own Cmd+Enter, and the agent question banner
+ * confirms its own selection with it.
  */
 export function shouldSubmitChatFromFocus(
   activeElement: Element | null,
   chatScope: Element | null
 ): boolean {
   if (shouldHandleUnfocusedChatKey(activeElement)) return true;
-  if (!activeElement || !chatScope?.contains(activeElement)) return false;
+  const panel = chatScope?.closest('[data-workspace-pane]') ?? chatScope;
+  if (!activeElement || !panel?.contains(activeElement)) return false;
   if ((activeElement as HTMLElement).isContentEditable) return false;
   return (
     !activeElement.matches('input, textarea, select') &&
