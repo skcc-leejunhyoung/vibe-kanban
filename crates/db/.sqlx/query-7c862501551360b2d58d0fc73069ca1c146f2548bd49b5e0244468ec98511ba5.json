@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                cat.agent_session_id as \"session_id!\",\n                cat.agent_message_id as \"message_id\",\n                (SELECT stale.agent_message_id\n                   FROM execution_processes dropped\n                   JOIN coding_agent_turns stale ON stale.execution_process_id = dropped.id\n                  WHERE dropped.session_id = ep.session_id\n                    AND dropped.run_reason = 'codingagent'\n                    AND dropped.dropped = TRUE\n                    AND dropped.created_at > ep.created_at\n                    AND stale.agent_session_id = cat.agent_session_id\n                    AND stale.agent_message_id IS NOT NULL\n                  ORDER BY dropped.created_at ASC\n                  LIMIT 1) as \"discard_from_message_id?: String\"\n               FROM execution_processes ep\n               CROSS JOIN coding_agent_turns cat ON ep.id = cat.execution_process_id\n               WHERE ep.session_id = $1\n                 AND ep.run_reason = 'codingagent'\n                 AND ep.dropped = FALSE\n                 AND cat.agent_session_id IS NOT NULL\n               ORDER BY ep.created_at DESC\n               LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "session_id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "message_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "discard_from_message_id?: String",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "7c862501551360b2d58d0fc73069ca1c146f2548bd49b5e0244468ec98511ba5"
+}

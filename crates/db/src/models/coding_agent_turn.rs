@@ -37,6 +37,11 @@ pub struct CodingAgentResumeInfo {
 impl CodingAgentTurn {
     /// Find session info from the latest coding agent turn for a session.
     /// Only returns turns that have an agent_session_id set.
+    ///
+    /// `CROSS JOIN` keeps SQLite walking the session's processes newest first
+    /// and stopping at the first match. Left to choose, it scans every turn
+    /// with a native session and sorts, evaluating the subquery for each one
+    /// (~1 s on a session with thousands of runs).
     pub async fn find_latest_session_info(
         pool: &SqlitePool,
         session_id: Uuid,
@@ -58,7 +63,7 @@ impl CodingAgentTurn {
                   ORDER BY dropped.created_at ASC
                   LIMIT 1) as "discard_from_message_id?: String"
                FROM execution_processes ep
-               JOIN coding_agent_turns cat ON ep.id = cat.execution_process_id
+               CROSS JOIN coding_agent_turns cat ON ep.id = cat.execution_process_id
                WHERE ep.session_id = $1
                  AND ep.run_reason = 'codingagent'
                  AND ep.dropped = FALSE
