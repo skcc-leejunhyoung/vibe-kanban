@@ -325,6 +325,11 @@ mod tests {
         assert!(f.receive().await.is_err());
         assert_eq!(f.state().await, "pending");
         assert!(f.queue.get_queued(f.session()).is_empty());
+        let pending = super::super::automation::action_receipt(&f.pool, "synthetic-handoff")
+            .await
+            .unwrap();
+        assert_eq!(pending["status"], "running");
+        assert!(pending["response"].is_null());
         f.status.store(200, Ordering::SeqCst);
         sqlx::raw_sql("CREATE TRIGGER synthetic_failed_queue BEFORE INSERT ON session_queued_messages BEGIN SELECT RAISE(FAIL,'synthetic storage failure'); END;").execute(&f.pool).await.unwrap();
         assert!(f.receive().await.is_err());
@@ -347,6 +352,25 @@ mod tests {
         assert_eq!(restored.get_queued(f.session())[0].id, id);
         let persisted: String=sqlx::query_scalar("SELECT status FROM automation_action_receipts WHERE idempotency_key='synthetic-handoff'").fetch_one(&f.pool).await.unwrap();
         assert_eq!(persisted, "succeeded");
+        let original = restored.get_queued(f.session())[0].clone();
+        let mut edited = original.data.clone();
+        edited.message = "Synthetic user-edited prompt".into();
+        restored.update_message(f.session(), id, edited);
+        let receipt = super::super::automation::action_receipt(&f.pool, "synthetic-handoff")
+            .await
+            .unwrap();
+        assert_eq!(
+            receipt["response"]["data"]["messages"][0]["id"],
+            id.to_string()
+        );
+        assert_eq!(
+            receipt["response"]["data"]["messages"][0]["data"]["message"],
+            original.data.message
+        );
+        assert_ne!(
+            restored.get_queued(f.session())[0].data.message,
+            original.data.message
+        );
         receive(&f.pool, &f.client, &restored, f.request.clone())
             .await
             .unwrap();

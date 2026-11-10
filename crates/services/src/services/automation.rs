@@ -57,6 +57,36 @@ pub async fn complete_action<T: serde::Serialize>(
     Ok(())
 }
 
+pub async fn action_receipt(pool: &SqlitePool, key: &str) -> Result<Value, sqlx::Error> {
+    let row = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+        "SELECT receipt.action, receipt.status, receipt.response, handoff.message \
+         FROM automation_action_receipts receipt \
+         LEFT JOIN notification_handoff_inbox handoff \
+           ON handoff.handoff_key = receipt.idempotency_key \
+          AND receipt.action = 'notification_handoff' \
+         WHERE receipt.idempotency_key = ?",
+    )
+    .bind(key)
+    .fetch_optional(pool)
+    .await?;
+    let Some((action, status, response, message)) = row else {
+        return Ok(serde_json::json!({ "status": "missing" }));
+    };
+    let mut response = response.and_then(|value| serde_json::from_str::<Value>(&value).ok());
+    if action == "notification_handoff"
+        && status == "succeeded"
+        && response.as_ref().is_none_or(Value::is_null)
+    {
+        // The immutable inbox retains the ID even after a queued message is edited or drained.
+        response = message
+            .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+            .map(|message| {
+                serde_json::json!({ "data": { "status": "queued", "messages": [message] } })
+            });
+    }
+    Ok(serde_json::json!({ "action": action, "status": status, "response": response }))
+}
+
 pub fn spawn_outbox(pool: SqlitePool, host_id: String) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
@@ -209,6 +239,16 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::query("CREATE TABLE automation_action_receipts (idempotency_key TEXT PRIMARY KEY, action TEXT NOT NULL, status TEXT NOT NULL, response TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)")
             .execute(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE notification_handoff_inbox (handoff_key TEXT PRIMARY KEY, message TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            action_receipt(&pool, "key").await.unwrap(),
+            serde_json::json!({ "status": "missing" })
+        );
         assert_eq!(
             begin_action(&pool, "key", "notify").await.unwrap(),
             ActionReceipt::Claimed
@@ -223,6 +263,10 @@ mod tests {
         assert_eq!(
             begin_action(&pool, "key", "notify").await.unwrap(),
             ActionReceipt::Succeeded(serde_json::json!({ "ok": true }))
+        );
+        assert_eq!(
+            action_receipt(&pool, "key").await.unwrap(),
+            serde_json::json!({ "action": "notify", "status": "succeeded", "response": { "ok": true } })
         );
     }
 

@@ -1438,7 +1438,10 @@ async function executeRoutineAction(routine, event) {
       queued.targetHostId === action.targetHostId
     ) {
       let receipt;
-      if (!queued.messageId && queued.idempotencyKey) {
+      if (
+        queued.idempotencyKey &&
+        (!queued.messageId || queued.idempotencyKey === meta.idempotencyKey)
+      ) {
         receipt = await vibeApi(
           connector,
           'GET',
@@ -1450,6 +1453,11 @@ async function executeRoutineAction(routine, event) {
           throw new Error(
             'previous queued prompt has an indeterminate action outcome'
           );
+        if (
+          receipt.status === 'succeeded' &&
+          queued.idempotencyKey === meta.idempotencyKey
+        )
+          return receipt.response;
         const accepted = receipt.response?.data?.messages?.findLast(
           (item) =>
             createHash('sha256').update(item.data.message).digest('hex') ===
@@ -1537,8 +1545,18 @@ async function executeRoutineAction(routine, event) {
         routineId: routine.id,
       });
     if (queue && !result?.skipped) {
+      const receipt =
+        !result?.data &&
+        (await vibeApi(
+          connector,
+          'GET',
+          `/api/automation-actions/receipts/${encodeURIComponent(meta.idempotencyKey)}`,
+          undefined,
+          bridge.baseUrl
+        ));
       const pending =
         result?.data ||
+        receipt?.response?.data ||
         (
           await vibeApi(
             connector,

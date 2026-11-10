@@ -232,6 +232,9 @@ the queue, the next occurrence can send again. Different routines queue
 independently. A lost response is resolved through the host action receipt.
 The saved prompt identity is computed after expired alerts are removed, before
 delivery, so a filtered batch can still be found after a lost response or restart.
+The host receipt recovers a notification handoff's original message ID even if
+the queued text was edited. A retry of the same accepted action completes the
+original run, including deletion of a successful one-time routine.
 Claimed notifications skipped by this check are returned to the user.
 
 Condition Rules expose `await ctx.actions.vibe.hostBridgeGet('/api/...')` to

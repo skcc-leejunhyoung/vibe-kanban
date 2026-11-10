@@ -125,8 +125,10 @@ function harness({
       store.receipts.set(meta.idempotencyKey, {
         status: 'succeeded',
         action: h.handoff ? 'notification_handoff' : 'queue_prompt',
-        response: h.handoff ? null : response,
+        response: h.legacyHandoffReceipt ? null : response,
       });
+      if (h.editBeforeResponse)
+        store.queue.at(-1).data.message = 'Synthetic user-edited prompt';
       if (h.loseResponse) throw new Error('synthetic response lost');
       return h.handoff ? null : response;
     }
@@ -284,6 +286,30 @@ test('retry success records completion even after the run history has been trimm
   assert.equal(h.state.routineClaims['synthetic-key'].status, 'succeeded');
 });
 
+test('a one-shot accepted before response loss is deleted after retry, even after a later duplicate check', async () => {
+  const h = harness();
+  const r = routine();
+  h.state.routines.push(r);
+  h.loseResponse = true;
+  await h.due();
+  const restarted = harness({
+    state: structuredClone(h.persisted),
+    store: h.store,
+  });
+  const duplicate = await restarted.run(
+    restarted.state.routines[0],
+    {},
+    'synthetic-later'
+  );
+  assert.match(duplicate.run.skipped, /still queued/);
+  await restarted.retry({ force: true });
+  assert.equal(restarted.posts, 0);
+  assert.equal(restarted.store.queue.length, 1);
+  assert.equal(restarted.state.routines.length, 0);
+  assert.equal(restarted.state.retryQueue.length, 0);
+  assert.deepEqual(restarted.state.routineOccurrences, {});
+});
+
 test('exhausted one-shots remain available for manual recovery', async () => {
   const h = harness();
   const r = routine();
@@ -381,6 +407,30 @@ test('an uncertain prior queue admission blocks new sends until its outcome is k
   assert.equal(h.posts, 0);
 });
 
+for (const loseResponse of [false, true]) {
+  test(`handoff message IDs survive queue edits with ${loseResponse ? 'a lost' : 'a bodyless'} response`, async () => {
+    const h = harness();
+    const r = routine({ trigger: { type: 'vk_event' } });
+    h.state.routines.push(r);
+    h.handoff = true;
+    h.editBeforeResponse = true;
+    h.loseResponse = loseResponse;
+    await h.run(r, { count: 1 }, 'synthetic-first');
+    const restarted = harness({
+      state: structuredClone(h.persisted),
+      store: h.store,
+    });
+    const result = await restarted.run(
+      restarted.state.routines[0],
+      { count: 2 },
+      'synthetic-second'
+    );
+    assert.match(result.run.skipped, /still queued/);
+    assert.equal(restarted.posts, 0);
+    assert.equal(restarted.store.queue.length, 1);
+  });
+}
+
 test('a queue intent must be durable before sending the prompt', async () => {
   const h = harness();
   const r = routine({ trigger: { type: 'vk_event' } });
@@ -463,6 +513,7 @@ for (const loseResponse of [false, true]) {
     const r = routine({ trigger: { type: 'vk_event' } });
     h.state.routines.push(r);
     h.handoff = true;
+    h.legacyHandoffReceipt = true;
     h.loseResponse = loseResponse;
     h.failStrictWrite = true;
     await h.run(
