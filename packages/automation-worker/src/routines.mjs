@@ -273,10 +273,12 @@ export function pruneAutomationState(state, now = Date.now()) {
       item.idempotencyKey,
       item.routineId,
     ]),
-    ...(state.retryQueue || []).map((item) => [
-      item.event?.routineIdempotencyKey,
-      item.event?.routineId,
-    ]),
+    ...(state.retryQueue || [])
+      .filter((item) => item.status !== 'exhausted')
+      .map((item) => [
+        item.event?.routineIdempotencyKey,
+        item.event?.routineId,
+      ]),
   ]);
   const claims = (state.routineClaims ||= {});
   const idempotency = (state.routineIdempotency ||= {});

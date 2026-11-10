@@ -277,7 +277,7 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
       }
       items.sort((a, b) => a.notificationId.localeCompare(b.notificationId));
       const delivery = {
-        ...build(event),
+        ...(await build(event)),
         members: items.map((item) => ({
           id: item.notificationId,
           revision: item.notificationRevision,

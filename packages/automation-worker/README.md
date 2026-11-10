@@ -217,8 +217,10 @@ including success on retry. Failed, retrying, exhausted, and skipped routines
 remain available. The latest 500 runs remain in history after routine deletion.
 Claims, idempotency records, and event receipts expire after seven days, with
 cleanup at startup and hourly, even while automation is disabled. Running work
-and pending/manual retries keep their claims. Records belonging to deleted
-routines, including occurrence markers, are removed; a live routine's last
+and pending retries keep their claims. Exhausted claims expire too; retained
+retry records prevent automatic replay and remain available for manual recovery.
+Records belonging to deleted routines, including occurrence markers, are removed;
+a live routine's last
 occurrence stays to prevent re-running a failed or condition-rejected one-shot.
 Legacy claims without a recoverable timestamp get seven days from upgrade.
 
@@ -228,6 +230,8 @@ skipped and recorded in the run's `skipped` field and worker logs. The check
 survives worker restart and prompt-template changes; after the message leaves
 the queue, the next occurrence can send again. Different routines queue
 independently. A lost response is resolved through the host action receipt.
+The saved prompt identity is computed after expired alerts are removed, before
+delivery, so a filtered batch can still be found after a lost response or restart.
 Claimed notifications skipped by this check are returned to the user.
 
 Condition Rules expose `await ctx.actions.vibe.hostBridgeGet('/api/...')` to
@@ -236,7 +240,7 @@ Only GET requests to relative `/api/` paths are allowed, and host identity is
 verified before reading. For example, a condition can return
 `(await ctx.actions.vibe.hostBridgeGet('/api/sessions/<id>/queue')).data.status === 'empty'`.
 Condition Rules cannot use mutation actions, arbitrary HTTP requests, or
-artifact publication.
+artifact publication. Host bindings do not replace the source fields in `event`.
 
 ## Artifact channels
 

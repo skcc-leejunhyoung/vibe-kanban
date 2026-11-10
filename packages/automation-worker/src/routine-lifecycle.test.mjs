@@ -12,6 +12,7 @@ import {
   validateRoutineScope,
 } from './routines.mjs';
 import { carriesRetryExhausted, renderPromptTemplate } from './vibe-events.mjs';
+import { createNotificationRouting } from './notification-routing.mjs';
 
 const source = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
 const functions = [
@@ -187,7 +188,7 @@ function harness({
     vibeApi: api,
     notificationRouting: {
       deliver: async (routine, event, build) => {
-        const delivery = build(event);
+        const delivery = await build(event);
         return api(
           null,
           'POST',
@@ -201,6 +202,7 @@ function harness({
   });
   vm.runInContext(functions, context);
   return Object.assign(h, {
+    context,
     run: context.runRoutine,
     due: context.runDueRoutines,
     retry: context.processRetryQueue,
@@ -219,6 +221,34 @@ test('successful one-shots are removed durably without resurrecting their occurr
   assert.equal(h.persisted.routines.length, 0);
   await h.due();
   assert.equal(h.posts, 2);
+});
+
+test('stale or disabled routine snapshots do not start a run', async () => {
+  const h = harness();
+  const stale = routine();
+  h.state.routines.push(routine());
+  assert.equal((await h.run(stale, {}, 'synthetic-stale')).status, 'skipped');
+  h.state.routines = [stale];
+  stale.enabled = false;
+  assert.equal(
+    (await h.run(stale, {}, 'synthetic-disabled')).status,
+    'skipped'
+  );
+  assert.equal(h.state.routineRuns.length, 0);
+  assert.equal(h.calls.length, 0);
+});
+
+test('an explicitly requested manual run still works for a disabled routine', async () => {
+  const h = harness();
+  const r = routine({ enabled: false });
+  h.state.routines.push(r);
+  const result = await h.run(
+    r,
+    { source: 'manual', type: 'manual' },
+    'synthetic-manual'
+  );
+  assert.equal(result.ok, true);
+  assert.equal(h.posts, 1);
 });
 
 test('failed one-shots survive restart and are removed only after a successful retry', async () => {
@@ -361,6 +391,72 @@ test('a queue intent must be durable before sending the prompt', async () => {
   assert.equal(h.posts, 0);
 });
 
+test('a filtered notification batch keeps the sent prompt identity across a lost reply and restart', async () => {
+  const h = harness();
+  const r = routine({ trigger: { type: 'vk_event' } });
+  h.state.routines.push(r);
+  h.handoff = true;
+  let delivery;
+  h.context.notificationRouting = createNotificationRouting({
+    instanceId: 'synthetic-instance',
+    api: async (_, method, endpoint, payload, onHost, meta) => {
+      if (endpoint.endsWith('/renew-claim')) {
+        if (endpoint.includes('/expired/'))
+          throw Object.assign(new Error('synthetic expired claim'), {
+            status: 409,
+          });
+        return {};
+      }
+      if (endpoint.endsWith('/handoff')) {
+        delivery = payload.handoff;
+        return {};
+      }
+      if (endpoint.endsWith('/notification-handoff'))
+        return h.context.vibeApi(
+          null,
+          'POST',
+          delivery.path,
+          delivery.payload,
+          'https://host.invalid',
+          meta
+        );
+      throw new Error(`Unexpected notification API: ${method} ${endpoint}`);
+    },
+  });
+  const alert = (id) => ({
+    id,
+    notificationId: id,
+    notificationRevision: 1,
+    notificationClaim: {
+      lease_id: 'synthetic-lease',
+      claim_token: 'synthetic-claim',
+    },
+  });
+  h.loseResponse = true;
+  await h.run(
+    r,
+    {
+      type: 'vk_event_batch',
+      count: 2,
+      events: [alert('expired'), alert('live')],
+    },
+    'synthetic-first'
+  );
+  assert.equal(h.store.queue[0].data.message, 'Synthetic check 1');
+  const restarted = harness({
+    state: structuredClone(h.persisted),
+    store: h.store,
+  });
+  const result = await restarted.run(
+    restarted.state.routines[0],
+    { count: 3 },
+    'synthetic-second'
+  );
+  assert.match(result.run.skipped, /still queued/);
+  assert.equal(restarted.store.queue.length, 1);
+  assert.equal(restarted.posts, 0);
+});
+
 for (const loseResponse of [false, true]) {
   test(`notification handoffs dedupe queued messages with ${loseResponse ? 'a lost response' : 'a bodyless response'}`, async () => {
     const h = harness();
@@ -455,6 +551,51 @@ test('condition rules can read their bound host while mutation and HTTP actions 
   );
 });
 
+test('host condition reads preserve the original source connector and target fields', async () => {
+  const h = harness();
+  h.state.rules.push({
+    id: 'synthetic-source-condition',
+    kind: 'condition',
+    enabled: true,
+    script:
+      'async function handle(event, ctx) { return event.connectorId === "events" && event.targetHostId === "source-host" && (await ctx.actions.vibe.hostBridgeGet("/api/state-read")).data.work; }',
+  });
+  const r = routine({ condition: { ruleId: 'synthetic-source-condition' } });
+  const event = {
+    type: 'vk_event',
+    source: 'vibe',
+    connectorId: 'events',
+    targetHostId: 'source-host',
+  };
+  assert.equal(await h.condition(r, event), true);
+  assert.equal(event.connectorId, 'events');
+  assert.equal(event.targetHostId, 'source-host');
+  assert.equal(h.calls.at(-1).baseUrl, 'https://host.invalid');
+});
+
+test('a false host condition consumes the occurrence without sending or deleting the one-shot', async () => {
+  const h = harness();
+  h.state.rules.push({
+    id: 'synthetic-empty-condition',
+    kind: 'condition',
+    enabled: true,
+    script:
+      'async function handle(event, ctx) { return !(await ctx.actions.vibe.hostBridgeGet("/api/state-read")).data.work; }',
+  });
+  h.state.routines.push(
+    routine({ condition: { ruleId: 'synthetic-empty-condition' } })
+  );
+  await h.due();
+  const reads = h.calls.length;
+  await h.due();
+  assert.equal(reads, 2);
+  assert.equal(h.calls.length, reads);
+  assert.equal(h.posts, 0);
+  assert.equal(h.state.routines.length, 1);
+  assert.equal(h.state.routineRuns.length, 0);
+  assert.ok(h.state.routineOccurrences['synthetic-routine']);
+});
+
 test('retention prunes old and deleted-routine records while preserving live work and occurrence fences', () => {
   const h = harness();
   const now = Date.parse('2032-06-15T00:00:00Z');
@@ -539,4 +680,33 @@ test('interrupted claims without retained run history become exhausted instead o
   recoverInterruptedAutomationState(state);
   assert.equal(state.routineClaims['synthetic-key'].status, 'exhausted');
   assert.ok(state.routineClaims['synthetic-key'].updatedAt);
+});
+
+test('exhausted claims expire while their retry records still prevent automatic replay and allow manual recovery', async () => {
+  const h = harness();
+  const r = routine();
+  h.state.routines.push(r);
+  h.fail = true;
+  await h.run(r, { type: 'schedule' }, 'synthetic-key');
+  h.state.retryQueue[0].maxAttempts = 2;
+  await h.retry({ force: true });
+  assert.equal(h.state.retryQueue[0].status, 'exhausted');
+  h.state.routineRuns = [];
+  h.state.routineClaims['synthetic-key'].updatedAt = Date.now() - 6 * 86400000;
+  pruneAutomationState(h.state);
+  assert.ok(h.state.routineClaims['synthetic-key']);
+  h.state.routineClaims['synthetic-key'].updatedAt = Date.now() - 30 * 86400000;
+  pruneAutomationState(h.state);
+  assert.equal(h.state.routineClaims['synthetic-key'], undefined);
+  assert.equal(h.state.routines.length, 1);
+  assert.equal(h.state.retryQueue.length, 1);
+  h.fail = false;
+  const redelivery = await h.run(r, { type: 'schedule' }, 'synthetic-key');
+  assert.equal(redelivery.status, 'exhausted');
+  assert.equal(h.posts, 0);
+  await h.retry({ force: true, includeExhausted: true });
+  assert.equal(h.posts, 1);
+  assert.equal(h.state.routines.length, 0);
+  assert.equal(h.state.retryQueue.length, 0);
+  assert.ok(h.state.routineIdempotency['synthetic-key']);
 });

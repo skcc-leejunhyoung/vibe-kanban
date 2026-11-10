@@ -1018,7 +1018,9 @@ async function runDueRoutines() {
     if (!occurrence || state.routineOccurrences[routine.id] === occurrence) continue;
     const event = { id: occurrence, type: 'schedule', source: 'schedule' };
     try {
-      if (!(await routineConditionMatches(routine, event))) {
+      const matches = await routineConditionMatches(routine, event);
+      if (!routine.enabled || !state.routines.includes(routine)) continue;
+      if (!matches) {
         state.routineOccurrences[routine.id] = occurrence;
         await persistState();
         continue;
@@ -1178,11 +1180,7 @@ async function routineConditionMatches(routine, event) {
   const rule = state.rules.find((item) => item.id === ruleId);
   if (!rule?.enabled || rule.kind !== 'condition')
     throw new Error(`enabled condition rule not found: ${ruleId}`);
-  const result = Boolean(await runRule(rule, {
-    ...event,
-    targetHostId: routine.action?.targetHostId,
-    connectorId: routine.action?.connectorId,
-  }, true));
+  const result = Boolean(await runRule(rule, event, true, routine.action));
   return routine.condition.expected === undefined
     ? result
     : result === Boolean(routine.condition.expected);
@@ -1211,19 +1209,53 @@ async function drainPendingRoutineEvents() {
 }
 
 async function runRoutine(routine, event, idempotencyKey) {
+  // A condition read can outlive deletion, disabling, or replacement of its routine.
+  if (
+    !state.routines.includes(routine) ||
+    (!routine.enabled && event.source !== 'manual')
+  )
+    return { ok: false, status: 'skipped' };
   if (routineInFlight.has(routine.id)) return { ok: false, status: 'busy' };
   const targetHostId = routine.action?.targetHostId;
   if (targetHostId && routineHostInFlight.has(targetHostId))
     return { ok: false, status: 'busy' };
   if (state.routineIdempotency[idempotencyKey])
     return { ok: true, status: 'succeeded' };
+  // Retry records fence redelivery even after their terminal claim expires.
+  const retry = state.retryQueue.find(
+    (item) => item.event?.routineIdempotencyKey === idempotencyKey
+  );
+  if (retry)
+    return {
+      ok: false,
+      status: retry.status === 'exhausted' ? 'exhausted' : 'retrying',
+    };
   const existingClaim = state.routineClaims[idempotencyKey];
   if (existingClaim)
-    return { ok: existingClaim.status === 'succeeded', status: existingClaim.status };
-  const run = { id: randomUUID(), routineId: routine.id, idempotencyKey, status: 'running', trigger: routineRunTrigger(event), targetHostId: routine.action?.targetHostId || null, startedAt: new Date().toISOString(), attempts: 1, maxAttempts: RETRY_MAX_ATTEMPTS, error: null };
+    return {
+      ok: existingClaim.status === 'succeeded',
+      status: existingClaim.status,
+    };
+  const run = {
+    id: randomUUID(),
+    routineId: routine.id,
+    idempotencyKey,
+    status: 'running',
+    trigger: routineRunTrigger(event),
+    targetHostId: routine.action?.targetHostId || null,
+    startedAt: new Date().toISOString(),
+    attempts: 1,
+    maxAttempts: RETRY_MAX_ATTEMPTS,
+    error: null,
+  };
   state.routineRuns.unshift(run);
   state.routineRuns = state.routineRuns.slice(0, MAX_LOGS);
-  state.routineClaims[idempotencyKey] = { runId: run.id, routineId: routine.id, status: 'running', updatedAt: Date.now() };
+  state.routineClaims[idempotencyKey] = {
+    runId: run.id,
+    routineId: routine.id,
+    status: 'running',
+    updatedAt: Date.now(),
+  };
   routineInFlight.add(routine.id);
   if (targetHostId) routineHostInFlight.add(targetHostId);
   try {
@@ -1238,7 +1270,8 @@ async function runRoutine(routine, event, idempotencyKey) {
     state.routineClaims[idempotencyKey].status = run.status;
     state.routineClaims[idempotencyKey].updatedAt = Date.now();
     run.error = errorMessage(error);
-    if (event.source !== 'artifact') await enqueueRoutineRetry(routine, event, idempotencyKey, error);
+    if (event.source !== 'artifact')
+      await enqueueRoutineRetry(routine, event, idempotencyKey, error);
     else if (event.kind !== 'automation.retry_exhausted')
       await announceRetryExhausted({
         what: 'routine_run',
@@ -1463,9 +1496,23 @@ async function executeRoutineAction(routine, event) {
       }
     }
     let queuedPrompt;
-    const build = (event) => {
+    const build = async (event) => {
       const message = renderPromptTemplate(prompt, event);
       queuedPrompt = message;
+      if (queue) {
+        // The router has removed expired alerts before rendering this exact delivery.
+        state.routineQueuedPrompts[routine.id] = {
+          sessionId,
+          targetHostId: action.targetHostId,
+          idempotencyKey: meta.idempotencyKey,
+          promptHash: createHash('sha256').update(message).digest('hex'),
+        };
+        // Claimed notifications already have durable intent in the central handoff protocol.
+        const claimed =
+          !explicitSessionId &&
+          (event.events || [event]).some((item) => item.notificationClaim);
+        await persistState(!claimed);
+      }
       return {
         path: `/api/sessions/${encodeURIComponent(sessionId)}/${queue ? 'queue' : 'follow-up'}`,
         payload: queue
@@ -1474,23 +1521,7 @@ async function executeRoutineAction(routine, event) {
         meta,
       };
     };
-    if (queue) {
-      // Persist intent before delivery so a lost reply can recover the host's queue receipt.
-      state.routineQueuedPrompts[routine.id] = {
-        sessionId,
-        targetHostId: action.targetHostId,
-        idempotencyKey: meta.idempotencyKey,
-        promptHash: createHash('sha256')
-          .update(build(event).payload.message)
-          .digest('hex'),
-      };
-      // Claimed notifications already have durable intent in the central handoff protocol.
-      const claimed =
-        !explicitSessionId &&
-        (event.events || [event]).some((item) => item.notificationClaim);
-      await persistState(!claimed);
-    }
-    const delivery = explicitSessionId && build(event);
+    const delivery = explicitSessionId && (await build(event));
     const result = !explicitSessionId
       ? await notificationRouting.deliver(routine, event, build)
       : await vibeApi(
@@ -4632,7 +4663,7 @@ async function processRetryQueue({
   return { ok: true, ...summary };
 }
 
-async function runRule(rule, event, conditionOnly = false) {
+async function runRule(rule, event, conditionOnly = false, hostBinding = event) {
   if (!shouldRunGithubIssueSyncRule(rule, event)) return;
   const source =
     event.source === 'github' && event.type === 'pr'
@@ -4649,7 +4680,7 @@ async function runRule(rule, event, conditionOnly = false) {
   const safeEvent = cloneData(event);
   const context = {
     event: safeEvent,
-    ctx: createRuleContext(rule, safeEvent, conditionOnly),
+    ctx: createRuleContext(rule, safeEvent, conditionOnly, hostBinding),
     console: {
       log: (...args) => log('info', 'rule console', { ruleId: rule.id, args }),
       warn: (...args) => log('warn', 'rule console', { ruleId: rule.id, args }),
@@ -4676,7 +4707,7 @@ async function runRule(rule, event, conditionOnly = false) {
   return result;
 }
 
-function createRuleContext(rule, event, conditionOnly = false) {
+function createRuleContext(rule, event, conditionOnly = false, hostBinding = event) {
   const context = {
     log: (level, message, meta = {}) =>
       log(level, message, { ruleId: rule.id, ...meta }),
@@ -4688,10 +4719,10 @@ function createRuleContext(rule, event, conditionOnly = false) {
     actions: {
       vibe: {
         hostBridgeGet: async (apiPath) => {
-          if (!event.targetHostId || !event.connectorId)
+          if (!hostBinding?.targetHostId || !hostBinding.connectorId)
             throw new Error('Host reads require a bound routine');
-          const connector = findConnector(event.connectorId);
-          const bridge = connector.config?.hostBridges?.[event.targetHostId];
+          const connector = findConnector(hostBinding.connectorId);
+          const bridge = connector.config?.hostBridges?.[hostBinding.targetHostId];
           if (!connector.enabled || connector.type !== 'vibe_kanban' || !bridge?.baseUrl)
             throw new Error('Routine host is unavailable');
           const url = new URL(apiPath, bridge.baseUrl);
@@ -4699,7 +4730,7 @@ function createRuleContext(rule, event, conditionOnly = false) {
             url.origin !== new URL(bridge.baseUrl).origin || !url.pathname.startsWith('/api/'))
             throw new Error('Host reads require a relative /api/ path');
           const host = await vibeApi(connector, 'GET', '/api/automation-actions/status', undefined, bridge.baseUrl);
-          if (host?.hostId !== event.targetHostId) throw new Error('Routine host identity mismatch');
+          if (host?.hostId !== hostBinding.targetHostId) throw new Error('Routine host identity mismatch');
           return vibeApi(connector, 'GET', apiPath, undefined, bridge.baseUrl);
         },
         readAgentUsage: async (agent) => {
