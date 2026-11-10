@@ -1991,6 +1991,7 @@ pub trait ContainerService {
                 prompt: data.message.clone(),
                 session_id: info.session_id,
                 reset_to_message_id: None,
+                discard_from_message_id: info.discard_from_message_id,
                 executor_config: data.executor_config.clone(),
                 working_dir: working_dir.clone(),
             })

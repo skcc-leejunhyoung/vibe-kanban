@@ -532,6 +532,7 @@ async fn follow_up_inner(
             prompt: prompt.clone(),
             session_id: info.session_id,
             reset_to_message_id: if is_reset { info.message_id } else { None },
+            discard_from_message_id: info.discard_from_message_id,
             executor_config: executor_config.clone(),
             working_dir: working_dir.clone(),
         })

@@ -108,6 +108,7 @@ pub struct LatestProcessInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum ExecutorActionField {
     ExecutorAction(ExecutorAction),
     Other(Value),

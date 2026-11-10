@@ -3305,6 +3305,7 @@ impl LocalContainerService {
                 prompt: prompt.to_string(),
                 session_id: info.session_id,
                 reset_to_message_id: None,
+                discard_from_message_id: info.discard_from_message_id,
                 executor_config,
                 working_dir,
             })

@@ -18,7 +18,7 @@ use serde_json::json;
 use super::{
     Codex,
     client::{AppServerClient, LogWriter},
-    codex_home, collect_model_pages, fork_params_from,
+    codex_home, collect_model_pages, continue_thread, fork_params_from,
 };
 use crate::{
     env::ExecutionEnv,
@@ -488,6 +488,7 @@ impl Codex {
             .as_ref()
             .map(|tier| tier.as_deref() == Some(ServiceTier::Fast.request_value()));
         let cwd = current_dir.to_path_buf();
+        let discard_from_turn = self.discard_from_turn.clone();
 
         self.spawn_app_server(
             current_dir,
@@ -505,11 +506,13 @@ impl Codex {
                         let old_thread_id = session_id.ok_or_else(|| {
                             ExecutorError::Io(std::io::Error::other("No active session to compact"))
                         })?;
-                        let fork_response = client
-                            .thread_fork(fork_params_from(old_thread_id, thread_start_params))
-                            .await?;
-                        let thread_id = fork_response.thread.id;
-                        tracing::debug!("forked thread for compact, new thread_id={thread_id}");
+                        let (thread_id, _) = continue_thread(
+                            &client,
+                            old_thread_id,
+                            discard_from_turn,
+                            thread_start_params,
+                        )
+                        .await?;
                         client.end_on_any_turn();
                         client.thread_compact_start(thread_id).await?;
                     }
@@ -618,6 +621,7 @@ impl Codex {
                             let mut fork_params =
                                 fork_params_from(old_thread_id, thread_start_params);
                             fork_params.service_tier = service_tier;
+                            fork_params.before_turn_id = discard_from_turn;
                             client.thread_fork(fork_params).await?;
                         }
                         let message = if want_fast {

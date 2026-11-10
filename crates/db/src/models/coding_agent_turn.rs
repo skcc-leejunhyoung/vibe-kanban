@@ -28,6 +28,10 @@ pub struct CreateCodingAgentTurn {
 pub struct CodingAgentResumeInfo {
     pub session_id: String,
     pub message_id: Option<String>,
+    /// Message id of the first dropped turn that kept writing to this same
+    /// native session: its history from there on is no longer part of the
+    /// conversation. `None` when every turn had a native session of its own.
+    pub discard_from_message_id: Option<String>,
 }
 
 impl CodingAgentTurn {
@@ -41,7 +45,18 @@ impl CodingAgentTurn {
             CodingAgentResumeInfo,
             r#"SELECT
                 cat.agent_session_id as "session_id!",
-                cat.agent_message_id as "message_id"
+                cat.agent_message_id as "message_id",
+                (SELECT stale.agent_message_id
+                   FROM execution_processes dropped
+                   JOIN coding_agent_turns stale ON stale.execution_process_id = dropped.id
+                  WHERE dropped.session_id = ep.session_id
+                    AND dropped.run_reason = 'codingagent'
+                    AND dropped.dropped = TRUE
+                    AND dropped.created_at > ep.created_at
+                    AND stale.agent_session_id = cat.agent_session_id
+                    AND stale.agent_message_id IS NOT NULL
+                  ORDER BY dropped.created_at ASC
+                  LIMIT 1) as "discard_from_message_id?: String"
                FROM execution_processes ep
                JOIN coding_agent_turns cat ON ep.id = cat.execution_process_id
                WHERE ep.session_id = $1
@@ -290,5 +305,109 @@ impl CodingAgentTurn {
             .into_iter()
             .map(|r| (r.workspace_id, r.prompt))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    async fn session() -> (SqlitePool, Uuid) {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let (workspace_id, session_id) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO workspaces (id, branch, name) VALUES ($1, 'vk/test', 'Test')")
+            .bind(workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES ($1, $2)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        (pool, session_id)
+    }
+
+    /// One agent run: its process `minute` minutes in, the native session it
+    /// wrote to and the message it recorded.
+    async fn run(
+        pool: &SqlitePool,
+        session_id: Uuid,
+        minute: u32,
+        dropped: bool,
+        native: &str,
+        message: &str,
+    ) {
+        let process = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO execution_processes (id, session_id, run_reason, status, dropped, created_at)
+             VALUES ($1, $2, 'codingagent', 'completed', $3, $4)",
+        )
+        .bind(process)
+        .bind(session_id)
+        .bind(dropped)
+        .bind(format!("2026-01-01 00:{minute:02}:00"))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO coding_agent_turns (id, execution_process_id, agent_session_id, agent_message_id)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(process)
+        .bind(native)
+        .bind(message)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn resume_info(pool: &SqlitePool, session_id: Uuid) -> (String, Option<String>) {
+        let info = CodingAgentTurn::find_latest_session_info(pool, session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        (info.session_id, info.discard_from_message_id)
+    }
+
+    #[tokio::test]
+    async fn dropped_runs_on_the_resumed_session_are_cut_from_the_first() {
+        let (pool, session_id) = session().await;
+        run(&pool, session_id, 1, false, "thread-1", "turn-1").await;
+        run(&pool, session_id, 2, true, "thread-1", "turn-2").await;
+        run(&pool, session_id, 3, true, "thread-1", "turn-3").await;
+        assert_eq!(
+            resume_info(&pool, session_id).await,
+            ("thread-1".to_string(), Some("turn-2".to_string()))
+        );
+
+        // The follow-up branched off: nothing on the branch is dropped.
+        run(&pool, session_id, 4, false, "thread-2", "turn-4").await;
+        assert_eq!(
+            resume_info(&pool, session_id).await,
+            ("thread-2".to_string(), None)
+        );
+    }
+
+    /// Runs that forked a native session of their own left the one being
+    /// continued untouched.
+    #[tokio::test]
+    async fn dropped_runs_on_other_sessions_need_no_cut() {
+        let (pool, session_id) = session().await;
+        run(&pool, session_id, 1, false, "thread-1", "turn-1").await;
+        run(&pool, session_id, 2, true, "thread-2", "turn-2").await;
+        assert_eq!(
+            resume_info(&pool, session_id).await,
+            ("thread-1".to_string(), None)
+        );
     }
 }

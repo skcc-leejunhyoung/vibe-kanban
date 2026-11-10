@@ -549,6 +549,7 @@ impl ToNormalizedEntry for PatchEntry {
 struct LogState {
     entry_index: EntryIndexProvider,
     root_thread_id: Option<String>,
+    first_turn_reported: bool,
     assistant: Option<StreamingText>,
     thinking: Option<StreamingText>,
     commands: HashMap<String, CommandState>,
@@ -579,6 +580,7 @@ impl LogState {
         Self {
             entry_index,
             root_thread_id: None,
+            first_turn_reported: false,
             assistant: None,
             thinking: None,
             commands: HashMap::new(),
@@ -3042,6 +3044,20 @@ fn handle_jsonrpc_response(
     entry_index: &EntryIndexProvider,
     state: &mut LogState,
 ) {
+    // The first turn the run starts (`turn/start`, `review/start`) is where
+    // its thread is cut off if the run is dropped: later runs resume the same
+    // thread.
+    if let Some(turn_id) = response
+        .result
+        .get("turn")
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+    {
+        if !std::mem::replace(&mut state.first_turn_reported, true) {
+            msg_store.push_message_id(turn_id.to_string());
+        }
+        return;
+    }
     if let Ok(resp) = super::compat::decode::<ThreadStartResponse>(response.result.clone()) {
         if accept_root_thread(state, &resp.thread.id) {
             msg_store.push_session_id(resp.thread.id);
@@ -4199,6 +4215,52 @@ mod tests {
             }
         })
         .to_string()
+    }
+
+    /// A resumed thread keeps its id across runs: the session id comes from
+    /// the `thread/resume` response, and the run's first turn is recorded so a
+    /// later reset can cut the thread off before it.
+    #[tokio::test]
+    async fn resumed_run_reports_its_thread_and_first_turn() {
+        let thread = json!({
+            "id": "thread-1", "sessionId": "thread-1", "forkedFromId": null,
+            "preview": "", "ephemeral": false, "historyMode": "paginated",
+            "modelProvider": "openai", "createdAt": 0, "updatedAt": 0,
+            "status": {"type": "idle"}, "path": null, "cwd": "/tmp/test-worktree",
+            "cliVersion": "0.166.0", "source": "vscode", "turns": []
+        });
+        let resume = json!({"id": 3, "result": {
+            "thread": thread, "model": "test-model", "modelProvider": "openai",
+            "serviceTier": null, "cwd": "/tmp/test-worktree", "approvalPolicy": "never",
+            "approvalsReviewer": "user", "sandbox": {"type": "dangerFullAccess"},
+            "reasoningEffort": "low", "collaborationMode": null,
+            "multiAgentMode": "explicitRequestOnly", "turnsBackwardsCursor": null
+        }});
+        let turn = |id: &str| {
+            json!({"id": 4, "result": {"turn": {
+                "id": id, "items": [], "status": "inProgress", "error": null
+            }}})
+            .to_string()
+        };
+        let msg_store = Arc::new(MsgStore::new());
+        for line in [resume.to_string(), turn("turn-1"), turn("reminder-turn")] {
+            msg_store.push_stdout(format!("{line}\n"));
+        }
+        msg_store.push_finished();
+        for handle in normalize_logs(msg_store.clone(), Path::new("/tmp/test-worktree")) {
+            handle.await.unwrap();
+        }
+
+        let ids: Vec<_> = msg_store
+            .get_history()
+            .into_iter()
+            .filter_map(|msg| match msg {
+                LogMsg::SessionId(id) => Some(format!("session {id}")),
+                LogMsg::MessageId(id) => Some(format!("message {id}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["session thread-1", "message turn-1"]);
     }
 
     fn thread_started_line(id: &str) -> String {

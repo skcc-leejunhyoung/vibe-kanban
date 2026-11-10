@@ -20,6 +20,11 @@ pub struct CodingAgentFollowUpRequest {
     pub session_id: String,
     #[serde(default)]
     pub reset_to_message_id: Option<String>,
+    /// First message that dropped turns left in the native session, when the
+    /// agent kept writing to that session across them.
+    #[serde(default)]
+    #[ts(skip)]
+    pub discard_from_message_id: Option<String>,
     /// Unified executor identity + overrides
     #[serde(alias = "executor_profile_id", alias = "profile_variant_label")]
     pub executor_config: ExecutorConfig,
@@ -79,6 +84,9 @@ impl Executable for CodingAgentFollowUpRequest {
                 agent.apply_overrides(&self.executor_config);
             }
             agent.use_approvals(approvals.clone());
+            if let Some(message_id) = &self.discard_from_message_id {
+                agent.discard_from_message(message_id);
+            }
 
             agent
                 .spawn_follow_up(

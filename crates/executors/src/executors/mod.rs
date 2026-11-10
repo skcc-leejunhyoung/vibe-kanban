@@ -235,6 +235,11 @@ pub trait StandardCodingAgentExecutor {
 
     fn use_approvals(&mut self, _approvals: Arc<dyn ExecutorApprovalService>) {}
 
+    /// Dropped turns wrote into the session about to be continued, starting
+    /// at this message. Agents that keep one native session across turns
+    /// continue from just before it.
+    fn discard_from_message(&mut self, _message_id: &str) {}
+
     async fn spawn(
         &self,
         current_dir: &Path,

@@ -30,6 +30,10 @@ pub struct ReviewRequest {
     /// Optional session ID to resume an existing session
     #[serde(default)]
     pub session_id: Option<String>,
+    /// See [`super::coding_agent_follow_up::CodingAgentFollowUpRequest`].
+    #[serde(default)]
+    #[ts(skip)]
+    pub discard_from_message_id: Option<String>,
     /// Optional relative path to execute the agent in (relative to container_ref).
     #[serde(default)]
     pub working_dir: Option<String>,
@@ -67,6 +71,9 @@ impl Executable for ReviewRequest {
             agent.apply_overrides(&self.executor_config);
         }
         agent.use_approvals(approvals.clone());
+        if let Some(message_id) = &self.discard_from_message_id {
+            agent.discard_from_message(message_id);
+        }
 
         agent
             .spawn_review(

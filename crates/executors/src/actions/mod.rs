@@ -307,6 +307,7 @@ mod tests {
                 context: None,
                 prompt: "Review".into(),
                 session_id: None,
+                discard_from_message_id: None,
                 working_dir: None,
             })
         };

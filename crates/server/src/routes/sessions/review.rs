@@ -176,9 +176,11 @@ pub async fn start_review(
         .wait_for_session_ready(session.id)
         .await;
 
-    let agent_session_id = CodingAgentTurn::find_latest_session_info(pool, session.id)
-        .await?
-        .map(|info| info.session_id);
+    let (agent_session_id, discard_from_message_id) =
+        CodingAgentTurn::find_latest_session_info(pool, session.id)
+            .await?
+            .map(|info| (info.session_id, info.discard_from_message_id))
+            .unzip();
 
     let context: Option<Vec<ExecutorRepoReviewContext>> = if payload.use_all_workspace_commits {
         let repos =
@@ -216,6 +218,7 @@ pub async fn start_review(
             context,
             prompt,
             session_id: agent_session_id,
+            discard_from_message_id: discard_from_message_id.flatten(),
             working_dir: session.agent_working_dir.clone(),
         }),
         None,

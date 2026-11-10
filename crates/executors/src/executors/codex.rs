@@ -385,12 +385,125 @@ pub(crate) fn fork_params_from(thread_id: String, params: ThreadStartParams) -> 
     }
 }
 
+fn resume_params_from(thread_id: String, params: ThreadStartParams) -> ThreadResumeParams {
+    ThreadResumeParams {
+        thread_id,
+        exclude_turns: true,
+        model: params.model,
+        model_provider: params.model_provider,
+        cwd: params.cwd,
+        approval_policy: params.approval_policy,
+        sandbox: params.sandbox,
+        config: params.config,
+        base_instructions: params.base_instructions,
+        developer_instructions: params.developer_instructions,
+        service_tier: params.service_tier,
+        ..Default::default()
+    }
+}
+
+/// Codex walks a thread's whole fork lineage on every fork and resume, one
+/// scan of its sessions directory per ancestor (~22 ms each with 14k rollouts;
+/// a resume walks it about three times). Threads up to this deep are resumed
+/// in place, which keeps the lineage at its depth.
+const MAX_RESUMED_LINEAGE: usize = 16;
+
+/// Threads in `thread_id`'s fork lineage, counted up to one past
+/// [`MAX_RESUMED_LINEAGE`]. `thread/read` does not walk the lineage.
+async fn lineage_depth(client: &AppServerClient, thread_id: &str) -> usize {
+    let mut current = thread_id.to_string();
+    for depth in 1..=MAX_RESUMED_LINEAGE {
+        match client.thread_read(current).await {
+            Ok(response) => match response.thread.forked_from_id {
+                Some(parent) => current = parent,
+                None => return depth,
+            },
+            // Unknown: let thread/resume (or the fork after it) report it.
+            Err(_) => return depth,
+        }
+    }
+    MAX_RESUMED_LINEAGE + 1
+}
+
+/// Leave a lineage too deep to reload for a new thread. Earlier builds forked
+/// once per turn, so a long-running session reached thousands of ancestors:
+/// every start then took tens of seconds and Codex could no longer list the
+/// thread's history.
+async fn start_over(
+    client: &AppServerClient,
+    old_thread_id: &str,
+    mut params: ThreadStartParams,
+) -> Result<(String, String), ExecutorError> {
+    let note = format!(
+        "This conversation continues Codex thread {old_thread_id}, whose history grew too \
+deep to reload. Its turns are not in your context. Vibe Kanban keeps them: `vk session list .`, \
+then `vk session executions <session>` and `vk session log <execution>`."
+    );
+    params.developer_instructions = Some(match params.developer_instructions {
+        Some(own) if !own.trim().is_empty() => format!("{own}\n\n{note}"),
+        _ => note,
+    });
+    let response = client.thread_start(params).await?;
+    slash_commands::log_event_notification(
+        client.log_writer(),
+        EventMsg::Warning(WarningEvent {
+            message: "The Codex thread grew too deep to reload, so this turn starts a new one. \
+Earlier turns stay visible here but are no longer in the agent's context."
+                .to_string(),
+        }),
+    )
+    .await?;
+    Ok((response.thread.id, response.model))
+}
+
+/// Continue `thread_id` for another turn, returning the thread to run it on
+/// and that thread's model.
+///
+/// The thread is resumed in place, so the cost of the next start stays
+/// constant however long the session runs. A fork remains for cutting off
+/// dropped turns and for a thread Codex will not resume (another process
+/// still holds it); a lineage too deep to reload starts over.
+pub(crate) async fn continue_thread(
+    client: &AppServerClient,
+    thread_id: String,
+    discard_from_turn: Option<String>,
+    params: ThreadStartParams,
+) -> Result<(String, String), ExecutorError> {
+    if lineage_depth(client, &thread_id).await > MAX_RESUMED_LINEAGE {
+        return start_over(client, &thread_id, params).await;
+    }
+    if let Some(turn_id) = discard_from_turn {
+        let mut fork = fork_params_from(thread_id.clone(), params.clone());
+        fork.before_turn_id = Some(turn_id);
+        match client.thread_fork(fork).await {
+            Ok(response) => return Ok((response.thread.id, response.model)),
+            // A session that keeps its dropped turns still beats one that
+            // cannot continue at all.
+            Err(err) => tracing::warn!("Codex could not fork before a dropped turn: {err}"),
+        }
+    }
+    match client
+        .thread_resume(resume_params_from(thread_id.clone(), params.clone()))
+        .await
+    {
+        Ok(response) => return Ok((response.thread.id, response.model)),
+        Err(err) => tracing::warn!("Codex thread/resume failed, forking instead: {err}"),
+    }
+    let response = client
+        .thread_fork(fork_params_from(thread_id, params))
+        .await?;
+    Ok((response.thread.id, response.model))
+}
+
 use async_trait::async_trait;
 use codex_app_server_protocol::{
     AskForApproval as V2AskForApproval, ReviewTarget, SandboxMode as V2SandboxMode,
-    ThreadForkParams, ThreadStartParams, UserInput,
+    ThreadForkParams, ThreadResumeParams, ThreadStartParams, UserInput,
 };
-use codex_protocol::config_types::ServiceTier;
+use codex_protocol::{
+    config_types::ServiceTier,
+    protocol::{EventMsg, WarningEvent},
+};
 use derivative::Derivative;
 use futures::StreamExt;
 use schemars::JsonSchema;
@@ -550,6 +663,11 @@ pub struct Codex {
     #[ts(skip)]
     #[derivative(Debug = "ignore", PartialEq = "ignore")]
     approvals: Option<Arc<dyn ExecutorApprovalService>>,
+    /// Set for one follow-up: the turn its thread must be cut off before.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[derivative(PartialEq = "ignore")]
+    discard_from_turn: Option<String>,
 }
 
 #[async_trait]
@@ -595,6 +713,10 @@ impl StandardCodingAgentExecutor for Codex {
 
     fn use_approvals(&mut self, approvals: Arc<dyn ExecutorApprovalService>) {
         self.approvals = Some(approvals);
+    }
+
+    fn discard_from_message(&mut self, message_id: &str) {
+        self.discard_from_turn = Some(message_id.to_string());
     }
 
     async fn spawn(
@@ -1082,6 +1204,7 @@ impl Codex {
     ) -> Result<SpawnedChild, ExecutorError> {
         let params = self.build_thread_start_params(current_dir, env);
         let resume_session = resume_session.map(|s| s.to_string());
+        let discard_from_turn = self.discard_from_turn.clone();
 
         self.spawn_app_server(
             current_dir,
@@ -1090,10 +1213,24 @@ impl Codex {
             move |client, _| async move {
                 match action {
                     CodexSessionAction::Chat { prompt } => {
-                        Self::launch_codex_agent(params, resume_session, prompt, client).await
+                        Self::launch_codex_agent(
+                            params,
+                            resume_session,
+                            discard_from_turn,
+                            prompt,
+                            client,
+                        )
+                        .await
                     }
                     CodexSessionAction::Review { target } => {
-                        review::launch_codex_review(params, resume_session, target, client).await
+                        review::launch_codex_review(
+                            params,
+                            resume_session,
+                            discard_from_turn,
+                            target,
+                            client,
+                        )
+                        .await
                     }
                 }
             },
@@ -1104,6 +1241,7 @@ impl Codex {
     async fn launch_codex_agent(
         thread_start_params: ThreadStartParams,
         resume_session: Option<String>,
+        discard_from_turn: Option<String>,
         combined_prompt: String,
         client: Arc<AppServerClient>,
     ) -> Result<(), ExecutorError> {
@@ -1120,11 +1258,7 @@ impl Codex {
                 (response.thread.id, response.model)
             }
             Some(session_id) => {
-                let response = client
-                    .thread_fork(fork_params_from(session_id, thread_start_params))
-                    .await?;
-                tracing::debug!("forked thread, new thread_id={}", response.thread.id);
-                (response.thread.id, response.model)
+                continue_thread(&client, session_id, discard_from_turn, thread_start_params).await?
             }
         };
 
@@ -1497,7 +1631,13 @@ base_url = "https://api.sailresearch.com/v1"
             params.developer_instructions.as_deref(),
             Some("Profile rules\n\n[Artifacts]")
         );
-        // Follow-up turns fork the thread with the same instructions.
+        // Follow-up turns resume or fork the thread with the same instructions.
+        assert_eq!(
+            super::resume_params_from("thread-1".into(), params.clone())
+                .developer_instructions
+                .as_deref(),
+            Some("Profile rules\n\n[Artifacts]")
+        );
         assert_eq!(
             super::fork_params_from("thread-1".into(), params)
                 .developer_instructions
@@ -1507,14 +1647,322 @@ base_url = "https://api.sailresearch.com/v1"
     }
 
     #[test]
-    fn fork_excludes_deprecated_full_history_hydration() {
-        let params = super::fork_params_from(
-            "thread-1".to_string(),
-            codex_app_server_protocol::ThreadStartParams::default(),
-        );
+    fn continuing_a_thread_excludes_deprecated_full_history_hydration() {
+        let params = codex_app_server_protocol::ThreadStartParams::default();
+        let fork = super::fork_params_from("thread-1".to_string(), params.clone());
+        let resume = super::resume_params_from("thread-1".to_string(), params);
 
-        assert!(params.exclude_turns);
-        assert_eq!(serde_json::to_value(params).unwrap()["excludeTurns"], true);
+        assert!(fork.exclude_turns);
+        assert_eq!(serde_json::to_value(fork).unwrap()["excludeTurns"], true);
+        assert!(resume.exclude_turns);
+        assert_eq!(serde_json::to_value(resume).unwrap()["excludeTurns"], true);
+    }
+
+    /// `thread` as `codex app-server` 0.166 reports it, fields newer than the
+    /// pinned protocol included.
+    #[cfg(unix)]
+    fn thread_json(id: &str, forked_from: Option<&str>) -> serde_json::Value {
+        json!({
+            "id": id,
+            "environments": [{
+                "environmentId": "local",
+                "cwd": "/tmp/project",
+                "runtimeWorkspaceRoots": ["/tmp/project"]
+            }],
+            "extra": null,
+            "sessionId": id,
+            "forkedFromId": forked_from,
+            "parentThreadId": null,
+            "preview": "Test prompt",
+            "ephemeral": false,
+            "section": null,
+            "sectionEnteredAt": null,
+            "projectId": null,
+            "historyMode": "paginated",
+            "modelProvider": "openai",
+            "model": "test-model",
+            "reasoningEffort": "low",
+            "createdAt": 1700000000,
+            "updatedAt": 1700000100,
+            "recencyAt": 1700000100,
+            "status": {"type": "idle"},
+            "path": "/tmp/codex-home/sessions/rollout-test.jsonl",
+            "cwd": "/tmp/project",
+            "cliVersion": "0.166.0",
+            "originator": "vibe-codex-executor",
+            "source": "vscode",
+            "canAcceptDirectInput": true,
+            "threadSource": null,
+            "agentNickname": null,
+            "agentRole": null,
+            "gitInfo": null,
+            "name": null,
+            "daybreakEnabled": null,
+            "turns": []
+        })
+    }
+
+    /// The body `thread/start`, `thread/resume` and `thread/fork` answer with.
+    #[cfg(unix)]
+    fn session_json(id: &str, forked_from: Option<&str>) -> serde_json::Value {
+        json!({
+            "thread": thread_json(id, forked_from),
+            "model": "test-model",
+            "modelProvider": "openai",
+            "serviceTier": null,
+            "disabledPluginIds": [],
+            "cwd": "/tmp/project",
+            "runtimeWorkspaceRoots": ["/tmp/project"],
+            "instructionSources": [],
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+            "sandbox": {"type": "dangerFullAccess"},
+            "activePermissionProfile": null,
+            "reasoningEffort": "low",
+            "collaborationMode": {
+                "mode": "default",
+                "settings": {
+                    "model": "test-model",
+                    "reasoning_effort": "low",
+                    "developer_instructions": null
+                }
+            },
+            "multiAgentMode": "explicitRequestOnly",
+            "initialTurnsPage": null,
+            "turnsBackwardsCursor": null,
+            "itemsBackwardsCursor": null
+        })
+    }
+
+    #[cfg(unix)]
+    fn result(value: serde_json::Value) -> String {
+        format!("\"result\":{value}")
+    }
+
+    #[cfg(unix)]
+    fn refusal(message: &str) -> String {
+        format!("\"error\":{}", json!({"code": -32600, "message": message}))
+    }
+
+    /// Answers `initialize`, then each request with the next scripted reply,
+    /// echoing the request to stderr.
+    #[cfg(unix)]
+    const SCRIPTED_APP_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"id":%s,"result":{"userAgent":"fake","codexHome":"/tmp","platformFamily":"unix","platformOs":"test"}}\n' "$id" ;;
+    *'"method":"initialized"'*) ;;
+    *)
+      printf '%s\n' "$line" >&2
+      printf '{"id":%s,%s}\n' "$id" "$1"
+      shift ;;
+  esac
+done
+"#;
+
+    /// Runs [`super::continue_thread`] on thread `tip` against an app server
+    /// that gives `replies` in order. Returns the thread it continues on and
+    /// the requests it took to get there.
+    #[cfg(unix)]
+    async fn continue_against(
+        replies: Vec<String>,
+        discard_from_turn: Option<&str>,
+    ) -> (String, Vec<serde_json::Value>) {
+        use std::time::Duration;
+
+        use tokio::{
+            io::{AsyncBufReadExt, BufReader},
+            time::timeout,
+        };
+
+        use crate::command::CommandParts;
+
+        let codex: Codex =
+            serde_json::from_value(json!({ "developer_instructions": "Profile rules" })).unwrap();
+        let env = ExecutionEnv::new(Default::default(), false, String::new());
+        let params = codex.build_thread_start_params(std::path::Path::new("/tmp/project"), &env);
+        let discard_from_turn = discard_from_turn.map(str::to_string);
+        let expected_requests = replies.len();
+        let mut args = vec![
+            "-c".to_string(),
+            SCRIPTED_APP_SERVER.to_string(),
+            "fake".into(),
+        ];
+        args.extend(replies);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut spawned = codex
+            .spawn_app_server(
+                &std::env::temp_dir(),
+                CommandParts::new("sh".into(), args),
+                &env,
+                move |client, _| async move {
+                    let continued =
+                        super::continue_thread(&client, "tip".into(), discard_from_turn, params)
+                            .await;
+                    let _ = tx.send(continued.map(|(thread_id, _model)| thread_id));
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        let thread_id = timeout(Duration::from_secs(10), rx)
+            .await
+            .expect("continue_thread finished")
+            .unwrap()
+            .unwrap();
+        let mut stderr = BufReader::new(spawned.child.inner().stderr.take().unwrap()).lines();
+        let mut requests = Vec::new();
+        for _ in 0..expected_requests {
+            let line = timeout(Duration::from_secs(5), stderr.next_line())
+                .await
+                .expect("every scripted reply answers a request")
+                .unwrap()
+                .unwrap();
+            requests.push(serde_json::from_str(&line).unwrap());
+        }
+        spawned.child.kill().await.unwrap();
+        (thread_id, requests)
+    }
+
+    #[cfg(unix)]
+    fn methods(requests: &[serde_json::Value]) -> Vec<&str> {
+        requests
+            .iter()
+            .map(|request| request["method"].as_str().unwrap())
+            .collect()
+    }
+
+    /// The whole point: a follow-up stays on its thread, so the lineage Codex
+    /// has to walk on the next start does not grow with the session.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn follow_up_resumes_its_thread_in_place() {
+        let (thread_id, requests) = continue_against(
+            vec![
+                result(json!({ "thread": thread_json("tip", Some("root")) })),
+                result(json!({ "thread": thread_json("root", None) })),
+                result(session_json("tip", Some("root"))),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(thread_id, "tip");
+        assert_eq!(
+            methods(&requests),
+            ["thread/read", "thread/read", "thread/resume"]
+        );
+        let resume = &requests[2]["params"];
+        assert_eq!(resume["threadId"], "tip");
+        assert_eq!(resume["excludeTurns"], true);
+        assert_eq!(resume["cwd"], "/tmp/project");
+        assert_eq!(resume["developerInstructions"], "Profile rules");
+    }
+
+    /// Lineages built by earlier builds (one fork per turn) are too deep to
+    /// reload: the session moves to a new thread and the agent is told where
+    /// the earlier turns went.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn follow_up_starts_over_from_a_deep_lineage() {
+        let mut replies: Vec<String> = (0..super::MAX_RESUMED_LINEAGE)
+            .map(|depth| {
+                let id = if depth == 0 {
+                    "tip".to_string()
+                } else {
+                    format!("ancestor-{depth}")
+                };
+                let parent = format!("ancestor-{}", depth + 1);
+                result(json!({ "thread": thread_json(&id, Some(&parent)) }))
+            })
+            .collect();
+        replies.push(result(session_json("fresh", None)));
+        let (thread_id, requests) = continue_against(replies, Some("dropped-turn")).await;
+
+        assert_eq!(thread_id, "fresh");
+        let methods = methods(&requests);
+        assert_eq!(methods.len(), super::MAX_RESUMED_LINEAGE + 1);
+        assert!(
+            methods[..super::MAX_RESUMED_LINEAGE]
+                .iter()
+                .all(|method| *method == "thread/read")
+        );
+        assert_eq!(methods[super::MAX_RESUMED_LINEAGE], "thread/start");
+        let start = &requests[super::MAX_RESUMED_LINEAGE]["params"];
+        let instructions = start["developerInstructions"].as_str().unwrap();
+        assert!(instructions.starts_with("Profile rules\n\n"));
+        assert!(instructions.contains("continues Codex thread tip"));
+        assert!(instructions.contains("vk session log"));
+    }
+
+    /// After a reset the thread still holds the dropped turns: the follow-up
+    /// branches off just before the first of them.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn follow_up_after_a_reset_forks_before_the_dropped_turns() {
+        let (thread_id, requests) = continue_against(
+            vec![
+                result(json!({ "thread": thread_json("tip", None) })),
+                result(session_json("branch", Some("tip"))),
+            ],
+            Some("dropped-turn"),
+        )
+        .await;
+
+        assert_eq!(thread_id, "branch");
+        assert_eq!(methods(&requests), ["thread/read", "thread/fork"]);
+        assert_eq!(requests[1]["params"]["threadId"], "tip");
+        assert_eq!(requests[1]["params"]["beforeTurnId"], "dropped-turn");
+    }
+
+    /// Codex refuses a second writer on a thread, e.g. while an orphaned app
+    /// server still holds it. A fork reads the thread without owning it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn follow_up_forks_when_the_thread_cannot_be_resumed() {
+        let (thread_id, requests) = continue_against(
+            vec![
+                result(json!({ "thread": thread_json("tip", None) })),
+                refusal("thread tip already has an active writer"),
+                result(session_json("forked", Some("tip"))),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(thread_id, "forked");
+        assert_eq!(
+            methods(&requests),
+            ["thread/read", "thread/resume", "thread/fork"]
+        );
+        assert!(
+            requests[2]["params"]
+                .get("beforeTurnId")
+                .is_none_or(serde_json::Value::is_null)
+        );
+    }
+
+    /// A cut Codex cannot make must not strand the session.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn follow_up_continues_when_the_dropped_turn_cannot_be_cut() {
+        let (thread_id, requests) = continue_against(
+            vec![
+                result(json!({ "thread": thread_json("tip", None) })),
+                refusal("turn dropped-turn not found"),
+                result(session_json("tip", None)),
+            ],
+            Some("dropped-turn"),
+        )
+        .await;
+
+        assert_eq!(thread_id, "tip");
+        assert_eq!(
+            methods(&requests),
+            ["thread/read", "thread/fork", "thread/resume"]
+        );
     }
 
     #[test]

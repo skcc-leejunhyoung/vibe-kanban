@@ -178,6 +178,7 @@ async fn process_one(
             prompt: row.resume_prompt.clone(),
             session_id: session_info.session_id,
             reset_to_message_id: None,
+            discard_from_message_id: session_info.discard_from_message_id,
             executor_config,
             working_dir,
         }),

@@ -23,11 +23,12 @@ use codex_app_server_protocol::{
     ReviewStartResponse, ReviewTarget, ServerRequest, SkillsListParams, SkillsListResponse,
     SortDirection, ThreadCompactStartParams, ThreadCompactStartResponse, ThreadForkParams,
     ThreadForkResponse, ThreadHistoryMode, ThreadItem, ThreadItemEntry, ThreadItemsListParams,
-    ThreadItemsListResponse, ThreadReadParams, ThreadReadResponse, ThreadStartParams,
-    ThreadStartResponse, ThreadTurnsListParams, ThreadTurnsListResponse,
-    ToolRequestUserInputAnswer, ToolRequestUserInputQuestion, ToolRequestUserInputResponse, Turn,
-    TurnCompletedNotification, TurnInterruptParams, TurnInterruptResponse, TurnItemsView,
-    TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
+    ThreadItemsListResponse, ThreadReadParams, ThreadReadResponse, ThreadResumeParams,
+    ThreadResumeResponse, ThreadStartParams, ThreadStartResponse, ThreadTurnsListParams,
+    ThreadTurnsListResponse, ToolRequestUserInputAnswer, ToolRequestUserInputQuestion,
+    ToolRequestUserInputResponse, Turn, TurnCompletedNotification, TurnInterruptParams,
+    TurnInterruptResponse, TurnItemsView, TurnStartParams, TurnStartResponse, TurnStatus,
+    UserInput,
 };
 use codex_protocol::{
     config_types::{CollaborationMode, ModeKind, Settings},
@@ -183,6 +184,17 @@ impl AppServerClient {
             params,
         };
         self.send_request(request, "thread/fork").await
+    }
+
+    pub async fn thread_resume(
+        &self,
+        params: ThreadResumeParams,
+    ) -> Result<ThreadResumeResponse, ExecutorError> {
+        let request = ClientRequest::ThreadResume {
+            request_id: self.next_request_id(),
+            params,
+        };
+        self.send_request(request, "thread/resume").await
     }
 
     pub async fn turn_start_with_mode(
@@ -1338,6 +1350,7 @@ fn request_id(request: &ClientRequest) -> RequestId {
         ClientRequest::Initialize { request_id, .. }
         | ClientRequest::ThreadStart { request_id, .. }
         | ClientRequest::ThreadFork { request_id, .. }
+        | ClientRequest::ThreadResume { request_id, .. }
         | ClientRequest::TurnStart { request_id, .. }
         | ClientRequest::TurnInterrupt { request_id, .. }
         | ClientRequest::GetAccount { request_id, .. }
