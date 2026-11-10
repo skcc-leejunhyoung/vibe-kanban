@@ -212,6 +212,32 @@ retries, origin chains, and execution deadlines are persisted in `state.json`
 so worker restarts resume them. Action requests carry an `Idempotency-Key`
 header for target APIs that support durable side-effect deduplication.
 
+One-time (`trigger.at`) routines are deleted after their action succeeds,
+including success on retry. Failed, retrying, exhausted, and skipped routines
+remain available. The latest 500 runs remain in history after routine deletion.
+Claims, idempotency records, and event receipts expire after seven days, with
+cleanup at startup and hourly, even while automation is disabled. Running work
+and pending/manual retries keep their claims. Records belonging to deleted
+routines, including occurrence markers, are removed; a live routine's last
+occurrence stays to prevent re-running a failed or condition-rejected one-shot.
+Legacy claims without a recoverable timestamp get seven days from upgrade.
+
+For `send_prompt` with `queue: true`, a routine remembers its queued message ID.
+If that ID is still in the same host session's queue, the next occurrence is
+skipped and recorded in the run's `skipped` field and worker logs. The check
+survives worker restart and prompt-template changes; after the message leaves
+the queue, the next occurrence can send again. Different routines queue
+independently. A lost response is resolved through the host action receipt.
+Claimed notifications skipped by this check are returned to the user.
+
+Condition Rules expose `await ctx.actions.vibe.hostBridgeGet('/api/...')` to
+read the routine's configured target host with the connector's authentication.
+Only GET requests to relative `/api/` paths are allowed, and host identity is
+verified before reading. For example, a condition can return
+`(await ctx.actions.vibe.hostBridgeGet('/api/sessions/<id>/queue')).data.status === 'empty'`.
+Condition Rules cannot use mutation actions, arbitrary HTTP requests, or
+artifact publication.
+
 ## Artifact channels
 
 Existing trusted Rules can publish non-sensitive dashboard snapshots with

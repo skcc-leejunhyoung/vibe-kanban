@@ -66,6 +66,7 @@ import {
   eventMatchesRoutine,
   isIndeterminateActionError,
   normalizeRoutine,
+  pruneAutomationState,
   recoverInterruptedAutomationState,
   redactEvent,
   routineRunTrigger,
@@ -278,6 +279,7 @@ const defaultState = {
   routineOccurrences: {},
   routineIdempotency: {},
   routineClaims: {},
+  routineQueuedPrompts: {},
   routineOrigins: {},
   pendingRoutineEvents: [],
   routineDeadlines: [],
@@ -444,6 +446,7 @@ async function bootstrap() {
   state = await readJson(STATE_PATH, defaultState);
   logs = await readJson(LOG_PATH, []);
   ensureDefaults();
+  pruneAutomationState(state);
   artifactChannels = createArtifactChannels({ state, persist: () => persistState(true), runRule });
   for (const snapshot of Object.values(state.routineBuffers)) for (const event of snapshot.events || []) notificationRouting.restore(event);
   for (const item of [...state.pendingRoutineEvents,...state.retryQueue]) notificationRouting.restore(item.event || {});
@@ -465,6 +468,7 @@ function ensureDefaults() {
   state.routineOccurrences ||= {};
   state.routineIdempotency ||= {};
   state.routineClaims ||= {};
+  state.routineQueuedPrompts ||= {};
   state.routineOrigins ||= {};
   state.pendingRoutineEvents ||= [];
   state.routineDeadlines ||= [];
@@ -589,14 +593,8 @@ async function route(req, res) {
 
   if (url.pathname.startsWith('/api/routines/') && req.method === 'DELETE') {
     const id = decodeURIComponent(url.pathname.split('/').pop() || '');
-    state.routines = state.routines.filter((item) => item.id !== id);
-    state.pendingRoutineEvents = state.pendingRoutineEvents.filter(
-      (item) => item.routineId !== id
-    );
-    state.retryQueue = state.retryQueue.filter(
-      (item) => item.ruleId !== `routine:${id}`
-    );
-    delete state.routineOccurrences[id];
+    removeRoutine(id);
+    pruneAutomationState(state);
     await persistState();
     sendState(res);
     return;
@@ -954,6 +952,13 @@ function scheduleAll() {
   for (const timer of timers.values()) clearInterval(timer);
   timers.clear();
 
+  timers.set('retention', setInterval(() => {
+    pruneAutomationState(state);
+    persistState().catch((error) =>
+      log('error', 'automation retention cleanup failed', { error: errorMessage(error) })
+    );
+  }, HOUR_MS));
+
   const routingTimer=setInterval(()=>reconcileNotificationRouting().catch(error=>log('warn','notification routing reconciliation failed',{error:errorMessage(error)})),20000);
   timers.set('notification-routing',routingTimer);
   reconcileNotificationRouting().catch(error=>log('warn','notification routing reconciliation failed',{error:errorMessage(error)}));
@@ -1030,7 +1035,7 @@ async function runDueRoutines() {
       event,
       `${routine.id}:${occurrence}`
     );
-    if (result.status !== 'busy') {
+    if (result.status !== 'busy' && state.routines.includes(routine)) {
       state.routineOccurrences[routine.id] = occurrence;
       await persistState();
     }
@@ -1158,8 +1163,6 @@ async function processAutomationEvent(key, event) {
   try {
     await runRules(event);
     await dispatchRoutineEvent(event);
-    // ponytail: receipts stay in the existing state file; move them to a DB
-    // only when event volume makes state-file growth measurable.
     state.eventReceipts[key].status = 'succeeded';
     await persistState();
   } catch (error) {
@@ -1175,7 +1178,11 @@ async function routineConditionMatches(routine, event) {
   const rule = state.rules.find((item) => item.id === ruleId);
   if (!rule?.enabled || rule.kind !== 'condition')
     throw new Error(`enabled condition rule not found: ${ruleId}`);
-  const result = Boolean(await runRule(rule, event, true));
+  const result = Boolean(await runRule(rule, {
+    ...event,
+    targetHostId: routine.action?.targetHostId,
+    connectorId: routine.action?.connectorId,
+  }, true));
   return routine.condition.expected === undefined
     ? result
     : result === Boolean(routine.condition.expected);
@@ -1216,21 +1223,20 @@ async function runRoutine(routine, event, idempotencyKey) {
   const run = { id: randomUUID(), routineId: routine.id, idempotencyKey, status: 'running', trigger: routineRunTrigger(event), targetHostId: routine.action?.targetHostId || null, startedAt: new Date().toISOString(), attempts: 1, maxAttempts: RETRY_MAX_ATTEMPTS, error: null };
   state.routineRuns.unshift(run);
   state.routineRuns = state.routineRuns.slice(0, MAX_LOGS);
-  state.routineClaims[idempotencyKey] = { runId: run.id, status: 'running' };
+  state.routineClaims[idempotencyKey] = { runId: run.id, routineId: routine.id, status: 'running', updatedAt: Date.now() };
   routineInFlight.add(routine.id);
   if (targetHostId) routineHostInFlight.add(targetHostId);
   try {
     await persistState(event.source === 'artifact');
-    await executeRoutineAction(routine, {
+    const result = await executeRoutineAction(routine, {
       ...event,
       routineIdempotencyKey: idempotencyKey,
     });
-    run.status = 'succeeded';
-    state.routineIdempotency[idempotencyKey] = run.id;
-    state.routineClaims[idempotencyKey].status = 'succeeded';
+    completeRoutineRun(routine, idempotencyKey, run, result);
   } catch (error) {
     run.status = event.source === 'artifact' ? 'exhausted' : 'retrying';
     state.routineClaims[idempotencyKey].status = run.status;
+    state.routineClaims[idempotencyKey].updatedAt = Date.now();
     run.error = errorMessage(error);
     if (event.source !== 'artifact') await enqueueRoutineRetry(routine, event, idempotencyKey, error);
     else if (event.kind !== 'automation.retry_exhausted')
@@ -1248,6 +1254,43 @@ async function runRoutine(routine, event, idempotencyKey) {
     await persistState();
   }
   return { ok: run.status === 'succeeded', run };
+}
+
+function removeRoutine(id) {
+  state.routines = state.routines.filter((item) => item.id !== id);
+  state.pendingRoutineEvents = state.pendingRoutineEvents.filter(
+    (item) => item.routineId !== id
+  );
+  state.retryQueue = state.retryQueue.filter(
+    (item) => item.ruleId !== `routine:${id}`
+  );
+  delete state.routineOccurrences[id];
+  delete state.routineBuffers[id];
+  delete state.routineQueuedPrompts[id];
+}
+
+function completeRoutineRun(routine, key, run, result) {
+  const claim = (state.routineClaims[key] ||= {
+    runId: run?.id || randomUUID(),
+  });
+  Object.assign(claim, {
+    routineId: routine.id,
+    status: 'succeeded',
+    updatedAt: Date.now(),
+  });
+  state.routineIdempotency[key] = claim.runId;
+  if (run) {
+    run.status = 'succeeded';
+    run.error = null;
+    if (result?.skipped) run.skipped = result.skipped;
+  }
+  if (
+    routine.trigger?.type === 'schedule' &&
+    routine.trigger.at &&
+    !result?.skipped &&
+    state.routines.includes(routine)
+  )
+    removeRoutine(routine.id);
 }
 
 async function restoreInterruptedRoutineRuns() {
@@ -1355,20 +1398,138 @@ async function executeRoutineAction(routine, event) {
       if (!executorConfig?.executor)
         throw new Error('autopilot executor config is unavailable; set input.executor_config');
     }
+    const queued = state.routineQueuedPrompts[routine.id];
+    if (
+      queue &&
+      queued?.sessionId === sessionId &&
+      queued.targetHostId === action.targetHostId
+    ) {
+      let receipt;
+      if (!queued.messageId && queued.idempotencyKey) {
+        receipt = await vibeApi(
+          connector,
+          'GET',
+          `/api/automation-actions/receipts/${encodeURIComponent(queued.idempotencyKey)}`,
+          undefined,
+          bridge.baseUrl
+        );
+        if (!['missing', 'succeeded'].includes(receipt.status))
+          throw new Error(
+            'previous queued prompt has an indeterminate action outcome'
+          );
+        const accepted = receipt.response?.data?.messages?.findLast(
+          (item) =>
+            createHash('sha256').update(item.data.message).digest('hex') ===
+            queued.promptHash
+        );
+        if (accepted) queued.messageId = accepted.id;
+      }
+      const pending = await vibeApi(
+        connector,
+        'GET',
+        `/api/sessions/${encodeURIComponent(sessionId)}/queue`,
+        undefined,
+        bridge.baseUrl
+      );
+      if (!['empty', 'queued'].includes(pending?.data?.status))
+        throw new Error('session queue status is unavailable');
+      if (
+        !queued.messageId &&
+        receipt?.status === 'succeeded' &&
+        receipt.action === 'notification_handoff'
+      ) {
+        queued.messageId = pending.data.messages?.findLast(
+          (item) =>
+            createHash('sha256').update(item.data.message).digest('hex') ===
+            queued.promptHash
+        )?.id;
+      }
+      if (
+        pending.data.messages?.some(
+          (message) => message.id === queued.messageId
+        )
+      ) {
+        await releaseClaimedNotifications(routine, event);
+        await log(
+          'info',
+          'send_prompt skipped: previous routine prompt is still queued',
+          {
+            routineId: routine.id,
+            sessionId,
+            messageId: queued.messageId,
+          }
+        );
+        return { skipped: 'previous routine prompt is still queued' };
+      }
+    }
+    let queuedPrompt;
     const build = (event) => {
       const message = renderPromptTemplate(prompt, event);
+      queuedPrompt = message;
       return {
-        path:`/api/sessions/${encodeURIComponent(sessionId)}/${queue?'queue':'follow-up'}`,
-        payload:queue?{message,executor_config:executorConfig}:{...payload,prompt:message,executor_config:executorConfig},
+        path: `/api/sessions/${encodeURIComponent(sessionId)}/${queue ? 'queue' : 'follow-up'}`,
+        payload: queue
+          ? { message, executor_config: executorConfig }
+          : { ...payload, prompt: message, executor_config: executorConfig },
         meta,
       };
     };
+    if (queue) {
+      // Persist intent before delivery so a lost reply can recover the host's queue receipt.
+      state.routineQueuedPrompts[routine.id] = {
+        sessionId,
+        targetHostId: action.targetHostId,
+        idempotencyKey: meta.idempotencyKey,
+        promptHash: createHash('sha256')
+          .update(build(event).payload.message)
+          .digest('hex'),
+      };
+      // Claimed notifications already have durable intent in the central handoff protocol.
+      const claimed =
+        !explicitSessionId &&
+        (event.events || [event]).some((item) => item.notificationClaim);
+      await persistState(!claimed);
+    }
     const delivery = explicitSessionId && build(event);
     const result = !explicitSessionId
-      ? await notificationRouting.deliver(routine,event,build)
-      : await vibeApi(connector,'POST',delivery.path,delivery.payload,bridge.baseUrl,meta);
+      ? await notificationRouting.deliver(routine, event, build)
+      : await vibeApi(
+          connector,
+          'POST',
+          delivery.path,
+          delivery.payload,
+          bridge.baseUrl,
+          meta
+        );
     if (result?.skipped)
-      await log('info', `send_prompt skipped: ${result.skipped}`, { routineId: routine.id });
+      await log('info', `send_prompt skipped: ${result.skipped}`, {
+        routineId: routine.id,
+      });
+    if (queue && !result?.skipped) {
+      const pending =
+        result?.data ||
+        (
+          await vibeApi(
+            connector,
+            'GET',
+            `/api/sessions/${encodeURIComponent(sessionId)}/queue`,
+            undefined,
+            bridge.baseUrl
+          )
+        )?.data;
+      if (!['empty', 'queued'].includes(pending?.status))
+        throw new Error('session queue status is unavailable after delivery');
+      const message = pending.messages?.findLast(
+        (item) => item.data?.message === queuedPrompt
+      );
+      if (message)
+        state.routineQueuedPrompts[routine.id] = {
+          sessionId,
+          targetHostId: action.targetHostId,
+          messageId: message.id,
+        };
+      else delete state.routineQueuedPrompts[routine.id];
+    }
     await rememberRoutineOrigin(result?.data?.id, meta);
     return result;
   }
@@ -1534,7 +1695,6 @@ async function pollVibeEvents(connector) {
     await persistState();
     if (events.length < limit) break;
   }
-  pruneEventReceipts();
   if (processed > 0) {
     await log('info', 'vibe journal events processed', {
       connectorId: connector.id,
@@ -1542,18 +1702,6 @@ async function pollVibeEvents(connector) {
     });
   }
   return { ok: true, processed, cursor: config.cursor };
-}
-
-// ponytail: journal events arrive far more often than issue events, so drop
-// receipts older than a week once the map is large; move receipts to a DB if
-// the state file still grows too much.
-function pruneEventReceipts() {
-  const entries = Object.entries(state.eventReceipts || {});
-  if (entries.length < 5000) return;
-  const cutoff = Date.now() - 7 * 24 * HOUR_MS;
-  for (const [key, receipt] of entries) {
-    if ((receipt?.receivedAt || 0) < cutoff) delete state.eventReceipts[key];
-  }
 }
 
 async function pollSlack(connector) {
@@ -4395,19 +4543,15 @@ async function processRetryQueue({
     summary.retried += 1;
     try {
       if (routine) {
-        await executeRoutineAction(routine, item.event);
+        const result = await executeRoutineAction(routine, item.event);
         const run = state.routineRuns.find(
           (entry) => entry.idempotencyKey === item.event.routineIdempotencyKey
         );
         if (run) {
-          run.status = 'succeeded';
-          run.error = null;
           run.attempts = item.attempts + 1;
           run.finishedAt = new Date().toISOString();
-          state.routineIdempotency[item.event.routineIdempotencyKey] = run.id;
-          if (state.routineClaims[item.event.routineIdempotencyKey])
-            state.routineClaims[item.event.routineIdempotencyKey].status = 'succeeded';
         }
+        completeRoutineRun(routine, item.event.routineIdempotencyKey, run, result);
       } else {
         await runRule(rule, item.event);
       }
@@ -4455,7 +4599,7 @@ async function processRetryQueue({
             run.attempts = item.attempts;
             run.finishedAt = new Date().toISOString();
             if (state.routineClaims[item.event.routineIdempotencyKey])
-              state.routineClaims[item.event.routineIdempotencyKey].status = 'exhausted';
+              Object.assign(state.routineClaims[item.event.routineIdempotencyKey], { status: 'exhausted', updatedAt: Date.now() });
           }
           if (deliversToAutopilot(routine))
             await releaseClaimedNotifications(routine, item.event);
@@ -4543,6 +4687,21 @@ function createRuleContext(rule, event, conditionOnly = false) {
     },
     actions: {
       vibe: {
+        hostBridgeGet: async (apiPath) => {
+          if (!event.targetHostId || !event.connectorId)
+            throw new Error('Host reads require a bound routine');
+          const connector = findConnector(event.connectorId);
+          const bridge = connector.config?.hostBridges?.[event.targetHostId];
+          if (!connector.enabled || connector.type !== 'vibe_kanban' || !bridge?.baseUrl)
+            throw new Error('Routine host is unavailable');
+          const url = new URL(apiPath, bridge.baseUrl);
+          if (typeof apiPath !== 'string' || !apiPath.startsWith('/api/') ||
+            url.origin !== new URL(bridge.baseUrl).origin || !url.pathname.startsWith('/api/'))
+            throw new Error('Host reads require a relative /api/ path');
+          const host = await vibeApi(connector, 'GET', '/api/automation-actions/status', undefined, bridge.baseUrl);
+          if (host?.hostId !== event.targetHostId) throw new Error('Routine host identity mismatch');
+          return vibeApi(connector, 'GET', apiPath, undefined, bridge.baseUrl);
+        },
         readAgentUsage: async (agent) => {
           if (event.source !== 'routine' || !event.targetHostId || !['CLAUDE_CODE', 'CODEX'].includes(agent))
             throw new Error('Usage reads require a bound routine and a supported agent');
@@ -4581,7 +4740,7 @@ function createRuleContext(rule, event, conditionOnly = false) {
     },
   };
   if (conditionOnly) {
-    delete context.actions;
+    context.actions = { vibe: { hostBridgeGet: context.actions.vibe.hostBridgeGet } };
     delete context.artifacts;
   }
   return context;

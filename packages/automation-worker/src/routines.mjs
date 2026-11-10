@@ -253,6 +253,73 @@ export function isIndeterminateActionError(error) {
   return /409[\s\S]*automation action is already running/i.test(String(error));
 }
 
+export function pruneAutomationState(state, now = Date.now()) {
+  const cutoff = now - 7 * 24 * 3600000;
+  const routines = new Map(
+    (state.routines || []).map((routine) => [routine.id, routine])
+  );
+  const routineIds = [...routines.keys()];
+  const runs = new Map((state.routineRuns || []).map((run) => [run.id, run]));
+  state.pendingRoutineEvents = (state.pendingRoutineEvents || []).filter(
+    (item) => routines.has(item.routineId)
+  );
+  state.retryQueue = (state.retryQueue || []).filter(
+    (item) =>
+      !item.ruleId?.startsWith('routine:') ||
+      routines.has(item.ruleId.slice('routine:'.length))
+  );
+  const pending = new Map([
+    ...(state.pendingRoutineEvents || []).map((item) => [
+      item.idempotencyKey,
+      item.routineId,
+    ]),
+    ...(state.retryQueue || []).map((item) => [
+      item.event?.routineIdempotencyKey,
+      item.event?.routineId,
+    ]),
+  ]);
+  const claims = (state.routineClaims ||= {});
+  const idempotency = (state.routineIdempotency ||= {});
+  for (const key of new Set([
+    ...Object.keys(claims),
+    ...Object.keys(idempotency),
+  ])) {
+    const claim = (claims[key] ||= {
+      runId: idempotency[key],
+      status: 'succeeded',
+    });
+    const run = runs.get(claim.runId);
+    // Legacy entries without a retained run get one full retention window.
+    claim.routineId ||=
+      run?.routineId ||
+      pending.get(key) ||
+      routineIds.find((id) => key.startsWith(`${id}:`)) ||
+      /^(.*):(?:once|cron):/.exec(key)?.[1];
+    claim.updatedAt ||= Date.parse(run?.finishedAt || run?.startedAt) || now;
+    if (claim.status === 'running' || pending.has(key)) continue;
+    if (
+      (claim.routineId && !routines.has(claim.routineId)) ||
+      claim.updatedAt < cutoff
+    ) {
+      delete claims[key];
+      delete idempotency[key];
+    }
+  }
+  for (const [key, receipt] of Object.entries(state.eventReceipts || {})) {
+    if (receipt.status !== 'running' && (receipt.receivedAt || 0) < cutoff)
+      delete state.eventReceipts[key];
+  }
+  // A live routine's last occurrence also fences false conditions and failed one-shots.
+  for (const field of [
+    'routineOccurrences',
+    'routineBuffers',
+    'routineQueuedPrompts',
+  ]) {
+    for (const id of Object.keys(state[field] || {}))
+      if (!routines.has(id)) delete state[field][id];
+  }
+}
+
 export function recoverInterruptedAutomationState(state) {
   for (const buffer of Object.values(state.routineBuffers || {}))
     buffer.events = (buffer.events || []).map(sanitizeNotificationEvent);
@@ -263,13 +330,24 @@ export function recoverInterruptedAutomationState(state) {
   for (const receipt of Object.values(state.eventReceipts || {})) {
     if (receipt.status === 'running') receipt.status = 'indeterminate';
   }
+  for (const claim of Object.values(state.routineClaims || {})) {
+    if (claim.status !== 'running') continue;
+    claim.status = 'exhausted';
+    claim.updatedAt = Date.now();
+  }
   for (const run of state.routineRuns || []) {
     if (run.trigger) run.trigger = sanitizeNotificationEvent(run.trigger);
     if (run.status !== 'running' || !run.idempotencyKey) continue;
     run.status = 'exhausted';
     run.error = 'interrupted with an indeterminate action outcome; review the target before running again';
     run.finishedAt ||= new Date().toISOString();
-    state.routineClaims[run.idempotencyKey] = { runId: run.id, status: 'exhausted' };
+    state.routineClaims[run.idempotencyKey] = {
+      ...state.routineClaims[run.idempotencyKey],
+      runId: run.id,
+      routineId: run.routineId,
+      status: 'exhausted',
+      updatedAt: Date.now(),
+    };
   }
 }
 
