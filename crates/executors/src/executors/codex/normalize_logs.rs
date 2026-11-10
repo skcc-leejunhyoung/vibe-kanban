@@ -761,6 +761,15 @@ fn accept_root_thread(state: &mut LogState, thread_id: &str) -> bool {
     true
 }
 
+/// The first turn a run starts on its thread (`turn/start`, `review/start`,
+/// or a `/compact`, which only announces its turn) is where the thread is cut
+/// off if the run is dropped: later runs resume the same thread.
+fn report_first_turn(state: &mut LogState, msg_store: &ThrottledMsgStore, turn_id: &str) {
+    if !std::mem::replace(&mut state.first_turn_reported, true) {
+        msg_store.push_message_id(turn_id.to_string());
+    }
+}
+
 enum UpdateMode {
     Append,
     Set,
@@ -1989,8 +1998,11 @@ fn handle_direct_notification(
         }
         ServerNotification::FileChangeOutputDelta(FileChangeOutputDeltaNotification { .. })
         | ServerNotification::McpToolCallProgress(McpToolCallProgressNotification { .. })
-        | ServerNotification::ThreadStatusChanged(..)
-        | ServerNotification::TurnStarted(..) => true,
+        | ServerNotification::ThreadStatusChanged(..) => true,
+        ServerNotification::TurnStarted(notification) => {
+            report_first_turn(state, msg_store, &notification.turn.id);
+            true
+        }
         ServerNotification::ItemStarted(notification) => {
             handle_direct_item_started(notification, state, msg_store, entry_index, worktree_path);
             true
@@ -3044,18 +3056,13 @@ fn handle_jsonrpc_response(
     entry_index: &EntryIndexProvider,
     state: &mut LogState,
 ) {
-    // The first turn the run starts (`turn/start`, `review/start`) is where
-    // its thread is cut off if the run is dropped: later runs resume the same
-    // thread.
     if let Some(turn_id) = response
         .result
         .get("turn")
         .and_then(|turn| turn.get("id"))
         .and_then(Value::as_str)
     {
-        if !std::mem::replace(&mut state.first_turn_reported, true) {
-            msg_store.push_message_id(turn_id.to_string());
-        }
+        report_first_turn(state, msg_store, turn_id);
         return;
     }
     if let Ok(resp) = super::compat::decode::<ThreadStartResponse>(response.result.clone()) {
@@ -4217,11 +4224,9 @@ mod tests {
         .to_string()
     }
 
-    /// A resumed thread keeps its id across runs: the session id comes from
-    /// the `thread/resume` response, and the run's first turn is recorded so a
-    /// later reset can cut the thread off before it.
-    #[tokio::test]
-    async fn resumed_run_reports_its_thread_and_first_turn() {
+    /// `thread/resume` of `thread-1`, followed by `lines`; returns the session
+    /// and message ids the run reports.
+    async fn ids_reported_after_resume(lines: &[String]) -> Vec<String> {
         let thread = json!({
             "id": "thread-1", "sessionId": "thread-1", "forkedFromId": null,
             "preview": "", "ephemeral": false, "historyMode": "paginated",
@@ -4236,14 +4241,9 @@ mod tests {
             "reasoningEffort": "low", "collaborationMode": null,
             "multiAgentMode": "explicitRequestOnly", "turnsBackwardsCursor": null
         }});
-        let turn = |id: &str| {
-            json!({"id": 4, "result": {"turn": {
-                "id": id, "items": [], "status": "inProgress", "error": null
-            }}})
-            .to_string()
-        };
         let msg_store = Arc::new(MsgStore::new());
-        for line in [resume.to_string(), turn("turn-1"), turn("reminder-turn")] {
+        msg_store.push_stdout(format!("{resume}\n"));
+        for line in lines {
             msg_store.push_stdout(format!("{line}\n"));
         }
         msg_store.push_finished();
@@ -4251,7 +4251,7 @@ mod tests {
             handle.await.unwrap();
         }
 
-        let ids: Vec<_> = msg_store
+        msg_store
             .get_history()
             .into_iter()
             .filter_map(|msg| match msg {
@@ -4259,8 +4259,44 @@ mod tests {
                 LogMsg::MessageId(id) => Some(format!("message {id}")),
                 _ => None,
             })
-            .collect();
-        assert_eq!(ids, ["session thread-1", "message turn-1"]);
+            .collect()
+    }
+
+    fn turn_json(id: &str) -> Value {
+        json!({"id": id, "items": [], "status": "inProgress", "error": null})
+    }
+
+    /// A resumed thread keeps its id across runs: the session id comes from
+    /// the `thread/resume` response, and the run's first turn is recorded so a
+    /// later reset can cut the thread off before it.
+    #[tokio::test]
+    async fn resumed_run_reports_its_thread_and_first_turn() {
+        let turn = |id: &str| json!({"id": 4, "result": {"turn": turn_json(id)}}).to_string();
+        assert_eq!(
+            ids_reported_after_resume(&[turn("turn-1"), turn("reminder-turn")]).await,
+            ["session thread-1", "message turn-1"]
+        );
+    }
+
+    /// `/compact` starts its turn without a `turn/start` response: the turn
+    /// is taken from its `turn/started` notification, not a child thread's.
+    #[tokio::test]
+    async fn compact_run_reports_its_compaction_turn() {
+        let started = |thread: &str, turn: &str| {
+            json!({"method": "turn/started", "params": {
+                "threadId": thread, "turn": turn_json(turn)
+            }})
+            .to_string()
+        };
+        assert_eq!(
+            ids_reported_after_resume(&[
+                json!({"id": 4, "result": {}}).to_string(),
+                started("child-thread", "child-turn"),
+                started("thread-1", "compaction-turn"),
+            ])
+            .await,
+            ["session thread-1", "message compaction-turn"]
+        );
     }
 
     fn thread_started_line(id: &str) -> String {
