@@ -358,7 +358,15 @@ export function useDialogKeyboard({
       if (event.defaultPrevented || !isDialogConfirmKey(event)) return;
       if (!isTopLayer()) return;
       const container = getContainer();
-      if (!container || !container.contains(event.target as Node)) return;
+      // Escape may blur to body; a closing menu still owns its event.
+      if (
+        !container ||
+        (event.target !== document.body &&
+          event.target !== document.documentElement &&
+          !container.contains(event.target as Node))
+      ) {
+        return;
+      }
       const primary = findDialogPrimaryAction(container);
       if (!primary) return;
       event.preventDefault();

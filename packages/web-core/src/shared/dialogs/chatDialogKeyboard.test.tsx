@@ -12,17 +12,23 @@ vi.mock('@vibe/ui/components/DialogFocusScope', () => ({
 }));
 vi.mock('@vibe/ui/lib/modal-keyboard', () => ({
   useModalKeyboardLayer: () => ({
-    isTopLayer: () => true,
+    isTopLayer: () => topLayer,
     isOverPointerBlockingLayer: () => false,
   }),
 }));
 
 let dom: ReturnType<typeof installFakeDomReact>;
 let dialog: HTMLDivElement;
+let topLayer = true;
 const send = vi.fn();
 
 beforeEach(async () => {
   dom = installFakeDomReact();
+  Object.assign(document, {
+    body: document.createElement('body'),
+    documentElement: document.createElement('html'),
+  });
+  topLayer = true;
   send.mockClear();
   const ref = createRef<HTMLDivElement>();
   await dom.render(<Dialog open ref={ref} />);
@@ -75,6 +81,45 @@ describe('chat dialog keyboard submission', () => {
   it.each(['metaKey', 'ctrlKey'])('submits once with %s+Enter', (modifier) => {
     expect(press({ [modifier]: true }).defaultPrevented).toBe(true);
     expect(send).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['body', 'metaKey'],
+    ['body', 'ctrlKey'],
+    ['documentElement', 'metaKey'],
+    ['documentElement', 'ctrlKey'],
+  ] as const)(
+    'submits once from %s with %s+Enter after the composer blurs',
+    (target, modifier) => {
+      Object.defineProperty(document, 'activeElement', {
+        configurable: true,
+        value: document[target],
+      });
+      expect(
+        press({ target: document[target], [modifier]: true }).defaultPrevented
+      ).toBe(true);
+      expect(send).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('leaves document confirm keys to the top dialog', () => {
+    topLayer = false;
+    expect(
+      press({ target: document.body, metaKey: true }).defaultPrevented
+    ).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('leaves a portaled menu event alone when its close blurred focus', () => {
+    Object.defineProperty(document, 'activeElement', {
+      configurable: true,
+      value: document.body,
+    });
+    expect(
+      press({ target: document.createElement('div'), metaKey: true })
+        .defaultPrevented
+    ).toBe(false);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('leaves portaled menu events alone even after focus returns to the dialog', () => {
