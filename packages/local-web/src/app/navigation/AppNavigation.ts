@@ -36,7 +36,7 @@ function parseLocalHostIdFromPathname(pathname: string): string | null {
 function resolveLocalDestinationFromPath(path: string): AppDestination | null {
   const url = new URL(path, 'http://localhost');
   const { pathname } = url;
-  const { foundRoute, routeParams } = router.getMatchedRoutes(pathname);
+  const [, routeParams, foundRoute] = router.getMatchedRoutes(pathname);
 
   if (!foundRoute) {
     return null;

@@ -46,9 +46,8 @@
     "@tanstack/react-db": "^0.1.50",
     "@tanstack/react-form": "^1.23.8",
     "@tanstack/react-query": "^5.85.5",
-    "@tanstack/react-router": "^1.161.1",
+    "@tanstack/react-router": "^1.170.46",
     "@tanstack/react-virtual": "^3.13.23",
-    "@tanstack/zod-adapter": "^1.161.1",
     "@uiw/react-codemirror": "^4.25.1",
     "@vibe/ui": "workspace:*",
     "@xterm/addon-fit": "^0.10.0",
@@ -88,7 +87,7 @@
     "simple-icons": "^15.16.0",
     "tailwind-merge": "^2.2.0",
     "wa-sqlite": "^1.0.0",
-    "zod": "^3.25.76",
+    "zod": "^4.6.6",
     "zustand": "^4.5.4"
   },
   "scripts": {
@@ -103,7 +102,7 @@
     "@rjsf/utils": "6.1.1",
     "@rjsf/validator-ajv8": "6.1.1",
     "@tailwindcss/container-queries": "^0.1.1",
-    "@tanstack/router-plugin": "^1.161.1",
+    "@tanstack/router-plugin": "^1.169.0",
     "@types/lodash": "^4.17.20",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",

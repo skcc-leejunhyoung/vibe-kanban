@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
-import { zodValidator } from "@tanstack/zod-adapter";
 import LoginCompletePage from "../pages/LoginCompletePage";
 
 const searchSchema = z.object({
@@ -13,5 +12,5 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute("/account_/complete")({
   component: LoginCompletePage,
-  validateSearch: zodValidator(searchSchema),
+  validateSearch: searchSchema,
 });

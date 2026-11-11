@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { zodValidator } from "@tanstack/zod-adapter";
 import { z } from "zod";
 import { redirectAuthenticatedToHome } from "@remote/shared/lib/route-auth";
 import LoginPage from "../pages/LoginPage";
@@ -10,7 +9,7 @@ const searchSchema = z.object({
 });
 
 export const Route = createFileRoute("/account")({
-  validateSearch: zodValidator(searchSchema),
+  validateSearch: searchSchema,
   beforeLoad: async ({ search }) => {
     if (!search.reauthenticate) await redirectAuthenticatedToHome();
   },

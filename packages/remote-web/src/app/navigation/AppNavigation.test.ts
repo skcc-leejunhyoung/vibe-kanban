@@ -29,10 +29,7 @@ describe("remote pull request navigation", () => {
     ["/pull-requests", "/pull-requests"],
     ["/hosts/host-1/pull-requests", "/hosts/$hostId/pull-requests"],
   ])("preserves PR deep links resolved from %s", (pathname, routeId) => {
-    getMatchedRoutes.mockReturnValue({
-      foundRoute: { id: routeId },
-      routeParams: {},
-    });
+    getMatchedRoutes.mockReturnValue([[], {}, { id: routeId }]);
     const prUrl = "https://github.com/acme/widgets/pull/42?view=files";
 
     expect(
@@ -44,10 +41,7 @@ describe("remote pull request navigation", () => {
   });
 
   it("resolves and opens the Drawer page on a note", () => {
-    getMatchedRoutes.mockReturnValue({
-      foundRoute: { id: "/drawer" },
-      routeParams: {},
-    });
+    getMatchedRoutes.mockReturnValue([[], {}, { id: "/drawer" }]);
     expect(resolveRemoteDestinationFromPath("/drawer?note=n1")).toEqual({
       kind: "drawer",
       noteId: "n1",

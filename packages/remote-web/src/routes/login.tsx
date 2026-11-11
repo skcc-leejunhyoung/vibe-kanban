@@ -1,5 +1,4 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { zodValidator } from "@tanstack/zod-adapter";
 import { z } from "zod";
 
 const searchSchema = z.object({
@@ -7,7 +6,7 @@ const searchSchema = z.object({
 });
 
 export const Route = createFileRoute("/login")({
-  validateSearch: zodValidator(searchSchema),
+  validateSearch: searchSchema,
   beforeLoad: ({ search }) => {
     throw redirect({
       to: "/account",

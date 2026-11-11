@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { zodValidator } from "@tanstack/zod-adapter";
 import { z } from "zod";
 import { requireAuthenticated } from "@remote/shared/lib/route-auth";
 import HomePage from "../pages/HomePage";
@@ -9,7 +8,7 @@ const searchSchema = z.object({
 });
 
 export const Route = createFileRoute("/")({
-  validateSearch: zodValidator(searchSchema),
+  validateSearch: searchSchema,
   beforeLoad: async ({ location }) => {
     await requireAuthenticated(location);
   },

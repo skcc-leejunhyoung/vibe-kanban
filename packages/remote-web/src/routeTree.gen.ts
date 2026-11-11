@@ -9,59 +9,34 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as WorkspacesRouteImport } from './routes/workspaces'
-import { Route as PullRequestsRouteImport } from './routes/pull-requests'
-import { Route as NotificationsRouteImport } from './routes/notifications'
-import { Route as LoginRouteImport } from './routes/login'
-import { Route as ExportRouteImport } from './routes/export'
-import { Route as DrawerRouteImport } from './routes/drawer'
-import { Route as AccountRouteImport } from './routes/account'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as WorkspaceWorkspaceIdRouteImport } from './routes/workspace.$workspaceId'
-import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
-import { Route as LoginCompleteRouteImport } from './routes/login_.complete'
+import { Route as AccountRouteImport } from './routes/account'
+import { Route as DrawerRouteImport } from './routes/drawer'
+import { Route as ExportRouteImport } from './routes/export'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as NotificationsRouteImport } from './routes/notifications'
+import { Route as PullRequestsRouteImport } from './routes/pull-requests'
+import { Route as WorkspacesRouteImport } from './routes/workspaces'
 import { Route as AccountCompleteRouteImport } from './routes/account_.complete'
-import { Route as InvitationsTokenCompleteRouteImport } from './routes/invitations.$token.complete'
-import { Route as InvitationsTokenAcceptRouteImport } from './routes/invitations.$token.accept'
-import { Route as HostsHostIdWorkspacesRouteImport } from './routes/hosts.$hostId.workspaces'
-import { Route as HostsHostIdPullRequestsRouteImport } from './routes/hosts.$hostId.pull-requests'
+import { Route as LoginCompleteRouteImport } from './routes/login_.complete'
+import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
+import { Route as WorkspaceWorkspaceIdRouteImport } from './routes/workspace.$workspaceId'
 import { Route as AccountOrganizationsOrgIdRouteImport } from './routes/account_.organizations.$orgId'
-import { Route as ProjectsProjectIdIssuesIssueIdRouteImport } from './routes/projects.$projectId_.issues.$issueId'
-import { Route as HostsHostIdWorkspacesCreateRouteImport } from './routes/hosts.$hostId.workspaces_.create'
+import { Route as HostsHostIdPullRequestsRouteImport } from './routes/hosts.$hostId.pull-requests'
+import { Route as HostsHostIdWorkspacesRouteImport } from './routes/hosts.$hostId.workspaces'
+import { Route as InvitationsTokenAcceptRouteImport } from './routes/invitations.$token.accept'
+import { Route as InvitationsTokenCompleteRouteImport } from './routes/invitations.$token.complete'
 import { Route as HostsHostIdWorkspacesWorkspaceIdRouteImport } from './routes/hosts.$hostId.workspaces_.$workspaceId'
+import { Route as HostsHostIdWorkspacesCreateRouteImport } from './routes/hosts.$hostId.workspaces_.create'
+import { Route as ProjectsProjectIdIssuesIssueIdRouteImport } from './routes/projects.$projectId_.issues.$issueId'
 import { Route as HostsHostIdWorkspacesWorkspaceIdVscodeRouteImport } from './routes/hosts.$hostId.workspaces.$workspaceId.vscode'
 import { Route as ProjectsProjectIdHostsHostIdWorkspacesCreateDraftIdRouteImport } from './routes/projects.$projectId_.hosts.$hostId.workspaces.create.$draftId'
 import { Route as ProjectsProjectIdIssuesIssueIdHostsHostIdWorkspacesWorkspaceIdRouteImport } from './routes/projects.$projectId_.issues.$issueId_.hosts.$hostId.workspaces.$workspaceId'
 import { Route as ProjectsProjectIdIssuesIssueIdHostsHostIdWorkspacesCreateDraftIdRouteImport } from './routes/projects.$projectId_.issues.$issueId_.hosts.$hostId.workspaces.create.$draftId'
 
-const WorkspacesRoute = WorkspacesRouteImport.update({
-  id: '/workspaces',
-  path: '/workspaces',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PullRequestsRoute = PullRequestsRouteImport.update({
-  id: '/pull-requests',
-  path: '/pull-requests',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const NotificationsRoute = NotificationsRouteImport.update({
-  id: '/notifications',
-  path: '/notifications',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ExportRoute = ExportRouteImport.update({
-  id: '/export',
-  path: '/export',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DrawerRoute = DrawerRouteImport.update({
-  id: '/drawer',
-  path: '/drawer',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AccountRoute = AccountRouteImport.update({
@@ -69,24 +44,34 @@ const AccountRoute = AccountRouteImport.update({
   path: '/account',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const DrawerRoute = DrawerRouteImport.update({
+  id: '/drawer',
+  path: '/drawer',
   getParentRoute: () => rootRouteImport,
 } as any)
-const WorkspaceWorkspaceIdRoute = WorkspaceWorkspaceIdRouteImport.update({
-  id: '/workspace/$workspaceId',
-  path: '/workspace/$workspaceId',
+const ExportRoute = ExportRouteImport.update({
+  id: '/export',
+  path: '/export',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
-  id: '/projects/$projectId',
-  path: '/projects/$projectId',
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const LoginCompleteRoute = LoginCompleteRouteImport.update({
-  id: '/login_/complete',
-  path: '/login/complete',
+const NotificationsRoute = NotificationsRouteImport.update({
+  id: '/notifications',
+  path: '/notifications',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PullRequestsRoute = PullRequestsRouteImport.update({
+  id: '/pull-requests',
+  path: '/pull-requests',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WorkspacesRoute = WorkspacesRouteImport.update({
+  id: '/workspaces',
+  path: '/workspaces',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AccountCompleteRoute = AccountCompleteRouteImport.update({
@@ -94,25 +79,19 @@ const AccountCompleteRoute = AccountCompleteRouteImport.update({
   path: '/account/complete',
   getParentRoute: () => rootRouteImport,
 } as any)
-const InvitationsTokenCompleteRoute =
-  InvitationsTokenCompleteRouteImport.update({
-    id: '/invitations/$token/complete',
-    path: '/invitations/$token/complete',
-    getParentRoute: () => rootRouteImport,
-  } as any)
-const InvitationsTokenAcceptRoute = InvitationsTokenAcceptRouteImport.update({
-  id: '/invitations/$token/accept',
-  path: '/invitations/$token/accept',
+const LoginCompleteRoute = LoginCompleteRouteImport.update({
+  id: '/login_/complete',
+  path: '/login/complete',
   getParentRoute: () => rootRouteImport,
 } as any)
-const HostsHostIdWorkspacesRoute = HostsHostIdWorkspacesRouteImport.update({
-  id: '/hosts/$hostId/workspaces',
-  path: '/hosts/$hostId/workspaces',
+const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
+  id: '/projects/$projectId',
+  path: '/projects/$projectId',
   getParentRoute: () => rootRouteImport,
 } as any)
-const HostsHostIdPullRequestsRoute = HostsHostIdPullRequestsRouteImport.update({
-  id: '/hosts/$hostId/pull-requests',
-  path: '/hosts/$hostId/pull-requests',
+const WorkspaceWorkspaceIdRoute = WorkspaceWorkspaceIdRouteImport.update({
+  id: '/workspace/$workspaceId',
+  path: '/workspace/$workspaceId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AccountOrganizationsOrgIdRoute =
@@ -121,10 +100,31 @@ const AccountOrganizationsOrgIdRoute =
     path: '/account/organizations/$orgId',
     getParentRoute: () => rootRouteImport,
   } as any)
-const ProjectsProjectIdIssuesIssueIdRoute =
-  ProjectsProjectIdIssuesIssueIdRouteImport.update({
-    id: '/projects/$projectId_/issues/$issueId',
-    path: '/projects/$projectId/issues/$issueId',
+const HostsHostIdPullRequestsRoute = HostsHostIdPullRequestsRouteImport.update({
+  id: '/hosts/$hostId/pull-requests',
+  path: '/hosts/$hostId/pull-requests',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HostsHostIdWorkspacesRoute = HostsHostIdWorkspacesRouteImport.update({
+  id: '/hosts/$hostId/workspaces',
+  path: '/hosts/$hostId/workspaces',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InvitationsTokenAcceptRoute = InvitationsTokenAcceptRouteImport.update({
+  id: '/invitations/$token/accept',
+  path: '/invitations/$token/accept',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InvitationsTokenCompleteRoute =
+  InvitationsTokenCompleteRouteImport.update({
+    id: '/invitations/$token/complete',
+    path: '/invitations/$token/complete',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const HostsHostIdWorkspacesWorkspaceIdRoute =
+  HostsHostIdWorkspacesWorkspaceIdRouteImport.update({
+    id: '/hosts/$hostId/workspaces_/$workspaceId',
+    path: '/hosts/$hostId/workspaces/$workspaceId',
     getParentRoute: () => rootRouteImport,
   } as any)
 const HostsHostIdWorkspacesCreateRoute =
@@ -133,10 +133,10 @@ const HostsHostIdWorkspacesCreateRoute =
     path: '/hosts/$hostId/workspaces/create',
     getParentRoute: () => rootRouteImport,
   } as any)
-const HostsHostIdWorkspacesWorkspaceIdRoute =
-  HostsHostIdWorkspacesWorkspaceIdRouteImport.update({
-    id: '/hosts/$hostId/workspaces_/$workspaceId',
-    path: '/hosts/$hostId/workspaces/$workspaceId',
+const ProjectsProjectIdIssuesIssueIdRoute =
+  ProjectsProjectIdIssuesIssueIdRouteImport.update({
+    id: '/projects/$projectId_/issues/$issueId',
+    path: '/projects/$projectId/issues/$issueId',
     getParentRoute: () => rootRouteImport,
   } as any)
 const HostsHostIdWorkspacesWorkspaceIdVscodeRoute =
@@ -356,46 +356,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/workspaces': {
-      id: '/workspaces'
-      path: '/workspaces'
-      fullPath: '/workspaces'
-      preLoaderRoute: typeof WorkspacesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/pull-requests': {
-      id: '/pull-requests'
-      path: '/pull-requests'
-      fullPath: '/pull-requests'
-      preLoaderRoute: typeof PullRequestsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/notifications': {
-      id: '/notifications'
-      path: '/notifications'
-      fullPath: '/notifications'
-      preLoaderRoute: typeof NotificationsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/export': {
-      id: '/export'
-      path: '/export'
-      fullPath: '/export'
-      preLoaderRoute: typeof ExportRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/drawer': {
-      id: '/drawer'
-      path: '/drawer'
-      fullPath: '/drawer'
-      preLoaderRoute: typeof DrawerRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/account': {
@@ -405,32 +370,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AccountRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/drawer': {
+      id: '/drawer'
+      path: '/drawer'
+      fullPath: '/drawer'
+      preLoaderRoute: typeof DrawerRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/workspace/$workspaceId': {
-      id: '/workspace/$workspaceId'
-      path: '/workspace/$workspaceId'
-      fullPath: '/workspace/$workspaceId'
-      preLoaderRoute: typeof WorkspaceWorkspaceIdRouteImport
+    '/export': {
+      id: '/export'
+      path: '/export'
+      fullPath: '/export'
+      preLoaderRoute: typeof ExportRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/projects/$projectId': {
-      id: '/projects/$projectId'
-      path: '/projects/$projectId'
-      fullPath: '/projects/$projectId'
-      preLoaderRoute: typeof ProjectsProjectIdRouteImport
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/login_/complete': {
-      id: '/login_/complete'
-      path: '/login/complete'
-      fullPath: '/login/complete'
-      preLoaderRoute: typeof LoginCompleteRouteImport
+    '/notifications': {
+      id: '/notifications'
+      path: '/notifications'
+      fullPath: '/notifications'
+      preLoaderRoute: typeof NotificationsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pull-requests': {
+      id: '/pull-requests'
+      path: '/pull-requests'
+      fullPath: '/pull-requests'
+      preLoaderRoute: typeof PullRequestsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workspaces': {
+      id: '/workspaces'
+      path: '/workspaces'
+      fullPath: '/workspaces'
+      preLoaderRoute: typeof WorkspacesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/account_/complete': {
@@ -440,32 +419,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AccountCompleteRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/invitations/$token/complete': {
-      id: '/invitations/$token/complete'
-      path: '/invitations/$token/complete'
-      fullPath: '/invitations/$token/complete'
-      preLoaderRoute: typeof InvitationsTokenCompleteRouteImport
+    '/login_/complete': {
+      id: '/login_/complete'
+      path: '/login/complete'
+      fullPath: '/login/complete'
+      preLoaderRoute: typeof LoginCompleteRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/invitations/$token/accept': {
-      id: '/invitations/$token/accept'
-      path: '/invitations/$token/accept'
-      fullPath: '/invitations/$token/accept'
-      preLoaderRoute: typeof InvitationsTokenAcceptRouteImport
+    '/projects/$projectId': {
+      id: '/projects/$projectId'
+      path: '/projects/$projectId'
+      fullPath: '/projects/$projectId'
+      preLoaderRoute: typeof ProjectsProjectIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/hosts/$hostId/workspaces': {
-      id: '/hosts/$hostId/workspaces'
-      path: '/hosts/$hostId/workspaces'
-      fullPath: '/hosts/$hostId/workspaces'
-      preLoaderRoute: typeof HostsHostIdWorkspacesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/hosts/$hostId/pull-requests': {
-      id: '/hosts/$hostId/pull-requests'
-      path: '/hosts/$hostId/pull-requests'
-      fullPath: '/hosts/$hostId/pull-requests'
-      preLoaderRoute: typeof HostsHostIdPullRequestsRouteImport
+    '/workspace/$workspaceId': {
+      id: '/workspace/$workspaceId'
+      path: '/workspace/$workspaceId'
+      fullPath: '/workspace/$workspaceId'
+      preLoaderRoute: typeof WorkspaceWorkspaceIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/account_/organizations/$orgId': {
@@ -475,11 +447,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AccountOrganizationsOrgIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/projects/$projectId_/issues/$issueId': {
-      id: '/projects/$projectId_/issues/$issueId'
-      path: '/projects/$projectId/issues/$issueId'
-      fullPath: '/projects/$projectId/issues/$issueId'
-      preLoaderRoute: typeof ProjectsProjectIdIssuesIssueIdRouteImport
+    '/hosts/$hostId/pull-requests': {
+      id: '/hosts/$hostId/pull-requests'
+      path: '/hosts/$hostId/pull-requests'
+      fullPath: '/hosts/$hostId/pull-requests'
+      preLoaderRoute: typeof HostsHostIdPullRequestsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/hosts/$hostId/workspaces': {
+      id: '/hosts/$hostId/workspaces'
+      path: '/hosts/$hostId/workspaces'
+      fullPath: '/hosts/$hostId/workspaces'
+      preLoaderRoute: typeof HostsHostIdWorkspacesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/invitations/$token/accept': {
+      id: '/invitations/$token/accept'
+      path: '/invitations/$token/accept'
+      fullPath: '/invitations/$token/accept'
+      preLoaderRoute: typeof InvitationsTokenAcceptRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/invitations/$token/complete': {
+      id: '/invitations/$token/complete'
+      path: '/invitations/$token/complete'
+      fullPath: '/invitations/$token/complete'
+      preLoaderRoute: typeof InvitationsTokenCompleteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/hosts/$hostId/workspaces_/$workspaceId': {
+      id: '/hosts/$hostId/workspaces_/$workspaceId'
+      path: '/hosts/$hostId/workspaces/$workspaceId'
+      fullPath: '/hosts/$hostId/workspaces/$workspaceId'
+      preLoaderRoute: typeof HostsHostIdWorkspacesWorkspaceIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/hosts/$hostId/workspaces_/create': {
@@ -489,11 +489,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HostsHostIdWorkspacesCreateRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/hosts/$hostId/workspaces_/$workspaceId': {
-      id: '/hosts/$hostId/workspaces_/$workspaceId'
-      path: '/hosts/$hostId/workspaces/$workspaceId'
-      fullPath: '/hosts/$hostId/workspaces/$workspaceId'
-      preLoaderRoute: typeof HostsHostIdWorkspacesWorkspaceIdRouteImport
+    '/projects/$projectId_/issues/$issueId': {
+      id: '/projects/$projectId_/issues/$issueId'
+      path: '/projects/$projectId/issues/$issueId'
+      fullPath: '/projects/$projectId/issues/$issueId'
+      preLoaderRoute: typeof ProjectsProjectIdIssuesIssueIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/hosts/$hostId/workspaces/$workspaceId/vscode': {
