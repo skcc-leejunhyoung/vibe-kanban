@@ -9,17 +9,6 @@ import {
 // reads, matching restoreDialogFocus.test.
 const body = { tagName: 'BODY' };
 
-function inDialog() {
-  return { closest: (sel: string) => (sel === '[role="dialog"]' ? {} : null) };
-}
-
-function closeEvent() {
-  return {
-    defaultPrevented: false,
-    preventDefault: vi.fn(),
-  } as unknown as Event;
-}
-
 afterEach(() => vi.unstubAllGlobals());
 
 describe('keepDialogFocusOnLayerClose', () => {
@@ -98,12 +87,28 @@ describe('keepDialogFocusOnLayerClose', () => {
       body,
       getElementById: () => trigger,
     });
-    keepDialogFocusOnLayerClose(
-      closeEvent(layer({ role: 'menu', 'aria-labelledby': 'trigger' }))
+    const event = closeEvent(
+      layer({ role: 'menu', 'aria-labelledby': 'trigger' })
     );
+    keepDialogFocusOnLayerClose(event);
+    expect(event.preventDefault).toHaveBeenCalled();
     vi.stubGlobal('document', { activeElement: body, body });
     restoreDialogFocus(null, dlg as unknown as Element);
     expect(trigger.focus).not.toHaveBeenCalled();
+  });
+
+  it('returns focus to a select trigger when its parent dialog reclaimed focus', () => {
+    const trigger = { isConnected: true, focus: vi.fn() };
+    const dlg = { contains: () => true, closest: () => dlg };
+    vi.stubGlobal('CSS', { escape: (s: string) => s });
+    vi.stubGlobal('document', {
+      activeElement: dlg,
+      body,
+      querySelector: () => trigger,
+    });
+    const event = closeEvent(layer({ role: 'listbox', id: 'select-options' }));
+    keepDialogFocusOnLayerClose(event);
+    expect(event.preventDefault).not.toHaveBeenCalled();
   });
 });
 

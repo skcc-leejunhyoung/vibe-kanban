@@ -161,9 +161,17 @@ export function keepDialogFocusOnLayerClose(
 ): void {
   onCloseAutoFocus?.(event);
   if (!isFocusInDialog()) return;
-  event.preventDefault();
   const dialog = document.activeElement?.closest('[role="dialog"]');
   const trigger = layerTrigger(event.currentTarget as Element | null);
+  // A parent focus trap may reclaim the shell before the trigger is restored.
+  if (
+    trigger &&
+    dialog?.contains(trigger) &&
+    document.activeElement === dialog
+  ) {
+    return;
+  }
+  event.preventDefault();
   // A menu inside the dialog itself (an item that focused one of its fields)
   // is not the dialog's opener.
   if (dialog && trigger && !dialog.contains(trigger)) {
