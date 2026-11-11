@@ -1,22 +1,15 @@
 import * as React from 'react';
 import { X } from 'lucide-react';
-import { useHotkeys } from 'react-hotkeys-hook';
 import { createPortal } from 'react-dom';
 
 import { cn } from '../lib/cn';
 import { useModalKeyboardLayer } from '../lib/modal-keyboard';
 import { FloatingBoundaryContext } from '../lib/floating-boundary';
-import {
-  activatesOnEnter,
-  findDialogPrimaryAction,
-  useDialogKeyboard,
-} from '../lib/dialog-keyboard';
+import { useDialogKeyboard } from '../lib/dialog-keyboard';
 import { DialogFocusScope } from './DialogFocusScope';
 import { getDialogMaxWidth, type DialogSize } from '../lib/dialog-size';
 
 export type { DialogSize } from '../lib/dialog-size';
-
-const DIALOG_SCOPE = 'dialog';
 
 // Width belongs to the outer dialog, not DialogContent. Apply it inline so
 // callers never need competing max-w-* classes; `cn` is clsx-only and cannot
@@ -96,61 +89,6 @@ const Dialog = React.forwardRef<
       isTopLayer,
       onClose: handleClose,
     });
-
-    useHotkeys(
-      'enter',
-      (e) => {
-        if (!open || !isTopLayer()) return;
-
-        const activeElement = document.activeElement as HTMLElement;
-        if (activeElement?.tagName === 'TEXTAREA') {
-          return;
-        }
-        // Enter belongs to whatever is focused when that element activates on
-        // Enter by itself: a button the user tabbed to, a link, or the
-        // highlighted item of a menu opened from here (portaled outside this
-        // container). Claiming the key would press the dialog's primary action
-        // instead — in a composer dialog that meant "Enter opens the file
-        // picker" no matter which control was focused.
-        if (activatesOnEnter(activeElement)) {
-          return;
-        }
-
-        const container = dialogRef.current;
-        if (!container) {
-          return;
-        }
-
-        // Structural resolution first (marker/submit/single button); legacy
-        // text heuristic only as a last resort for dialogs that predate
-        // explicit footer button types. The text match is English-only, so
-        // explicit types are the reliable path (ko labels never match).
-        const legacyPrimaryButton = () =>
-          (
-            Array.from(
-              container.querySelectorAll('button')
-            ) as HTMLButtonElement[]
-          ).find(
-            (btn) =>
-              !btn.disabled &&
-              !btn.textContent?.toLowerCase().includes('cancel') &&
-              !btn.textContent?.toLowerCase().includes('close') &&
-              btn.type !== 'button'
-          ) ?? null;
-        const primaryButton =
-          findDialogPrimaryAction(container) ?? legacyPrimaryButton();
-
-        if (primaryButton) {
-          e?.preventDefault();
-          primaryButton.click();
-        }
-      },
-      {
-        enabled: !!open,
-        scopes: [DIALOG_SCOPE],
-      },
-      [open, isTopLayer]
-    );
 
     if (!open) return null;
 

@@ -18,7 +18,7 @@ import { DropdownMenuItem, DropdownMenuLabel } from './Dropdown';
 import { PrimaryButton } from './PrimaryButton';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
 import { ToolbarDropdown, ToolbarIconButton } from './Toolbar';
-import { isPlainEscape } from '../lib/dialog-keyboard';
+import { isDialogConfirmKey, isPlainEscape } from '../lib/dialog-keyboard';
 
 export interface EditorProps {
   value: string;
@@ -174,16 +174,13 @@ export function CreateChatBox<TExecutor extends string = string>({
 
   const handleKeyDownCapture = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
-    const isEditor =
-      target.isContentEditable ||
-      target.closest('[contenteditable="true"]') !== null;
-
     if (
-      isEditor ||
-      e.key !== 'Enter' ||
-      !(e.metaKey || e.ctrlKey) ||
-      e.shiftKey ||
-      e.defaultPrevented
+      e.defaultPrevented ||
+      !isDialogConfirmKey(e.nativeEvent) ||
+      // React portal events still reach this box; menus own their keys.
+      !e.currentTarget.contains(target) ||
+      target.isContentEditable ||
+      target.closest('input, textarea, select, [contenteditable="true"]')
     ) {
       return;
     }

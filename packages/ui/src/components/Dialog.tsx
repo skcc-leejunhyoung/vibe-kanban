@@ -135,6 +135,7 @@ const DialogContent = React.forwardRef<
         if (event.defaultPrevented) return;
         if (!isDialogConfirmKey(event.nativeEvent)) return;
         if (isTopLayer && !isTopLayer()) return;
+        if (!event.currentTarget.contains(event.target as Node)) return;
         const primary = findDialogPrimaryAction(event.currentTarget);
         if (!primary) return;
         event.preventDefault();

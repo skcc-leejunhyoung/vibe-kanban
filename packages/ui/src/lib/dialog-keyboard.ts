@@ -350,7 +350,7 @@ export function useDialogKeyboard({
       if (event.defaultPrevented || !isDialogConfirmKey(event)) return;
       if (!isTopLayer()) return;
       const container = getContainer();
-      if (!container) return;
+      if (!container || !container.contains(event.target as Node)) return;
       const primary = findDialogPrimaryAction(container);
       if (!primary) return;
       event.preventDefault();
