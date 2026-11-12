@@ -7436,6 +7436,7 @@ dependencies = [
  "dirs 5.0.1",
  "executors",
  "futures",
+ "json-patch 2.0.0",
  "mime_guess",
  "regex",
  "reqwest 0.13.2",

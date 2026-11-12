@@ -31,6 +31,7 @@ rmcp = { version = "3.2.0", features = ["server", "transport-io"] }
 schemars = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 futures = "0.3"
+json-patch = "2.0"
 rustls = { workspace = true }
 regex = "1"
 thiserror = { workspace = true }

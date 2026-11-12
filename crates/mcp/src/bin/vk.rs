@@ -3480,6 +3480,25 @@ struct Ctx {
 
 type CliResult = Result<Value, VkError>;
 
+/// Fold the discovered-options SSE into `{options}` the way the web picker
+/// does: start from `{options: {}}` and apply each event as a JSON Patch. A
+/// cold probe sends the provisional `/options` (loading) and then nested
+/// updates such as `/options/model_selector/models` and
+/// `/options/loading_models`, which must land inside `options`.
+fn discovered_options_state(events: Vec<(String, String)>) -> Value {
+    let mut state = json!({ "options": {} });
+    for (event, data) in events {
+        if event != "json_patch" {
+            continue;
+        }
+        if let Ok(patch) = serde_json::from_str::<json_patch::Patch>(&data) {
+            // A patch that does not apply leaves the state as it was.
+            let _ = json_patch::patch(&mut state, &patch);
+        }
+    }
+    state
+}
+
 fn arg_str(m: &ArgMatches, name: &str) -> Option<String> {
     m.try_get_one::<String>(name).ok().flatten().cloned()
 }
@@ -5068,26 +5087,12 @@ impl Ctx {
                         |event, data| {
                             event == "finished" || data.contains("\"/slash_commands_loaded\"")
                         },
-                        Duration::from_secs(4),
+                        // Outlasts the server's 10s live-probe timeout; the
+                        // stream ends as soon as discovery is done.
+                        Duration::from_secs(12),
                     )
                     .await?;
-                let mut state = Map::new();
-                for (event, data) in events {
-                    if event != "json_patch" {
-                        continue;
-                    }
-                    let Ok(patch) = serde_json::from_str::<Vec<Value>>(&data) else {
-                        continue;
-                    };
-                    for op in patch {
-                        if let (Some(path), Some(value)) =
-                            (op.get("path").and_then(Value::as_str), op.get("value"))
-                        {
-                            state.insert(path.trim_start_matches('/').to_string(), value.clone());
-                        }
-                    }
-                }
-                Ok(Value::Object(state))
+                Ok(discovered_options_state(events))
             }
             "config.host.info" => {
                 let mut info = self.client.system_info().await?;
@@ -5727,6 +5732,37 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_discovery_nested_patches_land_inside_options() {
+        let patch = |value: Value| ("json_patch".to_string(), value.to_string());
+        let events = vec![
+            ("ready".to_string(), String::new()),
+            patch(json!([{"op": "replace", "path": "/options", "value": {
+                "loading_models": true,
+                "model_selector": {"models": [{"id": "stale-model"}], "default_model": null}
+            }}])),
+            patch(
+                json!([{"op": "replace", "path": "/options/model_selector/models",
+                "value": [{"id": "live-model"}]}]),
+            ),
+            patch(
+                json!([{"op": "replace", "path": "/options/model_selector/default_model",
+                "value": "live-model"}]),
+            ),
+            patch(json!([{"op": "replace", "path": "/options/loading_models", "value": false}])),
+            // Does not apply (no such parent): ignored, state kept.
+            patch(json!([{"op": "replace", "path": "/missing/child", "value": 1}])),
+        ];
+        let state = discovered_options_state(events);
+        assert_eq!(
+            state,
+            json!({"options": {
+                "loading_models": false,
+                "model_selector": {"models": [{"id": "live-model"}], "default_model": "live-model"}
+            }})
+        );
+    }
 
     #[test]
     fn command_tree_is_well_formed() {
