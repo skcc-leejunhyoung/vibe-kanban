@@ -1,8 +1,10 @@
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { sessionsApi } from '@/shared/lib/api';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useAfterAgentTurnRefetch } from '@/shared/hooks/useAfterAgentTurnRefetch';
+import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
 
 export const vibeRunStatusKeys = {
   /** Every host scope of the workspace's status (to invalidate). */
@@ -32,6 +34,26 @@ function pollMs(phase: string | null | undefined): number {
   return phase === 'review' ? REVIEW_POLL_MS : BACKUP_POLL_MS;
 }
 
+/** One read of a run: whose it is and its phase (`undefined`: not read yet). */
+interface SeenRun {
+  workspaceId: string | undefined;
+  phase: string | null | undefined;
+}
+
+/**
+ * True when the same workspace's run is in another phase than at the previous
+ * read. The first read is not a move, and neither is showing another workspace.
+ */
+export function vibeRunMoved(previous: SeenRun, next: SeenRun): boolean {
+  return (
+    !!next.workspaceId &&
+    previous.workspaceId === next.workspaceId &&
+    previous.phase !== undefined &&
+    next.phase !== undefined &&
+    previous.phase !== next.phase
+  );
+}
+
 /**
  * The server's state of the workspace's vibe run, for display only. The run
  * moves on the server whether or not this is mounted; nothing here drives it.
@@ -41,6 +63,7 @@ function pollMs(phase: string | null | undefined): number {
  */
 export function useVibeRunStatus(workspaceId?: string, sessionId?: string) {
   const hostId = useHostId();
+  const queryClient = useQueryClient();
   const enabled = !!workspaceId && !!sessionId;
   const query = useQuery({
     queryKey: vibeRunStatusKeys.byWorkspace(workspaceId, hostId),
@@ -50,5 +73,23 @@ export function useVibeRunStatus(workspaceId?: string, sessionId?: string) {
     refetchInterval: (query) => pollMs(query.state.data?.phase),
   });
   useAfterAgentTurnRefetch(enabled, query.refetch);
+
+  // The server's merge, push and PR change what the git views show (merged
+  // state, pushed target, the PR link) with no turn of this session to mark
+  // it: re-read them when the run moves, as the browser-driven flow did after
+  // its own push and PR.
+  const phase = query.data ? query.data.phase : undefined;
+  const seen = useRef<SeenRun>({ workspaceId, phase });
+  useEffect(() => {
+    const previous = seen.current;
+    const next = { workspaceId, phase };
+    seen.current = next;
+    if (!vibeRunMoved(previous, next)) return;
+    void queryClient.invalidateQueries({
+      queryKey: ['branchStatus', workspaceId],
+    });
+    void queryClient.invalidateQueries({ queryKey: workspaceSummaryKeys.all });
+  }, [workspaceId, phase, queryClient]);
+
   return query;
 }

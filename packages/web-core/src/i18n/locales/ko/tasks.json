@@ -482,7 +482,7 @@
       "prFailed": "차단됨: PR을 만들지 못했습니다",
       "mergeFailed": "차단됨: 머지에 실패했습니다",
       "reviewBlocked": "차단됨: 리뷰가 중단되어 PR을 만들지 않았습니다",
-      "done": "리뷰 · 머지 · push 완료 — PR이 준비됐습니다",
+      "done": "리뷰 완료 — 타깃 브랜치 push와 PR 준비까지 끝났습니다",
       "retry": "재시도",
       "nextTry": "다음 시도: {{time}}",
       "retryFailedTitle": "재시도할 수 없습니다",

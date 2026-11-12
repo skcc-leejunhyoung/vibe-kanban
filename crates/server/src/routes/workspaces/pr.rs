@@ -556,8 +556,10 @@ pub async fn get_pr_description_generation(
     Ok(ResponseJson(ApiResponse::success(status)))
 }
 
-/// How long a server-driven generation waits for a slot before giving up.
-const PR_GENERATE_ADMISSION_WAIT: Duration = Duration::from_secs(5 * 60);
+/// How long a server-driven generation waits for a slot before giving up:
+/// long enough to queue behind the drafts of other runs (two at a time, five
+/// minutes each at most), which is no reason to block a run.
+const PR_GENERATE_ADMISSION_WAIT: Duration = Duration::from_secs(15 * 60);
 /// Name of the throwaway session a PR draft is generated in.
 const PR_GENERATION_SESSION_NAME: &str = "create-pr";
 

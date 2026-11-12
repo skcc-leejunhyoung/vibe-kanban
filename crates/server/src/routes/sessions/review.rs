@@ -20,7 +20,9 @@ use executors::{
     profile::ExecutorConfig,
 };
 use serde::{Deserialize, Serialize};
-use services::services::{container::ContainerService, vibe_orchestrator::PR_FOLLOW_UP};
+use services::services::{
+    config::AgentAccessConfig, container::ContainerService, vibe_orchestrator::PR_FOLLOW_UP,
+};
 use ts_rs::TS;
 use utils::response::ApiResponse;
 
@@ -303,6 +305,16 @@ pub async fn start_review(
     Ok(ResponseJson(ApiResponse::success(execution_process)))
 }
 
+/// The agent-access toggle a `create_pr` review still lacks, if any. With
+/// `create_pr` the server later pushes the target branch and opens a PR on the
+/// request's word alone, so an agent needs what those two calls need when it
+/// makes them itself.
+fn missing_create_pr_toggle(access: &AgentAccessConfig) -> Option<Toggle> {
+    [Toggle::GitMerge, Toggle::GitWrite]
+        .into_iter()
+        .find(|toggle| !toggle.enabled(access))
+}
+
 /// Manually start a `vibe` review session for the current workspace, behaving as
 /// if its coding agent had just reported `VIBE_RESULT: done`. Spawns a fresh
 /// dedicated review session (and hands the rest of the automated workflow off to
@@ -316,15 +328,9 @@ pub async fn vibe_review(
 ) -> Result<ResponseJson<ApiResponse<Session, ReviewError>>, ApiError> {
     let pool = &deployment.db().pool;
     let request = payload.map(|Json(request)| request).unwrap_or_default();
-    // With `create_pr` the server later pushes the target branch and opens a
-    // PR on this request's word alone, so an agent needs what those two calls
-    // need when it makes them itself.
     if request.create_pr && is_agent_request(&headers) {
         let access = deployment.config().read().await.agent_access.clone();
-        if let Some(off) = [Toggle::GitMerge, Toggle::GitWrite]
-            .into_iter()
-            .find(|toggle| !toggle.enabled(&access))
-        {
+        if let Some(off) = missing_create_pr_toggle(&access) {
             return Err(ApiError::Forbidden(format!(
                 "Review and create PR pushes the target branch and opens a pull request: \
                  agent_access.{} is off on this host",
@@ -411,5 +417,27 @@ mod tests {
             review_session_id: None,
             ..run("merging", None)
         }));
+    }
+
+    // Asking for the PR makes the server push the base branch and open a PR
+    // later, with no further request: an agent must hold both permissions
+    // when it asks, or the flag would get it past them.
+    #[test]
+    fn an_agent_needs_push_and_pr_access_to_ask_for_the_pr() {
+        let access = |git_write, git_merge| AgentAccessConfig {
+            git_write,
+            git_merge,
+            ..Default::default()
+        };
+        // By default agents may not merge into or push the base branch.
+        assert_eq!(
+            missing_create_pr_toggle(&AgentAccessConfig::default()),
+            Some(Toggle::GitMerge)
+        );
+        assert_eq!(
+            missing_create_pr_toggle(&access(false, true)),
+            Some(Toggle::GitWrite)
+        );
+        assert_eq!(missing_create_pr_toggle(&access(true, true)), None);
     }
 }

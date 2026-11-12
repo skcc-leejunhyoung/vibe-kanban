@@ -33,6 +33,7 @@ use deployment::Deployment;
 use serde::Serialize;
 use serde_json::{Value, json};
 use services::services::{
+    agent_journal,
     container::ContainerService,
     vibe_orchestrator::{PR_FOLLOW_UP, VibePhase},
 };
@@ -75,12 +76,12 @@ pub(crate) trait FollowUpSteps: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), String>> + Send;
 
     /// Open an AI-drafted draft PR for every repo whose head has none open yet;
-    /// the URLs of the ones opened.
+    /// what became of each repo's PR.
     fn create_prs(
         &self,
         workspace: &Workspace,
         run: &VibeRun,
-    ) -> impl Future<Output = Result<Vec<String>, String>> + Send;
+    ) -> impl Future<Output = Result<Vec<PrOutcome>, String>> + Send;
 
     /// The step `run.phase` failed and blocked the run.
     fn blocked(
@@ -90,13 +91,22 @@ pub(crate) trait FollowUpSteps: Send + Sync + 'static {
         reason: &str,
     ) -> impl Future<Output = ()> + Send;
 
-    /// The follow-up is done, having opened `pr_urls`.
+    /// The follow-up is done, with these outcomes.
     fn finished(
         &self,
         workspace: &Workspace,
         run: &VibeRun,
-        pr_urls: &[String],
+        prs: &[PrOutcome],
     ) -> impl Future<Output = ()> + Send;
+}
+
+/// What became of one repo's PR in a finished follow-up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PrOutcome {
+    /// A draft PR was opened at this URL.
+    Opened(String),
+    /// The head already had this PR open, so none was opened.
+    AlreadyOpen(i64),
 }
 
 static IN_FLIGHT: LazyLock<Mutex<HashSet<Uuid>>> = LazyLock::new(Default::default);
@@ -196,6 +206,10 @@ async fn advance<S: FollowUpSteps>(
         let Some(workspace) = Workspace::find_by_id(pool, workspace_id).await? else {
             return Ok(());
         };
+        // The journal publishes a phase only when it differs from the last one
+        // it saw, and after a restart it has seen none: tell it where the run
+        // stands, so the step's outcome (done, or blocked) is an event too.
+        agent_journal::observe_vibe_run(&run, false);
         let from = phase.as_str();
         let failure = match phase {
             VibePhase::Pushing => match steps.push_targets(&workspace).await {
@@ -210,15 +224,15 @@ async fn advance<S: FollowUpSteps>(
                 Err(reason) => reason,
             },
             VibePhase::CreatingPr => match steps.create_prs(&workspace, &run).await {
-                Ok(pr_urls) => {
+                Ok(prs) => {
                     let next = VibePhase::Done.as_str();
                     if VibeRun::advance_follow_up(pool, workspace_id, from, next).await? {
                         tracing::info!(
-                            "vibe: workspace {} follow-up done ({} PR(s) opened)",
+                            "vibe: workspace {} follow-up done: {:?}",
                             workspace_id,
-                            pr_urls.len()
+                            prs
                         );
-                        steps.finished(&workspace, &run, &pr_urls).await;
+                        steps.finished(&workspace, &run, &prs).await;
                     }
                     return Ok(());
                 }
@@ -290,6 +304,48 @@ fn pr_plan(
             head_is_work_branch: true,
         },
     }
+}
+
+/// What to do about one repo's PR once its target is pushed.
+#[derive(Debug, PartialEq, Eq)]
+enum PrDecision {
+    /// Draft it and open it.
+    Open(PrPlan),
+    /// The head already has this PR open; another would be a duplicate.
+    AlreadyOpen(i64),
+    /// It cannot be opened as things stand; the reason blocks the run.
+    Refuse(String),
+}
+
+/// The checks "Create PR from AI" makes, in its order, before an agent run is
+/// spent on the draft: a base that is the head itself, a PR already open for
+/// the head, and a work-branch head with nothing on it (`work_commits_ahead`
+/// counts its commits over the target; `None` when that cannot be told).
+fn decide_pr(
+    repo_name: &str,
+    merges: &[Merge],
+    work_branch: &str,
+    target_branch: &str,
+    default_target_branch: Option<&str>,
+    work_commits_ahead: impl FnOnce() -> Option<usize>,
+) -> PrDecision {
+    let plan = pr_plan(merges, work_branch, target_branch, default_target_branch);
+    if plan.head == plan.base {
+        return PrDecision::Refuse(format!(
+            "{repo_name}: the pull request's base would be its own head branch '{}'. Set the \
+             repository's default target branch, then retry.",
+            plan.head
+        ));
+    }
+    if let Some(open) = open_pr_for_head(merges, &plan.head, work_branch) {
+        return PrDecision::AlreadyOpen(open.pr_info.number);
+    }
+    if plan.head_is_work_branch && work_commits_ahead() == Some(0) {
+        return PrDecision::Refuse(format!(
+            "{repo_name}: there are no commits to open a pull request for"
+        ));
+    }
+    PrDecision::Open(plan)
 }
 
 /// The workspace's open PR whose head is `head`, if any: a second one for the
@@ -408,6 +464,38 @@ fn db_error(error: impl std::fmt::Display) -> String {
     format!("database error: {error}")
 }
 
+/// What to tell the user when the follow-up is done: the PRs it opened, or —
+/// when it opened none — that the PR was already open, as "Create PR from AI"
+/// says in that case. Nothing when there was no PR to speak of.
+fn finished_notice(prs: &[PrOutcome]) -> Option<(&'static str, String)> {
+    let opened: Vec<&str> = prs
+        .iter()
+        .filter_map(|pr| match pr {
+            PrOutcome::Opened(url) => Some(url.as_str()),
+            PrOutcome::AlreadyOpen(_) => None,
+        })
+        .collect();
+    if !opened.is_empty() {
+        return Some(("Draft PR created", opened.join(" ")));
+    }
+    let kept: Vec<String> = prs
+        .iter()
+        .filter_map(|pr| match pr {
+            PrOutcome::AlreadyOpen(number) => Some(format!("#{number}")),
+            PrOutcome::Opened(_) => None,
+        })
+        .collect();
+    (!kept.is_empty()).then(|| {
+        (
+            "Pull request already open",
+            format!(
+                "PR {} is already open for this branch; no new pull request was created",
+                kept.join(", ")
+            ),
+        )
+    })
+}
+
 /// The steps against the real deployment: the same handlers the UI's push and
 /// "Create PR from AI" call, so their rules (which checkout a push runs from,
 /// the pre-checks of a PR) hold here too.
@@ -434,7 +522,10 @@ impl Live {
                     run.phase,
                     run.updated_at.timestamp_micros()
                 ),
-                true,
+                // Not local-only: unlike the merge's notices, nothing in the
+                // cloud (an issue comment, a status change) tells the user's
+                // other devices about a push or a PR.
+                false,
             )
             .await;
     }
@@ -500,13 +591,13 @@ impl FollowUpSteps for Live {
         &self,
         workspace: &Workspace,
         run: &VibeRun,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<PrOutcome>, String> {
         let deployment = &self.0;
         let pool = &deployment.db().pool;
         let workspace_repos = WorkspaceRepo::find_by_workspace_id(pool, workspace.id)
             .await
             .map_err(db_error)?;
-        let mut created = Vec::new();
+        let mut outcomes = Vec::new();
         for workspace_repo in workspace_repos {
             let Some(repo) = Repo::find_by_id(pool, workspace_repo.repo_id)
                 .await
@@ -517,46 +608,38 @@ impl FollowUpSteps for Live {
             let merges = Merge::find_by_workspace_and_repo_id(pool, workspace.id, repo.id)
                 .await
                 .map_err(db_error)?;
-            let plan = pr_plan(
+            let decision = decide_pr(
+                &repo.name,
                 &merges,
                 &workspace.branch,
                 &workspace_repo.target_branch,
                 repo.default_target_branch.as_deref(),
+                || {
+                    deployment
+                        .git()
+                        .get_branch_status(
+                            &repo.path,
+                            &workspace.branch,
+                            &workspace_repo.target_branch,
+                        )
+                        .ok()
+                        .map(|(ahead, _)| ahead)
+                },
             );
-            // The host rejects head == base; say what to change before an
-            // agent run is spent on the draft.
-            if plan.head == plan.base {
-                return Err(format!(
-                    "{}: the pull request's base would be its own head branch '{}'. Set the \
-                     repository's default target branch, then retry.",
-                    repo.name, plan.head
-                ));
-            }
-            if let Some(open) = open_pr_for_head(&merges, &plan.head, &workspace.branch) {
-                tracing::info!(
-                    "vibe: workspace {} already has PR #{} open for '{}' in {}; not opening another",
-                    workspace.id,
-                    open.pr_info.number,
-                    plan.head,
-                    repo.name
-                );
-                continue;
-            }
-            if plan.head_is_work_branch
-                && matches!(
-                    deployment.git().get_branch_status(
-                        &repo.path,
-                        &workspace.branch,
-                        &workspace_repo.target_branch
-                    ),
-                    Ok((0, _))
-                )
-            {
-                return Err(format!(
-                    "{}: there are no commits to open a pull request for",
-                    repo.name
-                ));
-            }
+            let plan = match decision {
+                PrDecision::Open(plan) => plan,
+                PrDecision::AlreadyOpen(number) => {
+                    tracing::info!(
+                        "vibe: workspace {} already has PR #{} open for this head in {}; not opening another",
+                        workspace.id,
+                        number,
+                        repo.name
+                    );
+                    outcomes.push(PrOutcome::AlreadyOpen(number));
+                    continue;
+                }
+                PrDecision::Refuse(reason) => return Err(reason),
+            };
 
             let head_branch = (!plan.head_is_work_branch).then(|| plan.head.clone());
             let generated = pr::generate_pr_description_when_free(
@@ -606,9 +689,9 @@ impl FollowUpSteps for Live {
             let url = settle(pool, workspace, "create_pr", &input, answer)
                 .await
                 .map_err(|e| format!("{what} failed: {e}"))?;
-            created.extend(url);
+            outcomes.extend(url.map(PrOutcome::Opened));
         }
-        Ok(created)
+        Ok(outcomes)
     }
 
     async fn blocked(&self, workspace: &Workspace, run: &VibeRun, reason: &str) {
@@ -620,11 +703,9 @@ impl FollowUpSteps for Live {
         self.notify(workspace, run, title, reason).await;
     }
 
-    async fn finished(&self, workspace: &Workspace, run: &VibeRun, pr_urls: &[String]) {
-        // Nothing new to announce when every head already had its PR open.
-        if !pr_urls.is_empty() {
-            self.notify(workspace, run, "Draft PR created", &pr_urls.join(" "))
-                .await;
+    async fn finished(&self, workspace: &Workspace, run: &VibeRun, prs: &[PrOutcome]) {
+        if let Some((title, detail)) = finished_notice(prs) {
+            self.notify(workspace, run, title, &detail).await;
         }
     }
 }
@@ -649,7 +730,7 @@ mod tests {
     struct Scripted {
         log: Mutex<Vec<String>>,
         pushes: Mutex<VecDeque<Result<(), String>>>,
-        prs: Mutex<VecDeque<Result<Vec<String>, String>>>,
+        prs: Mutex<VecDeque<Result<Vec<PrOutcome>, String>>>,
         /// A review to begin (pool, workspace, session) while the push runs.
         review_during_push: Option<(SqlitePool, Uuid, Uuid)>,
     }
@@ -676,18 +757,19 @@ mod tests {
             scripted.unwrap_or(Ok(()))
         }
 
-        async fn create_prs(&self, _: &Workspace, _: &VibeRun) -> Result<Vec<String>, String> {
+        async fn create_prs(&self, _: &Workspace, _: &VibeRun) -> Result<Vec<PrOutcome>, String> {
             self.note("pr");
             let scripted = self.prs.lock().unwrap().pop_front();
-            scripted.unwrap_or_else(|| Ok(vec![PR_URL.to_string()]))
+            scripted.unwrap_or_else(|| Ok(vec![PrOutcome::Opened(PR_URL.to_string())]))
         }
 
         async fn blocked(&self, _: &Workspace, run: &VibeRun, reason: &str) {
             self.note(format!("blocked in {}: {reason}", run.phase));
         }
 
-        async fn finished(&self, _: &Workspace, _: &VibeRun, pr_urls: &[String]) {
-            self.note(format!("finished: {}", pr_urls.join(",")));
+        async fn finished(&self, _: &Workspace, _: &VibeRun, prs: &[PrOutcome]) {
+            let told = finished_notice(prs).map(|(_, detail)| detail);
+            self.note(format!("finished: {}", told.unwrap_or_default()));
         }
     }
 
@@ -870,6 +952,30 @@ mod tests {
         assert_eq!(log, [FINISHED, FINISHED, "pr", "pr", "push"]);
     }
 
+    /// After a restart the journal has seen none of the run's phases, and it
+    /// publishes a phase only when it differs from the last one it saw. The
+    /// follow-up tells it where the run stands before moving it, so the outcome
+    /// of a resumed run is an event like any other.
+    #[tokio::test]
+    async fn the_outcome_of_a_resumed_run_is_published_as_an_event() {
+        let pool = pool().await;
+        let steps = Arc::new(Scripted::default());
+        let (workspace, _) = seed(&pool, "creating_pr").await;
+        let since = agent_journal::list(0, &[], 1).cursor;
+
+        pass(&pool, &steps).await;
+
+        // What the database hook does with the row the step wrote.
+        agent_journal::observe_vibe_run(&run(&pool, workspace).await, false);
+        let phases: Vec<String> = agent_journal::list(since, &["vibe.phase".to_string()], 1000)
+            .events
+            .into_iter()
+            .filter(|event| event.workspace_id == Some(workspace))
+            .map(|event| event.data["phase"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(phases, ["done"]);
+    }
+
     /// A step can take minutes, and the loop wakes every minute: it must not
     /// start the same run twice.
     #[tokio::test]
@@ -991,6 +1097,106 @@ mod tests {
             let over = [pr(Some("feature"), status), direct("feature")];
             assert!(open_pr_for_head(&over, "feature", "vk/work").is_none());
         }
+    }
+
+    #[test]
+    fn a_pr_already_open_for_the_head_is_not_opened_again() {
+        let decide = |merges: &[Merge]| {
+            decide_pr(
+                "widgets",
+                merges,
+                "vk/work",
+                "feature",
+                Some("main"),
+                || panic!("only a work-branch head is counted"),
+            )
+        };
+        // The usual run: merged into `feature`, a PR to the default target.
+        assert_eq!(
+            decide(&[direct("feature")]),
+            PrDecision::Open(PrPlan {
+                head: "feature".into(),
+                base: "main".into(),
+                head_is_work_branch: false
+            })
+        );
+        // Reviewed again with that PR still open: no draft is written for a
+        // second one.
+        assert_eq!(
+            decide(&[direct("feature"), pr(Some("feature"), MergeStatus::Open)]),
+            PrDecision::AlreadyOpen(7)
+        );
+        // Once it is merged or closed, a new one may be opened.
+        for status in [MergeStatus::Merged, MergeStatus::Closed] {
+            assert!(matches!(
+                decide(&[direct("feature"), pr(Some("feature"), status)]),
+                PrDecision::Open(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_pr_that_cannot_be_opened_is_refused_with_what_to_change() {
+        // No default target branch: the base would be the head itself. This
+        // is checked first, as "Create PR from AI" does.
+        let no_base = decide_pr(
+            "widgets",
+            &[direct("feature"), pr(Some("feature"), MergeStatus::Open)],
+            "vk/work",
+            "feature",
+            None,
+            || None,
+        );
+        match no_base {
+            PrDecision::Refuse(reason) => {
+                assert!(reason.starts_with("widgets: "), "{reason}");
+                assert!(reason.contains("default target branch"), "{reason}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+
+        // The merge skipped the repo (its open PR has another head), so the
+        // PR would come from the work branch: not when nothing is on it.
+        let skipped = [pr(Some("other"), MergeStatus::Open)];
+        let from_work_branch = |ahead: Option<usize>| {
+            decide_pr(
+                "widgets",
+                &skipped,
+                "vk/work",
+                "feature",
+                Some("main"),
+                || ahead,
+            )
+        };
+        assert!(matches!(
+            from_work_branch(Some(0)),
+            PrDecision::Refuse(reason) if reason.contains("no commits")
+        ));
+        for ahead in [Some(2), None] {
+            assert_eq!(
+                from_work_branch(ahead),
+                PrDecision::Open(PrPlan {
+                    head: "vk/work".into(),
+                    base: "feature".into(),
+                    head_is_work_branch: true
+                })
+            );
+        }
+    }
+
+    // Every finished run says what became of the PR: the browser-driven flow
+    // told the user "already open" instead of staying silent.
+    #[test]
+    fn a_finished_run_says_what_became_of_the_pr() {
+        let opened = PrOutcome::Opened(PR_URL.to_string());
+        assert_eq!(
+            finished_notice(&[opened.clone(), PrOutcome::AlreadyOpen(3)]),
+            Some(("Draft PR created", PR_URL.to_string()))
+        );
+        let (title, detail) = finished_notice(&[PrOutcome::AlreadyOpen(7)]).unwrap();
+        assert_eq!(title, "Pull request already open");
+        assert!(detail.contains("#7") && detail.contains("no new pull request"));
+        assert_eq!(finished_notice(&[]), None);
     }
 
     #[test]

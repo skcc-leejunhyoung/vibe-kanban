@@ -163,7 +163,7 @@
       "prFailed": "Stopped: the pull request could not be created",
       "mergeFailed": "Stopped: the merge failed",
       "reviewBlocked": "Stopped: the review was blocked, so no pull request was created",
-      "done": "Reviewed, merged and pushed — the pull request is ready",
+      "done": "Review finished — the target branch is pushed and the pull request is ready",
       "retry": "Retry",
       "nextTry": "Next try: {{time}}",
       "retryFailedTitle": "Couldn't retry",
