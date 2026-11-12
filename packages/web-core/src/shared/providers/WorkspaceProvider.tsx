@@ -130,7 +130,9 @@ function WorkspaceProviderContent({
       )
     );
     for (const [key, scope] of knownArtifactScopes.current) {
-      if (current.has(key)) continue;
+      // Disconnects can remove a whole host; only retained artifacts need a lookup.
+      if (current.has(key) || !hasArtifactScopeData(queryClient, scope))
+        continue;
       // A host disconnect or the gap between two streams is not a deletion.
       void workspacesApi
         .get(scope.workspaceId!, scope.hostId)
@@ -153,6 +155,7 @@ function WorkspaceProviderContent({
     archivedWorkspaces,
     isLoadingList,
     isArchivedLoadingList,
+    queryClient,
   ]);
 
   // A shared list reload on host focus must not unmount other panes' chats.

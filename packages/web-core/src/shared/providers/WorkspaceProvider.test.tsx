@@ -6,6 +6,8 @@ import {
   useWorkspaceContext,
   type WorkspaceContextValue,
 } from '@/shared/hooks/useWorkspaceContext';
+import { workspacesApi } from '@/shared/lib/api';
+import { artifactDrafts } from '@/shared/lib/artifactInputMemory';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { installDomlessReact } from '@/shared/lib/electric/electricTestKit';
 import { HostIdContext } from './HostIdProvider';
@@ -36,7 +38,10 @@ vi.mock('@/shared/hooks/useDiffStream', () => ({
   useDiffStream: () => ({ diffs: [] }),
 }));
 vi.mock('@/shared/lib/api', () => ({
-  workspacesApi: { markSeen: vi.fn(async () => {}) },
+  workspacesApi: {
+    markSeen: vi.fn(async () => {}),
+    get: vi.fn(async () => ({ archived: false })),
+  },
 }));
 
 let dom: ReturnType<typeof installDomlessReact>;
@@ -52,6 +57,8 @@ beforeEach(() => {
   client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  vi.mocked(workspacesApi.get).mockClear();
+  artifactDrafts.clear();
   mounts = 0;
   unmounts = 0;
   vi.mocked(useWorkspaceRecord).mockReturnValue({
@@ -64,6 +71,7 @@ beforeEach(() => {
 afterEach(async () => {
   await dom.unmount();
   client.clear();
+  artifactDrafts.clear();
   vi.unstubAllGlobals();
 });
 
@@ -83,9 +91,13 @@ function Pane() {
   return latest.isLoading ? null : <Conversation />;
 }
 
-function renderPane(hostId: string | null, listLoading: boolean) {
+function renderPane(
+  hostId: string | null,
+  listLoading: boolean,
+  activeWorkspaces: WorkspaceContextValue['activeWorkspaces'] = []
+) {
   const parent = {
-    activeWorkspaces: [],
+    activeWorkspaces,
     archivedWorkspaces: [],
     isWorkspacesListLoading: listLoading,
     isArchivedWorkspacesLoading: listLoading,
@@ -136,4 +148,41 @@ describe('WorkspaceProvider pane loading', () => {
     expect(latest.isWorkspacesListLoading).toBe(true);
     expect(mounts).toBe(1);
   });
+});
+
+describe('WorkspaceProvider artifact lifecycle lookups', () => {
+  const workspaces = Array.from({ length: 200 }, (_, i) => ({
+    id: `synthetic-workspace-${i}`,
+    hostId: 'synthetic-host',
+  })) as WorkspaceContextValue['activeWorkspaces'];
+
+  it('does not fetch every workspace when a disconnected host disappears', async () => {
+    await renderPane('synthetic-host', false, workspaces);
+    await renderPane('synthetic-host', false);
+    expect(workspacesApi.get).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'checks only scopes with artifact data and clears them only when archived=%s',
+    async (archived) => {
+      const draftKey = JSON.stringify([
+        'synthetic-host',
+        workspaces[0].id,
+        'synthetic-session',
+        'synthetic-owner',
+        'synthetic-request',
+      ]);
+      artifactDrafts.set(draftKey, { draft: 'synthetic draft' });
+      vi.mocked(workspacesApi.get).mockResolvedValueOnce({
+        archived,
+      } as Awaited<ReturnType<typeof workspacesApi.get>>);
+      await renderPane('synthetic-host', false, workspaces);
+      await renderPane('synthetic-host', false);
+      expect(workspacesApi.get).toHaveBeenCalledExactlyOnceWith(
+        workspaces[0].id,
+        'synthetic-host'
+      );
+      expect(artifactDrafts.has(draftKey)).toBe(!archived);
+    }
+  );
 });
