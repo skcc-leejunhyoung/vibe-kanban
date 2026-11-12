@@ -1,0 +1,125 @@
+import { describe, expect, it } from 'vitest';
+import type { VibeReviewStatus } from 'shared/types';
+import { vibeRunBanner } from './vibeRunBanner';
+
+const NOW = Date.parse('2026-11-12T12:00:00Z');
+
+function status(overrides: Partial<VibeReviewStatus>): VibeReviewStatus {
+  return {
+    phase: null,
+    last_error: null,
+    merge_retry_at: null,
+    pr_requested: true,
+    failed_phase: null,
+    updated_at: '2026-11-12T11:55:00Z',
+    ...overrides,
+  };
+}
+
+const show = (overrides: Partial<VibeReviewStatus>) =>
+  vibeRunBanner(status(overrides), NOW);
+
+describe('vibeRunBanner', () => {
+  it('shows each step of a review-and-create-PR run as the server reports it', () => {
+    const steps = ['review', 'merging', 'pushing', 'creating_pr'].map((phase) =>
+      show({ phase })
+    );
+
+    expect(steps.map((step) => step?.tone)).toEqual([
+      'progress',
+      'progress',
+      'progress',
+      'progress',
+    ]);
+    expect(steps.map((step) => step?.messageKey)).toEqual([
+      'conversation.vibeRun.reviewing',
+      'conversation.vibeRun.merging',
+      'conversation.vibeRun.pushing',
+      'conversation.vibeRun.creatingPr',
+    ]);
+    // Nothing to retry while the server is at work.
+    expect(steps.every((step) => step?.canRetry === false)).toBe(true);
+    expect(show({ phase: 'done' })).toMatchObject({
+      tone: 'done',
+      messageKey: 'conversation.vibeRun.done',
+    });
+  });
+
+  it('names the failed step, gives its reason and offers the retry', () => {
+    const reason =
+      "widgets: pushing target branch 'feature' failed: the branch diverged";
+    expect(
+      show({ phase: 'blocked', failed_phase: 'pushing', last_error: reason })
+    ).toEqual({
+      tone: 'blocked',
+      messageKey: 'conversation.vibeRun.pushFailed',
+      detail: reason,
+      canRetry: true,
+      retryAt: null,
+    });
+    expect(
+      show({
+        phase: 'blocked',
+        failed_phase: 'creating_pr',
+        last_error: 'gh: not logged in',
+      })
+    ).toMatchObject({
+      messageKey: 'conversation.vibeRun.prFailed',
+      detail: 'gh: not logged in',
+      canRetry: true,
+    });
+    // A failed merge has no follow-up step recorded.
+    expect(
+      show({ phase: 'blocked', last_error: 'repo: merge conflict' })
+    ).toMatchObject({
+      messageKey: 'conversation.vibeRun.mergeFailed',
+      canRetry: true,
+    });
+  });
+
+  it('shows a merge that waits to be retried, with its next try', () => {
+    expect(
+      show({
+        phase: 'merging',
+        pr_requested: false,
+        last_error: "repo: 'main' checkout has uncommitted changes",
+        merge_retry_at: '2026-11-12T12:05:00Z',
+      })
+    ).toMatchObject({
+      tone: 'progress',
+      messageKey: 'conversation.vibeRun.mergeWaiting',
+      canRetry: true,
+      retryAt: '2026-11-12T12:05:00Z',
+    });
+  });
+
+  it('says a blocked review made no PR, with nothing to retry', () => {
+    expect(show({ phase: 'blocked' })).toMatchObject({
+      tone: 'blocked',
+      messageKey: 'conversation.vibeRun.reviewBlocked',
+      canRetry: false,
+    });
+  });
+
+  it('stays out of the way of a plain review and of old outcomes', () => {
+    for (const phase of ['coding', 'review', 'merging', 'done', 'blocked']) {
+      expect(show({ phase, pr_requested: false })).toBeNull();
+    }
+    expect(show({ phase: 'coding' })).toBeNull();
+    expect(show({ phase: null })).toBeNull();
+    expect(vibeRunBanner(undefined, NOW)).toBeNull();
+    // Settled more than a day ago: no longer news.
+    const old = { updated_at: '2026-11-11T11:00:00Z' };
+    expect(show({ phase: 'done', ...old })).toBeNull();
+    expect(show({ phase: 'blocked', ...old })).toBeNull();
+    // A failure waiting for its retry is shown however old it is.
+    expect(
+      show({
+        phase: 'blocked',
+        failed_phase: 'pushing',
+        last_error: 'x',
+        ...old,
+      })
+    ).not.toBeNull();
+  });
+});

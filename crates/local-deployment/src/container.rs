@@ -24,7 +24,7 @@ use db::{
         repo::Repo,
         session::{CreateSession, Session},
         session_message_index::SessionMessageIndex,
-        vibe_run::{MergeWait, VibeRun},
+        vibe_run::{MergeWait, PrRequest, VibeRun},
         workspace::Workspace,
         workspace_repo::WorkspaceRepo,
     },
@@ -3074,6 +3074,11 @@ impl LocalContainerService {
                 }
                 let _ = VibeRun::finish_merge(pool, workspace_id).await;
                 tracing::info!("vibe: workspace {} merged → In review", workspace_id);
+                // "Review and create PR": the run is now `pushing`, and the
+                // server goes on to the push and the draft PR by itself.
+                if vibe_run.pr_requested {
+                    vibe_orchestrator::PR_FOLLOW_UP.notify_one();
+                }
                 self.vibe_notify_ready_for_review(
                     workspace,
                     format!(
@@ -3353,7 +3358,7 @@ impl LocalContainerService {
         // StartReview — instead of being stranded in `review` pointing at a
         // session that never ran (previously recoverable only by the 15-minute
         // orphan watcher).
-        VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id)
+        VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id, None)
             .await
             .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
         Ok(review_session)
@@ -4676,6 +4681,7 @@ impl ContainerService for LocalContainerService {
         workspace: &Workspace,
         session: &Session,
         executor_config: Option<ExecutorConfig>,
+        create_pr: bool,
     ) -> Result<Session, ContainerError> {
         let Some(task_id) = workspace.task_id else {
             return Err(ContainerError::Other(anyhow!(
@@ -4709,16 +4715,19 @@ impl ContainerService for LocalContainerService {
 
         // Answer with the review session as soon as it exists so the UI can
         // switch to it; the agent spawn follows in the background. A start that
-        // fails there blocks the run (as the workflow's Block does), so anything
-        // waiting on the review — "review and create PR" — stops instead of
-        // polling until its timeout.
+        // fails there blocks the run (as the workflow's Block does), so the run
+        // shows as stopped instead of sitting in `review` with no reviewer.
         let prompt = vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_A);
         let (review_session, executor_config) = self
             .vibe_create_review_session(workspace, session, executor_config)
             .await?;
-        // The phase moves now, not after the spawn: the caller polls it right
-        // away and would otherwise read a previous run's `blocked` / `done`.
-        VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id)
+        // The phase moves now, not after the spawn: the caller reads it right
+        // away and would otherwise see a previous run's `blocked` / `done`.
+        // The PR, if asked for, is drafted by the agent the review runs with.
+        let pr = create_pr.then(|| PrRequest {
+            executor_config: Some(executor_config.clone()),
+        });
+        VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id, pr.as_ref())
             .await
             .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
         {
@@ -5830,7 +5839,7 @@ done
         VibeRun::get_or_create(&pool, workspace.id, Uuid::new_v4())
             .await
             .unwrap();
-        VibeRun::begin_review(&pool, workspace.id, review.id)
+        VibeRun::begin_review(&pool, workspace.id, review.id, None)
             .await
             .unwrap();
         let run = || {
@@ -5950,7 +5959,7 @@ done
         VibeRun::get_or_create(&pool, workspace.id, Uuid::new_v4())
             .await
             .unwrap();
-        VibeRun::begin_review(&pool, workspace.id, review.id)
+        VibeRun::begin_review(&pool, workspace.id, review.id, None)
             .await
             .unwrap();
         VibeRun::set_merge_retries(&pool, workspace.id, 3)
@@ -5989,6 +5998,95 @@ done
         assert_eq!(run.phase, "done");
         assert_eq!(run.merge_retries, 0);
         assert!(run.last_error.is_none());
+    }
+
+    /// "Review and create PR": the approved merge landing is not the end of
+    /// the run. It moves on to `pushing`, where the server's follow-up pushes
+    /// the target and opens the PR — nothing waits for the client that started
+    /// the review. A later plain review of the workspace ends at its merge.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_approved_review_and_create_pr_run_goes_on_past_its_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("repo");
+        git(dir.path(), &["init", "-b", "main", "repo"]);
+        git(&repo_path, &["commit", "--allow-empty", "-m", "init"]);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let repo = Repo::find_or_create(&pool, &repo_path, "repo")
+            .await
+            .unwrap();
+        let container = container_on(pool.clone());
+        let workspace = task_workspace(&container, &repo, dir.path(), "a").await;
+        let review = Session::create(
+            &pool,
+            &CreateSession {
+                executor: Some(BaseCodingAgent::ClaudeCode.to_string()),
+                variant: None,
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        VibeRun::get_or_create(&pool, workspace.id, Uuid::new_v4())
+            .await
+            .unwrap();
+        let run = || {
+            let pool = pool.clone();
+            async move {
+                VibeRun::find_by_workspace_id(&pool, workspace.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+        };
+        let merged_files = || {
+            let tree = std::process::Command::new("git")
+                .args(["ls-tree", "--name-only", "main"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&tree.stdout).into_owned()
+        };
+
+        let pr = PrRequest {
+            executor_config: Some(ExecutorConfig::new(BaseCodingAgent::ClaudeCode)),
+        };
+        VibeRun::begin_review(&pool, workspace.id, review.id, Some(&pr))
+            .await
+            .unwrap();
+        container
+            .vibe_attempt_merge(None, &workspace, &review, &run().await, 0)
+            .await
+            .unwrap();
+
+        let merged = run().await;
+        assert_eq!(merged_files(), "a.txt\n");
+        assert_eq!(merged.phase, "pushing");
+        assert!(merged.pr_requested && merged.last_error.is_none());
+
+        // More work, then a plain review: approved, merged, and that is all.
+        let worktree = dir.path().join("a").join("repo");
+        std::fs::write(worktree.join("b.txt"), "b").unwrap();
+        git(&worktree, &["add", "."]);
+        git(&worktree, &["commit", "-m", "b"]);
+        VibeRun::begin_review(&pool, workspace.id, review.id, None)
+            .await
+            .unwrap();
+        container
+            .vibe_attempt_merge(None, &workspace, &review, &run().await, 0)
+            .await
+            .unwrap();
+
+        let done = run().await;
+        assert_eq!(merged_files(), "a.txt\nb.txt\n");
+        assert_eq!(done.phase, "done");
+        assert!(!done.pr_requested);
     }
 
     /// A follow-up for `agent`; anything but Claude Code fails to start in the

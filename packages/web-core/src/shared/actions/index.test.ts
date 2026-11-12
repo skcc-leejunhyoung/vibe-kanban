@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { Workspace } from 'shared/types';
+import type { VibeReviewStatus, Workspace } from 'shared/types';
 import {
   isActionVisible,
   type ActionExecutorContext,
@@ -840,13 +840,18 @@ describe('Actions.RetryVibeMerge', () => {
       { id: 'ws1' },
       { currentHostId: 'current-host', currentSessionId: 'session-1' }
     ).ctx;
+  const runStatus = (status: Partial<VibeReviewStatus>): VibeReviewStatus => ({
+    phase: null,
+    last_error: null,
+    merge_retry_at: null,
+    pr_requested: false,
+    failed_phase: null,
+    updated_at: '2026-11-12T12:00:00Z',
+    ...status,
+  });
 
   it('stays quiet when the merge lands', async () => {
-    vibeRetryMerge.mockResolvedValue({
-      phase: 'done',
-      last_error: null,
-      merge_retry_at: null,
-    });
+    vibeRetryMerge.mockResolvedValue(runStatus({ phase: 'done' }));
 
     await Actions.RetryVibeMerge.execute(ctxFor(), 'ws1');
 
@@ -854,12 +859,26 @@ describe('Actions.RetryVibeMerge', () => {
     expect(showConfirm).not.toHaveBeenCalled();
   });
 
+  it('stays quiet when a failed push or PR step is resumed on the server', async () => {
+    for (const phase of ['pushing', 'creating_pr']) {
+      vibeRetryMerge.mockResolvedValue(
+        runStatus({ phase, pr_requested: true })
+      );
+
+      await Actions.RetryVibeMerge.execute(ctxFor(), 'ws1');
+    }
+
+    expect(showConfirm).not.toHaveBeenCalled();
+  });
+
   it('shows why the merge is still waiting and when it tries next', async () => {
-    vibeRetryMerge.mockResolvedValue({
-      phase: 'merging',
-      last_error: "repo: 'main' checkout has uncommitted changes: vk.rs",
-      merge_retry_at: '2026-10-23T09:30:00Z',
-    });
+    vibeRetryMerge.mockResolvedValue(
+      runStatus({
+        phase: 'merging',
+        last_error: "repo: 'main' checkout has uncommitted changes: vk.rs",
+        merge_retry_at: '2026-10-23T09:30:00Z',
+      })
+    );
 
     await Actions.RetryVibeMerge.execute(ctxFor(), 'ws1');
 

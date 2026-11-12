@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
+use executors::profile::ExecutorConfig;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, SqlitePool, types::Json};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -12,9 +13,9 @@ pub enum VibeRunError {
 
 /// Per-workspace orchestration state for the automated `vibe` workflow.
 ///
-/// `phase` is one of `coding | review | merging | blocked | done` (kept as a
-/// plain string here so the `db` crate stays free of the `services`-level
-/// `VibePhase` enum; the orchestrator maps between them).
+/// `phase` is one of `coding | review | merging | pushing | creating_pr |
+/// blocked | done` (kept as a plain string here so the `db` crate stays free of
+/// the `services`-level `VibePhase` enum; the orchestrator maps between them).
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct VibeRun {
     pub workspace_id: Uuid,
@@ -29,15 +30,33 @@ pub struct VibeRun {
     /// by the next finalize.
     pub last_result: Option<String>,
     /// Why the last merge attempt failed (git's message plus who holds the
-    /// blocking checkout). Kept until the merge lands.
+    /// blocking checkout), kept until the merge lands; or why the follow-up
+    /// named by `failed_phase` stopped.
     pub last_error: Option<String>,
     /// First failure of the current merge wait; `None` when not waiting.
     pub merge_wait_since: Option<DateTime<Utc>>,
     pub merge_wait_attempts: i64,
     /// When the waiting merge is tried again.
     pub merge_retry_at: Option<DateTime<Utc>>,
+    /// "Review and create PR": once the merge lands the server pushes the
+    /// target branch (`pushing`) and opens a draft PR (`creating_pr`).
+    pub pr_requested: bool,
+    /// Agent config the PR text is drafted with; `None` uses the workspace's
+    /// latest.
+    pub pr_executor_config: Option<Json<ExecutorConfig>>,
+    /// The follow-up phase (`pushing` / `creating_pr`) a blocked run stopped
+    /// in, where a retry resumes. `None` for every other block.
+    pub failed_phase: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// What a review is asked to do after its merge: push the target branch and
+/// open a draft PR whose text `executor_config` drafts (`None`: the workspace's
+/// latest agent config).
+#[derive(Debug, Clone, Default)]
+pub struct PrRequest {
+    pub executor_config: Option<ExecutorConfig>,
 }
 
 /// A merge waiting for its next try.
@@ -51,7 +70,8 @@ pub struct MergeWait {
 impl VibeRun {
     const COLUMNS: &'static str = "workspace_id, task_id, phase, review_session_id, \
          coding_turns, review_turns, merge_retries, last_result, last_error, merge_wait_since, \
-         merge_wait_attempts, merge_retry_at, created_at, updated_at";
+         merge_wait_attempts, merge_retry_at, pr_requested, pr_executor_config, failed_phase, \
+         created_at, updated_at";
 
     /// Fetch-or-initialize the run row for a workspace. New rows start in the
     /// `coding` phase. Idempotent: an existing row is returned unchanged.
@@ -112,13 +132,27 @@ impl VibeRun {
         Ok(rows)
     }
 
+    /// Runs whose merge landed and whose push / PR follow-up is still owed.
+    pub async fn find_in_follow_up(pool: &SqlitePool) -> Result<Vec<Self>, VibeRunError> {
+        let rows = sqlx::query_as::<_, Self>(&format!(
+            "SELECT {} FROM vibe_runs WHERE phase IN ('pushing', 'creating_pr')",
+            Self::COLUMNS
+        ))
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Move to `phase`. Not for a follow-up failure, which keeps the phase it
+    /// stopped in ([`Self::block_follow_up`]): this clears it.
     pub async fn set_phase(
         pool: &SqlitePool,
         workspace_id: Uuid,
         phase: &str,
     ) -> Result<(), VibeRunError> {
         sqlx::query(
-            "UPDATE vibe_runs SET phase = ?, updated_at = datetime('now','subsec') \
+            "UPDATE vibe_runs SET phase = ?, failed_phase = NULL, \
+                 updated_at = datetime('now','subsec') \
              WHERE workspace_id = ?",
         )
         .bind(phase)
@@ -132,21 +166,26 @@ impl VibeRun {
     /// clears `last_result` so the fresh review verdict drives the merge
     /// decision — a stale token (e.g. an earlier `approve`) must not survive into
     /// the new review and short-circuit it straight to a merge. An earlier
-    /// merge failure and its wait end with it.
+    /// merge failure and its wait end with it. `pr` is what this review is
+    /// asked to do once its merge lands; an earlier review's request ends too.
     pub async fn begin_review(
         pool: &SqlitePool,
         workspace_id: Uuid,
         review_session_id: Uuid,
+        pr: Option<&PrRequest>,
     ) -> Result<(), VibeRunError> {
         sqlx::query(
             "UPDATE vibe_runs \
              SET phase = 'review', review_session_id = ?, review_turns = 0, \
                  last_result = NULL, last_error = NULL, merge_wait_since = NULL, \
                  merge_wait_attempts = 0, merge_retry_at = NULL, \
+                 pr_requested = ?, pr_executor_config = ?, failed_phase = NULL, \
                  updated_at = datetime('now','subsec') \
              WHERE workspace_id = ?",
         )
         .bind(review_session_id)
+        .bind(pr.is_some())
+        .bind(pr.and_then(|pr| pr.executor_config.clone()).map(Json))
         .bind(workspace_id)
         .execute(pool)
         .await?;
@@ -212,7 +251,7 @@ impl VibeRun {
     ) -> Result<(), VibeRunError> {
         sqlx::query(
             "UPDATE vibe_runs SET phase = ?, last_error = ?, merge_wait_since = ?, \
-                 merge_wait_attempts = ?, merge_retry_at = ?, \
+                 merge_wait_attempts = ?, merge_retry_at = ?, failed_phase = NULL, \
                  updated_at = datetime('now','subsec') \
              WHERE workspace_id = ?",
         )
@@ -227,11 +266,14 @@ impl VibeRun {
         Ok(())
     }
 
-    /// The merge landed: done, with the failure and any wait cleared.
+    /// The merge landed, with the failure and any wait cleared: done, or on to
+    /// `pushing` when the run was asked for a PR.
     pub async fn finish_merge(pool: &SqlitePool, workspace_id: Uuid) -> Result<(), VibeRunError> {
         sqlx::query(
-            "UPDATE vibe_runs SET phase = 'done', last_error = NULL, merge_wait_since = NULL, \
-                 merge_wait_attempts = 0, merge_retry_at = NULL, \
+            "UPDATE vibe_runs \
+             SET phase = CASE WHEN pr_requested THEN 'pushing' ELSE 'done' END, \
+                 last_error = NULL, merge_wait_since = NULL, \
+                 merge_wait_attempts = 0, merge_retry_at = NULL, failed_phase = NULL, \
                  updated_at = datetime('now','subsec') \
              WHERE workspace_id = ?",
         )
@@ -239,6 +281,67 @@ impl VibeRun {
         .execute(pool)
         .await?;
         Ok(())
+    }
+
+    /// A follow-up step finished: move from `from` to `to`. `false` when the
+    /// run is no longer in `from` (a new review took it over) and was left
+    /// alone.
+    pub async fn advance_follow_up(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        from: &str,
+        to: &str,
+    ) -> Result<bool, VibeRunError> {
+        let done = sqlx::query(
+            "UPDATE vibe_runs SET phase = ?, last_error = NULL, failed_phase = NULL, \
+                 updated_at = datetime('now','subsec') \
+             WHERE workspace_id = ? AND phase = ?",
+        )
+        .bind(to)
+        .bind(workspace_id)
+        .bind(from)
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// The follow-up step `from` failed: blocked, remembering the step and why.
+    /// `false` when the run is no longer in `from` and was left alone.
+    pub async fn block_follow_up(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        from: &str,
+        last_error: &str,
+    ) -> Result<bool, VibeRunError> {
+        let done = sqlx::query(
+            "UPDATE vibe_runs SET phase = 'blocked', last_error = ?, failed_phase = ?, \
+                 updated_at = datetime('now','subsec') \
+             WHERE workspace_id = ? AND phase = ?",
+        )
+        .bind(last_error)
+        .bind(from)
+        .bind(workspace_id)
+        .bind(from)
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Put a run a follow-up step blocked back into that step, without
+    /// reviewing or merging again. `false` when it is not blocked there.
+    pub async fn retry_follow_up(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+    ) -> Result<bool, VibeRunError> {
+        let done = sqlx::query(
+            "UPDATE vibe_runs SET phase = failed_phase, last_error = NULL, failed_phase = NULL, \
+                 updated_at = datetime('now','subsec') \
+             WHERE workspace_id = ? AND phase = 'blocked' AND failed_phase IS NOT NULL",
+        )
+        .bind(workspace_id)
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
     }
 
     /// Record (or clear, with `None`) the agent's latest sentinel token.
@@ -256,5 +359,150 @@ impl VibeRun {
         .execute(pool)
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use executors::executors::BaseCodingAgent;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    async fn run_in_review(pr: Option<&PrRequest>) -> (SqlitePool, Uuid) {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let (workspace_id, session_id) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'vk/test')")
+            .bind(workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?, ?)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        VibeRun::get_or_create(&pool, workspace_id, Uuid::new_v4())
+            .await
+            .unwrap();
+        VibeRun::begin_review(&pool, workspace_id, session_id, pr)
+            .await
+            .unwrap();
+        (pool, workspace_id)
+    }
+
+    async fn run(pool: &SqlitePool, workspace_id: Uuid) -> VibeRun {
+        VibeRun::find_by_workspace_id(pool, workspace_id)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    /// The merge of a "review and create PR" run is not its end: it goes on to
+    /// the push, with the agent config the PR is to be drafted with. A plain
+    /// review ends at its merge, as before.
+    #[tokio::test]
+    async fn a_merge_ends_the_run_unless_a_pr_was_asked_for() {
+        let (pool, plain) = run_in_review(None).await;
+        VibeRun::finish_merge(&pool, plain).await.unwrap();
+        let done = run(&pool, plain).await;
+        assert_eq!(done.phase, "done");
+        assert!(!done.pr_requested && done.pr_executor_config.is_none());
+
+        let request = PrRequest {
+            executor_config: Some(ExecutorConfig::new(BaseCodingAgent::ClaudeCode)),
+        };
+        let (pool, with_pr) = run_in_review(Some(&request)).await;
+        VibeRun::finish_merge(&pool, with_pr).await.unwrap();
+        let pushing = run(&pool, with_pr).await;
+        assert_eq!(pushing.phase, "pushing");
+        assert!(pushing.pr_requested);
+        assert_eq!(
+            pushing.pr_executor_config.map(|config| config.0.executor),
+            Some(BaseCodingAgent::ClaudeCode)
+        );
+        assert_eq!(
+            VibeRun::find_in_follow_up(&pool).await.unwrap().len(),
+            1,
+            "the follow-up finds it by its phase"
+        );
+
+        // The next review of the workspace is a plain one again.
+        let session = run(&pool, with_pr).await.review_session_id.unwrap();
+        VibeRun::begin_review(&pool, with_pr, session, None)
+            .await
+            .unwrap();
+        VibeRun::finish_merge(&pool, with_pr).await.unwrap();
+        let done = run(&pool, with_pr).await;
+        assert_eq!(done.phase, "done");
+        assert!(!done.pr_requested && done.pr_executor_config.is_none());
+    }
+
+    /// A follow-up step only moves the run it started on, and a block there
+    /// remembers the step so the retry resumes it. Any other change of phase —
+    /// a new merge attempt, its failure, a block by the review — forgets that
+    /// step: such a run must merge again first.
+    #[tokio::test]
+    async fn only_a_follow_up_block_is_resumed_at_its_step() {
+        let (pool, id) = run_in_review(Some(&PrRequest::default())).await;
+        // Not in the follow-up yet: its transitions leave the run alone.
+        assert!(
+            !VibeRun::advance_follow_up(&pool, id, "pushing", "creating_pr")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !VibeRun::block_follow_up(&pool, id, "pushing", "nope")
+                .await
+                .unwrap()
+        );
+        assert!(!VibeRun::retry_follow_up(&pool, id).await.unwrap());
+        assert_eq!(run(&pool, id).await.phase, "review");
+
+        VibeRun::finish_merge(&pool, id).await.unwrap();
+        assert!(
+            VibeRun::block_follow_up(&pool, id, "pushing", "diverged")
+                .await
+                .unwrap()
+        );
+        let blocked = run(&pool, id).await;
+        assert_eq!(
+            (
+                blocked.phase.as_str(),
+                blocked.last_error.as_deref(),
+                blocked.failed_phase.as_deref()
+            ),
+            ("blocked", Some("diverged"), Some("pushing"))
+        );
+        assert!(VibeRun::retry_follow_up(&pool, id).await.unwrap());
+        assert_eq!(run(&pool, id).await.phase, "pushing");
+        assert!(
+            VibeRun::advance_follow_up(&pool, id, "pushing", "creating_pr")
+                .await
+                .unwrap()
+        );
+
+        // Blocked at the PR, then re-approved: the merge runs again and fails.
+        // The retry must merge, not skip to the PR.
+        assert!(
+            VibeRun::block_follow_up(&pool, id, "creating_pr", "gh: not logged in")
+                .await
+                .unwrap()
+        );
+        VibeRun::set_phase(&pool, id, "merging").await.unwrap();
+        assert!(run(&pool, id).await.failed_phase.is_none());
+        VibeRun::record_merge_failure(&pool, id, "blocked", "merge conflict", None)
+            .await
+            .unwrap();
+        assert!(!VibeRun::retry_follow_up(&pool, id).await.unwrap());
+        let merge_blocked = run(&pool, id).await;
+        assert_eq!(merge_blocked.phase, "blocked");
+        assert_eq!(merge_blocked.last_error.as_deref(), Some("merge conflict"));
     }
 }

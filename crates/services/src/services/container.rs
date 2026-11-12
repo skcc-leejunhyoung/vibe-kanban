@@ -1119,11 +1119,14 @@ pub trait ContainerService {
     /// as if its coding agent had just reported `VIBE_RESULT: done`: ensure a
     /// `vibe_runs` row exists, tag the linked issue `vibe`, and
     /// spawn a fresh dedicated review session. Returns the new review session.
+    /// With `create_pr` the run goes on after its merge: the server pushes the
+    /// target branch and opens a draft PR drafted by the review's agent.
     async fn vibe_manual_start_review(
         &self,
         workspace: &Workspace,
         session: &Session,
         executor_config: Option<ExecutorConfig>,
+        create_pr: bool,
     ) -> Result<Session, ContainerError>;
 
     /// Try the merge of a `vibe` run again: a waiting merge whose retry is due

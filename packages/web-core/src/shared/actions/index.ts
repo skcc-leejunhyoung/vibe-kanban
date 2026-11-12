@@ -1050,10 +1050,11 @@ export const Actions = {
     id: 'retry-vibe-merge',
     label: 'Retry Vibe Merge',
     icon: GitMergeIcon,
-    keywords: ['vibe', 'merge', 'retry', 'blocked'],
+    keywords: ['vibe', 'merge', 'push', 'pull request', 'retry', 'blocked'],
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
-    getTooltip: () => 'Merge a blocked automated review again',
+    getTooltip: () =>
+      'Retry a blocked automated review at the step that failed (merge, target push or PR)',
     execute: async (ctx, workspaceId, hostId) => {
       const { targetHostId, targetSessionId } = await resolveReviewTarget(
         ctx,
@@ -1075,14 +1076,24 @@ export const Actions = {
             ? (error.error_data as ReviewError | undefined)
             : undefined;
         if (data?.type === 'nothing_to_merge') {
-          throw new Error('This workspace has no blocked automated merge');
+          throw new Error(
+            'This workspace has no blocked automated merge, push or PR to retry'
+          );
         }
         if (data?.type === 'process_already_running') {
           throw new Error('Wait for the running turn to finish, then retry');
         }
         throw error;
       }
-      if (status.phase === 'done') return;
+      // Merged, or back in the push / PR step the server resumes by itself;
+      // the workspace shows its progress.
+      if (
+        status.phase === 'done' ||
+        status.phase === 'pushing' ||
+        status.phase === 'creating_pr'
+      ) {
+        return;
+      }
       const nextTry = status.merge_retry_at
         ? `\n\nNext try: ${formatDateShortWithTime(status.merge_retry_at)}`
         : '';
@@ -1106,7 +1117,8 @@ export const Actions = {
     keywords: ['review', 'merge', 'push', 'pull request', 'ai', 'draft'],
     requiresTarget: ActionTargetType.WORKSPACE,
     isVisible: (ctx) => ctx.hasWorkspace,
-    getTooltip: () => 'Review, merge, push target, and create an AI draft PR',
+    getTooltip: () =>
+      'Review, then the server merges, pushes the target and creates an AI draft PR',
     execute: async (ctx, workspaceId, hostId) => {
       const isCurrentWorkspace =
         ctx.currentWorkspaceId === workspaceId &&

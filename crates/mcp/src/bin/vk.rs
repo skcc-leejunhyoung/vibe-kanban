@@ -995,6 +995,15 @@ const COMMANDS: &[Cmd] = &[
                 ),
                 "executor_config",
             ),
+            keyed(
+                opt(
+                    "create-pr",
+                    "After the merge, the server pushes the target branch and opens an AI-drafted draft PR",
+                    Where::Body,
+                    Kind::Flag,
+                ),
+                "create_pr",
+            ),
         ],
     ),
     cmd(
@@ -1006,7 +1015,7 @@ const COMMANDS: &[Cmd] = &[
     ),
     cmd(
         &["session", "vibe-review", "retry-merge"],
-        "Merge a blocked (or waiting) vibe run again",
+        "Retry a blocked vibe run at the step that failed (merge, target push or PR)",
         "POST",
         "/sessions/{session}/vibe-review/retry-merge",
         &[SESSION],

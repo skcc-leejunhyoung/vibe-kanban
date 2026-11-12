@@ -108,10 +108,12 @@ import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import type { TurnNavigationItem } from '@vibe/ui/components/TurnNavigationPopup';
 import { buildTurnNavigationItems } from '../model/turnNavigation';
+import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
 import {
-  resumeReviewAndCreatePr,
-  runReviewAndCreatePr,
-} from '@/shared/lib/reviewAndCreatePr';
+  useVibeRunStatus,
+  vibeRunStatusKeys,
+} from '@/shared/hooks/useVibeRunStatus';
+import { vibeRunBanner } from '@/shared/lib/vibeRunBanner';
 
 /** Compute execution status from boolean flags */
 function computeExecutionStatus(params: {
@@ -280,6 +282,8 @@ function reviewErrorKey(error: unknown): string {
       return 'conversation.review.alreadyRunning';
     case 'no_linked_issue':
       return 'conversation.review.noLinkedIssue';
+    case 'nothing_to_merge':
+      return 'conversation.vibeRun.nothingToRetry';
     default:
       return 'conversation.review.failedDescription';
   }
@@ -349,11 +353,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const hostId = useHostId();
   const { t } = useTranslation('tasks');
   const [isReviewing, setIsReviewing] = useState(false);
-  useEffect(() => {
-    if (workspaceId) {
-      void resumeReviewAndCreatePr(workspaceId, hostId);
-    }
-  }, [workspaceId, hostId]);
+  // Where the server stands in the workspace's automated review run. The run
+  // is the server's: this only shows it, and offers the retry of a failed step.
+  const { data: vibeRunStatus } = useVibeRunStatus(workspaceId, sessionId);
+  const [isRetryingVibeRun, setIsRetryingVibeRun] = useState(false);
   // Only issue-linked workspaces can enter the automated vibe review workflow;
   // gate the review button on a linked issue so it never advertises a call that
   // the backend is guaranteed to reject.
@@ -1723,6 +1726,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       void queryClient.invalidateQueries({
         queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
       });
+      void queryClient.invalidateQueries({
+        queryKey: vibeRunStatusKeys.workspace(workspaceId),
+      });
     } catch (error) {
       void ErrorDialog.show({
         title: t('conversation.review.failedTitle'),
@@ -1742,6 +1748,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     t,
   ]);
 
+  // Same review, plus the request that the server push the target branch and
+  // open an AI draft PR once the merge lands. Nothing after the start depends
+  // on this page: the banner below reads the server's progress.
   const handleVibeReviewAndCreatePr = useCallback(async () => {
     if (!sessionId || !workspaceId || isReviewing) return;
     setIsReviewing(true);
@@ -1756,17 +1765,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       });
     } catch (error) {
       void ErrorDialog.show({
-        title: t(
-          'conversation.reviewAndCreatePr.failedTitle',
-          'Review and create PR failed'
-        ),
-        message:
-          error instanceof Error
-            ? error.message
-            : t(
-                'conversation.reviewAndCreatePr.failed',
-                'The review and pull request workflow failed.'
-              ),
+        title: t('conversation.review.failedTitle'),
+        message: t(reviewErrorKey(error)),
       });
     } finally {
       setIsReviewing(false);
@@ -1781,6 +1781,48 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     onSelectSession,
     t,
   ]);
+
+  // Retry the step the run stopped at (merge, target push or PR). The server
+  // resumes there; it does not review again.
+  const handleRetryVibeRun = useCallback(async () => {
+    if (!sessionId || isRetryingVibeRun) return;
+    setIsRetryingVibeRun(true);
+    try {
+      const status = await sessionsApi.vibeRetryMerge(sessionId, hostId);
+      queryClient.setQueryData(
+        vibeRunStatusKeys.byWorkspace(workspaceId, hostId),
+        status
+      );
+    } catch (error) {
+      void ErrorDialog.show({
+        title: t('conversation.vibeRun.retryFailedTitle'),
+        message: t(reviewErrorKey(error)),
+      });
+    } finally {
+      setIsRetryingVibeRun(false);
+      void queryClient.invalidateQueries({
+        queryKey: vibeRunStatusKeys.workspace(workspaceId),
+      });
+    }
+  }, [sessionId, isRetryingVibeRun, workspaceId, hostId, queryClient, t]);
+
+  const vibeRunNotice = useMemo(() => {
+    const banner = vibeRunBanner(vibeRunStatus);
+    if (!banner) return null;
+    const nextTry = banner.retryAt
+      ? t('conversation.vibeRun.nextTry', {
+          time: formatDateShortWithTime(banner.retryAt),
+        })
+      : null;
+    return {
+      tone: banner.tone,
+      message: t(banner.messageKey),
+      detail: [banner.detail, nextTry].filter(Boolean).join('\n') || null,
+      onRetry: banner.canRetry ? handleRetryVibeRun : undefined,
+      retryLabel: t('conversation.vibeRun.retry'),
+      isRetrying: isRetryingVibeRun,
+    };
+  }, [vibeRunStatus, handleRetryVibeRun, isRetryingVibeRun, t]);
 
   // Track previous process count for queue refresh
   const prevProcessCountRef = useRef(processes.length);
@@ -2676,6 +2718,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
             }
           : undefined
       }
+      vibeRun={vibeRunNotice}
       localAttachments={localAttachments}
       dropzone={{ getRootProps, getInputProps, isDragActive }}
       modelSelector={modelSelectorNode}

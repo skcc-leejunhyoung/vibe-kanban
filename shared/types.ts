@@ -667,19 +667,44 @@ export type RenameBranchResponse = { branch: string, };
 
 export type StartReviewRequest = { executor_config: ExecutorConfig, additional_prompt: string | null, use_all_workspace_commits: boolean, };
 
-export type VibeReviewRequest = { executor_config: ExecutorConfig | null, };
+export type VibeReviewRequest = { executor_config: ExecutorConfig | null,
+/**
+ * "Review and create PR": once the review's merge lands, the server
+ * pushes the target branch and opens an AI-drafted draft PR. Nothing
+ * after this request depends on the caller staying connected.
+ */
+create_pr: boolean, };
 
 export type ReviewError = { "type": "process_already_running" } | { "type": "no_linked_issue" } | { "type": "nothing_to_merge" };
 
-export type VibeReviewStatus = { phase: string | null,
+export type VibeReviewStatus = {
 /**
- * Why the last auto-merge attempt failed, until a merge lands.
+ * `coding`, `review`, `merging`, `pushing`, `creating_pr`, `blocked` or
+ * `done`; `None` when the workspace has no vibe run.
+ */
+phase: string | null,
+/**
+ * Why the last auto-merge attempt failed, until a merge lands; or why the
+ * step named by `failed_phase` stopped.
  */
 last_error: string | null,
 /**
  * When a merge waiting on a retryable failure is tried again.
  */
-merge_retry_at: string | null, };
+merge_retry_at: string | null,
+/**
+ * The run was started as "review and create PR".
+ */
+pr_requested: boolean,
+/**
+ * `pushing` or `creating_pr` when that step blocked the run: a retry
+ * resumes there without reviewing or merging again.
+ */
+failed_phase: string | null,
+/**
+ * When the run last changed (entered its phase).
+ */
+updated_at: string | null, };
 
 export type OpenEditorRequest = { editor_type: string | null, file_path: string | null, repo_id?: string,
 /**

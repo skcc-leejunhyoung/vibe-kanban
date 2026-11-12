@@ -1,23 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { QueryClient } from '@tanstack/react-query';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
-import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
-import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
-import { PushErrorDialog } from '@/shared/dialogs/command-bar/PushErrorDialog';
-import type { ExecutorConfig } from 'shared/types';
-import {
-  resumeReviewAndCreatePr,
-  runReviewAndCreatePr,
-} from './reviewAndCreatePr';
-
-vi.mock('@/shared/dialogs/command-bar/PushErrorDialog', () => ({
-  PushErrorDialog: { show: vi.fn() },
-}));
-
-vi.mock('@/shared/dialogs/command-bar/PullFirstDialog', () => ({
-  PullFirstDialog: { show: vi.fn() },
-}));
+import type { ExecutorConfig, RepoBranchStatus } from 'shared/types';
+import { predictedPrHead, runReviewAndCreatePr } from './reviewAndCreatePr';
 
 vi.mock('@/shared/lib/unpushedWorkBranch', () => ({
   confirmUnpushedWorkBranchPush: vi.fn(),
@@ -27,18 +13,15 @@ vi.mock('@/shared/lib/api', () => ({
   sessionsApi: {
     vibeReview: vi.fn(),
     getVibeReviewStatus: vi.fn(),
+    vibeRetryMerge: vi.fn(),
   },
   workspacesApi: {
     get: vi.fn(),
     getRepos: vi.fn(),
     getBranchStatus: vi.fn(),
     pushTargetBranch: vi.fn(),
-  },
-}));
-
-vi.mock('@/shared/stores/usePrFromAiBackgroundStore', () => ({
-  usePrFromAiBackgroundStore: {
-    getState: vi.fn(),
+    generatePrDescription: vi.fn(),
+    createPR: vi.fn(),
   },
 }));
 
@@ -46,114 +29,122 @@ const queryClient = {
   invalidateQueries: vi.fn(),
   setQueryData: vi.fn(),
 } as unknown as QueryClient;
-const storage = new Map<string, string>();
 
-vi.stubGlobal('localStorage', {
-  getItem: (key: string) => storage.get(key) ?? null,
-  setItem: (key: string, value: string) => storage.set(key, value),
-  clear: () => storage.clear(),
+const storage = { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() };
+vi.stubGlobal('localStorage', storage);
+
+function repoStatus(merges: unknown[]): RepoBranchStatus {
+  return { repo_id: 'repo-1', merges } as unknown as RepoBranchStatus;
+}
+
+const directMerge = { type: 'direct', target_branch_name: 'feature' };
+const openPr = (head: string | null) => ({
+  type: 'pr',
+  head_branch_name: head,
+  pr_info: { number: 7, status: 'open' },
 });
 
 beforeEach(() => {
   vi.clearAllMocks();
-  localStorage.clear();
   vi.mocked(confirmUnpushedWorkBranchPush).mockResolvedValue(true);
+  vi.mocked(sessionsApi.vibeReview).mockResolvedValue({
+    id: 'review-session-1',
+  } as never);
+  vi.mocked(workspacesApi.get).mockResolvedValue({
+    branch: 'vk/work-branch',
+  } as never);
+  vi.mocked(workspacesApi.getRepos).mockResolvedValue([
+    { id: 'repo-1', target_branch: 'feature' },
+  ] as never);
+  vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
+    repoStatus([]),
+  ] as never);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('runReviewAndCreatePr', () => {
-  it('passes the composer executor config to the review session', async () => {
+  it('hands the whole workflow to the server and drives nothing itself', async () => {
+    vi.useFakeTimers();
     const executorConfig = {
       executor: 'CLAUDE_CODE',
       variant: 'default',
       model_id: 'claude-sonnet',
     } as ExecutorConfig;
-    vi.mocked(sessionsApi.vibeReview).mockRejectedValue(
-      new Error('Review could not be started')
-    );
+    const onReviewSession = vi.fn();
 
-    await runReviewAndCreatePr({
-      workspaceId: 'workspace-1',
-      sessionId: 'session-1',
-      hostId: 'host-1',
-      executorConfig,
-      queryClient,
-    });
+    await expect(
+      runReviewAndCreatePr({
+        workspaceId: 'workspace-1',
+        sessionId: 'session-1',
+        hostId: 'host-1',
+        executorConfig,
+        queryClient,
+        onReviewSession,
+      })
+    ).resolves.toBe(true);
 
+    // The request carries the intent; the server pushes and opens the PR.
     expect(sessionsApi.vibeReview).toHaveBeenCalledWith(
       'session-1',
       'host-1',
-      executorConfig
+      executorConfig,
+      true
     );
-  });
-
-  it('shows a warning dialog when an intermediate step fails', async () => {
-    vi.mocked(sessionsApi.vibeReview).mockRejectedValue(
-      new Error('Review could not be started')
-    );
-
-    await expect(
-      runReviewAndCreatePr({
-        workspaceId: 'workspace-1',
-        sessionId: 'session-1',
-        queryClient,
-      })
-    ).resolves.toBe(false);
-
-    expect(PushErrorDialog.show).toHaveBeenCalledWith({
-      title: 'Review and create PR from ai failed',
-      message: 'Review could not be started',
+    expect(onReviewSession).toHaveBeenCalledWith('review-session-1');
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['vibeRunStatus', 'workspace-1'],
     });
+
+    // The page that started it may now sit suspended or be closed: an hour
+    // later it has polled nothing, pushed nothing, created nothing and left
+    // no resume record behind.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(sessionsApi.getVibeReviewStatus).not.toHaveBeenCalled();
+    expect(workspacesApi.pushTargetBranch).not.toHaveBeenCalled();
+    expect(workspacesApi.generatePrDescription).not.toHaveBeenCalled();
+    expect(workspacesApi.createPR).not.toHaveBeenCalled();
+    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('does not duplicate the PR creation store error dialog', async () => {
-    vi.mocked(sessionsApi.vibeReview).mockResolvedValue({
-      id: 'review-session-1',
-    } as never);
-    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
-      phase: 'done',
-    } as never);
-    vi.mocked(workspacesApi.get).mockResolvedValue({
-      branch: 'vk/work-branch',
-    } as never);
-    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
-      {
-        id: 'repo-1',
-        name: 'repo-1',
-        target_branch: 'feature',
-        default_target_branch: 'develop',
-      },
-    ] as never);
+  it('asks about publishing a never-pushed work branch before the review starts', async () => {
+    // The repo already has an open PR for another head, so the merge skips it
+    // and the new PR would come from the work branch.
     vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
-      {
-        repo_id: 'repo-1',
-        is_target_remote: true,
-        merges: [
-          {
-            type: 'direct',
-            target_branch_name: 'feature',
-          },
-        ],
-      },
+      repoStatus([openPr('other-branch')]),
     ] as never);
-    const startCreateFromAi = vi.fn().mockResolvedValue(false);
-    vi.mocked(usePrFromAiBackgroundStore.getState).mockReturnValue({
-      startCreateFromAi,
-    } as never);
+    vi.mocked(confirmUnpushedWorkBranchPush).mockResolvedValue(false);
 
     await expect(
       runReviewAndCreatePr({
         workspaceId: 'workspace-1',
         sessionId: 'session-1',
+        hostId: 'host-1',
         queryClient,
       })
     ).resolves.toBe(false);
 
-    expect(startCreateFromAi).toHaveBeenCalledWith('workspace-1', 'repo-1', {
-      headBranch: 'feature',
-      targetBranch: 'develop',
-      workBranch: 'vk/work-branch',
-      hostId: undefined,
+    expect(confirmUnpushedWorkBranchPush).toHaveBeenCalledWith(
+      'workspace-1',
+      'repo-1',
+      'vk/work-branch',
+      null,
+      'host-1'
+    );
+    // Declined: no review, so nothing the server would later push.
+    expect(sessionsApi.vibeReview).not.toHaveBeenCalled();
+  });
+
+  it('does not question the usual case, where the PR comes from the merged-into branch', async () => {
+    await runReviewAndCreatePr({
+      workspaceId: 'workspace-1',
+      sessionId: 'session-1',
+      queryClient,
     });
+
     expect(confirmUnpushedWorkBranchPush).toHaveBeenCalledWith(
       'workspace-1',
       'repo-1',
@@ -161,30 +152,17 @@ describe('runReviewAndCreatePr', () => {
       'feature',
       undefined
     );
-    expect(PushErrorDialog.show).not.toHaveBeenCalled();
+    const asked = vi.mocked(confirmUnpushedWorkBranchPush).mock
+      .invocationCallOrder[0];
+    const started = vi.mocked(sessionsApi.vibeReview).mock
+      .invocationCallOrder[0];
+    expect(asked).toBeLessThan(started);
   });
 
-  it('does not create an AI PR when the unpushed-work-branch warning is cancelled', async () => {
-    vi.mocked(sessionsApi.vibeReview).mockResolvedValue({
-      id: 'review-session-1',
-    } as never);
-    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
-      phase: 'done',
-    } as never);
-    vi.mocked(workspacesApi.get).mockResolvedValue({
-      branch: 'vk/work-branch',
-    } as never);
-    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
-      { id: 'repo-1', name: 'repo-1', target_branch: 'develop' },
-    ] as never);
-    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
-      { repo_id: 'repo-1', is_target_remote: true, merges: [] },
-    ] as never);
-    vi.mocked(confirmUnpushedWorkBranchPush).mockResolvedValue(false);
-    const startCreateFromAi = vi.fn();
-    vi.mocked(usePrFromAiBackgroundStore.getState).mockReturnValue({
-      startCreateFromAi,
-    } as never);
+  it('starts the review when the branch state cannot be read', async () => {
+    vi.mocked(workspacesApi.getBranchStatus).mockRejectedValue(
+      new Error('host unreachable')
+    );
 
     await expect(
       runReviewAndCreatePr({
@@ -192,264 +170,49 @@ describe('runReviewAndCreatePr', () => {
         sessionId: 'session-1',
         queryClient,
       })
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
 
-    expect(startCreateFromAi).not.toHaveBeenCalled();
+    expect(confirmUnpushedWorkBranchPush).not.toHaveBeenCalled();
+    expect(sessionsApi.vibeReview).toHaveBeenCalled();
   });
 
-  it('resumes the push and PR steps without starting another review', async () => {
-    localStorage.setItem(
-      'vibe-review-and-create-pr',
-      JSON.stringify({
-        'local:workspace-1': {
-          workspaceId: 'workspace-1',
-          reviewSessionId: 'review-session-1',
-          hostId: null,
-        },
+  it('rejects when the review cannot start, for the caller to report', async () => {
+    vi.mocked(sessionsApi.vibeReview).mockRejectedValue(
+      new Error('Review could not be started')
+    );
+
+    await expect(
+      runReviewAndCreatePr({
+        workspaceId: 'workspace-1',
+        sessionId: 'session-1',
+        queryClient,
       })
-    );
-    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
-      phase: 'done',
-    } as never);
-    vi.mocked(workspacesApi.get).mockResolvedValue({
-      branch: 'vk/work-branch',
-    } as never);
-    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
-      {
-        id: 'repo-1',
-        name: 'repo-1',
-        target_branch: 'feature',
-        default_target_branch: 'develop',
-      },
-    ] as never);
-    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
-      {
-        repo_id: 'repo-1',
-        is_target_remote: false,
-        merges: [{ type: 'direct', target_branch_name: 'feature' }],
-      },
-    ] as never);
-    vi.mocked(workspacesApi.pushTargetBranch).mockResolvedValue({
-      success: true,
-    } as never);
-    const startCreateFromAi = vi.fn().mockResolvedValue(true);
-    vi.mocked(usePrFromAiBackgroundStore.getState).mockReturnValue({
-      startCreateFromAi,
-    } as never);
-
-    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
-      true
-    );
-
-    expect(sessionsApi.vibeReview).not.toHaveBeenCalled();
-    expect(workspacesApi.pushTargetBranch).toHaveBeenCalledOnce();
-    expect(startCreateFromAi).toHaveBeenCalledOnce();
-    expect(localStorage.getItem('vibe-review-and-create-pr')).toBe('{}');
-  });
-
-  it('pushes again and continues when the divergence was resolved elsewhere', async () => {
-    localStorage.setItem(
-      'vibe-review-and-create-pr',
-      JSON.stringify({
-        'local:workspace-1': {
-          workspaceId: 'workspace-1',
-          reviewSessionId: 'review-session-1',
-          hostId: null,
-        },
-      })
-    );
-    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
-      phase: 'done',
-    } as never);
-    vi.mocked(workspacesApi.get).mockResolvedValue({
-      branch: 'vk/work-branch',
-    } as never);
-    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
-      { id: 'repo-1', name: 'repo-1', target_branch: 'feature' },
-    ] as never);
-    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
-      { repo_id: 'repo-1', is_target_remote: false, merges: [] },
-    ] as never);
-    vi.mocked(workspacesApi.pushTargetBranch)
-      .mockResolvedValueOnce({
-        success: false,
-        error: { type: 'diverged', ahead: 1, behind: 2 },
-      } as never)
-      .mockResolvedValueOnce({ success: true } as never);
-    vi.mocked(PullFirstDialog.show).mockResolvedValue(
-      'resolved_elsewhere' as never
-    );
-    const startCreateFromAi = vi.fn().mockResolvedValue(true);
-    vi.mocked(usePrFromAiBackgroundStore.getState).mockReturnValue({
-      startCreateFromAi,
-    } as never);
-
-    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
-      true
-    );
-
-    expect(workspacesApi.pushTargetBranch).toHaveBeenCalledTimes(2);
-    expect(startCreateFromAi).toHaveBeenCalledOnce();
-    expect(PushErrorDialog.show).not.toHaveBeenCalled();
-  });
-
-  it('shows the full multi-line push output in the push error dialog', async () => {
-    localStorage.setItem(
-      'vibe-review-and-create-pr',
-      JSON.stringify({
-        'local:workspace-1': {
-          workspaceId: 'workspace-1',
-          reviewSessionId: 'review-session-1',
-          hostId: null,
-        },
-      })
-    );
-    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
-      phase: 'done',
-    } as never);
-    vi.mocked(workspacesApi.get).mockResolvedValue({
-      branch: 'vk/work-branch',
-    } as never);
-    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
-      { id: 'repo-1', name: 'repo-1', target_branch: 'feature' },
-    ] as never);
-    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
-      { repo_id: 'repo-1', is_target_remote: false, merges: [] },
-    ] as never);
-    const hookOutput = Array.from(
-      { length: 2000 },
-      (_, i) => `pre-push hook: check ${i} failed`
-    ).join('\n');
-    vi.mocked(workspacesApi.pushTargetBranch).mockResolvedValue({
-      success: false,
-      message: hookOutput,
-    } as never);
-
-    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
-      false
-    );
-
-    expect(PushErrorDialog.show).toHaveBeenCalledWith({
-      title: 'Review and create PR from ai failed',
-      message: hookOutput,
-    });
-  });
-
-  it('clears a blocked review so reopening the workspace does not retry it', async () => {
-    localStorage.setItem(
-      'vibe-review-and-create-pr',
-      JSON.stringify({
-        'local:workspace-1': {
-          workspaceId: 'workspace-1',
-          reviewSessionId: 'review-session-1',
-          hostId: null,
-        },
-      })
-    );
-    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
-      phase: 'blocked',
-    } as never);
-
-    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
-      false
-    );
-
-    expect(localStorage.getItem('vibe-review-and-create-pr')).toBe('{}');
-    await resumeReviewAndCreatePr('workspace-1', null);
-    expect(sessionsApi.getVibeReviewStatus).toHaveBeenCalledOnce();
-  });
-
-  it('clears the workflow after a post-review push failure so reopening does not retry it', async () => {
-    seedPendingReview();
-    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
-      phase: 'done',
-    } as never);
-    vi.mocked(workspacesApi.get).mockResolvedValue({
-      branch: 'vk/work-branch',
-    } as never);
-    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
-      { id: 'repo-1', name: 'repo-1', target_branch: 'feature' },
-    ] as never);
-    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
-      { repo_id: 'repo-1', is_target_remote: false, merges: [] },
-    ] as never);
-    vi.mocked(workspacesApi.pushTargetBranch).mockResolvedValue({
-      success: false,
-      message: 'pre-push hook rejected the push',
-    } as never);
-
-    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
-      false
-    );
-
-    expect(localStorage.getItem('vibe-review-and-create-pr')).toBe('{}');
-    await resumeReviewAndCreatePr('workspace-1', null);
-    expect(workspacesApi.pushTargetBranch).toHaveBeenCalledOnce();
-    expect(PushErrorDialog.show).toHaveBeenCalledOnce();
-  });
-
-  it('settles a caller that joins a failing run in flight instead of rejecting', async () => {
-    seedPendingReview();
-    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
-      phase: 'done',
-    } as never);
-    vi.mocked(workspacesApi.get).mockResolvedValue({
-      branch: 'vk/work-branch',
-    } as never);
-    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
-      { id: 'repo-1', name: 'repo-1', target_branch: 'feature' },
-    ] as never);
-    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
-      { repo_id: 'repo-1', is_target_remote: false, merges: [] },
-    ] as never);
-    vi.mocked(workspacesApi.pushTargetBranch).mockResolvedValue({
-      success: false,
-      message: 'pre-push hook rejected the push',
-    } as never);
-
-    const resumed = resumeReviewAndCreatePr('workspace-1', null);
-    const clicked = runReviewAndCreatePr({
-      workspaceId: 'workspace-1',
-      sessionId: 'session-1',
-      queryClient,
-    });
-
-    await expect(Promise.all([resumed, clicked])).resolves.toEqual([
-      false,
-      false,
-    ]);
-    expect(sessionsApi.vibeReview).not.toHaveBeenCalled();
-    expect(workspacesApi.pushTargetBranch).toHaveBeenCalledOnce();
-    expect(PushErrorDialog.show).toHaveBeenCalledOnce();
-  });
-
-  it('keeps the workflow when waiting for the review fails so reopening resumes it', async () => {
-    seedPendingReview();
-    vi.mocked(sessionsApi.getVibeReviewStatus).mockRejectedValue(
-      new Error('Failed to fetch')
-    );
-
-    await expect(resumeReviewAndCreatePr('workspace-1', null)).resolves.toBe(
-      false
-    );
-
-    expect(localStorage.getItem('vibe-review-and-create-pr')).toContain(
-      'local:workspace-1'
-    );
-    await resumeReviewAndCreatePr('workspace-1', null);
-    expect(sessionsApi.getVibeReviewStatus).toHaveBeenCalledTimes(2);
+    ).rejects.toThrow('Review could not be started');
+    expect(queryClient.setQueryData).not.toHaveBeenCalled();
   });
 });
 
-function seedPendingReview() {
-  localStorage.setItem(
-    'vibe-review-and-create-pr',
-    JSON.stringify({
-      'local:workspace-1': {
-        workspaceId: 'workspace-1',
-        reviewSessionId: 'review-session-1',
-        hostId: null,
-      },
-    })
-  );
-}
+describe('predictedPrHead', () => {
+  it('is the target branch the review will merge into', () => {
+    expect(predictedPrHead(repoStatus([]), 'feature')).toBe('feature');
+    expect(predictedPrHead(undefined, 'feature')).toBe('feature');
+  });
+
+  it('is the branch an earlier merge went into', () => {
+    expect(predictedPrHead(repoStatus([directMerge]), 'renamed')).toBe(
+      'feature'
+    );
+    expect(
+      predictedPrHead(repoStatus([openPr('feature'), directMerge]), 'renamed')
+    ).toBe('feature');
+  });
+
+  it('is the work branch when an open PR makes the merge skip the repo', () => {
+    expect(predictedPrHead(repoStatus([openPr(null)]), 'feature')).toBeNull();
+  });
+
+  it('ignores a PR that is closed or merged', () => {
+    const merged = { ...openPr('feature'), pr_info: { status: 'merged' } };
+    expect(predictedPrHead(repoStatus([merged]), 'feature')).toBe('feature');
+  });
+});

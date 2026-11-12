@@ -91,11 +91,16 @@ async fn tick(
         // Stop auto-responding once this workspace's vibe run has reached a
         // terminal phase (blocked/done): the automated workflow is over and a
         // human may now be driving a fresh session in the same workspace, so
-        // auto-answering would hijack their interaction. A missing run row means
-        // the first coding turn hasn't finalized yet (the row is created at
-        // finalize), so fall through and keep answering in that case.
+        // auto-answering would hijack their interaction. The same holds once
+        // the merge has landed and only the server's push / PR follow-up is
+        // left: no coding or review turn of the run is to come. A missing run
+        // row means the first coding turn hasn't finalized yet (the row is
+        // created at finalize), so fall through and keep answering in that case.
         if let Some(run) = VibeRun::find_by_workspace_id(pool, workspace.id).await?
-            && matches!(run.phase.as_str(), "blocked" | "done")
+            && matches!(
+                run.phase.as_str(),
+                "blocked" | "done" | "pushing" | "creating_pr"
+            )
         {
             continue;
         }

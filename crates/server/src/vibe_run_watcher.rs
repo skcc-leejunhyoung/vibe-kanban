@@ -12,6 +12,11 @@
 //! It also drives merges waiting on a retryable failure: when a waiting run's
 //! `merge_retry_at` comes due, it tries the merge again. The schedule lives in
 //! the row, so a wait survives restarts.
+//!
+//! A run in the push / PR follow-up after its merge belongs to
+//! [`crate::vibe_pr_follow_up`], which bounds its own steps. One that has no
+//! worker there and has not moved for a while is blocked here with the reason
+//! and the step a retry resumes in.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -33,7 +38,7 @@ use sqlx::SqlitePool;
 use tokio::time::sleep;
 use uuid::Uuid;
 
-use crate::DeploymentImpl;
+use crate::{DeploymentImpl, vibe_pr_follow_up};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -62,7 +67,13 @@ async fn tick(deployment: &DeploymentImpl) -> anyhow::Result<()> {
     retry_due_merges(deployment, Utc::now()).await?;
     let pool = &deployment.db().pool;
     let client = deployment.remote_client().ok();
-    block_orphaned_runs(pool, Utc::now(), client.as_ref()).await
+    block_orphaned_runs(
+        pool,
+        Utc::now(),
+        client.as_ref(),
+        vibe_pr_follow_up::in_flight,
+    )
+    .await
 }
 
 /// Try again every waiting merge whose retry is due. A workspace with a live
@@ -104,6 +115,7 @@ async fn block_orphaned_runs(
     pool: &SqlitePool,
     now: DateTime<Utc>,
     client: Option<&RemoteClient>,
+    follow_up_in_flight: impl Fn(Uuid) -> bool,
 ) -> anyhow::Result<()> {
     let runs = VibeRun::find_non_terminal(pool).await?;
     if runs.is_empty() {
@@ -134,6 +146,37 @@ async fn block_orphaned_runs(
             .cloned()
             .max(run.merge_retry_at);
         if !should_escalate(is_active, run.updated_at, latest_execution_activity_at, now) {
+            continue;
+        }
+        // The merge already landed: no review verdict is at stake and the
+        // issue is not blocked. Stop the follow-up where it stands, with a
+        // reason, so a retry resumes there instead of the run sitting silent.
+        if matches!(
+            VibePhase::from_db_str(&run.phase),
+            Some(VibePhase::Pushing | VibePhase::CreatingPr)
+        ) {
+            if follow_up_in_flight(run.workspace_id) {
+                continue;
+            }
+            tracing::warn!(
+                "vibe: workspace {} stalled in '{}' (run updated {}); blocking",
+                run.workspace_id,
+                run.phase,
+                run.updated_at
+            );
+            let reason = format!(
+                "The server made no progress in this step for {STALE_AFTER_MINUTES} minutes \
+                 (it may have restarted). Retry to resume."
+            );
+            if let Err(e) =
+                VibeRun::block_follow_up(pool, run.workspace_id, &run.phase, &reason).await
+            {
+                tracing::error!(
+                    "vibe: blocking stalled follow-up failed for {}: {}",
+                    run.workspace_id,
+                    e
+                );
+            }
             continue;
         }
         tracing::warn!(
@@ -363,7 +406,9 @@ mod tests {
         )
         .await;
 
-        block_orphaned_runs(&pool, now, None).await.unwrap();
+        block_orphaned_runs(&pool, now, None, |_| false)
+            .await
+            .unwrap();
 
         let run = VibeRun::find_by_workspace_id(&pool, workspace_id)
             .await
@@ -420,7 +465,9 @@ mod tests {
             .unwrap();
         }
 
-        block_orphaned_runs(&pool, now, None).await.unwrap();
+        block_orphaned_runs(&pool, now, None, |_| false)
+            .await
+            .unwrap();
 
         let phase = |workspace_id| {
             let pool = pool.clone();
@@ -436,13 +483,56 @@ mod tests {
         assert_eq!(phase(overdue).await, "blocked");
     }
 
+    // The merge landed, and the push / PR follow-up has no worker (its loop is
+    // not running, or died mid-step). The run must not sit there silently: it
+    // is blocked with a reason, at the step a retry resumes. One the follow-up
+    // is still working on is left to it, however long its step takes.
+    #[tokio::test]
+    async fn a_stalled_follow_up_is_blocked_with_a_reason_at_its_step() {
+        let pool = test_pool().await;
+        let now = ts("2026-06-19T12:00:00Z");
+        let (stalled, _) = seed_review_run(&pool, ts("2026-06-19T11:30:00Z")).await;
+        let (at_work, _) = seed_review_run(&pool, ts("2026-06-19T11:30:00Z")).await;
+        // `updated_at` stays as seeded: half an hour without a move.
+        sqlx::query("UPDATE vibe_runs SET phase = 'creating_pr', pr_requested = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        block_orphaned_runs(&pool, now, None, |workspace| workspace == at_work)
+            .await
+            .unwrap();
+
+        let run = |workspace_id| {
+            let pool = pool.clone();
+            async move {
+                VibeRun::find_by_workspace_id(&pool, workspace_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+        };
+        let blocked = run(stalled).await;
+        assert_eq!(blocked.phase, "blocked");
+        assert_eq!(blocked.failed_phase.as_deref(), Some("creating_pr"));
+        let reason = blocked.last_error.unwrap();
+        assert!(reason.contains("no progress"), "{reason}");
+        assert_eq!(run(at_work).await.phase, "creating_pr");
+
+        // The retry puts it back in its step; the merge is not redone.
+        assert!(VibeRun::retry_follow_up(&pool, stalled).await.unwrap());
+        assert_eq!(run(stalled).await.phase, "creating_pr");
+    }
+
     #[tokio::test]
     async fn stale_run_without_recent_execution_is_blocked() {
         let pool = test_pool().await;
         let now = ts("2026-06-19T12:00:00Z");
         let (workspace_id, _) = seed_review_run(&pool, ts("2026-06-19T11:30:00Z")).await;
 
-        block_orphaned_runs(&pool, now, None).await.unwrap();
+        block_orphaned_runs(&pool, now, None, |_| false)
+            .await
+            .unwrap();
         assert_eq!(
             VibeRun::find_by_workspace_id(&pool, workspace_id)
                 .await

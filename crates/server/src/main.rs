@@ -174,6 +174,12 @@ async fn main() -> Result<(), VibeKanbanError> {
         .set_preview_proxy_port(actual_proxy_port)
         .expect("client preview proxy port already set");
 
+    // Takes a "review and create PR" run from its merge to the pushed target
+    // and the draft PR. Its first pass resumes the runs a restart interrupted
+    // and may start the agent that drafts the PR, so it comes after the
+    // backend URL agents are given is known.
+    server::vibe_pr_follow_up::spawn(deployment.clone());
+
     let app_router = routes::router(deployment.clone());
 
     // Production only: open browser

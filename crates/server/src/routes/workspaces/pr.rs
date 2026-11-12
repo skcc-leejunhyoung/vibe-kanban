@@ -556,6 +556,68 @@ pub async fn get_pr_description_generation(
     Ok(ResponseJson(ApiResponse::success(status)))
 }
 
+/// How long a server-driven generation waits for a slot before giving up.
+const PR_GENERATE_ADMISSION_WAIT: Duration = Duration::from_secs(5 * 60);
+/// Name of the throwaway session a PR draft is generated in.
+const PR_GENERATION_SESSION_NAME: &str = "create-pr";
+
+/// Generate for a caller with no client to try again for it (the vibe PR
+/// follow-up): while this workspace or the global limit is busy, wait for a
+/// slot instead of answering "try again later". `since` is when the caller's
+/// step began; a draft of that step the server died in is cleared away first.
+pub(crate) async fn generate_pr_description_when_free(
+    deployment: &DeploymentImpl,
+    workspace: &Workspace,
+    request: GeneratePrDescriptionRequest,
+    since: chrono::DateTime<chrono::Utc>,
+) -> Result<GeneratePrDescriptionResponse, ApiError> {
+    let give_up = Instant::now() + PR_GENERATE_ADMISSION_WAIT;
+    let _admission = loop {
+        match PR_GENERATION_SCHEDULER.try_acquire(workspace.id) {
+            Ok(admission) => break admission,
+            Err(busy) if Instant::now() >= give_up => return Err(busy.into()),
+            Err(_) => tokio::time::sleep(Duration::from_secs(5)).await,
+        }
+    };
+    delete_interrupted_generation_sessions(deployment, workspace.id, since).await;
+    generate_pr_description_inner(
+        deployment,
+        workspace,
+        request,
+        CancellationToken::new(),
+        None,
+    )
+    .await
+}
+
+/// Delete the throwaway sessions of drafts a server restart cut off. Every
+/// attempt deletes its own session when it ends, and the caller holds the
+/// workspace's generation slot, so a draft session still here — created since
+/// `since`, with nothing running — belongs to an attempt that died with the
+/// server. Left alone, its failed process shows the workspace as failed.
+async fn delete_interrupted_generation_sessions(
+    deployment: &DeploymentImpl,
+    workspace_id: Uuid,
+    since: chrono::DateTime<chrono::Utc>,
+) {
+    let pool = &deployment.db().pool;
+    let Ok(sessions) = Session::find_by_workspace_id(pool, workspace_id).await else {
+        return;
+    };
+    for session in sessions {
+        if session.name.as_deref() != Some(PR_GENERATION_SESSION_NAME) || session.created_at < since
+        {
+            continue;
+        }
+        let idle =
+            ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
+                .await;
+        if matches!(idle, Ok(false)) {
+            delete_pr_generation_session(deployment, session.id).await;
+        }
+    }
+}
+
 async fn generate_pr_description_inner(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
@@ -724,7 +786,7 @@ async fn run_pr_generation(
                 workspace,
                 executor_config.clone(),
                 prompt.clone(),
-                Some("create-pr".to_string()),
+                Some(PR_GENERATION_SESSION_NAME.to_string()),
             )
             .await?;
         set_tracked_pr_generation_execution(job_id, Some(ep.id)).await;

@@ -201,6 +201,22 @@ interface ReviewCommentsProps {
   onClear: () => void;
 }
 
+/**
+ * Where the server stands in the workspace's automated review → merge → push
+ * → PR run. Display only: the server drives the run whether or not this is on
+ * screen.
+ */
+export interface VibeRunNotice {
+  tone: 'progress' | 'blocked' | 'done';
+  message: string;
+  /** The server's own reason (git or PR host output), shown as it is. */
+  detail?: string | null;
+  /** Retry the step that failed. Omitted when there is nothing to retry. */
+  onRetry?: () => void;
+  retryLabel?: string;
+  isRetrying?: boolean;
+}
+
 interface AutoResumeProps {
   /** Whether usage-based auto-resume is enabled for this session */
   enabled: boolean;
@@ -257,6 +273,8 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   approvalMode?: ApprovalModeProps;
   askQuestionMode?: AskQuestionModeProps;
   reviewComments?: ReviewCommentsProps;
+  /** The workspace's automated review run, when there is something to show. */
+  vibeRun?: VibeRunNotice | null;
   toolbarActions?: ToolbarActionsProps;
   handoff?: {
     current: TExecutor;
@@ -352,6 +370,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   approvalMode,
   askQuestionMode,
   reviewComments,
+  vibeRun,
   toolbarActions,
   handoff,
   modelSelector,
@@ -831,6 +850,43 @@ export function SessionChatBox<TExecutor extends string = string>({
   // Banner content
   const renderBanner = () => {
     const banners: ReactNode[] = [];
+
+    // Automated review run: where the server stands, and why it stopped.
+    if (vibeRun) {
+      banners.push(
+        <div
+          key="vibe-run"
+          role="status"
+          className="bg-secondary border-b px-plusfifty py-base flex items-start gap-base"
+        >
+          {vibeRun.tone === 'progress' ? (
+            <SpinnerIcon className="h-4 w-4 text-low flex-shrink-0 animate-spin" />
+          ) : vibeRun.tone === 'blocked' ? (
+            <WarningIcon className="h-4 w-4 text-error flex-shrink-0" />
+          ) : (
+            <CheckIcon className="h-4 w-4 text-success flex-shrink-0" />
+          )}
+          <div className="flex-1 min-w-0 flex flex-col gap-half">
+            <span className="text-sm text-normal">{vibeRun.message}</span>
+            {vibeRun.detail && (
+              <span className="text-xs text-low whitespace-pre-wrap break-words max-h-24 overflow-y-auto">
+                {vibeRun.detail}
+              </span>
+            )}
+          </div>
+          {vibeRun.onRetry && (
+            <button
+              type="button"
+              onClick={vibeRun.onRetry}
+              disabled={vibeRun.isRetrying}
+              className="text-xs text-brand hover:underline flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {vibeRun.retryLabel}
+            </button>
+          )}
+        </div>
+      );
+    }
 
     // Review comments banner
     if (reviewComments && reviewComments.count > 0) {

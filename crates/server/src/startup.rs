@@ -50,6 +50,10 @@ impl ServerHandle {
             .set_preview_proxy_port(self.proxy_port)
             .expect("client preview proxy port already set");
         relay_registration::spawn_relay(&self.deployment).await;
+        // The server's half of "review and create PR" after the merge. No
+        // browser tab drives the push and the PR any more, so every way of
+        // running the server starts it.
+        crate::vibe_pr_follow_up::spawn(self.deployment.clone());
 
         let app_router = routes::router(self.deployment.clone());
         let proxy_router: axum::Router = routes::preview::subdomain_router(self.deployment.clone())

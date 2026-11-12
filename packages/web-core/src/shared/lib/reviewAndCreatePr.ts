@@ -1,81 +1,9 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
-import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
-import { PushErrorDialog } from '@/shared/dialogs/command-bar/PushErrorDialog';
-import { usePrFromAiBackgroundStore } from '@/shared/stores/usePrFromAiBackgroundStore';
+import { vibeRunStatusKeys } from '@/shared/hooks/useVibeRunStatus';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
-import type { ExecutorConfig, Session } from 'shared/types';
-
-const VIBE_REVIEW_POLL_MS = 2000;
-const VIBE_REVIEW_TIMEOUT_MS = 60 * 60 * 1000;
-const STORAGE_KEY = 'vibe-review-and-create-pr';
-
-class VibeReviewBlockedError extends Error {}
-
-interface PendingReviewAndCreatePr {
-  workspaceId: string;
-  reviewSessionId: string;
-  hostId: string | null;
-}
-
-const inFlight = new Map<string, Promise<boolean>>();
-
-function workflowKey(workspaceId: string, hostId?: string | null): string {
-  return `${hostId ?? 'local'}:${workspaceId}`;
-}
-
-function readPending(): Record<string, PendingReviewAndCreatePr> {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
-  } catch {
-    return {};
-  }
-}
-
-function savePending(pending: PendingReviewAndCreatePr): void {
-  try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        ...readPending(),
-        [workflowKey(pending.workspaceId, pending.hostId)]: pending,
-      })
-    );
-  } catch {
-    // Persistence is a recovery aid; storage restrictions must not block review.
-  }
-}
-
-function clearPending(workspaceId: string, hostId?: string | null): void {
-  try {
-    const pending = readPending();
-    delete pending[workflowKey(workspaceId, hostId)];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(pending));
-  } catch {
-    // Ignore unavailable storage after the workflow has already completed.
-  }
-}
-
-async function waitForVibeReviewCompletion(
-  sessionId: string,
-  hostId?: string | null
-): Promise<void> {
-  const deadline = Date.now() + VIBE_REVIEW_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const { phase } = await sessionsApi.getVibeReviewStatus(sessionId, hostId);
-    if (phase === 'done') return;
-    if (phase === 'blocked') {
-      throw new VibeReviewBlockedError(
-        'The automated review was blocked before merge.'
-      );
-    }
-    await new Promise((resolve) =>
-      window.setTimeout(resolve, VIBE_REVIEW_POLL_MS)
-    );
-  }
-  throw new Error('Timed out waiting for the automated review to merge.');
-}
+import type { ExecutorConfig, RepoBranchStatus, Session } from 'shared/types';
 
 export interface ReviewAndCreatePrOptions {
   workspaceId: string;
@@ -87,10 +15,74 @@ export interface ReviewAndCreatePrOptions {
 }
 
 /**
- * Shared workflow behind both the composer split-button and command palette:
- * review -> merge -> push the materialized target -> create an AI draft PR.
+ * The head a repo's PR will have once the review has merged, as the server
+ * picks it; `null` is the work branch itself. The work is merged into the
+ * repo's target branch and the PR comes from there — unless the merge skips
+ * the repo because it already has an open PR, which leaves the work branch.
  */
-async function executeReviewAndCreatePr({
+export function predictedPrHead(
+  status: RepoBranchStatus | undefined,
+  targetBranch: string
+): string | null {
+  const merges = status?.merges ?? [];
+  const merged = merges.find((merge) => merge.type === 'direct');
+  if (merged?.type === 'direct') return merged.target_branch_name;
+  const hasOpenPr = merges.some(
+    (merge) => merge.type === 'pr' && merge.pr_info.status === 'open'
+  );
+  return hasOpenPr ? null : targetBranch;
+}
+
+/**
+ * The one decision the server cannot take for the user: publishing a work
+ * branch that was never pushed. It is asked before the review starts, because
+ * once it has started nothing waits for this page any more.
+ */
+async function confirmWorkBranchPushes(
+  workspaceId: string,
+  hostId: string | null | undefined
+): Promise<boolean> {
+  let loaded;
+  try {
+    loaded = await Promise.all([
+      workspacesApi.get(workspaceId, hostId),
+      workspacesApi.getRepos(workspaceId, hostId),
+      workspacesApi.getBranchStatus(workspaceId, hostId),
+    ]);
+  } catch {
+    // Not knowing the remote state never blocked a PR (see
+    // confirmUnpushedWorkBranchPush); it does not block the review either.
+    return true;
+  }
+  const [workspace, repos, branchStatuses] = loaded;
+  for (const repo of repos) {
+    const head = predictedPrHead(
+      branchStatuses.find((status) => status.repo_id === repo.id),
+      repo.target_branch
+    );
+    const proceed = await confirmUnpushedWorkBranchPush(
+      workspaceId,
+      repo.id,
+      workspace.branch,
+      head,
+      hostId
+    );
+    if (!proceed) return false;
+  }
+  return true;
+}
+
+/**
+ * "Review and create PR", behind both the composer split-button and the
+ * command palette: start the review with the request to push the target
+ * branch and open an AI draft PR once its merge lands.
+ *
+ * The server carries the workflow from there — closing, reloading or
+ * suspending this page changes nothing — and the workspace shows the server's
+ * progress (see useVibeRunStatus). Resolves `false` when the user declined to
+ * publish a never-pushed work branch; rejects when the review could not start.
+ */
+export async function runReviewAndCreatePr({
   workspaceId,
   sessionId,
   hostId,
@@ -98,16 +90,14 @@ async function executeReviewAndCreatePr({
   queryClient,
   onReviewSession,
 }: ReviewAndCreatePrOptions): Promise<boolean> {
+  if (!(await confirmWorkBranchPushes(workspaceId, hostId))) return false;
+
   const reviewSession = await sessionsApi.vibeReview(
     sessionId,
     hostId,
-    executorConfig
+    executorConfig,
+    true
   );
-  savePending({
-    workspaceId,
-    reviewSessionId: reviewSession.id,
-    hostId: hostId ?? null,
-  });
   // Switch at once; the list refetch catches up in the background.
   queryClient.setQueryData<Session[]>(
     workspaceSessionKeys.byWorkspace(workspaceId, hostId),
@@ -120,177 +110,8 @@ async function executeReviewAndCreatePr({
   void queryClient.invalidateQueries({
     queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
   });
-
-  return continueReviewAndCreatePr(workspaceId, reviewSession.id, hostId);
-}
-
-async function continueReviewAndCreatePr(
-  workspaceId: string,
-  reviewSessionId: string,
-  hostId: string | null | undefined
-): Promise<boolean> {
-  await waitForVibeReviewCompletion(reviewSessionId, hostId);
-  try {
-    return await pushAndCreatePr(workspaceId, hostId);
-  } catch (error) {
-    // The review already merged, so a failure from here on is final. Keeping
-    // the pending entry would retry the push and repeat the same error every
-    // time the workspace is reopened.
-    clearPending(workspaceId, hostId);
-    throw error;
-  }
-}
-
-async function pushAndCreatePr(
-  workspaceId: string,
-  hostId: string | null | undefined
-): Promise<boolean> {
-  const [workspace, repos, branchStatuses] = await Promise.all([
-    workspacesApi.get(workspaceId, hostId),
-    workspacesApi.getRepos(workspaceId, hostId),
-    workspacesApi.getBranchStatus(workspaceId, hostId),
-  ]);
-
-  for (const repo of repos) {
-    const repoStatus = branchStatuses.find(
-      (status) => status.repo_id === repo.id
-    );
-    if (repoStatus && !repoStatus.is_target_remote) {
-      const pushResult = await workspacesApi.pushTargetBranch(
-        workspaceId,
-        repo.id,
-        false,
-        hostId
-      );
-      if (!pushResult.success && pushResult.error?.type === 'diverged') {
-        const resolution = await PullFirstDialog.show({
-          workspaceId,
-          repoId: repo.id,
-          ahead: pushResult.error.ahead,
-          behind: pushResult.error.behind,
-          isTarget: true,
-          hostId,
-        });
-        // Synced elsewhere (another session or the Autopilot): the remote has
-        // nothing the local branch lacks any more, so a plain push goes through.
-        const reconciled =
-          resolution === 'success' ||
-          (resolution === 'resolved_elsewhere' &&
-            (
-              await workspacesApi.pushTargetBranch(
-                workspaceId,
-                repo.id,
-                false,
-                hostId
-              )
-            ).success);
-        if (!reconciled) {
-          throw new Error(
-            'The target branch must be reconciled before creating the pull request.'
-          );
-        }
-      } else if (!pushResult.success) {
-        throw new Error(
-          pushResult.message ||
-            `Failed to push target branch for ${repo.display_name || repo.name}.`
-        );
-      }
-    }
-
-    const directMerge = repoStatus?.merges?.find(
-      (merge) => merge.type === 'direct'
-    );
-    const featureBranch =
-      directMerge?.type === 'direct'
-        ? directMerge.target_branch_name
-        : undefined;
-    const proceed = await confirmUnpushedWorkBranchPush(
-      workspaceId,
-      repo.id,
-      workspace.branch,
-      featureBranch ?? null,
-      hostId
-    );
-    if (!proceed) return false;
-    const created = await usePrFromAiBackgroundStore
-      .getState()
-      .startCreateFromAi(workspaceId, repo.id, {
-        headBranch: featureBranch ?? null,
-        targetBranch: featureBranch
-          ? (repo.default_target_branch ?? repo.target_branch ?? null)
-          : (repo.target_branch ?? null),
-        workBranch: workspace.branch,
-        hostId,
-      });
-    if (!created) {
-      // The background PR store already surfaced the detailed failure.
-      return false;
-    }
-  }
-
+  void queryClient.invalidateQueries({
+    queryKey: vibeRunStatusKeys.workspace(workspaceId),
+  });
   return true;
-}
-
-// Every caller of a workflow, including one that joins a run already in
-// flight, gets the settled result: `false` on failure, with the dialog shown
-// once. Sharing the raw run instead left later callers with an unhandled
-// rejection.
-function trackWorkflow(
-  workspaceId: string,
-  hostId: string | null | undefined,
-  start: () => Promise<boolean>
-): Promise<boolean> {
-  const key = workflowKey(workspaceId, hostId);
-  const existing = inFlight.get(key);
-  if (existing) return existing;
-
-  const run = settleWorkflow(start(), workspaceId, hostId).finally(() =>
-    inFlight.delete(key)
-  );
-  inFlight.set(key, run);
-  return run;
-}
-
-async function settleWorkflow(
-  run: Promise<boolean>,
-  workspaceId: string,
-  hostId: string | null | undefined
-): Promise<boolean> {
-  try {
-    const completed = await run;
-    clearPending(workspaceId, hostId);
-    return completed;
-  } catch (error) {
-    if (error instanceof VibeReviewBlockedError) {
-      clearPending(workspaceId, hostId);
-    }
-    void PushErrorDialog.show({
-      title: 'Review and create PR from ai failed',
-      message:
-        error instanceof Error
-          ? error.message
-          : 'The review and pull request workflow failed.',
-    });
-    return false;
-  }
-}
-
-export function runReviewAndCreatePr(
-  options: ReviewAndCreatePrOptions
-): Promise<boolean> {
-  return trackWorkflow(options.workspaceId, options.hostId, () =>
-    executeReviewAndCreatePr(options)
-  );
-}
-
-export async function resumeReviewAndCreatePr(
-  workspaceId: string,
-  hostId: string | null | undefined
-): Promise<boolean> {
-  const pending = readPending()[workflowKey(workspaceId, hostId)];
-  if (!pending) return false;
-
-  return trackWorkflow(workspaceId, hostId, () =>
-    continueReviewAndCreatePr(workspaceId, pending.reviewSessionId, hostId)
-  );
 }

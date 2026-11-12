@@ -21,6 +21,17 @@
 //!                       └──────────► MERGING
 //! ```
 //!
+//! A review started as "review and create PR" goes on after its merge lands,
+//! still on the server and with no browser involved:
+//!
+//! ```text
+//! MERGING ──success──► PUSHING ──pushed──► CREATING_PR ──draft PR──► DONE
+//!                         │ diverged / push failed    │ PR failed
+//!                         └────────► BLOCKED ◄────────┘
+//!                                       │ manual retry: resumes at the step that
+//!                                       └ failed, without reviewing or merging again
+//! ```
+//!
 //! Script failures are handled independently of phase: a failed **cleanup**
 //! script asks the same session to fix it (with the failure log pasted in); a
 //! failed **setup** script does nothing and leaves the issue In progress.
@@ -28,7 +39,13 @@
 use std::time::Duration;
 
 use db::models::execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus};
+use tokio::sync::Notify;
 use utils::log_msg::LogMsg;
+
+/// Rung when a run enters `pushing` (its merge landed, or a blocked follow-up
+/// is retried), so the server's PR follow-up starts on it at once instead of
+/// on its next poll.
+pub static PR_FOLLOW_UP: Notify = Notify::const_new();
 
 /// The cloud tags this workflow applies. `vibe` opts an issue into the
 /// workflow; the backend adds `vibe-approve` when the review approves and
@@ -234,6 +251,10 @@ pub enum VibePhase {
     Review,
     /// The change is approved; merging into the base (with conflict retries).
     Merging,
+    /// Merged; the server is pushing the target branch ("review and create PR").
+    Pushing,
+    /// Pushed; the server is drafting and opening the draft PR.
+    CreatingPr,
     /// Terminal: needs human intervention.
     Blocked,
     /// Terminal: merged and handed to In review.
@@ -246,6 +267,8 @@ impl VibePhase {
             VibePhase::Coding => "coding",
             VibePhase::Review => "review",
             VibePhase::Merging => "merging",
+            VibePhase::Pushing => "pushing",
+            VibePhase::CreatingPr => "creating_pr",
             VibePhase::Blocked => "blocked",
             VibePhase::Done => "done",
         }
@@ -256,6 +279,8 @@ impl VibePhase {
             "coding" => Some(VibePhase::Coding),
             "review" => Some(VibePhase::Review),
             "merging" => Some(VibePhase::Merging),
+            "pushing" => Some(VibePhase::Pushing),
+            "creating_pr" => Some(VibePhase::CreatingPr),
             "blocked" => Some(VibePhase::Blocked),
             "done" => Some(VibePhase::Done),
             _ => None,
@@ -330,8 +355,9 @@ pub struct FinalizeInput {
     pub coding_turns: u32,
     pub review_turns: u32,
     pub merge_retries: u32,
-    /// The run holds a merge failure (`vibe_runs.last_error`): a `Blocked` run
-    /// with one stopped at the merge and may merge again.
+    /// The run holds a failure (`vibe_runs.last_error`): a `Blocked` run with
+    /// one stopped at the merge or in the follow-up after it, and may merge
+    /// (a no-op once merged) and follow up again.
     pub merge_failed: bool,
     pub bounds: VibeBounds,
 }
@@ -479,8 +505,12 @@ pub fn decide_finalize_action(input: &FinalizeInput) -> VibeAction {
     // Terminal phases never act again — except that a run blocked by a failed
     // merge merges again when its review session approves anew (someone asked
     // it to look again). It is a fresh attempt with the full retry budget.
+    // The follow-up after the merge is the server's, not a turn's: the agent
+    // drafting the PR text finalizes in these phases and must change nothing.
     match input.phase {
-        VibePhase::Done => return VibeAction::Nothing,
+        VibePhase::Done | VibePhase::Pushing | VibePhase::CreatingPr => {
+            return VibeAction::Nothing;
+        }
         VibePhase::Blocked => {
             let reapproved = input.merge_failed
                 && input.session_is_review
@@ -576,7 +606,9 @@ pub fn decide_finalize_action(input: &FinalizeInput) -> VibeAction {
                 retry: input.merge_retries,
             }
         }
-        VibePhase::Blocked | VibePhase::Done => VibeAction::Nothing,
+        VibePhase::Blocked | VibePhase::Done | VibePhase::Pushing | VibePhase::CreatingPr => {
+            VibeAction::Nothing
+        }
     }
 }
 
@@ -797,6 +829,50 @@ mod tests {
                 ..input()
             };
             assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
+        }
+    }
+
+    // The push / PR follow-up belongs to the server. The agent drafting the PR
+    // text ends a turn in the workspace while it runs: no sentinel, a stray
+    // one, or a failed cleanup must not send a prompt into any session.
+    #[test]
+    fn follow_up_phases_ignore_every_finalize() {
+        for phase in [VibePhase::Pushing, VibePhase::CreatingPr] {
+            for session_is_review in [false, true] {
+                for result in [
+                    VibeResult::None,
+                    VibeResult::Done,
+                    VibeResult::Approve,
+                    VibeResult::Continue,
+                    VibeResult::Blocked,
+                ] {
+                    for (run_reason, status) in [
+                        (
+                            ExecutionProcessRunReason::CodingAgent,
+                            ExecutionProcessStatus::Completed,
+                        ),
+                        (
+                            ExecutionProcessRunReason::CodingAgent,
+                            ExecutionProcessStatus::Failed,
+                        ),
+                        (
+                            ExecutionProcessRunReason::CleanupScript,
+                            ExecutionProcessStatus::Failed,
+                        ),
+                    ] {
+                        let i = FinalizeInput {
+                            phase,
+                            session_is_review,
+                            result,
+                            run_reason,
+                            status,
+                            merge_failed: true,
+                            ..input()
+                        };
+                        assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
+                    }
+                }
+            }
         }
     }
 
@@ -1433,6 +1509,8 @@ mod tests {
             VibePhase::Coding,
             VibePhase::Review,
             VibePhase::Merging,
+            VibePhase::Pushing,
+            VibePhase::CreatingPr,
             VibePhase::Blocked,
             VibePhase::Done,
         ] {

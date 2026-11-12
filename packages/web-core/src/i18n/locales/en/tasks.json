@@ -153,6 +153,22 @@
       "alreadyRunning": "Another process is already running in this workspace. Stop it before starting a review.",
       "noLinkedIssue": "Review can only be started on a workspace linked to an issue."
     },
+    "vibeRun": {
+      "reviewing": "Reviewing. Once it approves, the server merges, pushes the target branch and opens the draft PR by itself — you can leave this page.",
+      "merging": "Merging into the target branch…",
+      "mergeWaiting": "The merge is waiting and will be tried again",
+      "pushing": "Pushing the target branch…",
+      "creatingPr": "Drafting and opening the pull request…",
+      "pushFailed": "Stopped: the target branch could not be pushed",
+      "prFailed": "Stopped: the pull request could not be created",
+      "mergeFailed": "Stopped: the merge failed",
+      "reviewBlocked": "Stopped: the review was blocked, so no pull request was created",
+      "done": "Reviewed, merged and pushed — the pull request is ready",
+      "retry": "Retry",
+      "nextTry": "Next try: {{time}}",
+      "retryFailedTitle": "Couldn't retry",
+      "nothingToRetry": "There is no blocked merge, push or pull request to retry in this workspace."
+    },
     "autoResume": {
       "toggleLabel": "Toggle auto-resume on usage limit",
       "enabledTooltip": "Auto-resume is on. When this session hits its usage limit, 'continue' is sent automatically once the limit resets.",

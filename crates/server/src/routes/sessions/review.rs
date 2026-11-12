@@ -20,11 +20,15 @@ use executors::{
     profile::ExecutorConfig,
 };
 use serde::{Deserialize, Serialize};
-use services::services::container::ContainerService;
+use services::services::{container::ContainerService, vibe_orchestrator::PR_FOLLOW_UP};
 use ts_rs::TS;
 use utils::response::ApiResponse;
 
-use crate::{DeploymentImpl, error::ApiError};
+use crate::{
+    DeploymentImpl,
+    error::ApiError,
+    middleware::{Toggle, is_agent_request},
+};
 
 #[derive(Debug, Deserialize, Serialize, TS)]
 pub struct StartReviewRequest {
@@ -40,6 +44,11 @@ pub struct StartReviewRequest {
 #[derive(Debug, Default, Deserialize, Serialize, TS)]
 pub struct VibeReviewRequest {
     pub executor_config: Option<ExecutorConfig>,
+    /// "Review and create PR": once the review's merge lands, the server
+    /// pushes the target branch and opens an AI-drafted draft PR. Nothing
+    /// after this request depends on the caller staying connected.
+    #[serde(default)]
+    pub create_pr: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -48,25 +57,49 @@ pub struct VibeReviewRequest {
 pub enum ReviewError {
     ProcessAlreadyRunning,
     NoLinkedIssue,
-    /// No merging vibe run, or one blocked by a failed merge, to merge again.
+    /// No merging vibe run, or one blocked by a failed merge or by the push /
+    /// PR step after it, to try again.
     NothingToMerge,
 }
 
 #[derive(Debug, Serialize, TS)]
 pub struct VibeReviewStatus {
+    /// `coding`, `review`, `merging`, `pushing`, `creating_pr`, `blocked` or
+    /// `done`; `None` when the workspace has no vibe run.
     pub phase: Option<String>,
-    /// Why the last auto-merge attempt failed, until a merge lands.
+    /// Why the last auto-merge attempt failed, until a merge lands; or why the
+    /// step named by `failed_phase` stopped.
     pub last_error: Option<String>,
     /// When a merge waiting on a retryable failure is tried again.
     pub merge_retry_at: Option<DateTime<Utc>>,
+    /// The run was started as "review and create PR".
+    pub pr_requested: bool,
+    /// `pushing` or `creating_pr` when that step blocked the run: a retry
+    /// resumes there without reviewing or merging again.
+    pub failed_phase: Option<String>,
+    /// When the run last changed (entered its phase).
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 impl From<Option<VibeRun>> for VibeReviewStatus {
     fn from(run: Option<VibeRun>) -> Self {
+        let Some(run) = run else {
+            return Self {
+                phase: None,
+                last_error: None,
+                merge_retry_at: None,
+                pr_requested: false,
+                failed_phase: None,
+                updated_at: None,
+            };
+        };
         Self {
-            phase: run.as_ref().map(|run| run.phase.clone()),
-            last_error: run.as_ref().and_then(|run| run.last_error.clone()),
-            merge_retry_at: run.and_then(|run| run.merge_retry_at),
+            phase: Some(run.phase),
+            last_error: run.last_error,
+            merge_retry_at: run.merge_retry_at,
+            pr_requested: run.pr_requested,
+            failed_phase: run.failed_phase,
+            updated_at: Some(run.updated_at),
         }
     }
 }
@@ -99,14 +132,28 @@ fn can_retry_merge(run: &VibeRun) -> bool {
         }
 }
 
-/// Merge a `vibe` run again after a failed merge blocked it (or while it waits
-/// on a retryable failure): a fresh attempt with the full retry budget.
+/// Try a `vibe` run's failed step again. A run blocked by the push or the PR
+/// after its merge resumes at that step, with no new review or merge. A run
+/// blocked by a failed merge (or waiting on a retryable one) merges again: a
+/// fresh attempt with the full retry budget.
 #[axum::debug_handler]
 pub async fn vibe_retry_merge(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<VibeReviewStatus, ReviewError>>, ApiError> {
     let pool = &deployment.db().pool;
+    // The server's follow-up takes it from here; the answer is the phase it
+    // resumes in.
+    if VibeRun::retry_follow_up(pool, session.workspace_id)
+        .await
+        .map_err(vibe_run_error)?
+    {
+        PR_FOLLOW_UP.notify_one();
+        let run = VibeRun::find_by_workspace_id(pool, session.workspace_id)
+            .await
+            .map_err(vibe_run_error)?;
+        return Ok(ResponseJson(ApiResponse::success(run.into())));
+    }
     let run = VibeRun::find_by_workspace_id(pool, session.workspace_id)
         .await
         .map_err(vibe_run_error)?;
@@ -264,9 +311,27 @@ pub async fn start_review(
 pub async fn vibe_review(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
+    headers: axum::http::HeaderMap,
     payload: Option<Json<VibeReviewRequest>>,
 ) -> Result<ResponseJson<ApiResponse<Session, ReviewError>>, ApiError> {
     let pool = &deployment.db().pool;
+    let request = payload.map(|Json(request)| request).unwrap_or_default();
+    // With `create_pr` the server later pushes the target branch and opens a
+    // PR on this request's word alone, so an agent needs what those two calls
+    // need when it makes them itself.
+    if request.create_pr && is_agent_request(&headers) {
+        let access = deployment.config().read().await.agent_access.clone();
+        if let Some(off) = [Toggle::GitMerge, Toggle::GitWrite]
+            .into_iter()
+            .find(|toggle| !toggle.enabled(&access))
+        {
+            return Err(ApiError::Forbidden(format!(
+                "Review and create PR pushes the target branch and opens a pull request: \
+                 agent_access.{} is off on this host",
+                off.key()
+            )));
+        }
+    }
 
     let workspace = Workspace::find_by_id(pool, session.workspace_id)
         .await?
@@ -299,7 +364,8 @@ pub async fn vibe_review(
         .vibe_manual_start_review(
             &workspace,
             &session,
-            payload.and_then(|Json(request)| request.executor_config),
+            request.executor_config,
+            request.create_pr,
         )
         .await?;
 
@@ -327,6 +393,9 @@ mod tests {
             merge_wait_since: None,
             merge_wait_attempts: 0,
             merge_retry_at: None,
+            pr_requested: false,
+            pr_executor_config: None,
+            failed_phase: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

@@ -581,22 +581,24 @@ export const sessionsApi = {
   },
 
   /** Manually start an automated `vibe` review session for the workspace, as if
-   * the coding agent had reported `VIBE_RESULT: done`. Returns the new session. */
+   * the coding agent had reported `VIBE_RESULT: done`. Returns the new session.
+   * With `createPr` the server goes on after the review's merge: it pushes the
+   * target branch and opens an AI-drafted draft PR, with no client involved. */
   vibeReview: async (
     sessionId: string,
     hostId?: string | null,
-    executorConfig?: ExecutorConfig | null
+    executorConfig?: ExecutorConfig | null,
+    createPr = false
   ): Promise<Session> => {
     const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/vibe-review`,
       hostId,
       {
         method: 'POST',
-        body: JSON.stringify(
-          executorConfig
-            ? ({ executor_config: executorConfig } satisfies VibeReviewRequest)
-            : {}
-        ),
+        body: JSON.stringify({
+          executor_config: executorConfig ?? null,
+          create_pr: createPr,
+        } satisfies VibeReviewRequest),
       }
     );
     return handleApiResponse<Session, ReviewError>(response);
@@ -613,7 +615,9 @@ export const sessionsApi = {
     return handleApiResponse<VibeReviewStatus>(response);
   },
 
-  /** Merge a blocked (or waiting) automated `vibe` run again. */
+  /** Retry a blocked automated `vibe` run at the step that failed: the merge
+   * (also while it waits), or the target push / PR after it. Never reviews
+   * again. */
   vibeRetryMerge: async (
     sessionId: string,
     hostId?: string | null
