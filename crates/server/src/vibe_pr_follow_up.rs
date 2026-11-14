@@ -278,6 +278,12 @@ struct PrPlan {
 /// default target branch, falling back to the workspace's target. A repo the
 /// merge skipped — it already has an open PR — has no direct merge: its PR
 /// would go from the work branch to the workspace's target.
+///
+/// Both are read here, when the PR is about to be opened, and not recorded
+/// when the review starts. Only the merge settles which branch the work landed
+/// in (a remote-only target gets a local name, the target can be changed while
+/// the review runs), and a retry after the repository's default target branch
+/// was fixed has to pick that fix up.
 fn pr_plan(
     merges: &[Merge],
     work_branch: &str,
