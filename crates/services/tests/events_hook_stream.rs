@@ -1,7 +1,9 @@
 use std::{str::FromStr, sync::Arc, time::Duration};
 
 use db::models::{
-    execution_process::{CreateExecutionProcess, ExecutionProcess, ExecutionProcessRunReason},
+    execution_process::{
+        CreateExecutionProcess, ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus,
+    },
     session::{CreateSession, Session},
     workspace::{CreateWorkspace, Workspace},
 };
@@ -9,7 +11,7 @@ use executors::actions::{
     ExecutorAction, ExecutorActionType,
     script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
 };
-use services::services::events::EventService;
+use services::services::{agent_journal, events::EventService};
 use sqlx::{
     SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
@@ -340,4 +342,98 @@ async fn stream_order_matches_commit_order() {
         state[&format!("/workspaces/{}", workspace.id)]["name"],
         "after rollback"
     );
+}
+
+/// One-shot runs (PR text generation, spec intake) live in an ephemeral
+/// session that is deleted as soon as their caller reads the result. The
+/// agent journal must never point its consumers at them; a user session's run
+/// in the same workspace still reports its end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ephemeral_session_runs_stay_out_of_the_agent_journal() {
+    let (_temp, hooked, _store) = hooked_db().await;
+    let workspace = Workspace::create(
+        &hooked,
+        &CreateWorkspace {
+            branch: "vk/journal".into(),
+            name: None,
+        },
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
+    let action = ExecutorAction::new(
+        ExecutorActionType::ScriptRequest(ScriptRequest {
+            script: "true".into(),
+            language: ScriptRequestLanguage::Bash,
+            context: ScriptContext::SetupScript,
+            working_dir: None,
+        }),
+        None,
+    );
+    // The throwaway run first: the publisher follows commit order, so once the
+    // user run's end is published, the throwaway's events would be too.
+    let mut runs = Vec::new();
+    for ephemeral in [true, false] {
+        let session = Session::create(
+            &hooked,
+            &CreateSession {
+                executor: None,
+                variant: None,
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        if ephemeral {
+            Session::mark_ephemeral(&hooked, session.id).await.unwrap();
+        }
+        let id = Uuid::new_v4();
+        ExecutionProcess::create(
+            &hooked,
+            &CreateExecutionProcess {
+                session_id: session.id,
+                executor_action: action.clone(),
+                run_reason: ExecutionProcessRunReason::CodingAgent,
+            },
+            id,
+            &[],
+        )
+        .await
+        .unwrap();
+        ExecutionProcess::update_completion(
+            &hooked,
+            id,
+            ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+        runs.push(id);
+    }
+    let [throwaway, user] = runs[..] else {
+        unreachable!()
+    };
+
+    let kinds = ["process.".to_string()];
+    let events = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let events = agent_journal::list(0, &kinds, 4000).events;
+            if events
+                .iter()
+                .any(|e| e.execution_id == Some(user) && e.kind == "process.completed")
+            {
+                break events;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the user run must reach the journal");
+    let leaked: Vec<_> = events
+        .iter()
+        .filter(|e| e.execution_id == Some(throwaway))
+        .collect();
+    assert!(leaked.is_empty(), "throwaway run leaked: {leaked:?}");
 }

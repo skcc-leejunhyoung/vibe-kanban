@@ -1254,8 +1254,14 @@ impl LocalContainerService {
 
     /// Delete any leftover ephemeral (spec-intake) workspaces from a prior run
     /// that crashed mid-generation. Keyed on the durable `ephemeral` flag, not a
-    /// name, so it can never touch a real user workspace.
+    /// name, so it can never touch a real user workspace. Likewise for leftover
+    /// ephemeral sessions (e.g. PR text generation) in real workspaces.
     async fn reap_ephemeral_workspaces(&self) {
+        match Session::delete_leftover_ephemeral(&self.db.pool).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("Reaped {n} leftover ephemeral session(s)"),
+            Err(e) => tracing::warn!("Failed to reap leftover ephemeral sessions: {e}"),
+        }
         let ephemeral = match Workspace::find_ephemeral(&self.db.pool).await {
             Ok(ws) => ws,
             Err(e) => {
@@ -1656,15 +1662,20 @@ impl LocalContainerService {
                 .mark_ready(session_id, exec_id)
                 .await;
 
-            // Ephemeral workspaces (spec-intake) are throwaway: skip ALL normal
-            // finalize side effects — session summary, rate-limit auto-resume,
-            // commit, next-action, queued follow-ups, task finalize, vibe
-            // orchestration, analytics, and remote sync. Completion status was
-            // already persisted above, and the MsgStore/stream teardown below
-            // still runs regardless (the spec-intake route reads the agent's
-            // final message from the MsgStore before it is dropped).
+            // Ephemeral workspaces (spec-intake) and ephemeral sessions (one-shot
+            // runs such as PR text generation in a real workspace) are
+            // throwaway: skip ALL normal finalize side effects — session
+            // summary, rate-limit auto-resume, commit, next-action, queued
+            // follow-ups, task finalize, vibe orchestration, analytics, and
+            // remote sync. Completion status was already persisted above, and
+            // the MsgStore/stream teardown below still runs regardless (the
+            // one-shot routes read the agent's final message from the MsgStore
+            // before it is dropped).
             if let Ok(ctx) = ExecutionProcess::load_context(&db.pool, exec_id).await
                 && !ctx.workspace.ephemeral
+                && !Session::is_ephemeral(&db.pool, session_id)
+                    .await
+                    .unwrap_or(false)
             {
                 // Update executor session summary if available
                 if let Err(e) = container.update_executor_session_summary(&exec_id).await {
@@ -8581,5 +8592,143 @@ mod paused_autopilot_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+/// A one-shot run (PR text generation) works in the real workspace, in its
+/// own ephemeral session. Its exit must not finalize like a user turn: above
+/// all, it must not commit the user's uncommitted work.
+#[cfg(test)]
+mod ephemeral_session_tests {
+    use db::models::{workspace::CreateWorkspace, workspace_repo::CreateWorkspaceRepo};
+    use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    use super::{tests::SessionLogDir, *};
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// Commits on the repo after a successful run finishes in a workspace
+    /// with an uncommitted file.
+    async fn commits_after_run(ephemeral: bool) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = SqlitePoolOptions::new()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(dir.path().join("db.sqlite"))
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let container = super::tests::container_on(pool.clone());
+
+        let worktree = dir.path().join("worktree");
+        let repo_dir = worktree.join("repo0");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+        git(&repo_dir, &["init", "-q", "-b", "main"]);
+        git(&repo_dir, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        std::fs::write(repo_dir.join("wip.txt"), "uncommitted").unwrap();
+
+        let repo = Repo::find_or_create(&pool, &repo_dir, "repo0")
+            .await
+            .unwrap();
+        let workspace = Workspace::create(
+            &pool,
+            &CreateWorkspace {
+                branch: "main".into(),
+                name: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        Workspace::update_container_ref(&pool, workspace.id, &worktree.to_string_lossy())
+            .await
+            .unwrap();
+        WorkspaceRepo::create_many(
+            &pool,
+            workspace.id,
+            &[CreateWorkspaceRepo {
+                repo_id: repo.id,
+                target_branch: "main".into(),
+            }],
+        )
+        .await
+        .unwrap();
+        let session = Session::create(
+            &pool,
+            &CreateSession {
+                executor: None,
+                variant: None,
+                name: Some("create-pr".into()),
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        let _logs = SessionLogDir(session.id);
+        if ephemeral {
+            Session::mark_ephemeral(&pool, session.id).await.unwrap();
+        }
+
+        // A script stands in for the agent: the exit monitor's finalize is the
+        // same, and a successful cleanup run commits what the tree holds.
+        let action = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "true".into(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::CleanupScript,
+                working_dir: Some("repo0".into()),
+            }),
+            None,
+        );
+        let workspace = Workspace::find_by_id(&pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let process = container
+            .start_execution(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::CleanupScript,
+            )
+            .await
+            .unwrap();
+        let monitor = container
+            .take_exit_monitor_handle(&process.id)
+            .await
+            .unwrap();
+        // Scripts run at background QoS; a loaded machine can starve them.
+        tokio::time::timeout(Duration::from_secs(120), monitor)
+            .await
+            .unwrap()
+            .unwrap();
+
+        git(&repo_dir, &["log", "--format=%s"])
+    }
+
+    #[tokio::test]
+    async fn ephemeral_session_run_leaves_uncommitted_work_alone() {
+        assert_eq!(commits_after_run(true).await, "init");
+    }
+
+    /// Control: the same run in a user session does commit, so the test above
+    /// is not passing for an unrelated reason.
+    #[tokio::test]
+    async fn user_session_run_commits_uncommitted_work() {
+        assert_ne!(commits_after_run(false).await, "init");
     }
 }

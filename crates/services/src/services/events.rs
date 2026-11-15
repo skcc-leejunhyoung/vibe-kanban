@@ -185,11 +185,18 @@ async fn publish_row(
                 .ok()
                 .flatten()
                 .map(|session| session.workspace_id);
-            crate::services::agent_journal::observe_process(
-                process,
-                workspace_id,
-                matches!(operation, SqliteOperation::Insert),
-            );
+            // A throwaway one-shot run is deleted as soon as its caller reads
+            // the result, so journal consumers must never chase it.
+            if !Session::is_ephemeral(&db.pool, process.session_id)
+                .await
+                .unwrap_or(false)
+            {
+                crate::services::agent_journal::observe_process(
+                    process,
+                    workspace_id,
+                    matches!(operation, SqliteOperation::Insert),
+                );
+            }
             let patch = match operation {
                 SqliteOperation::Insert => execution_process_patch::add(process),
                 SqliteOperation::Update => execution_process_patch::replace(process),

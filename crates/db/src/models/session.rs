@@ -313,6 +313,42 @@ impl Session {
             .await?;
         Ok(result.rows_affected())
     }
+
+    /// Mark a throwaway one-shot session (PR text generation, spec intake).
+    /// Its runs skip finalize side effects and the agent journal, and it is
+    /// deleted once its caller has read the result.
+    pub async fn mark_ephemeral(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE sessions SET ephemeral = TRUE WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Whether `id` is a throwaway one-shot session; `false` once it is gone.
+    pub async fn is_ephemeral(pool: &SqlitePool, id: Uuid) -> Result<bool, sqlx::Error> {
+        Ok(
+            sqlx::query_scalar::<_, bool>("SELECT ephemeral FROM sessions WHERE id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
+                .unwrap_or(false),
+        )
+    }
+
+    /// Delete throwaway sessions a crash or restart left behind, except one
+    /// whose run is still going.
+    pub async fn delete_leftover_ephemeral(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query(
+            "DELETE FROM sessions
+             WHERE ephemeral = TRUE
+               AND NOT EXISTS (SELECT 1 FROM execution_processes ep
+                               WHERE ep.session_id = sessions.id AND ep.status = 'running')",
+        )
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
 }
 
 #[cfg(test)]

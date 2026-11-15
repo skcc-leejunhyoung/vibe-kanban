@@ -469,7 +469,12 @@ pub trait ContainerService {
             // a restart, so say explicitly that this turn died with the server
             // and can be resumed. Only agent turns: dev servers and scripts die
             // with every restart and resuming their session would start a turn.
-            if process.run_reason == ExecutionProcessRunReason::CodingAgent {
+            // Throwaway one-shot runs are reaped instead.
+            if process.run_reason == ExecutionProcessRunReason::CodingAgent
+                && !Session::is_ephemeral(&self.db().pool, process.session_id)
+                    .await
+                    .unwrap_or(false)
+            {
                 let parent = process
                     .parent_workspace_and_session(&self.db().pool)
                     .await
@@ -1492,10 +1497,12 @@ pub trait ContainerService {
     }
 
     /// Shared tail for one-shot agent runs: assumes the container/worktree
-    /// already exists. Creates a fresh session and starts a single headless
-    /// coding-agent run with no setup/cleanup scripts, so the returned
+    /// already exists. Creates a fresh ephemeral session and starts a single
+    /// headless coding-agent run with no setup/cleanup scripts, so the returned
     /// `ExecutionProcess` is always the coding agent itself and nothing
-    /// side-effecting runs around it.
+    /// side-effecting runs around it — nor after it: an ephemeral session's
+    /// runs skip commit, vibe, notifications, remote sync, queue drain and the
+    /// agent journal, even in a real workspace.
     async fn spawn_oneshot_coding_agent(
         &self,
         workspace: &Workspace,
@@ -1518,6 +1525,9 @@ pub trait ContainerService {
             workspace.id,
         )
         .await?;
+        // Before the run row exists, so the exit monitor and the journal
+        // already see a throwaway run when it starts.
+        Session::mark_ephemeral(&self.db().pool, session.id).await?;
 
         let working_dir = session
             .agent_working_dir
