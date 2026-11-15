@@ -10,6 +10,7 @@ use axum::{
     routing::any,
 };
 use deployment::Deployment;
+use futures_util::StreamExt;
 use relay_hosts::ProxiedResponse;
 use utils::http_headers::is_hop_by_hop_header;
 use uuid::Uuid;
@@ -106,7 +107,7 @@ async fn forward_http(
         .proxy_http(&method, &target_path, &headers, &body_bytes)
         .await?;
 
-    Ok(relay_http_response(response))
+    Ok(relay_http_response(response, host_id, &target_path))
 }
 
 async fn forward_ws(
@@ -161,7 +162,7 @@ fn upstream_api_uri(tail: &str, query: Option<&str>) -> Result<Uri, ApiError> {
         .map_err(|_| ApiError::BadRequest("Invalid rewritten relay path".to_string()))
 }
 
-fn relay_http_response(response: ProxiedResponse) -> Response {
+fn relay_http_response(response: ProxiedResponse, host_id: Uuid, target_path: &str) -> Response {
     let mut builder = Response::builder().status(response.status);
     for (name, value) in &response.headers {
         if !is_hop_by_hop_header(name.as_str()) {
@@ -169,15 +170,28 @@ fn relay_http_response(response: ProxiedResponse) -> Response {
         }
     }
 
-    builder
-        .body(Body::from_stream(response.body))
-        .unwrap_or_else(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to build relay proxy response",
-            )
-                .into_response()
-        })
+    // The status already went out when the upstream body breaks off, so the
+    // caller only sees a truncated body ("error decoding response body") and no
+    // hop logs anything. Record where and after how many bytes it broke.
+    let path = target_path.to_owned();
+    let mut sent = 0usize;
+    let body = response.body.inspect(move |chunk| match chunk {
+        Ok(bytes) => sent += bytes.len(),
+        Err(error) => tracing::warn!(
+            %host_id,
+            path = %path,
+            bytes_sent = sent,
+            %error,
+            "Relay proxy response body broke off mid-transfer"
+        ),
+    });
+    builder.body(Body::from_stream(body)).unwrap_or_else(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to build relay proxy response",
+        )
+            .into_response()
+    })
 }
 
 #[cfg(test)]

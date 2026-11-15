@@ -289,17 +289,36 @@ impl VkClient {
     /// body is an `ApiResponse`, otherwise the body itself (cloud proxies and
     /// the automation worker answer unwrapped).
     pub async fn send_value(&self, request: reqwest::RequestBuilder) -> Result<Value, VkError> {
-        let response = request
-            .send()
-            .await
+        let request = request
+            .build()
             .map_err(|error| VkError::Connect(error.to_string()))?;
-        if !response.status().is_success() {
-            return Err(Self::response_error(response).await);
-        }
-        let text = response
-            .text()
-            .await
-            .map_err(|error| VkError::Parse(error.to_string()))?;
+        // A read whose body broke off after the 200 (a relay hop dropping the
+        // stream mid-transfer) is repeated once. Writes never are: a lost
+        // body cannot tell whether the write ran.
+        let mut replay = matches!(
+            *request.method(),
+            reqwest::Method::GET | reqwest::Method::HEAD
+        )
+        .then(|| request.try_clone())
+        .flatten();
+        let mut request = request;
+        let text = loop {
+            let response = self
+                .http
+                .execute(request)
+                .await
+                .map_err(|error| VkError::Connect(error.to_string()))?;
+            if !response.status().is_success() {
+                return Err(Self::response_error(response).await);
+            }
+            match response.text().await {
+                Ok(text) => break text,
+                Err(error) => match replay.take() {
+                    Some(again) => request = again,
+                    None => return Err(VkError::Parse(error.to_string())),
+                },
+            }
+        };
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
@@ -2750,6 +2769,81 @@ impl VkClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serves one truncated 200 (declared length longer than what is sent,
+    /// then the socket closes) and full answers after it; counts requests.
+    async fn truncating_server() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0; 8192];
+                let _ = socket.read(&mut buf).await;
+                let body = json!({"success": true, "data": {"ok": true}}).to_string();
+                let reply = if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                        body.len() + 100,
+                        &body[..body.len() / 2]
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                };
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        (base, hits)
+    }
+
+    #[tokio::test]
+    async fn read_cut_off_mid_body_is_retried_once() {
+        use std::sync::atomic::Ordering;
+
+        let (base, hits) = truncating_server().await;
+        let client = VkClient::new(&base, "test/1");
+        let value = client
+            .exec("GET", "/execution-processes", false, &[], None, None)
+            .await
+            .unwrap();
+        assert_eq!(value, json!({"ok": true}));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn write_cut_off_mid_body_is_not_resent() {
+        use std::sync::atomic::Ordering;
+
+        let (base, hits) = truncating_server().await;
+        let client = VkClient::new(&base, "test/1");
+        let error = client
+            .exec(
+                "POST",
+                "/sessions/x/follow-up",
+                false,
+                &[],
+                Some(&json!({})),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, VkError::Parse(_)), "{error:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn host_routing_prefixes_the_relay_proxy() {
