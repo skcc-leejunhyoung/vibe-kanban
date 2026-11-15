@@ -430,6 +430,12 @@ pub trait ContainerService {
     async fn cleanup_orphan_executions(&self) -> Result<(), ContainerError> {
         let running_processes = ExecutionProcess::find_running(&self.db().pool).await?;
         for process in running_processes {
+            // Decided before the row changes: a session deleted meanwhile reads
+            // as throwaway, and a failed read still reports the user's turn.
+            let throwaway = matches!(
+                Session::is_ephemeral(&self.db().pool, process.session_id).await,
+                Ok(true)
+            );
             tracing::info!(
                 "Found orphaned execution process {} for session {}",
                 process.id,
@@ -469,12 +475,8 @@ pub trait ContainerService {
             // a restart, so say explicitly that this turn died with the server
             // and can be resumed. Only agent turns: dev servers and scripts die
             // with every restart and resuming their session would start a turn.
-            // Throwaway one-shot runs are reaped instead.
-            if process.run_reason == ExecutionProcessRunReason::CodingAgent
-                && !Session::is_ephemeral(&self.db().pool, process.session_id)
-                    .await
-                    .unwrap_or(false)
-            {
+            // Throwaway one-shot runs are reaped below instead.
+            if process.run_reason == ExecutionProcessRunReason::CodingAgent && !throwaway {
                 let parent = process
                     .parent_workspace_and_session(&self.db().pool)
                     .await
@@ -520,6 +522,14 @@ pub trait ContainerService {
             }
             // Process marked as failed
             tracing::info!("Marked orphaned execution process {} as failed", process.id);
+        }
+        // Now that no orphan is left running, the throwaway sessions a restart
+        // cut off can go; left alone, their failed run marks the workspace as
+        // failed until the next restart.
+        match Session::delete_leftover_ephemeral(&self.db().pool).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("Reaped {n} leftover ephemeral session(s)"),
+            Err(e) => tracing::warn!("Failed to reap leftover ephemeral sessions: {e}"),
         }
         Ok(())
     }
@@ -1525,6 +1535,26 @@ pub trait ContainerService {
             workspace.id,
         )
         .await?;
+        let started = self
+            .start_oneshot_in_session(&workspace, &session, executor_config, prompt)
+            .await;
+        // The caller only learns the session from a started run, so a failed
+        // start would leave it behind in the user's workspace.
+        if started.is_err()
+            && let Err(error) = Session::delete(&self.db().pool, session.id).await
+        {
+            tracing::warn!("Failed to delete one-shot session {}: {error}", session.id);
+        }
+        started
+    }
+
+    async fn start_oneshot_in_session(
+        &self,
+        workspace: &Workspace,
+        session: &Session,
+        executor_config: ExecutorConfig,
+        prompt: String,
+    ) -> Result<ExecutionProcess, ContainerError> {
         // Before the run row exists, so the exit monitor and the journal
         // already see a throwaway run when it starts.
         Session::mark_ephemeral(&self.db().pool, session.id).await?;
@@ -1549,17 +1579,14 @@ pub trait ContainerService {
             None,
         );
 
-        let execution_process = self
-            .start_execution_with_status_note(
-                &workspace,
-                &session,
-                &coding_action,
-                &ExecutionProcessRunReason::CodingAgent,
-                false,
-            )
-            .await?;
-
-        Ok(execution_process)
+        self.start_execution_with_status_note(
+            workspace,
+            session,
+            &coding_action,
+            &ExecutionProcessRunReason::CodingAgent,
+            false,
+        )
+        .await
     }
 
     /// Return the last non-empty assistant message from the in-memory MsgStore

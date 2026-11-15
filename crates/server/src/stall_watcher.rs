@@ -8,7 +8,10 @@
 use std::{collections::HashSet, time::Duration};
 
 use chrono::{DateTime, Utc};
-use db::models::execution_process::{ExecutionProcess, ExecutionProcessRunReason};
+use db::models::{
+    execution_process::{ExecutionProcess, ExecutionProcessRunReason},
+    session::Session,
+};
 use deployment::Deployment;
 use serde_json::{Value, json};
 use services::services::agent_journal;
@@ -80,7 +83,14 @@ async fn tick(deployment: &DeploymentImpl, announced: &mut HashSet<Uuid>) -> any
         .ok()
         .map(DateTime::<Utc>::from);
         let idle = idle_seconds(process.started_at, last_output_at, now);
-        if idle < limit {
+        // A throwaway one-shot run is deleted by its caller; the journal never
+        // reports on one.
+        if idle < limit
+            || !matches!(
+                Session::is_ephemeral(pool, process.session_id).await,
+                Ok(false)
+            )
+        {
             continue;
         }
         announced.insert(process.id);

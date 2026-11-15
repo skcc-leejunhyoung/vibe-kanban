@@ -106,6 +106,8 @@ impl Session {
     /// Find the most recently used session for a workspace.
     /// "Most recently used" is defined as the most recent non-dev server execution process.
     /// Sessions with no executions fall back to created_at for ordering.
+    /// Throwaway one-shot sessions are skipped: anything started in one (a dev
+    /// server, a script, a prompt) would be deleted along with it.
     pub async fn find_latest_by_workspace_id(
         pool: &SqlitePool,
         workspace_id: Uuid,
@@ -127,7 +129,7 @@ impl Session {
                    WHERE ep.run_reason != 'devserver' AND ep.dropped = FALSE
                    GROUP BY ep.session_id
                ) latest_ep ON s.id = latest_ep.session_id
-               WHERE s.workspace_id = $1
+               WHERE s.workspace_id = $1 AND s.ephemeral = FALSE
                ORDER BY COALESCE(latest_ep.last_used, s.created_at) DESC
                LIMIT 1"#,
             workspace_id
@@ -325,23 +327,27 @@ impl Session {
         Ok(())
     }
 
-    /// Whether `id` is a throwaway one-shot session; `false` once it is gone.
+    /// Whether `id` is a throwaway one-shot session. A session that is already
+    /// gone counts as one: it was deleted with everything it ran, so nothing
+    /// may finalize, report or notify about it.
     pub async fn is_ephemeral(pool: &SqlitePool, id: Uuid) -> Result<bool, sqlx::Error> {
         Ok(
             sqlx::query_scalar::<_, bool>("SELECT ephemeral FROM sessions WHERE id = ?")
                 .bind(id)
                 .fetch_optional(pool)
                 .await?
-                .unwrap_or(false),
+                .unwrap_or(true),
         )
     }
 
-    /// Delete throwaway sessions a crash or restart left behind, except one
-    /// whose run is still going.
+    /// Delete throwaway sessions a crash or restart left behind in real
+    /// workspaces, except one whose run is still going. Ephemeral workspaces
+    /// are reaped whole, logs included, by the workspace reaper.
     pub async fn delete_leftover_ephemeral(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
         let result = sqlx::query(
             "DELETE FROM sessions
              WHERE ephemeral = TRUE
+               AND workspace_id IN (SELECT id FROM workspaces WHERE ephemeral = FALSE)
                AND NOT EXISTS (SELECT 1 FROM execution_processes ep
                                WHERE ep.session_id = sessions.id AND ep.status = 'running')",
         )

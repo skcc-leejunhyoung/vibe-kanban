@@ -1252,16 +1252,21 @@ impl LocalContainerService {
         Ok(())
     }
 
+    /// Whether a run in `session_id` gets the uncommitted-changes reminder. A
+    /// throwaway one-shot run must not: the reminder would tell it to commit
+    /// the user's work in progress in the real workspace.
+    async fn commit_reminder_enabled_for(&self, session_id: Uuid) -> bool {
+        self.config.read().await.commit_reminder_enabled
+            && matches!(
+                Session::is_ephemeral(&self.db.pool, session_id).await,
+                Ok(false)
+            )
+    }
+
     /// Delete any leftover ephemeral (spec-intake) workspaces from a prior run
     /// that crashed mid-generation. Keyed on the durable `ephemeral` flag, not a
-    /// name, so it can never touch a real user workspace. Likewise for leftover
-    /// ephemeral sessions (e.g. PR text generation) in real workspaces.
+    /// name, so it can never touch a real user workspace.
     async fn reap_ephemeral_workspaces(&self) {
-        match Session::delete_leftover_ephemeral(&self.db.pool).await {
-            Ok(0) => {}
-            Ok(n) => tracing::info!("Reaped {n} leftover ephemeral session(s)"),
-            Err(e) => tracing::warn!("Failed to reap leftover ephemeral sessions: {e}"),
-        }
         let ephemeral = match Workspace::find_ephemeral(&self.db.pool).await {
             Ok(ws) => ws,
             Err(e) => {
@@ -1670,12 +1675,11 @@ impl LocalContainerService {
             // remote sync. Completion status was already persisted above, and
             // the MsgStore/stream teardown below still runs regardless (the
             // one-shot routes read the agent's final message from the MsgStore
-            // before it is dropped).
+            // before it is dropped). Read after the context, so a session the
+            // route deletes in between counts as throwaway, not as a user turn.
             if let Ok(ctx) = ExecutionProcess::load_context(&db.pool, exec_id).await
                 && !ctx.workspace.ephemeral
-                && !Session::is_ephemeral(&db.pool, session_id)
-                    .await
-                    .unwrap_or(false)
+                && matches!(Session::is_ephemeral(&db.pool, session_id).await, Ok(false))
             {
                 // Update executor session summary if available
                 if let Err(e) = container.update_executor_session_summary(&exec_id).await {
@@ -4205,8 +4209,10 @@ impl ContainerService for LocalContainerService {
         let repo_names: Vec<String> = repos.iter().map(|r| r.name.clone()).collect();
         let repo_context = RepoContext::new(current_dir.clone(), repo_names);
 
+        let commit_reminder_enabled = self
+            .commit_reminder_enabled_for(execution_process.session_id)
+            .await;
         let config = self.config.read().await;
-        let commit_reminder_enabled = config.commit_reminder_enabled;
         let commit_reminder_prompt = config
             .commit_reminder_prompt
             .clone()
@@ -8618,9 +8624,7 @@ mod ephemeral_session_tests {
         String::from_utf8(out.stdout).unwrap().trim().to_string()
     }
 
-    /// Commits on the repo after a successful run finishes in a workspace
-    /// with an uncommitted file.
-    async fn commits_after_run(ephemeral: bool) -> String {
+    async fn fresh_db() -> (tempfile::TempDir, sqlx::SqlitePool, LocalContainerService) {
         let dir = tempfile::tempdir().unwrap();
         let pool = SqlitePoolOptions::new()
             .connect_with(
@@ -8632,6 +8636,45 @@ mod ephemeral_session_tests {
             .unwrap();
         sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
         let container = super::tests::container_on(pool.clone());
+        (dir, pool, container)
+    }
+
+    async fn workspace_without_repos(pool: &sqlx::SqlitePool) -> Workspace {
+        Workspace::create(
+            pool,
+            &CreateWorkspace {
+                branch: "vk/oneshot".into(),
+                name: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn session(pool: &sqlx::SqlitePool, workspace: &Workspace, ephemeral: bool) -> Session {
+        let session = Session::create(
+            pool,
+            &CreateSession {
+                executor: None,
+                variant: None,
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        if ephemeral {
+            Session::mark_ephemeral(pool, session.id).await.unwrap();
+        }
+        session
+    }
+
+    /// Commits on the repo after a successful run finishes in a workspace
+    /// with an uncommitted file.
+    async fn commits_after_run(ephemeral: bool) -> String {
+        let (dir, pool, container) = fresh_db().await;
 
         let worktree = dir.path().join("worktree");
         let repo_dir = worktree.join("repo0");
@@ -8730,5 +8773,137 @@ mod ephemeral_session_tests {
     #[tokio::test]
     async fn user_session_run_commits_uncommitted_work() {
         assert_ne!(commits_after_run(false).await, "init");
+    }
+
+    /// The shared one-shot path (PR text, spec intake) marks its session
+    /// before any run row exists, and a start that fails takes the session
+    /// with it instead of leaving it in the user's workspace. A workspace with
+    /// no repositories fails the start before any row or child exists.
+    #[tokio::test]
+    async fn oneshot_marks_its_session_and_removes_it_when_the_start_fails() {
+        let (_dir, pool, container) = fresh_db().await;
+        let workspace = workspace_without_repos(&pool).await;
+        let config = ExecutorConfig::new(BaseCodingAgent::ClaudeCode);
+
+        let marked = session(&pool, &workspace, false).await;
+        assert!(
+            container
+                .start_oneshot_in_session(&workspace, &marked, config.clone(), "x".into())
+                .await
+                .is_err()
+        );
+        assert!(
+            Session::find_by_id(&pool, marked.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(Session::is_ephemeral(&pool, marked.id).await.unwrap());
+
+        assert!(
+            container
+                .spawn_oneshot_coding_agent(
+                    &workspace,
+                    config,
+                    "x".into(),
+                    Some("create-pr".into())
+                )
+                .await
+                .is_err()
+        );
+        let left: Vec<Uuid> = Session::find_by_workspace_id(&pool, workspace.id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(left, [marked.id]);
+    }
+
+    /// While a one-shot run is going, the workspace's "latest session" (dev
+    /// server, scripts, prompts with no session) stays the user's, and the
+    /// one-shot run is never told to commit the user's work.
+    #[tokio::test]
+    async fn throwaway_session_is_never_latest_and_gets_no_commit_reminder() {
+        let (_dir, pool, container) = fresh_db().await;
+        let workspace = workspace_without_repos(&pool).await;
+        let user = session(&pool, &workspace, false).await;
+        let throwaway = session(&pool, &workspace, true).await;
+
+        let latest = Session::find_latest_by_workspace_id(&pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.id, user.id);
+        assert!(container.commit_reminder_enabled_for(user.id).await);
+        assert!(!container.commit_reminder_enabled_for(throwaway.id).await);
+    }
+
+    /// After a restart, a throwaway session's orphaned run is not reported
+    /// and the session is reaped once orphans are failed; a user turn
+    /// orphaned beside it is still reported and kept.
+    #[tokio::test]
+    async fn restart_reaps_throwaway_sessions_without_reporting_them() {
+        let (_dir, pool, container) = fresh_db().await;
+        let workspace = workspace_without_repos(&pool).await;
+        let action = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "true".into(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::SetupScript,
+                working_dir: None,
+            }),
+            None,
+        );
+        let mut runs = Vec::new();
+        for ephemeral in [true, false] {
+            let session = session(&pool, &workspace, ephemeral).await;
+            let process = ExecutionProcess::create(
+                &pool,
+                &db::models::execution_process::CreateExecutionProcess {
+                    session_id: session.id,
+                    executor_action: action.clone(),
+                    run_reason: ExecutionProcessRunReason::CodingAgent,
+                },
+                Uuid::new_v4(),
+                &[],
+            )
+            .await
+            .unwrap();
+            runs.push((session.id, process.id));
+        }
+        let [(throwaway_session, throwaway_run), (user_session, user_run)] = runs[..] else {
+            unreachable!()
+        };
+
+        container.cleanup_orphan_executions().await.unwrap();
+
+        assert!(
+            Session::find_by_id(&pool, throwaway_session)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            Session::find_by_id(&pool, user_session)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let user_status = ExecutionProcess::find_by_id(&pool, user_run)
+            .await
+            .unwrap()
+            .unwrap()
+            .status;
+        assert_eq!(user_status, ExecutionProcessStatus::Failed);
+        let orphaned =
+            services::services::agent_journal::list(0, &["process.orphaned".to_string()], 4000)
+                .events;
+        assert!(orphaned.iter().any(|e| e.execution_id == Some(user_run)));
+        assert!(
+            !orphaned
+                .iter()
+                .any(|e| e.execution_id == Some(throwaway_run))
+        );
     }
 }
