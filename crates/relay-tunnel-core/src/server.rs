@@ -1,4 +1,10 @@
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    io,
+    pin::Pin,
+    sync::{Arc, Mutex as StdMutex},
+    task::{Context, Poll},
+};
 
 use axum::{
     body::Body,
@@ -9,9 +15,13 @@ use axum::{
 use futures_util::StreamExt;
 use hyper::{body::Body as _, client::conn::http1 as client_http1, upgrade};
 use hyper_util::rt::TokioIo;
-use tokio::sync::Mutex;
+use relay_control::signing::NONCE_HEADER;
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    sync::Mutex,
+};
 use tokio_util::sync::CancellationToken;
-use tokio_yamux::{Control, Session};
+use tokio_yamux::{Control, Session, StreamHandle};
 use ws_bridge::axum_ws_stream_io;
 
 use crate::yamux_config;
@@ -36,7 +46,10 @@ impl ReplayableRequest {
             parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD;
         let is_upgrade = parts.headers.contains_key(axum::http::header::UPGRADE);
         let empty_body = body.size_hint().exact() == Some(0);
-        (safe_method && !is_upgrade && empty_body).then(|| Self {
+        // The host consumes a signed request's nonce on delivery and the relay
+        // holds no key to re-sign, so a resend is always a replay rejection.
+        let signed = parts.headers.contains_key(NONCE_HEADER);
+        (safe_method && !is_upgrade && empty_body && !signed).then(|| Self {
             method: parts.method.clone(),
             uri: parts.uri.clone(),
             version: parts.version,
@@ -126,9 +139,10 @@ pub async fn proxy_request_over_control(
     let mut outbound = axum::http::Request::from_parts(parts, body);
     let request_upgrade = upgrade::on(&mut outbound);
 
+    let mut stream_id = stream.id();
     let result = tokio::select! {
         _=cancellation.cancelled()=>return StatusCode::FORBIDDEN.into_response(),
-        result=send_request_over_stream(stream, outbound)=>result,
+        result=send_request_over_stream(stream, outbound, &request_path)=>result,
     };
     let mut response = match result {
         Ok(response) => response,
@@ -151,9 +165,10 @@ pub async fn proxy_request_over_control(
                         }
                     }
                 };
+                stream_id = retry_stream.id();
                 let retry_result = tokio::select! {
                     _=cancellation.cancelled()=>return StatusCode::FORBIDDEN.into_response(),
-                    result=send_request_over_stream(retry_stream, replayable.into_request())=>result,
+                    result=send_request_over_stream(retry_stream, replayable.into_request(), &request_path)=>result,
                 };
                 match retry_result {
                     Ok(response) => response,
@@ -187,25 +202,99 @@ pub async fn proxy_request_over_control(
     }
 
     let (parts, body) = response.into_parts();
+    let mut bytes_relayed = 0u64;
     let stream = Body::new(body)
         .into_data_stream()
+        .inspect(move |chunk| match chunk {
+            Ok(chunk) => bytes_relayed += chunk.len() as u64,
+            Err(error) => tracing::warn!(
+                ?error,
+                path = %request_path,
+                stream_id,
+                bytes_relayed,
+                "relay response body interrupted"
+            ),
+        })
         .take_until(cancellation.cancelled_owned());
     Response::from_parts(parts, Body::from_stream(stream))
 }
 
 async fn send_request_over_stream(
-    stream: tokio_yamux::StreamHandle,
+    stream: StreamHandle,
     request: Request,
+    path: &str,
 ) -> Result<hyper::Response<hyper::body::Incoming>, hyper::Error> {
+    let stream_id = stream.id();
+    let head = Arc::<StdMutex<Vec<u8>>>::default();
+    let io = HeadRecorder {
+        inner: stream,
+        head: head.clone(),
+    };
     let (mut sender, connection) = client_http1::Builder::new()
-        .handshake(TokioIo::new(stream))
+        .handshake(TokioIo::new(io))
         .await?;
     tokio::spawn(async move {
         if let Err(error) = connection.with_upgrades().await {
             tracing::debug!(?error, "relay stream connection closed");
         }
     });
-    sender.send_request(request).await
+    let result = sender.send_request(request).await;
+    if let Err(error) = &result
+        && error.is_parse()
+    {
+        tracing::warn!(
+            ?error,
+            path = %path,
+            stream_id,
+            response_head = %head.lock().unwrap().escape_ascii(),
+            "relay stream returned a malformed HTTP response"
+        );
+    }
+    result
+}
+
+/// Enough to tell an HTTP head from JSON, SSE, or a yamux frame, but too short
+/// to hold a whole token from a misrouted body.
+const RESPONSE_HEAD_LOG_BYTES: usize = 16;
+
+/// Keeps the first bytes read from a relay stream for the malformed-response log.
+struct HeadRecorder {
+    inner: StreamHandle,
+    head: Arc<StdMutex<Vec<u8>>>,
+}
+
+impl AsyncRead for HeadRecorder {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let start = buf.filled().len();
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+        let mut head = self.head.lock().unwrap();
+        let room = RESPONSE_HEAD_LOG_BYTES.saturating_sub(head.len());
+        let read = &buf.filled()[start..];
+        head.extend_from_slice(&read[..read.len().min(room)]);
+        poll
+    }
+}
+
+impl AsyncWrite for HeadRecorder {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 fn normalized_relay_path(uri: &axum::http::Uri, strip_prefix: &str) -> String {
@@ -260,6 +349,13 @@ mod tests {
             Request::builder()
                 .uri("/api/workspaces")
                 .body(Body::from("unexpected GET body"))
+                .unwrap()
+        ));
+        assert!(!replayable(
+            Request::builder()
+                .uri("/api/workspaces?archived=false")
+                .header(relay_control::signing::NONCE_HEADER, "fixture-nonce")
+                .body(Body::empty())
                 .unwrap()
         ));
     }
