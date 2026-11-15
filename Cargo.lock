@@ -10299,7 +10299,6 @@ dependencies = [
  "http 1.4.0",
  "hyper",
  "hyper-util",
- "relay-control",
  "rustls",
  "tokio",
  "tokio-tungstenite 0.26.2",

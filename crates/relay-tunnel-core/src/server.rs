@@ -13,9 +13,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::StreamExt;
-use hyper::{body::Body as _, client::conn::http1 as client_http1, upgrade};
+use hyper::{client::conn::http1 as client_http1, upgrade};
 use hyper_util::rt::TokioIo;
-use relay_control::signing::NONCE_HEADER;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::Mutex,
@@ -31,43 +30,6 @@ pub type SharedControl = Arc<Mutex<Control>>;
 /// Stops both directions of an upgraded stream and unbounded response bodies.
 #[derive(Clone)]
 pub struct RelayCancellation(pub CancellationToken);
-
-#[derive(Clone)]
-struct ReplayableRequest {
-    method: axum::http::Method,
-    uri: Uri,
-    version: axum::http::Version,
-    headers: axum::http::HeaderMap,
-}
-
-impl ReplayableRequest {
-    fn from_parts(parts: &axum::http::request::Parts, body: &Body) -> Option<Self> {
-        let safe_method =
-            parts.method == axum::http::Method::GET || parts.method == axum::http::Method::HEAD;
-        let is_upgrade = parts.headers.contains_key(axum::http::header::UPGRADE);
-        let empty_body = body.size_hint().exact() == Some(0);
-        // The host consumes a signed request's nonce on delivery and the relay
-        // holds no key to re-sign, so a resend is always a replay rejection.
-        let signed = parts.headers.contains_key(NONCE_HEADER);
-        (safe_method && !is_upgrade && empty_body && !signed).then(|| Self {
-            method: parts.method.clone(),
-            uri: parts.uri.clone(),
-            version: parts.version,
-            headers: parts.headers.clone(),
-        })
-    }
-
-    fn into_request(self) -> Request {
-        let mut request = Request::builder()
-            .method(self.method)
-            .uri(self.uri)
-            .version(self.version)
-            .body(Body::empty())
-            .expect("replayable relay request must remain valid");
-        *request.headers_mut() = self.headers;
-        request
-    }
-}
 
 /// Runs the server-side control channel over an upgraded WebSocket.
 ///
@@ -134,54 +96,19 @@ pub async fn proxy_request_over_control(
         }
     };
 
-    let replayable = ReplayableRequest::from_parts(&parts, &body);
     let request_path = parts.uri.path().to_string();
     let mut outbound = axum::http::Request::from_parts(parts, body);
     let request_upgrade = upgrade::on(&mut outbound);
 
-    let mut stream_id = stream.id();
+    // Never resent: by the time a response fails the request has reached the
+    // host, which consumed its signed nonce, and the relay cannot re-sign it.
+    let stream_id = stream.id();
     let result = tokio::select! {
         _=cancellation.cancelled()=>return StatusCode::FORBIDDEN.into_response(),
         result=send_request_over_stream(stream, outbound, &request_path)=>result,
     };
-    let mut response = match result {
-        Ok(response) => response,
-        Err(error) => {
-            if error.is_parse()
-                && let Some(replayable) = replayable
-            {
-                tracing::warn!(?error, path = %request_path, "relay response parse failed; retrying once");
-                let retry_stream = {
-                    let opened = tokio::select! {
-                        _=cancellation.cancelled()=>return StatusCode::FORBIDDEN.into_response(),
-                        result=async { control.lock().await.open_stream().await }=>result,
-                    };
-                    match opened {
-                        Ok(stream) => stream,
-                        Err(retry_error) => {
-                            tracing::warn!(?retry_error, path = %request_path, "failed to open relay retry stream");
-                            return (StatusCode::BAD_GATEWAY, "Relay connection lost")
-                                .into_response();
-                        }
-                    }
-                };
-                stream_id = retry_stream.id();
-                let retry_result = tokio::select! {
-                    _=cancellation.cancelled()=>return StatusCode::FORBIDDEN.into_response(),
-                    result=send_request_over_stream(retry_stream, replayable.into_request(), &request_path)=>result,
-                };
-                match retry_result {
-                    Ok(response) => response,
-                    Err(retry_error) => {
-                        tracing::warn!(?retry_error, path = %request_path, "relay request retry failed");
-                        return (StatusCode::BAD_GATEWAY, "Relay request failed").into_response();
-                    }
-                }
-            } else {
-                tracing::warn!(?error, path = %request_path, "relay proxy request failed");
-                return (StatusCode::BAD_GATEWAY, "Relay request failed").into_response();
-            }
-        }
+    let Some(mut response) = result else {
+        return (StatusCode::BAD_GATEWAY, "Relay request failed").into_response();
     };
 
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
@@ -202,16 +129,16 @@ pub async fn proxy_request_over_control(
     }
 
     let (parts, body) = response.into_parts();
-    let mut bytes_relayed = 0u64;
+    let mut bytes_sent = 0u64;
     let stream = Body::new(body)
         .into_data_stream()
         .inspect(move |chunk| match chunk {
-            Ok(chunk) => bytes_relayed += chunk.len() as u64,
+            Ok(chunk) => bytes_sent += chunk.len() as u64,
             Err(error) => tracing::warn!(
                 ?error,
                 path = %request_path,
                 stream_id,
-                bytes_relayed,
+                bytes_sent,
                 "relay response body interrupted"
             ),
         })
@@ -223,34 +150,37 @@ async fn send_request_over_stream(
     stream: StreamHandle,
     request: Request,
     path: &str,
-) -> Result<hyper::Response<hyper::body::Incoming>, hyper::Error> {
+) -> Option<hyper::Response<hyper::body::Incoming>> {
     let stream_id = stream.id();
     let head = Arc::<StdMutex<Vec<u8>>>::default();
     let io = HeadRecorder {
         inner: stream,
         head: head.clone(),
     };
-    let (mut sender, connection) = client_http1::Builder::new()
-        .handshake(TokioIo::new(io))
-        .await?;
-    tokio::spawn(async move {
-        if let Err(error) = connection.with_upgrades().await {
-            tracing::debug!(?error, "relay stream connection closed");
-        }
-    });
-    let result = sender.send_request(request).await;
-    if let Err(error) = &result
-        && error.is_parse()
-    {
+    let result = async {
+        let (mut sender, connection) = client_http1::Builder::new()
+            .handshake(TokioIo::new(io))
+            .await?;
+        tokio::spawn(async move {
+            if let Err(error) = connection.with_upgrades().await {
+                tracing::debug!(?error, "relay stream connection closed");
+            }
+        });
+        sender.send_request(request).await
+    }
+    .await;
+    if let Err(error) = &result {
+        // A parse error (e.g. `Parse(Version)`) means the stream carried
+        // non-HTTP bytes; the head and stream id show what arrived and where.
         tracing::warn!(
             ?error,
             path = %path,
             stream_id,
             response_head = %head.lock().unwrap().escape_ascii(),
-            "relay stream returned a malformed HTTP response"
+            "relay proxy request failed"
         );
     }
-    result
+    result.ok()
 }
 
 /// Enough to tell an HTTP head from JSON, SSE, or a yamux frame, but too short
@@ -303,60 +233,4 @@ fn normalized_relay_path(uri: &axum::http::Uri, strip_prefix: &str) -> String {
     let path = if path.is_empty() { "/" } else { path };
     let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
     format!("{path}{query}")
-}
-
-#[cfg(test)]
-mod tests {
-    use axum::{body::Body, http::Request};
-
-    use super::ReplayableRequest;
-
-    fn replayable(request: Request<Body>) -> bool {
-        let (parts, body) = request.into_parts();
-        ReplayableRequest::from_parts(&parts, &body).is_some()
-    }
-
-    #[test]
-    fn only_empty_idempotent_non_upgrade_requests_are_replayable() {
-        assert!(replayable(
-            Request::builder()
-                .uri("/api/workspaces")
-                .body(Body::empty())
-                .unwrap()
-        ));
-        assert!(replayable(
-            Request::builder()
-                .method("HEAD")
-                .uri("/api/health")
-                .body(Body::empty())
-                .unwrap()
-        ));
-        assert!(!replayable(
-            Request::builder()
-                .method("POST")
-                .uri("/api/workspaces")
-                .body(Body::empty())
-                .unwrap()
-        ));
-        assert!(!replayable(
-            Request::builder()
-                .uri("/api/workspaces")
-                .header("upgrade", "websocket")
-                .body(Body::empty())
-                .unwrap()
-        ));
-        assert!(!replayable(
-            Request::builder()
-                .uri("/api/workspaces")
-                .body(Body::from("unexpected GET body"))
-                .unwrap()
-        ));
-        assert!(!replayable(
-            Request::builder()
-                .uri("/api/workspaces?archived=false")
-                .header(relay_control::signing::NONCE_HEADER, "fixture-nonce")
-                .body(Body::empty())
-                .unwrap()
-        ));
-    }
 }

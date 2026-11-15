@@ -1,5 +1,6 @@
-//! A host that answers with non-HTTP bytes must not receive a signed request
-//! twice: the resend would carry a consumed nonce and be rejected as a replay.
+//! A host that answers with non-HTTP bytes must not receive the request twice:
+//! it was already delivered, and a signed resend would carry a consumed nonce
+//! that the host rejects as a replay.
 use std::{
     sync::{
         Arc,
@@ -17,7 +18,6 @@ use axum::{
     routing::get,
 };
 use futures_util::StreamExt;
-use relay_control::signing::NONCE_HEADER;
 use relay_tunnel_core::server::{SharedControl, proxy_request_over_control, run_control_channel};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -26,6 +26,9 @@ use tokio::{
 };
 use tokio_yamux::{Config, Session};
 use ws_bridge::tungstenite_ws_stream_io;
+
+/// relay_control::signing::NONCE_HEADER (not a dependency of this crate).
+const NONCE_HEADER: &str = "x-vk-sig-nonce";
 
 type ControlSlot = Arc<Mutex<Option<SharedControl>>>;
 
@@ -39,10 +42,10 @@ async fn connect(State(slot): State<ControlSlot>, upgrade: WebSocketUpgrade) -> 
 }
 
 #[tokio::test]
-async fn malformed_response_retries_only_unsigned_requests() {
+async fn malformed_response_is_never_resent() {
     tokio::time::timeout(Duration::from_secs(20), run())
         .await
-        .expect("malformed response retry test timed out");
+        .expect("malformed response test timed out");
 }
 
 async fn run() {
@@ -94,5 +97,5 @@ async fn run() {
         .unwrap();
     let response = proxy_request_over_control(&control, unsigned, "").await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    assert_eq!(delivered.load(Ordering::SeqCst), 2);
+    assert_eq!(delivered.load(Ordering::SeqCst), 1);
 }
