@@ -2781,6 +2781,15 @@ impl LocalContainerService {
                 {
                     return;
                 }
+                // Once the merge has landed no finalize reads a sentinel, and
+                // recording one would stamp a finished run as changed just
+                // now: its `updated_at` is when it entered its phase.
+                if matches!(
+                    phase,
+                    VibePhase::Done | VibePhase::Pushing | VibePhase::CreatingPr
+                ) {
+                    return;
+                }
             }
             Ok(None) => {
                 let Some(client) = self.remote_client.clone() else {

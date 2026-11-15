@@ -5,6 +5,7 @@ import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useAfterAgentTurnRefetch } from '@/shared/hooks/useAfterAgentTurnRefetch';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
+import type { VibeReviewStatus } from 'shared/types';
 
 export const vibeRunStatusKeys = {
   /** Every host scope of the workspace's status (to invalidate). */
@@ -29,7 +30,14 @@ const REVIEW_POLL_MS = 15_000;
 /** Backup for a run started, retried or finished from somewhere else. */
 const BACKUP_POLL_MS = 60_000;
 
-function pollMs(phase: string | null | undefined): number {
+/** How soon to read the run again, by how soon it can move. */
+export function vibeRunPollMs(
+  status: Pick<VibeReviewStatus, 'phase' | 'last_error'> | undefined
+): number {
+  const phase = status?.phase;
+  // A merge held up by a failure waits minutes to hours: for its next
+  // scheduled try, or for the review session to sort the failure out.
+  if (phase === 'merging' && status?.last_error) return REVIEW_POLL_MS;
   if (phase && SERVER_STEPS.has(phase)) return SERVER_STEP_POLL_MS;
   return phase === 'review' ? REVIEW_POLL_MS : BACKUP_POLL_MS;
 }
@@ -60,6 +68,9 @@ export function vibeRunMoved(previous: SeenRun, next: SeenRun): boolean {
  * Read afresh on every mount (reopening a workspace shows where the run
  * stands now, not where it stood), after each turn of the session on screen,
  * and on a timer paced by how soon the phase can change.
+ *
+ * The run is the workspace's; `sessionId` is only the session it is read
+ * through, and has to be one that stays (see `isPrDraftSession`).
  */
 export function useVibeRunStatus(workspaceId?: string, sessionId?: string) {
   const hostId = useHostId();
@@ -70,7 +81,7 @@ export function useVibeRunStatus(workspaceId?: string, sessionId?: string) {
     queryFn: () => sessionsApi.getVibeReviewStatus(sessionId!, hostId),
     enabled,
     staleTime: 0,
-    refetchInterval: (query) => pollMs(query.state.data?.phase),
+    refetchInterval: (query) => vibeRunPollMs(query.state.data),
   });
   useAfterAgentTurnRefetch(enabled, query.refetch);
 

@@ -486,7 +486,8 @@
       "retry": "재시도",
       "nextTry": "다음 시도: {{time}}",
       "retryFailedTitle": "재시도할 수 없습니다",
-      "nothingToRetry": "이 워크스페이스에는 다시 시도할 머지 · push · PR 실패가 없습니다."
+      "nothingToRetry": "이 워크스페이스에는 다시 시도할 머지 · push · PR 실패가 없습니다.",
+      "retryWhileRunning": "이 워크스페이스에서 아직 턴이 실행 중입니다. 끝난 뒤 다시 시도하세요."
     },
     "autoResume": {
       "toggleLabel": "사용량 한도 도달 시 자동 재개 전환",

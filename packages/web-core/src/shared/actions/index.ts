@@ -146,6 +146,7 @@ import {
   revealDestinationInPane,
 } from '@/shared/lib/openInSplitPane';
 import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
+import { vibeRunStatusKeys } from '@/shared/hooks/useVibeRunStatus';
 import { getChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 import { buildWorkspacePath } from '@/shared/lib/routes/appNavigation';
@@ -1084,6 +1085,13 @@ export const Actions = {
           throw new Error('Wait for the running turn to finish, then retry');
         }
         throw error;
+      } finally {
+        // The workspace's banner reads the run on a slow timer once it is
+        // blocked: without this it would go on offering a retry of the step
+        // this one just resumed.
+        void ctx.queryClient.invalidateQueries({
+          queryKey: vibeRunStatusKeys.workspace(workspaceId),
+        });
       }
       // Merged, or back in the push / PR step the server resumes by itself;
       // the workspace shows its progress.

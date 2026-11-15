@@ -84,10 +84,16 @@ export function vibeRunBanner(
         });
       }
       if (detail) {
-        return banner('blocked', 'conversation.vibeRun.mergeFailed', {
-          detail,
-          canRetry: true,
-        });
+        // A run that owes its PR shows the failed merge until someone acts on
+        // it. For a plain review it is news for a day: the issue comment and
+        // the notification said it, and a merge later done by hand leaves the
+        // run as it was.
+        return status.pr_requested || settledRecently
+          ? banner('blocked', 'conversation.vibeRun.mergeFailed', {
+              detail,
+              canRetry: true,
+            })
+          : null;
       }
       // Blocked by the review itself: nothing to retry, and for a plain review
       // nothing new to say.

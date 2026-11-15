@@ -167,7 +167,8 @@
       "retry": "Retry",
       "nextTry": "Next try: {{time}}",
       "retryFailedTitle": "Couldn't retry",
-      "nothingToRetry": "There is no blocked merge, push or pull request to retry in this workspace."
+      "nothingToRetry": "There is no blocked merge, push or pull request to retry in this workspace.",
+      "retryWhileRunning": "A turn is still running in this workspace. Wait for it to finish, then retry."
     },
     "autoResume": {
       "toggleLabel": "Toggle auto-resume on usage limit",

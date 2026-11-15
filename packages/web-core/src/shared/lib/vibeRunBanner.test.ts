@@ -122,4 +122,21 @@ describe('vibeRunBanner', () => {
       })
     ).not.toBeNull();
   });
+
+  // A failed merge of a plain review is news for a day; one that still owes
+  // its PR stays until someone retries it.
+  it('lets go of an old failed merge unless the run still owes its PR', () => {
+    const failed = { phase: 'blocked', last_error: 'repo: merge conflict' };
+    const old = { updated_at: '2026-11-11T11:00:00Z' };
+
+    expect(show({ ...failed, pr_requested: false })).toMatchObject({
+      messageKey: 'conversation.vibeRun.mergeFailed',
+      canRetry: true,
+    });
+    expect(show({ ...failed, pr_requested: false, ...old })).toBeNull();
+    expect(show({ ...failed, pr_requested: true, ...old })).toMatchObject({
+      messageKey: 'conversation.vibeRun.mergeFailed',
+      canRetry: true,
+    });
+  });
 });

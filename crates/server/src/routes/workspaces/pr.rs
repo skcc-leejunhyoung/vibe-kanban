@@ -32,6 +32,7 @@ use executors::{
         NormalizedEntryError, NormalizedEntryType,
         utils::patch::extract_normalized_entry_from_patch,
     },
+    model_selector::PermissionPolicy,
     profile::ExecutorConfig,
 };
 use futures_util::FutureExt;
@@ -567,12 +568,21 @@ const PR_GENERATION_SESSION_NAME: &str = "create-pr";
 /// follow-up): while this workspace or the global limit is busy, wait for a
 /// slot instead of answering "try again later". `since` is when the caller's
 /// step began; a draft of that step the server died in is cleared away first.
+///
+/// Nobody is there to answer this draft either. Under a policy that asks
+/// (`Supervised`, `Plan`) its agent would wait on an approval until the
+/// generation timed out, so it runs unattended, as every other turn the
+/// server starts by itself for a vibe run does.
 pub(crate) async fn generate_pr_description_when_free(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
-    request: GeneratePrDescriptionRequest,
+    mut request: GeneratePrDescriptionRequest,
     since: chrono::DateTime<chrono::Utc>,
 ) -> Result<GeneratePrDescriptionResponse, ApiError> {
+    let executor_config =
+        resolve_generation_executor_config(deployment, workspace, request.executor_config.take())
+            .await?;
+    request.executor_config = Some(unattended(executor_config));
     let give_up = Instant::now() + PR_GENERATE_ADMISSION_WAIT;
     let _admission = loop {
         match PR_GENERATION_SCHEDULER.try_acquire(workspace.id) {
@@ -590,6 +600,13 @@ pub(crate) async fn generate_pr_description_when_free(
         None,
     )
     .await
+}
+
+/// `config` for a run with nobody to answer it: tool and plan approvals are
+/// skipped and the agent cannot ask questions.
+fn unattended(mut config: ExecutorConfig) -> ExecutorConfig {
+    config.permission_policy = Some(PermissionPolicy::DontAsk);
+    config
 }
 
 /// Delete the throwaway sessions of drafts a server restart cut off. Every

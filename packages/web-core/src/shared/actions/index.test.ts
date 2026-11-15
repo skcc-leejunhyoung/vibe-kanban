@@ -871,6 +871,36 @@ describe('Actions.RetryVibeMerge', () => {
     expect(showConfirm).not.toHaveBeenCalled();
   });
 
+  // The workspace's banner polls a blocked run only once a minute; left at
+  // "blocked" it would keep offering a retry the server now refuses.
+  it("re-reads the run for the workspace's banner, whatever the outcome", async () => {
+    const resumed = makeCtx(
+      { id: 'ws1' },
+      { currentHostId: 'current-host', currentSessionId: 'session-1' }
+    );
+    vibeRetryMerge.mockResolvedValue(
+      runStatus({ phase: 'pushing', pr_requested: true })
+    );
+    await Actions.RetryVibeMerge.execute(resumed.ctx, 'ws1');
+    expect(resumed.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['vibeRunStatus', 'ws1'],
+    });
+
+    const refused = makeCtx(
+      { id: 'ws1' },
+      { currentHostId: 'current-host', currentSessionId: 'session-1' }
+    );
+    vibeRetryMerge.mockRejectedValue(
+      new ApiError('failed', 200, undefined, { type: 'nothing_to_merge' })
+    );
+    await expect(
+      Actions.RetryVibeMerge.execute(refused.ctx, 'ws1')
+    ).rejects.toThrow();
+    expect(refused.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['vibeRunStatus', 'ws1'],
+    });
+  });
+
   it('shows why the merge is still waiting and when it tries next', async () => {
     vibeRetryMerge.mockResolvedValue(
       runStatus({

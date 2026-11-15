@@ -655,7 +655,7 @@ impl FollowUpSteps for Live {
                     repo_id: repo.id,
                     target_branch: Some(plan.base.clone()),
                     head_branch: head_branch.clone(),
-                    executor_config: run.pr_executor_config.as_ref().map(|c| c.0.clone()),
+                    executor_config: run.pr_draft_config(),
                 },
                 // The run entered this step at `updated_at`.
                 run.updated_at,
@@ -956,6 +956,77 @@ mod tests {
         let mut log = steps.take_log();
         log.sort();
         assert_eq!(log, [FINISHED, FINISHED, "pr", "pr", "push"]);
+    }
+
+    /// What the reused handlers answer is all that tells a failed push or PR
+    /// from one that went through: a typed error (`diverged`), a plain message
+    /// (no remote, the PR host's rejection), an internal error. Each must stop
+    /// the step with its reason — read as a success, the run would go on to
+    /// open a PR for a target that was never pushed — and be published as the
+    /// route's own middleware publishes it.
+    #[tokio::test]
+    async fn a_handler_answer_that_failed_stops_the_step_with_its_reason() {
+        type Answer = Result<ResponseJson<ApiResponse<String, git::PushError>>, ApiError>;
+        let pool = pool().await;
+        let (workspace_id, _) = seed(&pool, "pushing").await;
+        let workspace = Workspace::find_by_id(&pool, workspace_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let since = agent_journal::list(0, &[], 1).cursor;
+        let input = json!({});
+
+        let diverged: Answer = Ok(ResponseJson(ApiResponse::error_with_data(
+            git::PushError::Diverged {
+                ahead: 1,
+                behind: 2,
+            },
+        )));
+        let reason = settle(&pool, &workspace, "target_push", &input, diverged)
+            .await
+            .unwrap_err();
+        assert!(
+            reason.contains("2 remote-only commit(s), 1 local-only"),
+            "{reason}"
+        );
+
+        let no_remote: Answer = Ok(ResponseJson(ApiResponse::error(
+            "No remote configured for this repository",
+        )));
+        assert_eq!(
+            settle(&pool, &workspace, "target_push", &input, no_remote).await,
+            Err("No remote configured for this repository".to_string())
+        );
+
+        let refused: Answer = Err(ApiError::BadRequest(
+            "Commit tracked changes before creating a pull request".to_string(),
+        ));
+        let reason = settle(&pool, &workspace, "create_pr", &input, refused)
+            .await
+            .unwrap_err();
+        assert!(reason.contains("Commit tracked changes"), "{reason}");
+
+        let pushed: Answer = Ok(ResponseJson(ApiResponse::success("pushed".to_string())));
+        assert_eq!(
+            settle(&pool, &workspace, "target_push", &input, pushed).await,
+            Ok(Some("pushed".to_string()))
+        );
+
+        let published: Vec<String> = agent_journal::list(since, &["git.".to_string()], 1000)
+            .events
+            .into_iter()
+            .filter(|event| event.workspace_id == Some(workspace_id))
+            .map(|event| event.kind)
+            .collect();
+        assert_eq!(
+            published,
+            [
+                "git.operation_failed",
+                "git.operation_failed",
+                "git.operation_failed",
+                "git.operation_succeeded"
+            ]
+        );
     }
 
     /// After a restart the journal has seen none of the run's phases, and it

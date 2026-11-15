@@ -34,6 +34,15 @@ export function workspaceSessionsQuery(
 const EMPTY_SESSIONS: Session[] = [];
 
 /**
+ * The server's own session a PR draft is generated in (`create-pr`, the
+ * server's `PR_GENERATION_SESSION_NAME`). It is listed while the draft runs
+ * and deleted the moment it ends, so nothing should settle on it by itself.
+ */
+export function isPrDraftSession(session: Session): boolean {
+  return session.name === 'create-pr';
+}
+
+/**
  * Discriminated union for session selection state. `auto` marks a selection
  * this hook made itself (following the most recently used session); anything
  * the user or a flow picked explicitly has no `auto` and stays put.
@@ -153,17 +162,21 @@ export function useWorkspaceSessions(
       // instead of reading "not in this list" as "deleted".
       if (isFetching) return;
     }
-    // Sessions are ordered by most recently used, so first is the most recently used
+    // Sessions are ordered by most recently used, so first is the most recently
+    // used. While the server drafts a PR that is its own draft session, gone
+    // again in a moment: the one before it is what the user comes back to.
+    const latest =
+      data.find((session) => !isPrDraftSession(session)) ?? data[0];
     if (
       currentSelection?.mode === 'existing' &&
       currentSelection.auto &&
-      currentSelection.sessionId === data[0].id
+      currentSelection.sessionId === latest.id
     ) {
       return;
     }
     setStoredSelection(selectionKey, {
       mode: 'existing',
-      sessionId: data[0].id,
+      sessionId: latest.id,
       auto: true,
     });
   }, [data, isFetching, selectionKey, setStoredSelection]);

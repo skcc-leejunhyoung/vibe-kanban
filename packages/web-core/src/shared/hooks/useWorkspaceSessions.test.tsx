@@ -296,6 +296,31 @@ describe('useWorkspaceSessions', () => {
     expect(probe.pane.selectedSessionId).toBe('a-review');
   });
 
+  // While the server drafts a PR its own throwaway session is the most
+  // recently used one, and it is deleted the moment the draft ends. Reopening
+  // the workspace then must land on the session before it, not on one about
+  // to vanish (every request made through it would answer "not found").
+  it("does not settle on the server's PR-draft session", async () => {
+    const probe = renderPaneAndDocument();
+    await probe.focusDocumentOn('ws-a');
+    await probe.close();
+
+    const draft = { id: 'a-draft', name: 'create-pr' } as Session;
+    vi.mocked(sessionsApi.getByWorkspace).mockImplementationOnce(async () => [
+      draft,
+      ...sessionList(['a-review', 'a-latest', 'a-older']),
+    ]);
+
+    await probe.focusDocumentOn('ws-a');
+    await settle();
+
+    expect(probe.pane.selectedSessionId).toBe('a-review');
+    // Still listed: a user who picks it by hand keeps it.
+    expect(probe.pane.sessions.map((session) => session.id)).toContain(
+      'a-draft'
+    );
+  });
+
   it('keeps a user-picked session when the list gains a newer one', async () => {
     const probe = renderPaneAndDocument();
     await probe.focusDocumentOn('ws-a');

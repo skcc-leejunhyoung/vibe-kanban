@@ -41,9 +41,12 @@ pub struct VibeRun {
     /// "Review and create PR": once the merge lands the server pushes the
     /// target branch (`pushing`) and opens a draft PR (`creating_pr`).
     pub pr_requested: bool,
-    /// Agent config the PR text is drafted with; `None` uses the workspace's
-    /// latest.
-    pub pr_executor_config: Option<Json<ExecutorConfig>>,
+    /// Agent config the PR text is drafted with, as the `ExecutorConfig` JSON
+    /// recorded when the review began; read it with
+    /// [`Self::pr_draft_config`]. Kept untyped so that a config written before
+    /// an executor or a policy was renamed still loads: a row that failed to
+    /// decode would take every read of the run down with it.
+    pub pr_executor_config: Option<Json<serde_json::Value>>,
     /// The follow-up phase (`pushing` / `creating_pr`) a blocked run stopped
     /// in, where a retry resumes. `None` for every other block.
     pub failed_phase: Option<String>,
@@ -68,6 +71,14 @@ pub struct MergeWait {
 }
 
 impl VibeRun {
+    /// The agent config the PR text is drafted with. `None` — nothing was
+    /// recorded, or what was no longer names a known config — drafts with the
+    /// workspace's latest.
+    pub fn pr_draft_config(&self) -> Option<ExecutorConfig> {
+        let config = self.pr_executor_config.as_ref()?;
+        serde_json::from_value(config.0.clone()).ok()
+    }
+
     const COLUMNS: &'static str = "workspace_id, task_id, phase, review_session_id, \
          coding_turns, review_turns, merge_retries, last_result, last_error, merge_wait_since, \
          merge_wait_attempts, merge_retry_at, pr_requested, pr_executor_config, failed_phase, \
@@ -185,7 +196,11 @@ impl VibeRun {
         )
         .bind(review_session_id)
         .bind(pr.is_some())
-        .bind(pr.and_then(|pr| pr.executor_config.clone()).map(Json))
+        .bind(
+            pr.and_then(|pr| pr.executor_config.as_ref())
+                .and_then(|config| serde_json::to_value(config).ok())
+                .map(Json),
+        )
         .bind(workspace_id)
         .execute(pool)
         .await?;
@@ -424,7 +439,7 @@ mod tests {
         assert_eq!(pushing.phase, "pushing");
         assert!(pushing.pr_requested);
         assert_eq!(
-            pushing.pr_executor_config.map(|config| config.0.executor),
+            pushing.pr_draft_config().map(|config| config.executor),
             Some(BaseCodingAgent::ClaudeCode)
         );
         assert_eq!(
@@ -442,6 +457,28 @@ mod tests {
         let done = run(&pool, with_pr).await;
         assert_eq!(done.phase, "done");
         assert!(!done.pr_requested && done.pr_executor_config.is_none());
+    }
+
+    /// A recorded config that no longer parses (an executor or a policy was
+    /// renamed since) must not make the run unreadable: every read of it, the
+    /// watcher's and the follow-up's scans included, would fail with it. The
+    /// PR is then drafted with the workspace's latest config.
+    #[tokio::test]
+    async fn a_run_survives_a_draft_config_it_can_no_longer_read() {
+        let (pool, id) = run_in_review(Some(&PrRequest::default())).await;
+        sqlx::query(
+            "UPDATE vibe_runs SET phase = 'pushing', \
+                 pr_executor_config = '{\"executor\":\"AGENT_SINCE_REMOVED\"}'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let stale = run(&pool, id).await;
+        assert!(stale.pr_requested);
+        assert_eq!(stale.pr_draft_config(), None);
+        assert_eq!(VibeRun::find_in_follow_up(&pool).await.unwrap().len(), 1);
+        assert_eq!(VibeRun::find_non_terminal(&pool).await.unwrap().len(), 1);
     }
 
     /// A follow-up step only moves the run it started on, and a block there

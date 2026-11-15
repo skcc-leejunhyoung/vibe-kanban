@@ -142,8 +142,20 @@ fn can_retry_merge(run: &VibeRun) -> bool {
 pub async fn vibe_retry_merge(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
+    headers: axum::http::HeaderMap,
 ) -> Result<ResponseJson<ApiResponse<VibeReviewStatus, ReviewError>>, ApiError> {
     let pool = &deployment.db().pool;
+    // Resuming the push / PR step has the server do what `create_pr` asks
+    // for, so an agent needs the same access here as to ask for it — the
+    // route's own toggle only covers the merge.
+    if is_agent_request(&headers)
+        && VibeRun::find_by_workspace_id(pool, session.workspace_id)
+            .await
+            .map_err(vibe_run_error)?
+            .is_some_and(|run| run.failed_phase.is_some())
+    {
+        require_create_pr_access(&deployment).await?;
+    }
     // The server's follow-up takes it from here; the answer is the phase it
     // resumes in.
     if VibeRun::retry_follow_up(pool, session.workspace_id)
@@ -315,6 +327,19 @@ fn missing_create_pr_toggle(access: &AgentAccessConfig) -> Option<Toggle> {
         .find(|toggle| !toggle.enabled(access))
 }
 
+/// Refuse an agent that lacks a toggle the server's push and PR need.
+async fn require_create_pr_access(deployment: &DeploymentImpl) -> Result<(), ApiError> {
+    let access = deployment.config().read().await.agent_access.clone();
+    match missing_create_pr_toggle(&access) {
+        Some(off) => Err(ApiError::Forbidden(format!(
+            "Review and create PR pushes the target branch and opens a pull request: \
+             agent_access.{} is off on this host",
+            off.key()
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Manually start a `vibe` review session for the current workspace, behaving as
 /// if its coding agent had just reported `VIBE_RESULT: done`. Spawns a fresh
 /// dedicated review session (and hands the rest of the automated workflow off to
@@ -329,14 +354,7 @@ pub async fn vibe_review(
     let pool = &deployment.db().pool;
     let request = payload.map(|Json(request)| request).unwrap_or_default();
     if request.create_pr && is_agent_request(&headers) {
-        let access = deployment.config().read().await.agent_access.clone();
-        if let Some(off) = missing_create_pr_toggle(&access) {
-            return Err(ApiError::Forbidden(format!(
-                "Review and create PR pushes the target branch and opens a pull request: \
-                 agent_access.{} is off on this host",
-                off.key()
-            )));
-        }
+        require_create_pr_access(&deployment).await?;
     }
 
     let workspace = Workspace::find_by_id(pool, session.workspace_id)

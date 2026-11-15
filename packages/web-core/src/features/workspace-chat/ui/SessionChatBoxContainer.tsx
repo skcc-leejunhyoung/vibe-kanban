@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
 import {
@@ -114,6 +115,7 @@ import {
   vibeRunStatusKeys,
 } from '@/shared/hooks/useVibeRunStatus';
 import { vibeRunBanner } from '@/shared/lib/vibeRunBanner';
+import { isPrDraftSession } from '@/shared/hooks/useWorkspaceSessions';
 
 /** Compute execution status from boolean flags */
 function computeExecutionStatus(params: {
@@ -282,10 +284,27 @@ function reviewErrorKey(error: unknown): string {
       return 'conversation.review.alreadyRunning';
     case 'no_linked_issue':
       return 'conversation.review.noLinkedIssue';
-    case 'nothing_to_merge':
-      return 'conversation.vibeRun.nothingToRetry';
     default:
       return 'conversation.review.failedDescription';
+  }
+}
+
+/**
+ * Why a retry of the run's stopped step was refused. A failure the server
+ * has no category for is shown in its own words.
+ */
+function retryErrorMessage(error: unknown, t: TFunction<'tasks'>): string {
+  const data =
+    error instanceof ApiError
+      ? (error.error_data as ReviewError | undefined)
+      : undefined;
+  switch (data?.type) {
+    case 'process_already_running':
+      return t('conversation.vibeRun.retryWhileRunning');
+    case 'nothing_to_merge':
+      return t('conversation.vibeRun.nothingToRetry');
+    default:
+      return error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -355,7 +374,18 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const [isReviewing, setIsReviewing] = useState(false);
   // Where the server stands in the workspace's automated review run. The run
   // is the server's: this only shows it, and offers the retry of a failed step.
-  const { data: vibeRunStatus } = useVibeRunStatus(workspaceId, sessionId);
+  // It is the workspace's run, read through one of its sessions: the one on
+  // screen, or — in new-session mode, or while the server's PR-draft session
+  // is on screen (deleted when the draft ends, after which every read through
+  // it answers "not found") — the workspace's latest lasting one.
+  const vibeRunSessionId =
+    session && !isPrDraftSession(session)
+      ? session.id
+      : sessions?.find((candidate) => !isPrDraftSession(candidate))?.id;
+  const { data: vibeRunStatus } = useVibeRunStatus(
+    workspaceId,
+    vibeRunSessionId
+  );
   const [isRetryingVibeRun, setIsRetryingVibeRun] = useState(false);
   // Only issue-linked workspaces can enter the automated vibe review workflow;
   // gate the review button on a linked issue so it never advertises a call that
@@ -1785,10 +1815,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Retry the step the run stopped at (merge, target push or PR). The server
   // resumes there; it does not review again.
   const handleRetryVibeRun = useCallback(async () => {
-    if (!sessionId || isRetryingVibeRun) return;
+    if (!vibeRunSessionId || isRetryingVibeRun) return;
     setIsRetryingVibeRun(true);
     try {
-      const status = await sessionsApi.vibeRetryMerge(sessionId, hostId);
+      const status = await sessionsApi.vibeRetryMerge(vibeRunSessionId, hostId);
       queryClient.setQueryData(
         vibeRunStatusKeys.byWorkspace(workspaceId, hostId),
         status
@@ -1796,7 +1826,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     } catch (error) {
       void ErrorDialog.show({
         title: t('conversation.vibeRun.retryFailedTitle'),
-        message: t(reviewErrorKey(error)),
+        message: retryErrorMessage(error, t),
       });
     } finally {
       setIsRetryingVibeRun(false);
@@ -1804,7 +1834,14 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         queryKey: vibeRunStatusKeys.workspace(workspaceId),
       });
     }
-  }, [sessionId, isRetryingVibeRun, workspaceId, hostId, queryClient, t]);
+  }, [
+    vibeRunSessionId,
+    isRetryingVibeRun,
+    workspaceId,
+    hostId,
+    queryClient,
+    t,
+  ]);
 
   const vibeRunNotice = useMemo(() => {
     const banner = vibeRunBanner(vibeRunStatus);

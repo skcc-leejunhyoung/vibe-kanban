@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { vibeRunMoved } from './useVibeRunStatus';
+import { vibeRunMoved, vibeRunPollMs } from './useVibeRunStatus';
 
 const at = (phase: string | null | undefined, workspaceId = 'workspace-1') => ({
   workspaceId,
@@ -29,5 +29,34 @@ describe('vibeRunMoved', () => {
       vibeRunMoved(at('done', 'workspace-1'), at('review', 'workspace-2'))
     ).toBe(false);
     expect(vibeRunMoved(at('done', ''), at('review', ''))).toBe(false);
+  });
+});
+
+describe('vibeRunPollMs', () => {
+  const at = (phase: string | null, last_error: string | null = null) => ({
+    phase,
+    last_error,
+  });
+
+  it('reads the steps the server takes by itself every few seconds', () => {
+    for (const phase of ['merging', 'pushing', 'creating_pr']) {
+      expect(vibeRunPollMs(at(phase))).toBe(3_000);
+    }
+  });
+
+  // A merge waiting on a dirty base stays `merging` for up to hours; every
+  // open composer would otherwise ask every three seconds, over the relay too.
+  it('slows down for a merge held up by a failure', () => {
+    expect(
+      vibeRunPollMs(at('merging', "repo: 'main' has uncommitted changes"))
+    ).toBe(15_000);
+  });
+
+  it('reads a review now and then and anything else once a minute', () => {
+    expect(vibeRunPollMs(at('review'))).toBe(15_000);
+    for (const phase of ['coding', 'blocked', 'done', null]) {
+      expect(vibeRunPollMs(at(phase))).toBe(60_000);
+    }
+    expect(vibeRunPollMs(undefined)).toBe(60_000);
   });
 });
