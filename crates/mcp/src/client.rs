@@ -43,6 +43,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub const AGENT_HEADER: &str = "x-vibe-agent";
+/// Id a relayed host gives each request in its log (`account_host_request`).
+pub const REQUEST_ID_HEADER: &str = "x-vk-request-id";
 pub const AGENT_SESSION_HEADER: &str = "x-vibe-agent-session";
 /// Which CLI command or MCP tool made the call, for the server's audit log.
 pub const AGENT_COMMAND_HEADER: &str = "x-vibe-agent-command";
@@ -227,8 +229,23 @@ impl VkClient {
 
     async fn response_error(response: reqwest::Response) -> VkError {
         let status = response.status().as_u16();
+        // A relayed host names the request in its own log; keep that id so a
+        // failure can be traced to the host's log line.
+        let request_id = response
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let text = response.text().await.unwrap_or_default();
-        let body = serde_json::from_str::<Value>(&text).ok();
+        let mut body = serde_json::from_str::<Value>(&text).ok();
+        if let Some(request_id) = request_id {
+            match body.as_mut().and_then(Value::as_object_mut) {
+                Some(object) => {
+                    object.insert("request_id".to_string(), Value::String(request_id));
+                }
+                None => body = Some(json!({ "request_id": request_id })),
+            }
+        }
         let message = body
             .as_ref()
             .and_then(|value| {
@@ -258,17 +275,9 @@ impl VkClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<T, VkError> {
-        let response = request
-            .send()
-            .await
-            .map_err(|error| VkError::Connect(error.to_string()))?;
-        if !response.status().is_success() {
-            return Err(Self::response_error(response).await);
-        }
-        let envelope: Envelope<T> = response
-            .json()
-            .await
-            .map_err(|error| VkError::Parse(error.to_string()))?;
+        let text = self.read_body(request).await?;
+        let envelope: Envelope<T> =
+            serde_json::from_str(&text).map_err(|error| VkError::Parse(error.to_string()))?;
         if !envelope.success {
             return Err(VkError::Api {
                 status: 200,
@@ -285,16 +294,14 @@ impl VkClient {
             .ok_or_else(|| VkError::Parse("response has no data".to_string()))
     }
 
-    /// Send and return the payload as JSON: the envelope's `data` when the
-    /// body is an `ApiResponse`, otherwise the body itself (cloud proxies and
-    /// the automation worker answer unwrapped).
-    pub async fn send_value(&self, request: reqwest::RequestBuilder) -> Result<Value, VkError> {
+    /// Send and read the body of a successful response. A read whose body
+    /// broke off after the 200 (a relay hop dropping the stream mid-transfer)
+    /// is repeated once; writes never are — a lost body cannot tell whether
+    /// the write ran.
+    async fn read_body(&self, request: reqwest::RequestBuilder) -> Result<String, VkError> {
         let request = request
             .build()
             .map_err(|error| VkError::Connect(error.to_string()))?;
-        // A read whose body broke off after the 200 (a relay hop dropping the
-        // stream mid-transfer) is repeated once. Writes never are: a lost
-        // body cannot tell whether the write ran.
         let mut replay = matches!(
             *request.method(),
             reqwest::Method::GET | reqwest::Method::HEAD
@@ -302,7 +309,7 @@ impl VkClient {
         .then(|| request.try_clone())
         .flatten();
         let mut request = request;
-        let text = loop {
+        loop {
             let response = self
                 .http
                 .execute(request)
@@ -312,13 +319,20 @@ impl VkClient {
                 return Err(Self::response_error(response).await);
             }
             match response.text().await {
-                Ok(text) => break text,
+                Ok(text) => return Ok(text),
                 Err(error) => match replay.take() {
                     Some(again) => request = again,
                     None => return Err(VkError::Parse(error.to_string())),
                 },
             }
-        };
+        }
+    }
+
+    /// Send and return the payload as JSON: the envelope's `data` when the
+    /// body is an `ApiResponse`, otherwise the body itself (cloud proxies and
+    /// the automation worker answer unwrapped).
+    pub async fn send_value(&self, request: reqwest::RequestBuilder) -> Result<Value, VkError> {
+        let text = self.read_body(request).await?;
         if text.trim().is_empty() {
             return Ok(Value::Null);
         }
@@ -2822,6 +2836,54 @@ mod tests {
             .unwrap();
         assert_eq!(value, json!({"ok": true}));
         assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn typed_read_cut_off_mid_body_is_retried_once() {
+        use std::sync::atomic::Ordering;
+
+        let (base, hits) = truncating_server().await;
+        let client = VkClient::new(&base, "test/1");
+        let value: Value = client.get("/workspaces/x/review").await.unwrap();
+        assert_eq!(value, json!({"ok": true}));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn failure_keeps_the_host_request_id() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0; 8192];
+            let _ = socket.read(&mut buf).await;
+            let body = json!({"success": false, "message": "Executor mismatch"}).to_string();
+            let reply = format!(
+                "HTTP/1.1 409 Conflict\r\ncontent-type: application/json\r\nx-vk-request-id: synthetic-request\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(reply.as_bytes()).await;
+        });
+        let client = VkClient::new(&base, "test/1");
+        let error = client
+            .exec(
+                "POST",
+                "/sessions/x/follow-up",
+                false,
+                &[],
+                Some(&json!({})),
+                None,
+            )
+            .await
+            .unwrap_err();
+        let VkError::Api { status, body, .. } = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(status, 409);
+        assert_eq!(body.unwrap()["request_id"], "synthetic-request");
     }
 
     #[tokio::test]

@@ -91,13 +91,19 @@ pub async fn require_relay_request_signature(
             )
             .await,
         };
+        let request_id = request
+            .extensions()
+            .get::<RelayRequestSignatureContext>()
+            .unwrap()
+            .nonce
+            .to_string();
         let span = tracing::info_span!(
             "account_host_request",
             actor_id = %account.identity.user_id,
             host_owner = scope.host_owner,
             auth_session_id = %account.identity.auth_session_id,
             connection_id = %account.identity.connection_id,
-            request_id = %request.extensions().get::<RelayRequestSignatureContext>().unwrap().nonce,
+            request_id = %request_id,
             method = %request.method(),
             path = %request.uri().path(),
         );
@@ -120,7 +126,12 @@ pub async fn require_relay_request_signature(
             }
             Ok(response)
         }.instrument(span).await?;
-        let (parts, body) = response.into_parts();
+        let (mut parts, body) = response.into_parts();
+        // The caller can quote the id this log line carries (`vk` prints it
+        // with a failure), so a failed request is found in the host's log.
+        if let Ok(value) = axum::http::HeaderValue::from_str(&request_id) {
+            parts.headers.insert("x-vk-request-id", value);
+        }
         use futures_util::StreamExt;
         let body = Body::from_stream(
             body.into_data_stream()

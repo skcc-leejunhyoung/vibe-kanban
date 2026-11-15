@@ -5679,7 +5679,7 @@ async fn main() -> ExitCode {
                 .filter(|failure| failure.is_object());
             if json {
                 let mut body = json!({ "success": false, "error": error.to_string(), "status": error.status() });
-                for key in ["error_data", "data"] {
+                for key in ["error_data", "data", "request_id"] {
                     if let Some(value) = envelope
                         .and_then(|body| body.get(key))
                         .filter(|value| !value.is_null())
