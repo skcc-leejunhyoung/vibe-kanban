@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use db::{
     DBService,
@@ -71,6 +71,7 @@ async fn publish_row(
     db: &DBService,
     msg_store: &Arc<MsgStore>,
     entry_count: &Arc<RwLock<usize>>,
+    process_events: &tokio::sync::mpsc::UnboundedSender<(ExecutionProcess, bool)>,
 ) {
     let record_type: RecordTypes = match (table, operation.clone()) {
         (HookTables::Workspaces, SqliteOperation::Delete)
@@ -180,22 +181,14 @@ async fn publish_row(
             return;
         }
         RecordTypes::ExecutionProcess(process) => {
-            let workspace_id = Session::find_by_id(&db.pool, process.session_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|session| session.workspace_id);
-            // A throwaway one-shot run is deleted as soon as its caller reads
-            // the result, so journal consumers must never chase it.
-            if matches!(
-                Session::is_ephemeral(&db.pool, process.session_id).await,
-                Ok(false)
-            ) {
-                crate::services::agent_journal::observe_process(
-                    process,
-                    workspace_id,
+            if process_events
+                .send((
+                    process.clone(),
                     matches!(operation, SqliteOperation::Insert),
-                );
+                ))
+                .is_err()
+            {
+                tracing::error!("Process journal publisher stopped");
             }
             let patch = match operation {
                 SqliteOperation::Insert => execution_process_patch::add(process),
@@ -333,6 +326,49 @@ impl EventService {
     + Sync
     + 'static {
         let (commits, mut committed) = tokio::sync::mpsc::unbounded_channel::<Vec<RowChange>>();
+        let (process_events, mut pending_processes) =
+            tokio::sync::mpsc::unbounded_channel::<(ExecutionProcess, bool)>();
+        let journal_pool = db_service.pool.clone();
+        // Preserve process transitions while retrying classification, without
+        // holding up the live UI's row publisher.
+        // shortcut: retries are memory-only; use a durable outbox if restart recovery is required.
+        tokio::spawn(async move {
+            while let Some((process, inserted)) = pending_processes.recv().await {
+                let mut retry = Duration::from_millis(100);
+                loop {
+                    // Missing and ephemeral sessions must never be advertised:
+                    // their executions may already have been deleted by callers.
+                    match sqlx::query_scalar::<_, Uuid>(
+                        "SELECT workspace_id FROM sessions WHERE id = ? AND ephemeral = FALSE",
+                    )
+                    .bind(process.session_id)
+                    .fetch_optional(&journal_pool)
+                    .await
+                    {
+                        Ok(Some(workspace_id)) => {
+                            crate::services::agent_journal::observe_process(
+                                &process,
+                                Some(workspace_id),
+                                inserted,
+                            );
+                            break;
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            if journal_pool.is_closed() {
+                                return;
+                            }
+                            if retry == Duration::from_millis(100) {
+                                tracing::warn!(%error, execution_id = %process.id,
+                                    "Session classification failed; retrying process journal event");
+                            }
+                            tokio::time::sleep(retry).await;
+                            retry = (retry * 2).min(Duration::from_secs(5));
+                        }
+                    }
+                }
+            }
+        });
         tokio::spawn(async move {
             while let Some(mut changes) = committed.recv().await {
                 // Commits that queued up meanwhile share one wait.
@@ -353,6 +389,7 @@ impl EventService {
                                     &db_service,
                                     &msg_store,
                                     &entry_count,
+                                    &process_events,
                                 )
                                 .await
                             }
