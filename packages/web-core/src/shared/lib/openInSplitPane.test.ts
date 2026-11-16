@@ -175,6 +175,25 @@ describe('openDestinationInOwnPane', () => {
       expect(state().focusSerial).toBe(serialBefore + 1);
     });
 
+    it('goes to the pane already showing it without resetting what it shows', () => {
+      const pr: WorkspacePaneDestination = {
+        kind: 'pull-requests',
+        prUrl: 'https://example.test/pr/1',
+      };
+      seed([null, pr], 4);
+
+      revealDestinationInPane(
+        { kind: 'pull-requests' },
+        navigation,
+        'local',
+        vi.fn()
+      );
+
+      expect(state().activePaneId).toBe('pane-1');
+      expect(state().panes[1]?.destination).toEqual(pr);
+      expect(state().panes[0]?.destination).toBeNull();
+    });
+
     it('leaves focus alone when it navigated the document instead', () => {
       seed([ws('ws1')], 4);
       isMobile = true;

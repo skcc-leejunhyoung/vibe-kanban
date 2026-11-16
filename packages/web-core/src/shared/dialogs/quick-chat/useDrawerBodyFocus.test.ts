@@ -208,6 +208,18 @@ describe('Drawer body focus transitions', () => {
     }
   });
 
+  it('hands a clicked (not dragged) shell to the body, not a clicked control', async () => {
+    pane = new EventTarget();
+    await render();
+    const control = element();
+    focused = control;
+    pane.dispatchEvent(new Event('click'));
+    expect(focused).toBe(control);
+    focused = pane as unknown as Element;
+    pane.dispatchEvent(new Event('click'));
+    expect(focused).toBe(body);
+  });
+
   it('removes the pane-shell focus listener while inactive', async () => {
     pane = new EventTarget();
     await render();

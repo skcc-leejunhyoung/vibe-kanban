@@ -15,6 +15,8 @@ function opener(isConnected = true) {
   return {
     isConnected,
     focus: vi.fn(),
+    // Outside the pane grid: no pane shell to consider.
+    closest: () => null,
   } as unknown as HTMLElement;
 }
 

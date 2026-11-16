@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { isInInactiveWorkspacePane } from './workspace-pane';
 
 /**
  * Marks a button as the dialog's primary (confirm) action for the
@@ -121,7 +122,10 @@ const layerOpeners = new WeakMap<Element, HTMLElement>();
  * target is gone, or when focus already sits in another dialog: focus scopes
  * restore on a `setTimeout(0)`, so in an `await ConfirmDialog.show()` chain the
  * next dialog has already mounted and focused itself by then — restoring would
- * yank focus out of it, back behind the modal.
+ * yank focus out of it, back behind the modal. When the dialog's action moved
+ * to another split pane (a palette Goto, a note opened as a page), focusing
+ * back into the opener's pane would re-activate it and undo the move, so focus
+ * lands in the pane moved to instead.
  */
 export function restoreDialogFocus(
   opener: HTMLElement | null,
@@ -129,6 +133,15 @@ export function restoreDialogFocus(
 ): void {
   const target = (dialog && layerOpeners.get(dialog)) ?? opener;
   if (!target?.isConnected || isFocusInDialog()) return;
+  if (isInInactiveWorkspacePane(target)) {
+    const pane = document.querySelector<HTMLElement>(
+      '[data-workspace-pane-active="true"]'
+    );
+    if (pane && !pane.contains(document.activeElement)) {
+      pane.focus({ preventScroll: true });
+    }
+    return;
+  }
   target.focus({ preventScroll: true });
 }
 

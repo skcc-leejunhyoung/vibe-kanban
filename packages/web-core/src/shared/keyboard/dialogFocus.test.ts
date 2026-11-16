@@ -42,7 +42,7 @@ describe('keepDialogFocusOnLayerClose', () => {
   it('keeps focus in the dialog a menu item opened, and hands the dialog the menu trigger to restore to', () => {
     // Radix only sets the trigger's aria-controls while open; the menu content
     // is labelled by its trigger.
-    const trigger = { isConnected: true, focus: vi.fn() };
+    const trigger = { isConnected: true, focus: vi.fn(), closest: () => null };
     const dlg = dialog();
     vi.stubGlobal('document', {
       activeElement: focusIn(dlg),
@@ -62,7 +62,7 @@ describe('keepDialogFocusOnLayerClose', () => {
   });
 
   it('finds a select or popover trigger through aria-controls', () => {
-    const trigger = { isConnected: true, focus: vi.fn() };
+    const trigger = { isConnected: true, focus: vi.fn(), closest: () => null };
     const dlg = dialog();
     vi.stubGlobal('CSS', { escape: (s: string) => s });
     vi.stubGlobal('document', {
@@ -80,7 +80,7 @@ describe('keepDialogFocusOnLayerClose', () => {
   });
 
   it('ignores a menu that lives inside the dialog itself', () => {
-    const trigger = { isConnected: true, focus: vi.fn() };
+    const trigger = { isConnected: true, focus: vi.fn(), closest: () => null };
     const dlg = dialog(true);
     vi.stubGlobal('document', {
       activeElement: focusIn(dlg),
@@ -98,7 +98,7 @@ describe('keepDialogFocusOnLayerClose', () => {
   });
 
   it('returns focus to a select trigger when its parent dialog reclaimed focus', () => {
-    const trigger = { isConnected: true, focus: vi.fn() };
+    const trigger = { isConnected: true, focus: vi.fn(), closest: () => null };
     const dlg = { contains: () => true, closest: () => dlg };
     vi.stubGlobal('CSS', { escape: (s: string) => s });
     vi.stubGlobal('document', {

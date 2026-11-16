@@ -15,6 +15,7 @@ import {
   getActivePaneWorkspace,
   isPaneGridDestination,
   isPaneRenderableDestination,
+  paneDestinationKey,
   useWorkspacePanesStore,
   type OpenPaneOptions,
   type WorkspacePaneDestination,
@@ -147,7 +148,8 @@ export function openDestinationForActivePane(
 /**
  * Like {@link openDestinationForActivePane}, but never leaves two panes on the
  * same destination — it focuses the pane already showing it instead ("go to
- * it" rather than "open another").
+ * it" rather than "open another"), as that pane is: an open note, PR or issue
+ * stays open.
  */
 export function revealDestinationInPane(
   destination: WorkspacePaneDestination,
@@ -159,15 +161,22 @@ export function revealDestinationInPane(
     navigateDocument();
     return;
   }
+  const { panes, activePaneId, setActivePane, adoptRouteDestination } =
+    useWorkspacePanesStore.getState();
+  const key = paneDestinationKey(destination);
+  const other = panes.find(
+    (pane) =>
+      pane.id !== activePaneId &&
+      pane.destination !== null &&
+      paneDestinationKey(pane.destination) === key
+  );
   // adoptRouteDestination is the store's dedupe-by-key path; setPaneDestination
   // (what openDestinationForActivePane uses) would happily duplicate.
-  const { adoptRouteDestination, focusActivePane } =
-    useWorkspacePanesStore.getState();
-  adoptRouteDestination(destination);
+  if (other) setActivePane(other.id);
+  else adoptRouteDestination(destination);
   // Deliberate "go to it" gesture, and callers decline the command bar's focus
-  // restore, so nothing else moves the caret when the destination already sits
-  // in a pane — adoptRouteDestination is a no-op then and focus stays on body.
-  focusActivePane();
+  // restore, so nothing else moves the caret into the pane.
+  useWorkspacePanesStore.getState().focusActivePane();
 }
 
 /**

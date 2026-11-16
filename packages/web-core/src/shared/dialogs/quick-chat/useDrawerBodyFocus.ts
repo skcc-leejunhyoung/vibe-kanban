@@ -66,22 +66,29 @@ export function useDrawerBodyFocus(
     if (!pane) return;
     // Pane cycling focuses its shell after child effects have already run.
     // A press focuses the shell too (mousedown's default), but moving focus
-    // mid-press cancels the drag it starts, e.g. moving the pane by its header.
+    // mid-press cancels the drag it starts, e.g. moving the pane by its header;
+    // a press that ends as a click (never after a drag) hands it over then.
     let pressed = false;
     const press = () => {
       pressed = true;
       setTimeout(() => (pressed = false));
     };
     const focusBody = () => {
-      if (!pressed && !isModalKeyboardActive()) {
-        body.focus({ preventScroll: true });
-      }
+      if (!isModalKeyboardActive()) body.focus({ preventScroll: true });
+    };
+    const onFocus = () => {
+      if (!pressed) focusBody();
+    };
+    const onClick = () => {
+      if (document.activeElement === pane) focusBody();
     };
     pane.addEventListener('mousedown', press, true);
-    pane.addEventListener('focus', focusBody);
+    pane.addEventListener('focus', onFocus);
+    pane.addEventListener('click', onClick);
     return () => {
       pane.removeEventListener('mousedown', press, true);
-      pane.removeEventListener('focus', focusBody);
+      pane.removeEventListener('focus', onFocus);
+      pane.removeEventListener('click', onClick);
     };
   }, [bodyRef, enabled]);
 }

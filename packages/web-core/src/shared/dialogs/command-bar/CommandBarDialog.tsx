@@ -38,6 +38,7 @@ import {
 } from '@phosphor-icons/react';
 import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
+import { restoreDialogFocus } from '@vibe/ui/lib/dialog-keyboard';
 import { splitPresetActions } from '@/shared/actions/splitPresetActions';
 import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import { resolveCommandBarIssueIds } from './commandBar/resolveCommandBarIssueIds';
@@ -472,12 +473,9 @@ function CommandBarContent({
       return;
     }
     if (!restoreFocusOnCloseRef.current) return;
-    // Don't restore focus if another dialog has taken over (e.g., action opened a new dialog)
-    const activeElement = document.activeElement;
-    const isInDialog = activeElement?.closest('[role="dialog"]');
-    if (!isInDialog) {
-      previousFocusRef.current?.focus();
-    }
+    // Not into a dialog the action opened, nor back into a pane the action
+    // moved away from (a Workspace:/Project: item landing in another pane).
+    restoreDialogFocus(previousFocusRef.current);
   }, []);
 
   return (
