@@ -274,7 +274,9 @@ export function SharedAppLayout() {
   const handlePullRequestsClick = useCallback(
     (event?: MouseEvent<HTMLButtonElement>) => {
       if (event?.metaKey || event?.ctrlKey) {
-        openUrlInSplitPane('/pull-requests', appNavigation, appRuntime);
+        openUrlInSplitPane('/pull-requests', appNavigation, appRuntime, {
+          allowDuplicate: true,
+        });
         return;
       }
       openDestinationForActivePane(

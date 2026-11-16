@@ -234,12 +234,21 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
     );
   }, [appNavigation, appRuntime, navigate, selectWorkspaceHost]);
 
-  const handlePullRequestsClick = useCallback(() => {
-    navigate({
-      to: "/pull-requests",
-      search: { prUrl: undefined },
-    });
-  }, [navigate]);
+  const handlePullRequestsClick = useCallback(
+    (event?: MouseEvent<HTMLButtonElement>) => {
+      if (event?.metaKey || event?.ctrlKey) {
+        openUrlInSplitPane("/pull-requests", appNavigation, appRuntime, {
+          allowDuplicate: true,
+        });
+        return;
+      }
+      navigate({
+        to: "/pull-requests",
+        search: { prUrl: undefined },
+      });
+    },
+    [appNavigation, appRuntime, navigate],
+  );
 
   const handleProjectClick = useCallback(
     (projectId: string, event?: MouseEvent<HTMLButtonElement>) => {

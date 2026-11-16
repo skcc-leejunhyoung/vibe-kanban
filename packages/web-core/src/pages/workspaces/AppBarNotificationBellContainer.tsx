@@ -21,7 +21,9 @@ export function AppBarNotificationBellContainer() {
 
   const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
     if (event.metaKey || event.ctrlKey) {
-      openUrlInSplitPane('/notifications', appNavigation, appRuntime);
+      openUrlInSplitPane('/notifications', appNavigation, appRuntime, {
+        allowDuplicate: true,
+      });
       return;
     }
     // Open in the focused split pane when one is selected, else navigate.
