@@ -357,10 +357,13 @@ export function GeneralSettingsSection() {
   const runtime = useAppRuntime();
   const machineClient = useSettingsMachineClient();
   const machineHostId = machineClient?.target.apiHostId;
-  // Theme, colour and language of THIS app come from this machine's config on
-  // the local web and from the shared "Remote" config on the remote web.
-  // Another host's values are that host's own and must not restyle this app.
-  const ownsAppAppearance =
+  // Whether the edited target is the settings owner of THIS app: this
+  // machine's config on the local web, the shared "Remote" config on the
+  // remote web. Only its theme, colour and language restyle the app, and only
+  // there are the app's own preferences offered (the send key, where a quick
+  // chat or the terminal opens): under another host they would be saved to
+  // that host and change nothing here.
+  const editsThisApp =
     runtime === 'remote'
       ? machineClient === null
       : machineClient?.target.kind === 'local';
@@ -468,7 +471,7 @@ export function GeneralSettingsSection() {
         setError(t('settings.general.save.error'));
         return;
       }
-      if (ownsAppAppearance) {
+      if (editsThisApp) {
         setTheme(nextDraft.theme);
         applyPrimaryColor(nextDraft.primary_color);
         persistPrimaryColor(nextDraft.primary_color);
@@ -1355,33 +1358,36 @@ export function GeneralSettingsSection() {
         </SettingsCard>
       )}
 
-      {/* Message Input */}
-      <SettingsCard
-        title={t('settings.general.messageInput.title')}
-        description={t('settings.general.messageInput.description')}
-      >
-        <SettingsField
-          label={t('settings.general.messageInput.shortcut.label')}
-          description={t('settings.general.messageInput.shortcut.helper')}
+      {/* Message Input: a habit of the person typing, read from this app's
+          own settings whichever host a pane is on. */}
+      {editsThisApp && (
+        <SettingsCard
+          title={t('settings.general.messageInput.title')}
+          description={t('settings.general.messageInput.description')}
         >
-          <SettingsSelect
-            value={draft?.send_message_shortcut ?? 'ModifierEnter'}
-            options={[
-              {
-                value: 'ModifierEnter' as SendMessageShortcut,
-                label: `${getModifierKey()}+Enter`,
-              },
-              {
-                value: 'Enter' as SendMessageShortcut,
-                label: t('settings.general.messageInput.shortcut.enterLabel'),
-              },
-            ]}
-            onChange={(value: SendMessageShortcut) =>
-              updateDraft({ send_message_shortcut: value })
-            }
-          />
-        </SettingsField>
-      </SettingsCard>
+          <SettingsField
+            label={t('settings.general.messageInput.shortcut.label')}
+            description={t('settings.general.messageInput.shortcut.helper')}
+          >
+            <SettingsSelect
+              value={draft?.send_message_shortcut ?? 'ModifierEnter'}
+              options={[
+                {
+                  value: 'ModifierEnter' as SendMessageShortcut,
+                  label: `${getModifierKey()}+Enter`,
+                },
+                {
+                  value: 'Enter' as SendMessageShortcut,
+                  label: t('settings.general.messageInput.shortcut.enterLabel'),
+                },
+              ]}
+              onChange={(value: SendMessageShortcut) =>
+                updateDraft({ send_message_shortcut: value })
+              }
+            />
+          </SettingsField>
+        </SettingsCard>
+      )}
 
       {/* Workspace List */}
       <SettingsCard
@@ -1424,21 +1430,23 @@ export function GeneralSettingsSection() {
             'Choose how many pages can open together before links fall back to a new window.',
         })}
       >
-        <SettingsCheckbox
-          id="quick-chat-open-in-new-pane"
-          label={t('settings.general.splitScreen.quickChatNewPane.label')}
-          description={t(
-            'settings.general.splitScreen.quickChatNewPane.helper'
-          )}
-          checked={draft?.quick_chat_open_in_new_pane ?? false}
-          onChange={(checked) =>
-            updateDraft({ quick_chat_open_in_new_pane: checked })
-          }
-        />
+        {editsThisApp && (
+          <SettingsCheckbox
+            id="quick-chat-open-in-new-pane"
+            label={t('settings.general.splitScreen.quickChatNewPane.label')}
+            description={t(
+              'settings.general.splitScreen.quickChatNewPane.helper'
+            )}
+            checked={draft?.quick_chat_open_in_new_pane ?? false}
+            onChange={(checked) =>
+              updateDraft({ quick_chat_open_in_new_pane: checked })
+            }
+          />
+        )}
         {/* The standalone terminal is a local-app surface: the cloud app has no
             host id to route a home-directory PTY to, so its command palette
             never offers the action this toggle governs. */}
-        {runtime === 'local' && (
+        {runtime === 'local' && editsThisApp && (
           <SettingsCheckbox
             id="terminal-open-in-new-pane"
             label={t('settings.general.splitScreen.terminalNewPane.label')}

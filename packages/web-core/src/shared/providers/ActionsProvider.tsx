@@ -41,7 +41,7 @@ import {
   registerPaneActionExecutor,
 } from '@/shared/lib/paneActionRegistry';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
-import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
+import { useAppUserSystem } from '@/shared/hooks/useAppUserSystem';
 import { resolveActionHost } from '@/shared/lib/actionHost';
 
 interface ActionsProviderProps {
@@ -54,7 +54,7 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
   const { userId } = useAuth();
   // How this app opens the terminal: the app's own preference, not a setting
   // of the host this provider's pane happens to be on.
-  const { config } = useAppMachineSystem();
+  const { config } = useAppUserSystem();
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
   // Derived from the destination (not router params) so split panes can scope

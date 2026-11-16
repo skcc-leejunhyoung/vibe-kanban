@@ -7,7 +7,7 @@ import { useDiffViewMode } from '@/shared/stores/useDiffViewStore';
 import { useDiffPaths } from '@/shared/stores/useWorkspaceDiffStore';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
-import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
+import { useAppUserSystem } from '@/shared/hooks/useAppUserSystem';
 import { useDevServer } from '@/shared/hooks/useDevServer';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { useShape } from '@/shared/integrations/electric/hooks';
@@ -129,7 +129,7 @@ export function useActionVisibilityContext(
         ? 'kanban'
         : 'workspaces';
   const { config } = useUserSystem();
-  const appConfig = useAppMachineSystem().config;
+  const appConfig = useAppUserSystem().config;
   const { isStarting, isStopping, runningDevServers } = useDevServer(
     workspaceId,
     { hostId: chromeTargetHostId }

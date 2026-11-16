@@ -49,8 +49,24 @@ const update: UpdateScratch = {
 let dom: ReturnType<typeof installDomlessReact>;
 const scratches = new Map<string, UseScratchResult>();
 
-function Probe({ id, scratchId }: { id: string; scratchId: string }) {
-  scratches.set(id, useScratch(ScratchType.DRAFT_FOLLOW_UP, scratchId));
+function Probe({
+  id,
+  scratchId,
+  ownerHostId,
+}: {
+  id: string;
+  scratchId: string;
+  /** Set when the scratch names its own keeper instead of the pane's host. */
+  ownerHostId?: string | null;
+}) {
+  scratches.set(
+    id,
+    useScratch(
+      ScratchType.DRAFT_FOLLOW_UP,
+      scratchId,
+      ownerHostId === undefined ? undefined : { hostId: ownerHostId }
+    )
+  );
   return null;
 }
 async function render() {
@@ -60,6 +76,8 @@ async function render() {
       <Probe id="root" scratchId="preferences" />
       <HostIdContext.Provider value="host-b">
         <Probe id="pane-b" scratchId="session-b" />
+        {/* Account data shown in a pane on host B: kept on this machine. */}
+        <Probe id="account-draft" scratchId="issue" ownerHostId={null} />
       </HostIdContext.Provider>
       <HostIdContext.Provider value={null}>
         <Probe id="pane-local" scratchId="session-local" />
@@ -86,6 +104,7 @@ describe('scratch owner', () => {
     ['root', 'preferences', null],
     ['pane-b', 'session-b', 'host-b'],
     ['pane-local', 'session-local', null],
+    ['account-draft', 'issue', null],
   ])(
     'writes %s scratch to the host it is read from, not to the focused pane',
     async (id, scratchId, hostId) => {
@@ -120,6 +139,8 @@ describe('scratch owner', () => {
         ['/api/scratch/DRAFT_FOLLOW_UP/preferences/stream/ws', null],
         ['/api/scratch/DRAFT_FOLLOW_UP/session-b/stream/ws', 'host-b'],
         ['/api/scratch/DRAFT_FOLLOW_UP/session-local/stream/ws', null],
+        // Rendered in a pane on host B, kept on this machine.
+        ['/api/scratch/DRAFT_FOLLOW_UP/issue/stream/ws', null],
       ])
     );
   });

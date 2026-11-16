@@ -16,6 +16,7 @@ import { LogsPanelProvider } from '@/shared/providers/LogsPanelProvider';
 import { ActionsProvider } from '@/shared/providers/ActionsProvider';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useAppUserSystem } from '@/shared/hooks/useAppUserSystem';
+import { useLocalAccountLayoutOwner } from '@/shared/hooks/useLocalAccountLayoutOwner';
 import { SharedAppLayout } from '@/shared/components/ui-new/containers/SharedAppLayout';
 import { HostUserSystemProvider } from '@web/app/providers/HostUserSystemProvider';
 import { useWorkspacePaneShortcuts } from '@/shared/keyboard/useWorkspacePaneShortcuts';
@@ -76,6 +77,12 @@ function ReleaseNotesHandler() {
   return null;
 }
 
+/** Clears the previous account's panes and host filter when another signs in. */
+function AccountLayoutOwner() {
+  useLocalAccountLayoutOwner();
+  return null;
+}
+
 function ExecutionProcessesProviderWrapper({
   children,
 }: {
@@ -115,6 +122,7 @@ function AppLayoutRouteComponent() {
   return (
     <AppRouteProviders>
       <ReleaseNotesHandler />
+      <AccountLayoutOwner />
       <SequenceTrackerProvider>
         <SequenceIndicator />
         <KeyboardShortcutsHandler />

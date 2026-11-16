@@ -23,6 +23,13 @@ export interface UseScratchResult {
 interface UseScratchOptions {
   /** Whether to enable the scratch connection. Defaults to true. */
   enabled?: boolean;
+  /**
+   * The host that keeps this scratch, when it is not the one this hook is
+   * rendered under: a draft about account data (a cloud issue's comment)
+   * belongs with this machine (`null`), not with whichever host the pane
+   * showing it is on.
+   */
+  hostId?: string | null;
 }
 
 /**
@@ -45,7 +52,8 @@ export const useScratch = (
   // the app root). Writes must go to the same place: left to the transport's
   // ambient host they would follow the focused pane instead, saving one
   // host's scratch — app-wide UI preferences included — into another's.
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = options?.hostId !== undefined ? options.hostId : contextHostId;
 
   // --- localStorage path (remote-web) ---
   const localResult = useLocalStorageScratch(userId, scratchType, id, {

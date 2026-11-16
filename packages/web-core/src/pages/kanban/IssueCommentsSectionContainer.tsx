@@ -82,12 +82,15 @@ function IssueCommentsSectionContent({
   const [commentInput, setCommentInput] = useState('');
   const runtime = useAppRuntime();
   const commentDraftId = getIssueCommentDraftId(issueContext.issueId, runtime);
+  // The issue lives in the cloud account, so its draft stays with this
+  // machine: kept on the pane's host, it would vanish whenever the pane showed
+  // the issue from another host.
   const {
     scratch: commentDraftScratch,
     updateScratch: updateCommentDraft,
     deleteScratch: deleteCommentDraft,
     isLoading: isCommentDraftLoading,
-  } = useScratch(ScratchType.DRAFT_TASK, commentDraftId);
+  } = useScratch(ScratchType.DRAFT_TASK, commentDraftId, { hostId: null });
   const commentDraft =
     commentDraftScratch?.payload?.type === 'DRAFT_TASK'
       ? commentDraftScratch.payload.data

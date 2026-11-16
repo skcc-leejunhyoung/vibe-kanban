@@ -551,6 +551,7 @@
         "defaultCannotDisable": "The default agent can't be hidden",
         "visibleModelsLabel": "Visible models",
         "visibleModelsHint": "Choose which models appear in the model picker for this agent.",
+        "visibleModelsScope": "Saved in this browser and applied to every host.",
         "visibleModelsEmpty": "No models available for this agent.",
         "toggleModelVisible": "Toggle {{name}}"
       },

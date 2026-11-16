@@ -66,6 +66,10 @@ vi.mock('@/shared/hooks/useCreateWorkspace', () => ({
 vi.mock('@/shared/hooks/useUserSystem', () => ({
   useUserSystem: () => ({ profiles: {}, config: null }),
 }));
+// The send key is the app's own preference, read apart from the host's config.
+vi.mock('@/shared/hooks/useAppUserSystem', () => ({
+  useSendMessageShortcut: () => undefined,
+}));
 vi.mock('@/shared/hooks/useExecutorConfig', () => ({
   useExecutorConfig: () => ({
     effectiveExecutor: 'CODEX',

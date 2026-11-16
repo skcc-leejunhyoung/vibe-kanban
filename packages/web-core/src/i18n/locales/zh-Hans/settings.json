@@ -363,7 +363,12 @@
         "jsonLabel": "代理配置（JSON）",
         "jsonPlaceholder": "加载配置文件中...",
         "jsonLoading": "加载中...",
-        "pathLabel": "配置文件位置："
+        "pathLabel": "配置文件位置：",
+        "visibleModelsLabel": "可见模型",
+        "visibleModelsHint": "选择此代理的模型选择器中显示哪些模型。",
+        "visibleModelsScope": "保存在此浏览器中，并应用于所有主机。",
+        "visibleModelsEmpty": "此代理没有可用的模型。",
+        "toggleModelVisible": "切换 {{name}}"
       },
       "errors": {
         "deleteFailed": "删除配置失败。请重试。",

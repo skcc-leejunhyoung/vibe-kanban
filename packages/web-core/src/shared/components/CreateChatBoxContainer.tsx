@@ -16,6 +16,7 @@ import { targetBranchModeCreates } from '@/features/create-mode/model/targetBran
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { ChatUsageIndicator } from '@/shared/components/ChatUsageIndicator';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useSendMessageShortcut } from '@/shared/hooks/useAppUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { useCreateWorkspace } from '@/shared/hooks/useCreateWorkspace';
 import { workspacesApi } from '@/shared/lib/api';
@@ -106,6 +107,7 @@ function CreateChatBoxContent({
   });
   useChatSubmitKey(submitTargetRef, isActivePane);
   const { profiles, config } = useUserSystem();
+  const sendShortcut = useSendMessageShortcut();
   const {
     repos,
     targetBranches,
@@ -695,7 +697,7 @@ function CreateChatBoxContent({
                       autoFocus={isActivePane}
                       onPasteFiles={onPasteFiles}
                       localAttachments={localAttachments}
-                      sendShortcut={config?.send_message_shortcut}
+                      sendShortcut={sendShortcut}
                     />
                   )}
                   contextUsage={

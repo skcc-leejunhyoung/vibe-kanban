@@ -10,11 +10,19 @@ import {
   AppRuntimeProvider,
   type AppRuntime,
 } from '@/shared/hooks/useAppRuntime';
-import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
+import {
+  useAppMachineSystem,
+  useAppUserSystem,
+  useSendMessageShortcut,
+} from '@/shared/hooks/useAppUserSystem';
 import { useHostUserSystem } from '@/shared/hooks/useHostUserSystem';
 import { UserSystemContext, useUserSystem } from '@/shared/hooks/useUserSystem';
 import { configApi } from '@/shared/lib/api';
 import { DEFAULT_CONFIG } from '@/shared/lib/defaultConfig';
+import {
+  loadRemoteSharedUserSystemInfo,
+  saveRemoteSharedConfig,
+} from '@/shared/lib/remoteSharedConfig';
 import { installDomlessReact } from '@/shared/lib/electric/electricTestKit';
 import {
   getHostRequestScopeQueryKey,
@@ -27,6 +35,12 @@ import { HostUserSystemScope } from './HostUserSystemScope';
 const settings = vi.hoisted(() => ({ hostId: null as string | null }));
 vi.mock('@/shared/lib/api', () => ({
   configApi: { getConfig: vi.fn(), saveConfig: vi.fn() },
+}));
+// The account's shared "Remote" config, the app's own settings on the remote web.
+vi.mock('@/shared/lib/remoteSharedConfig', () => ({
+  REMOTE_SHARED_USER_SYSTEM_QUERY_KEY: ['user-system', 'remote-shared'],
+  loadRemoteSharedUserSystemInfo: vi.fn(),
+  saveRemoteSharedConfig: vi.fn(),
 }));
 vi.mock('@/shared/dialogs/settings/settings/SettingsHostContext', () => ({
   useSettingsMachineClient: () => ({
@@ -249,6 +263,73 @@ describe('host user system scope', () => {
       await flush();
       expect(seen.get('machine')?.system.machineId).toBe('machine-a');
     }
+  });
+});
+
+describe('the app’s own preferences', () => {
+  // Host B sends on Enter; this machine and the account keep their own value.
+  const withSendKey = (info: UserSystemInfo, key: 'Enter' | 'ModifierEnter') =>
+    ({
+      ...info,
+      config: { ...info.config, send_message_shortcut: key },
+    }) as UserSystemInfo;
+  let sendKey: string | undefined;
+  let app: ReturnType<typeof useAppUserSystem>;
+  function AppProbe() {
+    sendKey = useSendMessageShortcut();
+    app = useAppUserSystem();
+    return null;
+  }
+
+  beforeEach(() => {
+    vi.mocked(configApi.getConfig).mockImplementation(async (hostId) =>
+      hostId === 'host-b' ? withSendKey(infoB, 'Enter') : infoA
+    );
+    vi.mocked(loadRemoteSharedUserSystemInfo)
+      .mockReset()
+      .mockResolvedValue({
+        ...withSendKey(infoA, 'Enter'),
+        machine_id: '',
+        config_revision: 'shared-1',
+      });
+    vi.mocked(saveRemoteSharedConfig)
+      .mockReset()
+      .mockImplementation(async (config) => ({
+        config,
+        revision: 'shared-2',
+      }));
+  });
+
+  it('come from this machine on the local web, not from the host a pane is on', async () => {
+    await render('host-b', <AppProbe />);
+    await flush();
+    expect(sendKey).toBe('ModifierEnter');
+  });
+
+  it('come from the account’s shared config on the remote web', async () => {
+    runtime = 'remote';
+    // The document's host keeps the default; the account chose Enter.
+    vi.mocked(configApi.getConfig).mockResolvedValue(infoB);
+    await render('host-b', <AppProbe />);
+    await flush();
+    expect(sendKey).toBe('Enter');
+  });
+
+  it('are saved to the shared config on the remote web, never to the host', async () => {
+    runtime = 'remote';
+    await render('host-b', <AppProbe />);
+    await flush();
+    // What dismissing a guide writes.
+    await act(async () => {
+      await app.updateAndSaveConfig({
+        showcases: { seen_features: ['workspaces-guide'] },
+      });
+    });
+    expect(saveRemoteSharedConfig).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(saveRemoteSharedConfig).mock.calls[0][0].showcases
+    ).toEqual({ seen_features: ['workspaces-guide'] });
+    expect(configApi.saveConfig).not.toHaveBeenCalled();
   });
 });
 

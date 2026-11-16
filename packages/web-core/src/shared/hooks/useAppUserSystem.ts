@@ -1,3 +1,4 @@
+import type { SendMessageShortcut } from 'shared/types';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useHostUserSystem } from '@/shared/hooks/useHostUserSystem';
@@ -33,10 +34,20 @@ export function useAppUserSystem(): UserSystemContextType {
 }
 
 /**
- * State of the machine the app itself runs on: its login, machine id, version,
- * guides already shown. On the local web that is this machine, whichever host
- * the route or the focused pane is on. The remote web has no machine of its
- * own, so there this stays the route host's, as it was.
+ * How Enter behaves in this app's message inputs. It is a habit of the person
+ * typing, so it comes from the app's own settings and not from the host a
+ * pane, a draft or a dialog happens to be on.
+ */
+export function useSendMessageShortcut(): SendMessageShortcut | undefined {
+  return useAppUserSystem().config?.send_message_shortcut;
+}
+
+/**
+ * State of the machine the app itself runs on: its login, machine id and
+ * version. On the local web that is this machine, whichever host the route or
+ * the focused pane is on. The remote web has no machine of its own, so there
+ * this stays the route host's. Preferences are not machine state: they come
+ * from `useAppUserSystem()`.
  */
 export function useAppMachineSystem(): UserSystemContextType {
   const runtime = useAppRuntime();

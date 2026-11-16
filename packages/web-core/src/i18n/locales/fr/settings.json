@@ -363,7 +363,12 @@
         "jsonLabel": "Configuration de l'agent (JSON)",
         "jsonPlaceholder": "Chargement des profils...",
         "jsonLoading": "Chargement...",
-        "pathLabel": "Emplacement du fichier de configuration :"
+        "pathLabel": "Emplacement du fichier de configuration :",
+        "visibleModelsLabel": "Modèles visibles",
+        "visibleModelsHint": "Choisissez les modèles affichés dans le sélecteur de modèles de cet agent.",
+        "visibleModelsScope": "Enregistré dans ce navigateur et appliqué à tous les hôtes.",
+        "visibleModelsEmpty": "Aucun modèle disponible pour cet agent.",
+        "toggleModelVisible": "Basculer {{name}}"
       },
       "errors": {
         "deleteFailed": "Échec de la suppression de la configuration. Veuillez réessayer.",

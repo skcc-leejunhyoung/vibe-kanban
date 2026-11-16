@@ -8,7 +8,7 @@ import { useDialogKeyboard } from '@vibe/ui/lib/dialog-keyboard';
 import { DialogFocusScope } from '@vibe/ui/components/DialogFocusScope';
 import { defineModal, type NoProps } from '@/shared/lib/modals';
 
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useSendMessageShortcut } from '@/shared/hooks/useAppUserSystem';
 import { cn } from '@/shared/lib/utils';
 import {
   effectiveSequentialBindings,
@@ -46,9 +46,8 @@ interface ShortcutGroup {
 }
 
 function useShortcutGroups(): ShortcutGroup[] {
-  const { config } = useUserSystem();
   const { t } = useTranslation('common');
-  const sendShortcut = config?.send_message_shortcut ?? 'ModifierEnter';
+  const sendShortcut = useSendMessageShortcut() ?? 'ModifierEnter';
   const overrides = useKeyboardShortcutsStore((s) => s.overrides);
   const maxSplitPanes = useWorkspacePanesStore((state) => state.maxPanes);
 

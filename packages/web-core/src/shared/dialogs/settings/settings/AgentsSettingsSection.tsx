@@ -768,7 +768,8 @@ function ModelVisibilitySettings({
         {t('settings.agents.editor.visibleModelsLabel')}
       </label>
       <p className="text-xs text-low">
-        {t('settings.agents.editor.visibleModelsHint')}
+        {t('settings.agents.editor.visibleModelsHint')}{' '}
+        {t('settings.agents.editor.visibleModelsScope')}
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
         {models.map((model) => {

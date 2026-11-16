@@ -34,6 +34,7 @@ import {
 import { PROCESS_RUN_REASONS } from '@/shared/constants/processes';
 import { useWorkspaceRepo } from '@/shared/hooks/useWorkspaceRepo';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useSendMessageShortcut } from '@/shared/hooks/useAppUserSystem';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
 import { useApprovalFeedbackOptional } from '../model/contexts/ApprovalFeedbackContext';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
@@ -2462,6 +2463,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     return localMessage;
   }, [isScratchLoading, hasInitialValue, localMessage]);
 
+  const sendShortcut = useSendMessageShortcut();
   const renderEditor = useCallback(
     ({
       focusKey,
@@ -2496,10 +2498,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         autoFocus={autoFocus}
         onPasteFiles={onPasteFiles}
         localAttachments={localAttachments}
-        sendShortcut={config?.send_message_shortcut}
+        sendShortcut={sendShortcut}
       />
     ),
-    [autoFocus, config?.send_message_shortcut, sessionId]
+    [autoFocus, sendShortcut, sessionId]
   );
 
   const modelSelectorNode = effectiveExecutor ? (

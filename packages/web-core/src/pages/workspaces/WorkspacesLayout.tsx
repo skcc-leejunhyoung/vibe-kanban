@@ -32,7 +32,7 @@ import { ChangesPanelContainer } from './ChangesPanelContainer';
 import { CreateChatBoxContainer } from '@/shared/components/CreateChatBoxContainer';
 import { PreviewBrowserContainer } from './PreviewBrowserContainer';
 import { WorkspacesGuideDialog } from '@/shared/dialogs/shared/WorkspacesGuideDialog';
-import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
+import { useAppUserSystem } from '@/shared/hooks/useAppUserSystem';
 import { useWorkspacePanelState } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
@@ -174,14 +174,15 @@ export function WorkspacesLayout({
       isLeftMainPanelVisible
   );
 
-  // Which guides were shown is the app's own record, not the route host's:
-  // otherwise opening a workspace on another host shows the guide again and
-  // writes the flag into that host's config.
+  // Which guides were shown is the app's own record (this machine's config
+  // on the local web, the account's shared config on the remote web), not the
+  // route host's: otherwise opening a workspace on another host shows the
+  // guide again and writes the flag into that host's config.
   const {
     config,
     updateAndSaveConfig,
     loading: configLoading,
-  } = useAppMachineSystem();
+  } = useAppUserSystem();
   const hasAutoShownWorkspacesGuide = useRef(false);
 
   // Auto-show Workspaces Guide on first visit

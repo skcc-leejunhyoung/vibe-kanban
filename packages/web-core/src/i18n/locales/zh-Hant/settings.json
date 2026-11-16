@@ -363,7 +363,12 @@
         "jsonLabel": "代理設定（JSON）",
         "jsonPlaceholder": "載入設定檔中...",
         "jsonLoading": "載入中...",
-        "pathLabel": "設定檔位置："
+        "pathLabel": "設定檔位置：",
+        "visibleModelsLabel": "可見模型",
+        "visibleModelsHint": "選擇此代理的模型選擇器中顯示哪些模型。",
+        "visibleModelsScope": "儲存在此瀏覽器中，並套用於所有主機。",
+        "visibleModelsEmpty": "此代理沒有可用的模型。",
+        "toggleModelVisible": "切換 {{name}}"
       },
       "errors": {
         "deleteFailed": "刪除設定失敗。請重試。",
