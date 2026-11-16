@@ -164,15 +164,16 @@ export function revealDestinationInPane(
   const { panes, activePaneId, setActivePane, adoptRouteDestination } =
     useWorkspacePanesStore.getState();
   const key = paneDestinationKey(destination);
-  const other = panes.find(
-    (pane) =>
-      pane.id !== activePaneId &&
-      pane.destination !== null &&
-      paneDestinationKey(pane.destination) === key
-  );
+  const shows = (pane: (typeof panes)[number]) =>
+    pane.destination !== null && paneDestinationKey(pane.destination) === key;
+  // The active pane first: with several (cmd-click duplicates, terminals),
+  // "go to it" from one of them stays put rather than jumping to a sibling.
+  const showing =
+    panes.find((pane) => pane.id === activePaneId && shows(pane)) ??
+    panes.find(shows);
   // adoptRouteDestination is the store's dedupe-by-key path; setPaneDestination
   // (what openDestinationForActivePane uses) would happily duplicate.
-  if (other) setActivePane(other.id);
+  if (showing) setActivePane(showing.id);
   else adoptRouteDestination(destination);
   // Deliberate "go to it" gesture, and callers decline the command bar's focus
   // restore, so nothing else moves the caret into the pane.

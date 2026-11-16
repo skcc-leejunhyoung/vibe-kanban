@@ -194,6 +194,20 @@ describe('openDestinationInOwnPane', () => {
       expect(state().panes[0]?.destination).toBeNull();
     });
 
+    it('stays in the active pane when it already shows it', () => {
+      const note: WorkspacePaneDestination = { kind: 'drawer', noteId: 'n1' };
+      seed([terminal, note, { kind: 'drawer' }, terminal], 4);
+      state().setActivePane('pane-1');
+
+      revealDestinationInPane({ kind: 'drawer' }, navigation, 'local', vi.fn());
+      expect(state().activePaneId).toBe('pane-1');
+      expect(state().panes[1]?.destination).toEqual(note);
+
+      state().setActivePane('pane-3');
+      revealDestinationInPane(terminal, navigation, 'local', vi.fn());
+      expect(state().activePaneId).toBe('pane-3');
+    });
+
     it('leaves focus alone when it navigated the document instead', () => {
       seed([ws('ws1')], 4);
       isMobile = true;
