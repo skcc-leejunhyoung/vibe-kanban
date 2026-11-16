@@ -548,6 +548,39 @@ describe('command palette navigation actions', () => {
     expect(goToTerminal).toHaveBeenCalled();
   });
 
+  it.each([
+    [Actions.GotoDrawer, { kind: 'drawer' }, 'goToDrawer'],
+    [Actions.GotoNotifications, { kind: 'notifications' }, 'goToNotifications'],
+    [Actions.GotoPullRequests, { kind: 'pull-requests' }, 'goToPullRequests'],
+    [Actions.GotoProjects, { kind: 'project', projectId: 'p1' }, 'goToProject'],
+  ] as const)(
+    '%#: Goto lands in the pane already showing it, not the opener pane',
+    (action, destination, method) => {
+      // Restoring the opener (e.g. a fresh empty pane) would re-activate it
+      // right after the reveal and undo the move.
+      expect(action.restoreFocusOnClose).toBe(false);
+      const goTo = vi.fn();
+      const { ctx } = makeCtx(
+        {},
+        {
+          appNavigation: { [method]: goTo } as never,
+          navigationProjects: [{ id: 'p1' }] as never,
+        }
+      );
+      action.execute(ctx);
+
+      const reveal = vi.mocked(revealDestinationInPane);
+      expect(reveal).toHaveBeenCalledWith(
+        destination,
+        ctx.appNavigation,
+        ctx.appRuntime,
+        expect.any(Function)
+      );
+      reveal.mock.calls[0]?.[3]?.();
+      expect(goTo).toHaveBeenCalled();
+    }
+  );
+
   it('only shows the pull request refresh action on the pull requests page', () => {
     expect(
       isActionVisible(Actions.RefreshPullRequests, {

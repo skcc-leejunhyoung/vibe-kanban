@@ -10,7 +10,10 @@ import {
   openUrlInSplitPane,
 } from '@/shared/lib/openInSplitPane';
 
-/** App bar entry for the Drawer: unread count, click = page, ⌘-click = pane. */
+/**
+ * App bar entry for the Drawer: unread count, click = page, ⌘-click = a new
+ * pane (like projects; never retargets a Drawer pane already open on a note).
+ */
 export function AppBarDrawerContainer() {
   const appNavigation = useAppNavigation();
   const appRuntime = useAppRuntime();
@@ -20,7 +23,9 @@ export function AppBarDrawerContainer() {
 
   const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
     if (event.metaKey || event.ctrlKey) {
-      openUrlInSplitPane('/drawer', appNavigation, appRuntime);
+      openUrlInSplitPane('/drawer', appNavigation, appRuntime, {
+        allowDuplicate: true,
+      });
       return;
     }
     openDestinationForActivePane(

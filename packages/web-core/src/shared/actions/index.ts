@@ -1570,10 +1570,20 @@ export const Actions = {
     icon: KanbanIcon,
     keywords: ['project', 'projects', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.NONE,
+    // Goto lands in the pane already showing the destination. Restoring the
+    // palette's opener on close would re-activate the pane it was opened from
+    // and undo that, so the pane takes focus instead (like GotoTerminal).
+    restoreFocusOnClose: false,
     isEnabled: (ctx) => ctx.isSignedIn,
     execute: (ctx) => {
       const firstProject = ctx.navigationProjects[0];
-      if (firstProject) ctx.appNavigation.goToProject(firstProject.id);
+      if (!firstProject) return;
+      revealDestinationInPane(
+        { kind: 'project', projectId: firstProject.id },
+        ctx.appNavigation,
+        ctx.appRuntime,
+        () => ctx.appNavigation.goToProject(firstProject.id)
+      );
     },
   } satisfies GlobalActionDefinition,
 
@@ -1583,8 +1593,15 @@ export const Actions = {
     icon: BellIcon,
     keywords: ['notification', 'notifications', 'alerts', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
     isEnabled: (ctx) => ctx.isSignedIn,
-    execute: (ctx) => ctx.appNavigation.goToNotifications(),
+    execute: (ctx) =>
+      revealDestinationInPane(
+        { kind: 'notifications' },
+        ctx.appNavigation,
+        ctx.appRuntime,
+        () => ctx.appNavigation.goToNotifications()
+      ),
   } satisfies GlobalActionDefinition,
 
   GotoDrawer: {
@@ -1593,8 +1610,15 @@ export const Actions = {
     icon: TrayIcon,
     keywords: ['drawer', 'autopilot', 'notes', 'reports', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.NONE,
+    restoreFocusOnClose: false,
     isEnabled: (ctx) => ctx.isSignedIn,
-    execute: (ctx) => ctx.appNavigation.goToDrawer(),
+    execute: (ctx) =>
+      revealDestinationInPane(
+        { kind: 'drawer' },
+        ctx.appNavigation,
+        ctx.appRuntime,
+        () => ctx.appNavigation.goToDrawer()
+      ),
   } satisfies GlobalActionDefinition,
 
   OpenNotificationInNewTab: {
@@ -1657,9 +1681,14 @@ export const Actions = {
     icon: GitPullRequestIcon,
     keywords: ['pull request', 'pr', 'go to', 'navigate'],
     requiresTarget: ActionTargetType.NONE,
-    execute: (ctx) => {
-      ctx.appNavigation.goToPullRequests();
-    },
+    restoreFocusOnClose: false,
+    execute: (ctx) =>
+      revealDestinationInPane(
+        { kind: 'pull-requests' },
+        ctx.appNavigation,
+        ctx.appRuntime,
+        () => ctx.appNavigation.goToPullRequests()
+      ),
   } satisfies GlobalActionDefinition,
 
   FilterPullRequests: {
