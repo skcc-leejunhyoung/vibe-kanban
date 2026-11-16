@@ -2,7 +2,10 @@ use std::{
     future::Future,
     io,
     pin::Pin,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -100,8 +103,8 @@ pub async fn proxy_request_over_control(
     let mut outbound = axum::http::Request::from_parts(parts, body);
     let request_upgrade = upgrade::on(&mut outbound);
 
-    // Never resent: by the time a response fails the request has reached the
-    // host, which consumed its signed nonce, and the relay cannot re-sign it.
+    // Never resent: a failed exchange may already have reached the host, which
+    // consumes a signed request's nonce on delivery, and the relay cannot re-sign.
     let stream_id = stream.id();
     let result = tokio::select! {
         _=cancellation.cancelled()=>return StatusCode::FORBIDDEN.into_response(),
@@ -129,20 +132,36 @@ pub async fn proxy_request_over_control(
     }
 
     let (parts, body) = response.into_parts();
-    let mut bytes_sent = 0u64;
+    // The body streams after this returns; keep the caller's span (host id)
+    // on its logs.
+    let span = tracing::Span::current();
+    let bytes_sent = Arc::new(AtomicU64::new(0));
+    let (counted, cut_span, cut_path) = (bytes_sent.clone(), span.clone(), request_path.clone());
     let stream = Body::new(body)
         .into_data_stream()
         .inspect(move |chunk| match chunk {
-            Ok(chunk) => bytes_sent += chunk.len() as u64,
+            Ok(chunk) => {
+                counted.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            }
             Err(error) => tracing::warn!(
+                parent: &span,
                 ?error,
                 path = %request_path,
                 stream_id,
-                bytes_sent,
+                bytes_sent = counted.load(Ordering::Relaxed),
                 "relay response body interrupted"
             ),
         })
-        .take_until(cancellation.cancelled_owned());
+        .take_until(async move {
+            cancellation.cancelled_owned().await;
+            tracing::warn!(
+                parent: &cut_span,
+                path = %cut_path,
+                stream_id,
+                bytes_sent = bytes_sent.load(Ordering::Relaxed),
+                "relay response body cut off by access cancellation"
+            );
+        });
     Response::from_parts(parts, Body::from_stream(stream))
 }
 
@@ -183,11 +202,13 @@ async fn send_request_over_stream(
     result.ok()
 }
 
-/// Enough to tell an HTTP head from JSON, SSE, or a yamux frame, but too short
-/// to hold a whole token from a misrouted body.
+/// Enough of the response shape to tell an HTTP head from JSON, SSE, or a
+/// binary frame.
 const RESPONSE_HEAD_LOG_BYTES: usize = 16;
 
-/// Keeps the first bytes read from a relay stream for the malformed-response log.
+/// Keeps the shape of the first bytes read from a relay stream for the failure
+/// log. Letters and digits are masked (`x`, `0`) so no secret reaches the log;
+/// punctuation, control, and binary bytes are kept.
 struct HeadRecorder {
     inner: StreamHandle,
     head: Arc<StdMutex<Vec<u8>>>,
@@ -204,7 +225,15 @@ impl AsyncRead for HeadRecorder {
         let mut head = self.head.lock().unwrap();
         let room = RESPONSE_HEAD_LOG_BYTES.saturating_sub(head.len());
         let read = &buf.filled()[start..];
-        head.extend_from_slice(&read[..read.len().min(room)]);
+        head.extend(read[..read.len().min(room)].iter().map(|&byte| {
+            if byte.is_ascii_alphabetic() {
+                b'x'
+            } else if byte.is_ascii_digit() {
+                b'0'
+            } else {
+                byte
+            }
+        }));
         poll
     }
 }

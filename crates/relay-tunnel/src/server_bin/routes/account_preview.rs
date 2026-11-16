@@ -6,6 +6,7 @@ use axum::{
 };
 use relay_control::account::{credential_hash, new_credential};
 use relay_tunnel_core::server::{RelayCancellation, proxy_request_over_control};
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::super::state::RelayAppState;
@@ -113,7 +114,9 @@ pub async fn handle(State(state): State<RelayAppState>, mut request: Request) ->
     request
         .extensions_mut()
         .insert(RelayCancellation(cancellation));
-    let mut response = proxy_request_over_control(relay.control.as_ref(), request, "").await;
+    let mut response = proxy_request_over_control(relay.control.as_ref(), request, "")
+        .instrument(tracing::info_span!("relay_proxy", %host_id, session_id = %connection_id))
+        .await;
     let cookies = response
         .headers()
         .get_all(header::SET_COOKIE)

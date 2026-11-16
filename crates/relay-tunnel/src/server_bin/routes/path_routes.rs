@@ -7,6 +7,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use relay_tunnel_core::server::proxy_request_over_control;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::super::{
@@ -183,5 +184,7 @@ async fn do_relay_proxy_for_host(
     request
         .extensions_mut()
         .insert(relay_tunnel_core::server::RelayCancellation(cancellation));
-    proxy_request_over_control(relay.control.as_ref(), request, &strip_prefix).await
+    proxy_request_over_control(relay.control.as_ref(), request, &strip_prefix)
+        .instrument(tracing::info_span!("relay_proxy", %host_id, session_id = %browser_session_id))
+        .await
 }

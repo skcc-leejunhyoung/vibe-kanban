@@ -67,11 +67,13 @@ pub async fn start_relay_client(config: RelayClientConfig) -> anyhow::Result<()>
                     .map_err(|e| anyhow::anyhow!("Relay yamux session error: {e}"))?;
 
                 tokio::spawn(async move {
+                    // Matches the relay server's `stream_id` for the same exchange.
+                    let stream_id = stream.id();
                     if let Err(error) = handle_inbound_stream(stream, local_addr).await {
                         if is_expected_stream_close(&error) {
-                            tracing::debug!(?error, "Relay stream closed by requester");
+                            tracing::debug!(?error, stream_id, "Relay stream closed by requester");
                         } else {
-                            tracing::warn!(?error, "Relay stream handling failed");
+                            tracing::warn!(?error, stream_id, "Relay stream handling failed");
                         }
                     }
                 });

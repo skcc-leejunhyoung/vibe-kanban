@@ -10305,6 +10305,7 @@ dependencies = [
  "tokio-util",
  "tokio-yamux",
  "tracing",
+ "tracing-subscriber",
  "ws-bridge",
 ]
 

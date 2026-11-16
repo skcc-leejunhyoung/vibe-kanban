@@ -12,6 +12,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use relay_tunnel_core::server::proxy_request_over_control;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::super::state::RelayAppState;
@@ -93,5 +94,7 @@ pub async fn preview_subdomain_handler(
 
     // No prefix to strip — the request URI is already what the host should
     // route on (e.g. `/`, `/static/foo.css`, `/?_refresh=1`).
-    proxy_request_over_control(relay.control.as_ref(), request, "").await
+    proxy_request_over_control(relay.control.as_ref(), request, "")
+        .instrument(tracing::info_span!("relay_proxy", host_id = %target.host_id))
+        .await
 }

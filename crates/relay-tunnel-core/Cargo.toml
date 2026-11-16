@@ -17,3 +17,6 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tokio-yamux = "0.3.17"
 tracing = { workspace = true }
 ws-bridge = { path = "../ws-bridge" }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

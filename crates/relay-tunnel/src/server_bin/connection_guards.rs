@@ -25,11 +25,12 @@ impl ConnectionGuards {
         let output = token.as_ref().clone();
         let weak = Arc::downgrade(&self.0);
         tokio::spawn(async move {
+            const CHECK_FAILED: &str = "session check failing for 60s";
             let mut deadline = Instant::now() + Duration::from_secs(60);
             let mut wall_deadline = SystemTime::now() + Duration::from_secs(60);
-            loop {
+            let reason = loop {
                 if Instant::now() >= deadline || SystemTime::now() >= wall_deadline {
-                    break;
+                    break Some(CHECK_FAILED);
                 }
                 let started = Instant::now();
                 let wall_started = SystemTime::now();
@@ -60,15 +61,19 @@ impl ConnectionGuards {
                         deadline = started + Duration::from_secs(60);
                         wall_deadline = wall_started + Duration::from_secs(60);
                     }
-                    Ok(Ok(_)) => break,
-                    _ if Instant::now() >= deadline => break,
+                    Ok(Ok(_)) => break Some("session revoked or host access removed"),
+                    _ if Instant::now() >= deadline => break Some(CHECK_FAILED),
                     _ => {}
                 }
                 tokio::select! {
-                    _=token.cancelled()=>break,
+                    _=token.cancelled()=>break None,
                     _=tokio::time::sleep(Duration::from_secs(2))=>{},
-                    _=tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))=>break,
+                    _=tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))=>break Some(CHECK_FAILED),
                 }
+            };
+            // Every relayed body and WebSocket of this session ends here.
+            if let Some(reason) = reason {
+                tracing::warn!(host_id = %host, session_id = %id, reason, "relay closing all connections of session");
             }
             token.cancel();
             if let Some(guards) = weak.upgrade() {
