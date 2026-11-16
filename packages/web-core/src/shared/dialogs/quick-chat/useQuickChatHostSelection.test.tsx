@@ -119,6 +119,20 @@ describe('quick chat host selection', () => {
     expect(selected).toBe('host-a');
   });
 
+  it('reopens a host-less remote page on the default host without passing through none', async () => {
+    await render({ runtime: 'remote', firstOnlineHostId: 'host-a' });
+    await render({ visible: true });
+    expect(selected).toBe('host-a');
+    await render({ visible: false });
+    committed = [];
+    await render({ visible: true });
+    // A `null` commit would key the host draft to "no host" and drop the
+    // folder and model picked for host A.
+    expect(committed.filter((c) => c.visible).map((c) => c.selected)).toEqual([
+      'host-a',
+    ]);
+  });
+
   it('does not replace a remote route host that happens to be offline', async () => {
     await render({ runtime: 'remote', routeHostId: 'host-b' });
     await render({ visible: true, firstOnlineHostId: 'host-a' });

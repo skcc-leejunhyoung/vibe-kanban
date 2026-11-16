@@ -34,7 +34,13 @@ export function useQuickChatHostSelection({
   if (wasVisible !== visible) {
     setWasVisible(visible);
     const justOpened = visible;
-    if (justOpened && !hasDraft) setSelectedHostId(routeHostId);
+    // The remote web's default host directly, not via `null`: a `null`
+    // commit would re-key the host draft and drop its folder and model.
+    if (justOpened && !hasDraft) {
+      setSelectedHostId(
+        routeHostId ?? (runtime === 'remote' ? firstOnlineHostId : null)
+      );
+    }
   }
 
   // The remote web has no "this machine", so with nothing chosen yet the

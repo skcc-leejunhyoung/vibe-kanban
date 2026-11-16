@@ -448,6 +448,10 @@ function QuickChatHostPanel({
       // Sent: the draft is now the workspace's first message, so drop it.
       onPromptChange('');
       clearAttachments();
+      // Also clear the host draft directly: the hide below unmounts this
+      // panel before its attachment sync effect runs, and the next send on
+      // this host would carry these ids again.
+      onHostDraftChange({ attachments: [] });
       if (isAutopilotMode) {
         void queryClient.invalidateQueries({
           queryKey: ['autopilot', hostId],
@@ -470,6 +474,7 @@ function QuickChatHostPanel({
     isAutopilotMode,
     getAttachmentIds,
     clearAttachments,
+    onHostDraftChange,
     queryClient,
     hostId,
     onPromptChange,
