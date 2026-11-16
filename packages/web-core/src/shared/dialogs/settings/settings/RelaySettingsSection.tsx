@@ -1,13 +1,6 @@
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { cloneDeep, isEqual, merge } from 'lodash';
 import {
   BroadcastIcon,
   CheckIcon,
@@ -18,7 +11,8 @@ import {
 } from '@phosphor-icons/react';
 import { OAuthDialog } from '@/shared/dialogs/global/OAuthDialog';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppUserSystem } from '@/shared/hooks/useAppUserSystem';
+import { useConfigDraft } from '@/shared/hooks/useConfigDraft';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { relayApi } from '@/shared/lib/api';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
@@ -211,13 +205,15 @@ function LocalRelaySettingsSectionContent({
 }) {
   const { t } = useTranslation(['settings', 'common']);
   const { setDirty: setContextDirty } = useSettingsDirty();
-  const userSystem = useUserSystem();
-  const { config, loading, updateAndSaveConfig } = userSystem;
+  // Incoming connections, the display name and the paired clients are this
+  // machine's. The ambient user system follows the document route, which is
+  // another host whenever a pane on that host has focus.
+  const { config, loading, updateAndSaveConfig } = useAppUserSystem();
   const { isSignedIn } = useAuth();
   const queryClient = useQueryClient();
 
-  const [draft, setDraft] = useState(() => (config ? cloneDeep(config) : null));
-  const [dirty, setDirty] = useState(false);
+  const { draft, hasUnsavedChanges, updateDraft, saveDraft, discardDraft } =
+    useConfigDraft(config, updateAndSaveConfig);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -250,35 +246,9 @@ function LocalRelaySettingsSectionContent({
   });
 
   useEffect(() => {
-    if (!config) return;
-    if (!dirty) {
-      setDraft(cloneDeep(config));
-    }
-  }, [config, dirty]);
-
-  const hasUnsavedChanges = useMemo(() => {
-    if (!draft || !config) return false;
-    return !isEqual(draft, config);
-  }, [draft, config]);
-
-  useEffect(() => {
     setContextDirty('relay', hasUnsavedChanges);
     return () => setContextDirty('relay', false);
   }, [hasUnsavedChanges, setContextDirty]);
-
-  const updateDraft = useCallback(
-    (patch: Partial<typeof config>) => {
-      setDraft((prev: typeof config) => {
-        if (!prev) return prev;
-        const next = merge({}, prev, patch);
-        if (!isEqual(next, config)) {
-          setDirty(true);
-        }
-        return next;
-      });
-    },
-    [config]
-  );
 
   const handleSave = async () => {
     if (!draft) return;
@@ -288,10 +258,12 @@ function LocalRelaySettingsSectionContent({
     setSuccess(false);
 
     try {
-      await updateAndSaveConfig(draft);
-      setDirty(false);
-      setSuccess(true);
-      setTimeout(() => setSuccess(false), 3000);
+      if (await saveDraft()) {
+        setSuccess(true);
+        setTimeout(() => setSuccess(false), 3000);
+      } else {
+        setError(t('settings.general.save.error'));
+      }
     } catch {
       setError(t('settings.general.save.error'));
     } finally {
@@ -299,11 +271,7 @@ function LocalRelaySettingsSectionContent({
     }
   };
 
-  const handleDiscard = () => {
-    if (!config) return;
-    setDraft(cloneDeep(config));
-    setDirty(false);
-  };
+  const handleDiscard = discardDraft;
 
   const handleShowEnrollmentCode = async () => {
     setEnrollmentLoading(true);

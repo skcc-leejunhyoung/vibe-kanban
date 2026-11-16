@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { CopyIcon, DevicesIcon, UserCircleIcon } from '@phosphor-icons/react';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
 import { hostAccountApi } from '@/shared/lib/hostAccountApi';
 import { getAuthRuntime } from '@/shared/lib/auth/runtime';
 import { resetAccountHostConnections } from '@/shared/lib/accountHostConnection';
@@ -28,7 +28,7 @@ export function AccountSettingsSection() {
 function SignedInAccount() {
   const { t } = useTranslation('settings');
   const { userId } = useAuth();
-  const { loginStatus } = useUserSystem();
+  const { loginStatus } = useAppMachineSystem();
   const loginProfile =
     loginStatus?.status === 'loggedin' ? loginStatus.profile : null;
   const profile = loginProfile?.user_id === userId ? loginProfile : null;

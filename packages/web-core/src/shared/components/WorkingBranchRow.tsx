@@ -11,6 +11,7 @@ import {
 } from '@vibe/ui/components/DropdownMenu';
 import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useIsActivePane } from '@/shared/components/workspace-panes/PaneActiveContext';
 import { pickBranchForRepo } from '@/shared/lib/branchPicker';
 import {
@@ -82,6 +83,7 @@ export function WorkingBranchRow({ locked }: { locked?: LockedBranch | null }) {
   const { repos, workingBranch, setWorkingBranch, linkedIssue } =
     useCreateMode();
   const { config } = useUserSystem();
+  const hostId = useHostId();
   const [pickingExisting, setPickingExisting] = useState(false);
   const [nameError, setNameError] = useState<BranchNameError | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -127,7 +129,7 @@ export function WorkingBranchRow({ locked }: { locked?: LockedBranch | null }) {
     setPickError(null);
     setPickingExisting(true);
     try {
-      const branch = await pickBranchForRepo(repo);
+      const branch = await pickBranchForRepo(repo, hostId);
       if (branch) {
         setNameError(null);
         setWorkingBranch({ mode: 'existing', name: branch });
@@ -141,7 +143,7 @@ export function WorkingBranchRow({ locked }: { locked?: LockedBranch | null }) {
     } finally {
       setPickingExisting(false);
     }
-  }, [repos, setWorkingBranch, t]);
+  }, [repos, hostId, setWorkingBranch, t]);
 
   const handleNameChange = useCallback(
     (value: string) => {

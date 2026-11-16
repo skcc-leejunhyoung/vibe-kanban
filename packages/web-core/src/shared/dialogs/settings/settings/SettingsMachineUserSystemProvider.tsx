@@ -1,56 +1,30 @@
-import { ReactNode, useCallback, useMemo } from 'react';
+import { ReactNode } from 'react';
 import { UserSystemContext } from '@/shared/hooks/useUserSystem';
-import { useUserSystemController } from '@/shared/hooks/useUserSystemController';
+import { useHostUserSystem } from '@/shared/hooks/useHostUserSystem';
+import { HostIdContext } from '@/shared/providers/HostIdProvider';
 import { useSettingsMachineClient } from './SettingsHostContext';
 
+/**
+ * Scopes the host settings sections to the machine picked in the dialog: its
+ * config cache entry is the one that host's panes and chat read, and host
+ * lookups inside the sections resolve to it rather than to the document route.
+ */
 export function SettingsMachineUserSystemProvider({
   children,
 }: {
   children: ReactNode;
 }) {
   const machineClient = useSettingsMachineClient();
-  const queryKey = useMemo(() => {
-    if (machineClient?.target.kind === 'local') {
-      return ['user-system', 'local'] as const;
-    }
-
-    return [
-      'user-system',
-      'settings-machine',
-      machineClient?.target.id ?? 'unselected',
-    ] as const;
-  }, [machineClient]);
-  const loadConfig = useCallback(() => {
-    if (!machineClient) {
-      throw new Error('Machine client is required');
-    }
-
-    return machineClient.getConfig();
-  }, [machineClient]);
-  const saveConfig = useCallback(
-    (
-      config: Parameters<NonNullable<typeof machineClient>['saveConfig']>[0],
-      revision: string
-    ) => {
-      if (!machineClient) {
-        throw new Error('Machine client is required');
-      }
-
-      return machineClient.saveConfig(config, revision);
-    },
-    [machineClient]
-  );
-
-  const { value } = useUserSystemController({
-    queryKey,
+  const hostId = machineClient?.target.apiHostId ?? null;
+  const { value } = useHostUserSystem(hostId, {
     enabled: machineClient != null,
-    load: loadConfig,
-    save: saveConfig,
   });
 
   return (
-    <UserSystemContext.Provider value={value}>
-      {children}
-    </UserSystemContext.Provider>
+    <HostIdContext.Provider value={hostId}>
+      <UserSystemContext.Provider value={value}>
+        {children}
+      </UserSystemContext.Provider>
+    </HostIdContext.Provider>
   );
 }

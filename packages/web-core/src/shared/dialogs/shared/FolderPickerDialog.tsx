@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@vibe/ui/components/Button';
 import { Input } from '@vibe/ui/components/Input';
@@ -24,6 +24,7 @@ import { fileSystemApi } from '@/shared/lib/api';
 import { DirectoryEntry, DirectoryListResponse } from 'shared/types';
 import { create, useModal } from '@ebay/nice-modal-react';
 import { defineModal } from '@/shared/lib/modals';
+import { useHostIdPinnedWhile } from '@/shared/providers/HostIdProvider';
 import { fuzzySearchMatch } from '@vibe/ui/lib/search';
 
 export interface FolderPickerDialogProps {
@@ -38,9 +39,13 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
     value = '',
     title = 'Select Folder',
     description = 'Choose a folder for your project',
-    hostId,
+    hostId: hostIdProp,
   }) => {
     const modal = useModal();
+    // Every listing of one browse comes from one host: the caller's, or the
+    // host the dialog was opened on when the caller names none.
+    const openedHostId = useHostIdPinnedWhile(modal.visible);
+    const hostId = hostIdProp === undefined ? openedHostId : hostIdProp;
     const { t } = useTranslation('common');
     const [currentPath, setCurrentPath] = useState<string>('');
     const [entries, setEntries] = useState<DirectoryEntry[]>([]);
@@ -56,14 +61,28 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
       );
     }, [entries, searchTerm]);
 
+    // Only the latest listing may land. The dialog stays mounted between
+    // opens, so without this a slow answer from an earlier browse — possibly
+    // of another host — would replace the folders shown for this one.
+    const latestListingRef = useRef(0);
+
     useEffect(() => {
       if (modal.visible) {
+        // The previous browse may have been on another host: its folder must
+        // not stay selectable while this one loads, or after it fails.
+        setCurrentPath('');
+        setEntries([]);
+        setSearchTerm('');
         setManualPath(value);
         loadDirectory();
+      } else {
+        latestListingRef.current += 1;
       }
     }, [modal.visible, value]);
 
     const loadDirectory = async (path?: string) => {
+      const listing = ++latestListingRef.current;
+      const isLatest = () => listing === latestListingRef.current;
       setLoading(true);
       setError('');
 
@@ -72,6 +91,7 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
           path,
           hostId
         );
+        if (!isLatest()) return;
 
         // Ensure result exists and has the expected structure
         if (!result || typeof result !== 'object') {
@@ -87,13 +107,14 @@ const FolderPickerDialogImpl = create<FolderPickerDialogProps>(
           setManualPath(newPath);
         }
       } catch (err) {
+        if (!isLatest()) return;
         setError(
           err instanceof Error ? err.message : 'Failed to load directory'
         );
         // Reset entries to empty array on error
         setEntries([]);
       } finally {
-        setLoading(false);
+        if (isLatest()) setLoading(false);
       }
     };
 

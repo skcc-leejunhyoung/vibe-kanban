@@ -19,7 +19,7 @@ import { useShape } from '@/shared/integrations/electric/hooks';
 import { PROJECT_ISSUES_SHAPE } from 'shared/remote-types';
 import { RemoteIssueLink } from './RemoteIssueLink';
 import { AppBarUserPopoverContainer } from './AppBarUserPopoverContainer';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
 import { NavbarActionGroups } from '@/shared/actions';
 import {
   NavbarDivider,
@@ -159,7 +159,9 @@ export function NavbarContainer({
   const isCreateMode = chromeTargetWorkspace ? false : contextIsCreateMode;
   const { workspaces } = useUserContext();
   const syncErrorContext = useSyncErrorContext();
-  const { remoteAuthDegraded } = useUserSystem();
+  // This machine's cloud sign-in state; another host's must not raise the
+  // banner here.
+  const { remoteAuthDegraded } = useAppMachineSystem();
   const appNavigation = useAppNavigation();
   const destination = useCurrentAppDestination();
   const projectDestination = useMemo(

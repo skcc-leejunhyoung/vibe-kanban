@@ -128,11 +128,15 @@ const ScriptFixerDialogImpl = create<ScriptFixerDialogProps>(
     const hasProcessError =
       isProcessFailed || (isProcessCompleted && !isExitCodeZero);
 
-    // Reset selectedRepoId on dialog re-open
+    // nice-modal keeps this mounted, so every open starts from the workspace
+    // it was opened for. Left as they were, the repo and session of the
+    // previous open would be the ones saved to and tested here.
+    const firstRepoId = repos[0]?.id ?? '';
     useEffect(() => {
-      if (!initialRepoId) return;
-      setSelectedRepoId(initialRepoId);
-    }, [initialRepoId]);
+      if (!modal.visible) return;
+      setSelectedRepoId(initialRepoId || firstRepoId);
+      setActiveSessionId(sessionId);
+    }, [modal.visible, workspaceId, initialRepoId, firstRepoId, sessionId]);
 
     // Fetch the selected repo's script
     useEffect(() => {

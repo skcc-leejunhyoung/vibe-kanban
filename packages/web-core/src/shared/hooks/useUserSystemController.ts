@@ -102,8 +102,13 @@ export function useUserSystemController({
       if (!config || !configRevision) return false;
 
       const newConfig = { ...config, ...updates };
+      const optimistic = !updates.agent_access;
+      const previous: Partial<Config> = {};
+      for (const field of Object.keys(updates) as (keyof Config)[]) {
+        Object.assign(previous, { [field]: config[field] });
+      }
       // Permission controls must show confirmed values, including failed revocations.
-      if (!updates.agent_access) updateConfig(updates);
+      if (optimistic) updateConfig(updates);
 
       try {
         const saved = await save(newConfig, configRevision);
@@ -118,6 +123,11 @@ export function useUserSystemController({
         return true;
       } catch (err) {
         console.error('Error saving config:', err);
+        // Take the unsaved values back out. The refetch below cannot be
+        // relied on to do it: when the host is unreachable it fails as well,
+        // and every screen showing this host would keep a change that was
+        // never saved.
+        if (optimistic) updateConfig(previous);
         queryClient.invalidateQueries({ queryKey });
         return false;
       }

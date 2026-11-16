@@ -851,7 +851,19 @@ export const workspacesApi = {
       `/api/workspaces/autopilot`,
       hostId
     );
-    if (response.status === 404) return null;
+    if (response.status === 404) {
+      // "None" only when the host said so itself, in its own error envelope.
+      // A relay or proxy answers 404 too when the host cannot be reached
+      // ("No active relay"): that is a failed lookup, and the host may well
+      // have its Autopilot.
+      const body: unknown = await response
+        .clone()
+        .json()
+        .catch(() => null);
+      if ((body as { success?: unknown } | null)?.success === false) {
+        return null;
+      }
+    }
     return handleApiResponse<AutopilotWorkspaceResponse>(response);
   },
 
@@ -890,9 +902,13 @@ export const workspacesApi = {
   },
 
   /** Resolve the project id this workspace belongs to (null when unlinked) */
-  getProjectId: async (workspaceId: string): Promise<string | null> => {
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/project`
+  getProjectId: async (
+    workspaceId: string,
+    hostId: string | null
+  ): Promise<string | null> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/project`,
+      hostId
     );
     return handleApiResponse<string | null>(response);
   },
@@ -2038,12 +2054,17 @@ export const repoApi = {
 
   openEditor: async (
     repoId: string,
-    data: OpenEditorRequest
+    data: OpenEditorRequest,
+    hostId: string | null
   ): Promise<OpenEditorResponse> => {
-    const response = await makeRequest(`/api/repos/${repoId}/open-editor`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const response = await makeHostAwareRequest(
+      `/api/repos/${repoId}/open-editor`,
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
     return handleApiResponse<OpenEditorResponse>(response);
   },
 
@@ -2161,11 +2182,19 @@ export const issuePrsApi = {
     return handleApiResponse<void>(response);
   },
 
-  linkToIssue: async (data: LinkPrToIssueRequest): Promise<void> => {
-    const response = await makeRequest('/api/remote/pull-requests/link', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+  /** Tracks the PR on `hostId`, the host it was looked up on. */
+  linkToIssue: async (
+    data: LinkPrToIssueRequest,
+    hostId: string | null
+  ): Promise<void> => {
+    const response = await makeHostAwareRequest(
+      '/api/remote/pull-requests/link',
+      hostId,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    );
     await handleApiResponse<void>(response);
   },
 };
@@ -2923,10 +2952,16 @@ export const scratchApi = {
     return handleApiResponse<void>(response);
   },
 
-  delete: async (scratchType: ScratchType, id: string): Promise<void> => {
-    const response = await makeRequest(`/api/scratch/${scratchType}/${id}`, {
-      method: 'DELETE',
-    });
+  delete: async (
+    scratchType: ScratchType,
+    id: string,
+    hostId?: string | null
+  ): Promise<void> => {
+    const response = await makeHostAwareRequest(
+      `/api/scratch/${scratchType}/${id}`,
+      hostId,
+      { method: 'DELETE' }
+    );
     return handleApiResponse<void>(response);
   },
 

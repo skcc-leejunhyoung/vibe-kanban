@@ -11,10 +11,12 @@ export function useRebase(
   workspaceId: string | undefined,
   repoId: string | undefined,
   onSuccess?: () => void,
-  onError?: (err: Result<void, GitOperationError>) => void
+  onError?: (err: Result<void, GitOperationError>) => void,
+  hostIdOverride?: string | null
 ) {
   const queryClient = useQueryClient();
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? contextHostId : hostIdOverride;
 
   type RebaseMutationArgs = {
     repoId: string;
@@ -49,7 +51,7 @@ export function useRebase(
 
         // Invalidate workspaceWithSession query to refresh attempt.target_branch
         queryClient.invalidateQueries({
-          queryKey: ['workspaceWithSession', workspaceId],
+          queryKey: ['workspaceWithSession', hostId, workspaceId],
         });
 
         // Refresh repos to update target_branch in RepoCard

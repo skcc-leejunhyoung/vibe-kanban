@@ -37,7 +37,7 @@ import type { PullRequestStatus } from 'shared/remote-types';
 import { pullRequestSummariesQueryOptions } from '@/pages/pull-requests/pullRequestSummariesQuery';
 import { type AppRuntime, useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
-import { useHostId } from '@/shared/providers/HostIdProvider';
+import { useHostIdPinnedWhile } from '@/shared/providers/HostIdProvider';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 import { GitHubApiErrorAlert } from '@/shared/components/GitHubApiErrorAlert';
 
@@ -63,7 +63,8 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
   const modal = useModal();
   const { t } = useTranslation('tasks');
   const runtime = useAppRuntime();
-  const hostId = useHostId();
+  // One host per open: the PR is looked up there and tracked there.
+  const hostId = useHostIdPinnedWhile(modal.visible);
   const { userId } = useAuth();
 
   const [activeTab, setActiveTab] = useState<TabMode>('url');
@@ -360,11 +361,14 @@ function LinkPrToIssueContent({ issueId }: { issueId: string }) {
       });
       await persisted;
       if (runtime === 'local') {
-        await issuePrsApi.linkToIssue({
-          pr_url: pr.url,
-          pr_number: Number(pr.number),
-          base_branch: pr.base_branch,
-        });
+        await issuePrsApi.linkToIssue(
+          {
+            pr_url: pr.url,
+            pr_number: Number(pr.number),
+            base_branch: pr.base_branch,
+          },
+          hostId
+        );
       }
       modal.hide();
     } catch (err) {

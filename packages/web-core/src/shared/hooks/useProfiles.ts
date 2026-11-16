@@ -50,6 +50,11 @@ export function useProfiles(hostId: string | null): UseProfilesReturn {
         queryKey: presetOptionsKeys.all,
       });
     },
+    // A rejected save usually means the revision moved on (a model picked in
+    // chat bumps it). Reload it, or every retry conflicts the same way.
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey });
+    },
   });
 
   const save = async (content: string): Promise<void> => {
@@ -126,6 +131,11 @@ export function useMachineProfiles(
       void queryClient.invalidateQueries({
         queryKey: presetOptionsKeys.all,
       });
+    },
+    // A rejected save usually means the revision moved on (a model picked in
+    // chat bumps it). Reload it, or every retry conflicts the same way.
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey });
     },
   });
 

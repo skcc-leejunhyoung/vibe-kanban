@@ -106,6 +106,7 @@ import {
 } from '@/shared/lib/remoteApi';
 import { writeClipboardViaBridge } from '@/shared/lib/clipboard';
 import type { SendMessageShortcut } from 'shared/types';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import type { BaseCodingAgent } from 'shared/types';
 import {
   MERMAID_ARTIFACT_TRANSFORMERS,
@@ -157,7 +158,10 @@ type WysiwygProps = {
   sessionId?: string;
   /** Repo ID for slash commands when no workspace yet */
   repoId?: string;
-  /** Route slash-command discovery to this host (remote host-picker flows). */
+  /**
+   * The host this editor's lookups and tag edits belong to. Defaults to the
+   * surrounding scope's host (the pane's), never to the focused pane's.
+   */
   hostId?: string | null;
   /** Local attachments for immediate rendering (before saved to server) */
   localAttachments?: LocalAttachmentMetadata[];
@@ -319,7 +323,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       workspaceId,
       sessionId,
       repoId,
-      hostId,
+      hostId: hostIdProp,
       localAttachments,
       onEdit,
       onDelete,
@@ -336,6 +340,8 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     }: WysiwygProps,
     ref: React.ForwardedRef<WYSIWYGEditorRef>
   ) {
+    const contextHostId = useHostId();
+    const hostId = hostIdProp === undefined ? contextHostId : hostIdProp;
     // Ref to capture the Lexical editor instance for imperative methods
     const editorInstanceRef = useRef<LexicalEditor | null>(null);
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PlusIcon } from '@phosphor-icons/react';
-import type { BaseCodingAgent, ExecutorProfile } from 'shared/types';
+import type { BaseCodingAgent } from 'shared/types';
 import { McpConfig } from 'shared/types';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { McpConfigStrategyGeneral } from '@/shared/lib/mcpStrategies';
@@ -33,8 +33,10 @@ export function McpSettingsSection() {
   const [mcpConfig, setMcpConfig] = useState<McpConfig | null>(null);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpLoading, setMcpLoading] = useState(true);
-  const [selectedProfile, setSelectedProfile] =
-    useState<ExecutorProfile | null>(null);
+  // The agent is tracked by its key. Profile objects are replaced whenever the
+  // host's profiles are refreshed, so an object held in state stops matching
+  // and its lookup would fail, or reload the editor over what is being typed.
+  const [selectedExecutor, setSelectedExecutor] = useState<string | null>(null);
   const [mcpApplying, setMcpApplying] = useState(false);
   const [mcpConfigPath, setMcpConfigPath] = useState<string>('');
   const [success, setSuccess] = useState(false);
@@ -49,38 +51,31 @@ export function McpSettingsSection() {
 
   // Initialize selected profile when config loads
   useEffect(() => {
-    if (config?.executor_profile && profiles && !selectedProfile) {
-      const currentProfile = profiles[config.executor_profile.executor];
-      if (currentProfile) {
-        setSelectedProfile(currentProfile);
-      } else if (Object.keys(profiles).length > 0) {
-        setSelectedProfile(Object.values(profiles)[0]);
-      }
+    if (config?.executor_profile && profiles && !selectedExecutor) {
+      const preferred = config.executor_profile.executor;
+      setSelectedExecutor(
+        profiles[preferred] ? preferred : (Object.keys(profiles)[0] ?? null)
+      );
     }
-  }, [config?.executor_profile, profiles, selectedProfile]);
+  }, [config?.executor_profile, profiles, selectedExecutor]);
 
-  // Load MCP configuration when selected profile changes
+  // Load MCP configuration when the agent (or the machine) changes
   useEffect(() => {
-    const loadMcpServersForProfile = async (profile: ExecutorProfile) => {
-      setMcpLoading(true);
-      setMcpError(null);
-      setMcpConfigPath('');
+    if (!selectedExecutor || !machineClient) return;
+    // A slower or failed load for the previous agent must not leave that
+    // agent's servers in the editor under this one: Save would post them here.
+    let cancelled = false;
+    setMcpLoading(true);
+    setMcpError(null);
+    setMcpConfigPath('');
+    setMcpConfig(null);
+    setMcpServers('{}');
+    setOriginalMcpServers('{}');
 
-      try {
-        const profileKey = profiles
-          ? Object.keys(profiles).find((key) => profiles[key] === profile)
-          : null;
-        if (!profileKey) {
-          throw new Error('Profile key not found');
-        }
-
-        if (!machineClient) {
-          throw new Error('Machine client is required');
-        }
-
-        const result = await machineClient.loadMcpServers({
-          executor: profileKey as BaseCodingAgent,
-        });
+    machineClient
+      .loadMcpServers({ executor: selectedExecutor as BaseCodingAgent })
+      .then((result) => {
+        if (cancelled) return;
         setMcpConfig(result.mcp_config);
         const fullConfig = McpConfigStrategyGeneral.createFullConfig(
           result.mcp_config
@@ -89,24 +84,24 @@ export function McpSettingsSection() {
         setMcpServers(configJson);
         setOriginalMcpServers(configJson);
         setMcpConfigPath(result.config_path);
-      } catch (err: unknown) {
-        if (
-          err instanceof Error &&
-          err.message.includes('does not support MCP')
-        ) {
-          setMcpError(err.message);
-        } else {
-          console.error('Error loading MCP servers:', err);
-        }
-      } finally {
-        setMcpLoading(false);
-      }
-    };
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        console.error('Error loading MCP servers:', err);
+        setMcpError(
+          err instanceof Error
+            ? err.message
+            : t('settings.mcp.errors.loadFailed')
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setMcpLoading(false);
+      });
 
-    if (selectedProfile) {
-      loadMcpServersForProfile(selectedProfile);
-    }
-  }, [machineClient, profiles, selectedProfile]);
+    return () => {
+      cancelled = true;
+    };
+  }, [machineClient, selectedExecutor, t]);
 
   const handleMcpServersChange = (value: string) => {
     setMcpServers(value);
@@ -131,7 +126,7 @@ export function McpSettingsSection() {
   };
 
   const handleApplyMcpServers = async () => {
-    if (!selectedProfile || !mcpConfig) return;
+    if (!selectedExecutor || !mcpConfig) return;
 
     setMcpApplying(true);
     setMcpError(null);
@@ -147,14 +142,7 @@ export function McpSettingsSection() {
               fullConfig
             );
 
-          const selectedProfileKey = profiles
-            ? Object.keys(profiles).find(
-                (key) => profiles[key] === selectedProfile
-              )
-            : null;
-          if (!selectedProfileKey) {
-            throw new Error('Selected profile key not found');
-          }
+          const selectedProfileKey = selectedExecutor;
 
           if (!machineClient) {
             throw new Error('Machine client is required');
@@ -237,11 +225,7 @@ export function McpSettingsSection() {
         .map((key) => ({ value: key, label: toPrettyCase(key) }))
     : [];
 
-  const selectedProfileKey = selectedProfile
-    ? Object.keys(profiles || {}).find(
-        (key) => profiles![key] === selectedProfile
-      ) || ''
-    : '';
+  const selectedProfileKey = selectedExecutor ?? '';
 
   if (!config) {
     return (
@@ -293,8 +277,9 @@ export function McpSettingsSection() {
                 <DropdownMenuItem
                   key={option.value}
                   onClick={() => {
-                    const profile = profiles?.[option.value];
-                    if (profile) setSelectedProfile(profile);
+                    if (profiles?.[option.value]) {
+                      setSelectedExecutor(option.value);
+                    }
                   }}
                 >
                   {option.label}

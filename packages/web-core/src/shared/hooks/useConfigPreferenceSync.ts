@@ -278,9 +278,49 @@ const PREF_SPECS: PrefSpec[] = [
   }),
 ];
 
+const PREF_OWNER_STORAGE_KEY = 'vk-config-pref-owner';
+
+/**
+ * Whether the values sitting in this browser's preference stores may be
+ * promoted into `ownerId`'s config. Not once they are known to be another
+ * owner's: the stores are per browser, so after an account change they still
+ * hold the previous account's shortcuts, themes and folder favorites, and
+ * promoting them would write those into the new account.
+ *
+ * `ownerId` undefined: the config has a single owner (this machine).
+ * `storedOwner` null: nothing recorded yet, so the original one-time
+ * promotion of pre-existing local settings still applies.
+ */
+export function mayPromoteLocalPreferences(
+  storedOwner: string | null,
+  ownerId: string | undefined
+): boolean {
+  return (
+    ownerId === undefined || storedOwner === null || storedOwner === ownerId
+  );
+}
+
+function readPreferenceOwner(): string | null {
+  try {
+    return localStorage.getItem(PREF_OWNER_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writePreferenceOwner(ownerId: string): void {
+  try {
+    localStorage.setItem(PREF_OWNER_STORAGE_KEY, ownerId);
+  } catch {
+    // Storage unavailable: the next seed falls back to the unrecorded case.
+  }
+}
+
 export function useConfigPreferenceSync(
   config: Config | null,
-  save: (updates: Partial<Config>) => Promise<boolean>
+  save: (updates: Partial<Config>) => Promise<boolean>,
+  /** Whose config this is, when one browser can serve several (accounts). */
+  ownerId?: string
 ): void {
   const enabled = config != null;
 
@@ -306,10 +346,15 @@ export function useConfigPreferenceSync(
 
     const promote: Partial<Config> = {};
     let hasPromote = false;
+    const mayPromote = mayPromoteLocalPreferences(
+      readPreferenceOwner(),
+      ownerId
+    );
+    if (ownerId !== undefined) writePreferenceOwner(ownerId);
     PREF_SPECS.forEach((spec, i) => {
       const configValue = spec.getConfigValue(config);
       const local = spec.readStore();
-      if (spec.isDefault(configValue) && !spec.isDefault(local)) {
+      if (mayPromote && spec.isDefault(configValue) && !spec.isDefault(local)) {
         // One-time promotion of pre-existing local settings into config.
         Object.assign(promote, spec.toConfig(local));
         lastSyncedRef.current[i] = local;

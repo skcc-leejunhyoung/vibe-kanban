@@ -41,7 +41,8 @@ import {
   registerPaneActionExecutor,
 } from '@/shared/lib/paneActionRegistry';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
+import { resolveActionHost } from '@/shared/lib/actionHost';
 
 interface ActionsProviderProps {
   children: ReactNode;
@@ -51,7 +52,9 @@ interface ActionsProviderProps {
 export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
   const appRuntime = useAppRuntime();
   const { userId } = useAuth();
-  const { config } = useUserSystem();
+  // How this app opens the terminal: the app's own preference, not a setting
+  // of the host this provider's pane happens to be on.
+  const { config } = useAppMachineSystem();
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
   // Derived from the destination (not router params) so split panes can scope
@@ -296,6 +299,7 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
     config?.terminal_open_in_new_pane,
     userId,
     hostId,
+    appNavigation,
     queryClient,
     selectWorkspace,
     activeWorkspaces,
@@ -347,6 +351,8 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
           );
         }
       }
+      // One host per run, fixed before the action starts.
+      const target = resolveActionHost(hostId, executorContext);
       try {
         switch (action.requiresTarget) {
           case ActionTargetType.NONE:
@@ -359,7 +365,7 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
                 `Action "${action.id}" requires a workspace target`
               );
             }
-            await action.execute(executorContext, workspaceId, hostId);
+            await action.execute(executorContext, workspaceId, target.hostId);
             break;
 
           case ActionTargetType.GIT:
@@ -368,8 +374,9 @@ export function ActionsProvider({ children, paneId }: ActionsProviderProps) {
                 `Action "${action.id}" requires both workspace and repository`
               );
             }
+            // Git actions read their host from the context.
             await action.execute(
-              executorContext,
+              target.context,
               workspaceId,
               repoIdOrProjectId
             );

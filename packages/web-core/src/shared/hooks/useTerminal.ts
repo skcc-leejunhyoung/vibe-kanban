@@ -40,6 +40,8 @@ export interface TerminalContextType {
   createTerminalConnection: (
     tabId: string,
     endpoint: string,
+    /** The host the shell runs on (`null` = this machine), fixed per tab. */
+    hostId: string | null,
     onData: (data: Uint8Array) => void,
     onExit?: () => void
   ) => {

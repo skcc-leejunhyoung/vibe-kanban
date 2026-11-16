@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Dialog,
@@ -15,7 +15,7 @@ import { Switch } from '@vibe/ui/components/Switch';
 import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { AgentSelector } from '@/shared/components/tasks/AgentSelector';
 import { ConfigSelector } from '@/shared/components/tasks/ConfigSelector';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useHostUserSystem } from '@/shared/hooks/useHostUserSystem';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
@@ -48,7 +48,10 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
     const queryClient = useQueryClient();
     const contextHostId = useHostId();
     const hostId = targetHostId !== undefined ? targetHostId : contextHostId;
-    const { profiles, config } = useUserSystem();
+    // Agents of the host the review runs on, not of the document's host.
+    const { profiles, config } = useHostUserSystem(hostId, {
+      enabled: modal.visible,
+    }).value;
     const {
       workspaceId: contextWorkspaceId,
       selectedSession: contextSelectedSession,
@@ -58,6 +61,7 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
     const { data: sessions = [] } = useQuery({
       queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
       queryFn: () => sessionsApi.getByWorkspace(workspaceId, hostId),
+      enabled: modal.visible,
     });
     const { t } = useTranslation(['tasks', 'common']);
 
@@ -99,6 +103,13 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
     const [includeGitContext, setIncludeGitContext] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    // nice-modal keeps this mounted: the agent and note written for one
+    // workspace must not carry over to the next (maybe on another host).
+    useEffect(() => {
+      setUserSelectedProfile(null);
+      setAdditionalPrompt('');
+      setError(null);
+    }, [workspaceId, hostId]);
 
     const effectiveProfile = userSelectedProfile ?? resolvedDefaultProfile;
 

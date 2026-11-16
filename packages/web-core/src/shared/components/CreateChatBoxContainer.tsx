@@ -373,8 +373,12 @@ function CreateChatBoxContent({
     });
   };
 
+  // The presets on screen are the create target's, so open that host's agents.
   const handleCustomise = () => {
-    SettingsDialog.show({ initialSection: 'agents' });
+    SettingsDialog.show({
+      initialSection: 'agents',
+      initialHostId: hostId ?? 'local',
+    });
   };
 
   // Handle executor change - use saved variant if switching to default executor

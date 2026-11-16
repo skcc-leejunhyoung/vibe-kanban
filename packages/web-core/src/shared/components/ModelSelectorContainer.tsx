@@ -37,7 +37,7 @@ import {
 import { useHiddenModels } from '@/shared/stores/useUiPreferencesStore';
 import { isLegacyUnversionedRevision, profilesApi } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useHostUserSystem } from '@/shared/hooks/useHostUserSystem';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
 import { RevisionSaveQueue } from '@/shared/lib/revisionSaveQueue';
 import { useModelSelectorConfig } from '@/shared/hooks/useExecutorDiscovery';
@@ -103,8 +103,13 @@ export function ModelSelectorContainer({
   const [expandedProviderId, setExpandedProviderId] = useState('');
   const contextHostId = useHostId();
   const targetHostId = hostId === undefined ? contextHostId : hostId;
+  // The recently-used list is read from, and saved back to, the profiles of
+  // the host this selector targets. Taking them from the surrounding user
+  // system instead would mix two hosts whenever a caller with its own host
+  // picker renders under another host's provider: that host's profiles
+  // document and revision would be sent to this one.
   const { profiles, profilesRevision, setProfiles, reloadSystem } =
-    useUserSystem();
+    useHostUserSystem(targetHostId).value;
   const defaultLabel = t('modelSelector.default');
   const loadingLabel = t('states.loading');
 

@@ -12,6 +12,8 @@ interface WorkspaceDefaultsLike {
 
 interface LocalWorkspaceLike {
   id: string;
+  /** Host the row lives on (`null` = this machine); absent in host-less lists. */
+  hostId?: string | null;
 }
 
 interface LinkedIssueSource {
@@ -50,6 +52,21 @@ export function resolveGithubLinkedBranchSource(
 
 export const DEFAULT_WORKSPACE_CREATE_DRAFT_ID =
   '00000000-0000-0000-0000-000000000001';
+
+/**
+ * Scratch id of the unnamed "new workspace" draft. A host's own scratch store
+ * keeps one per host by itself. The remote web keeps drafts in the browser,
+ * where the host has to be part of the id: otherwise the draft written for
+ * one host, with that host's attachments and branch, is restored on another.
+ */
+export function defaultWorkspaceDraftId(
+  runtime: AppRuntime,
+  hostId: string | null
+): string {
+  return runtime === 'remote' && hostId
+    ? `${DEFAULT_WORKSPACE_CREATE_DRAFT_ID}@${hostId}`
+    : DEFAULT_WORKSPACE_CREATE_DRAFT_ID;
+}
 
 export function buildWorkspaceCreatePrompt(
   title: string | null | undefined,
@@ -104,13 +121,22 @@ export function buildWorkspaceCreateInitialState(args: {
 export function buildLocalWorkspaceIdSet(
   activeWorkspaces: LocalWorkspaceLike[],
   archivedWorkspaces: LocalWorkspaceLike[],
-  isArchivedLoading: boolean
+  isArchivedLoading: boolean,
+  /**
+   * The host the new workspace is created on. The lists span every host, and
+   * a candidate from another host cannot be looked up on this one: the lookup
+   * 404s and the defaults are silently dropped.
+   */
+  hostId?: string | null
 ): Set<string> {
   if (isArchivedLoading) return new Set();
-  return new Set([
-    ...activeWorkspaces.map((workspace) => workspace.id),
-    ...archivedWorkspaces.map((workspace) => workspace.id),
-  ]);
+  const onHost = (workspace: LocalWorkspaceLike) =>
+    hostId === undefined || (workspace.hostId ?? null) === hostId;
+  return new Set(
+    [...activeWorkspaces, ...archivedWorkspaces]
+      .filter(onHost)
+      .map((workspace) => workspace.id)
+  );
 }
 
 export function toDraftWorkspaceData(

@@ -1,6 +1,5 @@
-import { type ReactNode, useCallback, useMemo } from 'react';
-import { configApi } from '@/shared/lib/api';
-import { useUserSystemController } from '@/shared/hooks/useUserSystemController';
+import { type ReactNode } from 'react';
+import { useHostUserSystem } from '@/shared/hooks/useHostUserSystem';
 import { UserSystemContext, useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { shouldOverrideLocalUserSystem } from '@/shared/lib/hostRequestScope';
@@ -19,30 +18,13 @@ import { shouldOverrideLocalUserSystem } from '@/shared/lib/hostRequestScope';
 export function HostUserSystemProvider({ children }: { children: ReactNode }) {
   const hostId = useHostId();
   const local = useUserSystem();
-  const remoteHostId = shouldOverrideLocalUserSystem(hostId) ? hostId : null;
-
-  const queryKey = useMemo(
-    () => ['user-system', 'local-route', remoteHostId] as const,
-    [remoteHostId]
-  );
-  const load = useCallback(
-    () => configApi.getConfig(remoteHostId),
-    [remoteHostId]
-  );
-  const save = useCallback(
-    (config: Parameters<typeof configApi.saveConfig>[0], revision: string) =>
-      configApi.saveConfig(config, revision, remoteHostId),
-    [remoteHostId]
-  );
-  const { value: remote } = useUserSystemController({
-    queryKey,
-    load,
-    save,
-    enabled: remoteHostId !== null,
+  const isRemoteHost = shouldOverrideLocalUserSystem(hostId);
+  const { value: remote } = useHostUserSystem(hostId, {
+    enabled: isRemoteHost,
   });
 
   return (
-    <UserSystemContext.Provider value={remoteHostId !== null ? remote : local}>
+    <UserSystemContext.Provider value={isRemoteHost ? remote : local}>
       {children}
     </UserSystemContext.Provider>
   );

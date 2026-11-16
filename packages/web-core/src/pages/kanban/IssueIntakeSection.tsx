@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { CaretDownIcon, CaretRightIcon } from '@phosphor-icons/react';
 import {
   BaseCodingAgent,
@@ -7,11 +6,11 @@ import {
   type Repo,
   type WorkspaceRepoInput,
 } from 'shared/types';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
-import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useHostUserSystem } from '@/shared/hooks/useHostUserSystem';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { getProjectRepoDefaults } from '@/shared/hooks/useProjectRepoDefaults';
-import { configApi, repoApi, specApi, ApiError } from '@/shared/lib/api';
+import { repoApi, specApi, ApiError } from '@/shared/lib/api';
 
 interface IssueIntakeSectionProps {
   projectId: string;
@@ -56,28 +55,18 @@ function prettyExecutor(executor: BaseCodingAgent): string {
  */
 export function IssueIntakeSection({
   projectId,
-  hostId,
+  hostId: hostIdProp,
   title,
   description,
   disabled,
   onGenerated,
 }: IssueIntakeSectionProps) {
-  const runtime = useAppRuntime();
-  const routeSystem = useUserSystem();
-  const hostSystem = useQuery({
-    queryKey: ['user-system', 'remote-route', hostId ?? 'none'],
-    queryFn: () => configApi.getConfig(hostId ?? null),
-    enabled: runtime === 'remote' && !!hostId,
-    staleTime: 5 * 60 * 1000,
-  });
-  const profiles =
-    runtime === 'remote'
-      ? (hostSystem.data?.executors ?? null)
-      : routeSystem.profiles;
-  const config =
-    runtime === 'remote'
-      ? (hostSystem.data?.config ?? null)
-      : routeSystem.config;
+  // One host for the whole section: where the spec agent runs is also whose
+  // agents, presets, repos and defaults are offered. No explicit host means
+  // the surrounding scope's, not whichever pane has focus when a request goes.
+  const contextHostId = useHostId();
+  const hostId = hostIdProp === undefined ? contextHostId : hostIdProp;
+  const { profiles, config } = useHostUserSystem(hostId).value;
   const {
     executorConfig,
     effectiveExecutor,
@@ -129,7 +118,9 @@ export function IssueIntakeSection({
     (async () => {
       try {
         const [defaults, repos] = await Promise.all([
-          getProjectRepoDefaults(projectId, hostId),
+          // Read-only here: when the saved defaults cannot be read, offer the
+          // host's repos rather than showing "no repositories".
+          getProjectRepoDefaults(projectId, hostId).catch(() => null),
           repoApi.list(hostId),
         ]);
         if (cancelled) return;

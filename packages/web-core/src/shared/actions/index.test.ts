@@ -31,9 +31,11 @@ vi.mock('@/shared/lib/api', () => ({
     pushTargetBranch: vi.fn(),
     attachPr: vi.fn(),
     openEditor: vi.fn(),
+    delete: vi.fn(),
+    change_target_branch: vi.fn(),
   },
   relayApi: { openRemoteWorkspaceInEditor: vi.fn() },
-  repoApi: {},
+  repoApi: { openEditor: vi.fn() },
   sessionsApi: {
     getByWorkspace: vi.fn(),
     vibeReview: vi.fn(),
@@ -100,10 +102,16 @@ import { formatDateShortWithTime } from '@/shared/lib/date';
 import {
   ApiError,
   relayApi,
+  repoApi,
   scratchApi,
   sessionsApi,
   workspacesApi,
 } from '@/shared/lib/api';
+import { DeleteWorkspaceDialog } from '@vibe/ui/components/DeleteWorkspaceDialog';
+import { BranchPickerDialog } from '@/shared/dialogs/BranchPickerDialog';
+import { workspaceRecordKeys } from '@/shared/hooks/useWorkspaceRecord';
+import { workspaceRepoKeys } from '@/shared/hooks/useWorkspaceRepo';
+import { useWorkspacePanesStore } from '@/shared/stores/useWorkspacePanesStore';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { PullFirstDialog } from '@/shared/dialogs/command-bar/PullFirstDialog';
@@ -1324,12 +1332,14 @@ describe('diverged push recovery', () => {
 
     await Actions.GitPushTarget.execute(ctx, 'ws1', 'repo1');
 
+    // The pull-first dialog acts on the host the push was sent to.
     expect(showPullFirst).toHaveBeenCalledWith({
       workspaceId: 'ws1',
       repoId: 'repo1',
       ahead: 2,
       behind: 3,
       isTarget: true,
+      hostId: 'host-1',
     });
     expect(showConfirm).toHaveBeenCalledWith(
       expect.objectContaining({ variant: 'destructive' })
@@ -2248,6 +2258,94 @@ describe('workspace script host scope', () => {
       expect(apiCall).toHaveBeenCalledWith('ws1', 'host-2', 'session-9');
     }
   );
+});
+
+describe('deleting the workspace on screen', () => {
+  it('moves to the neighbour on the neighbour’s own host', async () => {
+    getBranchStatus.mockResolvedValue([]);
+    vi.mocked(workspacesApi.delete).mockResolvedValue(undefined as never);
+    const showDelete = vi
+      .spyOn(DeleteWorkspaceDialog, 'show')
+      .mockResolvedValue({
+        action: 'confirmed',
+        deleteBranches: false,
+        unlinkFromIssue: false,
+      } as never);
+    // The panes store persists what it clears; there is no storage here.
+    const clearPanes = vi
+      .spyOn(useWorkspacePanesStore.getState(), 'clearWorkspacePanes')
+      .mockImplementation(() => {});
+    const goToWorkspacesCreate = vi.fn();
+    // The list spans hosts: the same id exists on another host too, and the
+    // neighbour of the removed row lives on a third one.
+    const { ctx, selectWorkspace } = makeCtx(
+      { id: 'ws1', branch: 'main' },
+      {
+        currentHostId: 'host-b',
+        activeWorkspaces: [
+          { id: 'ws1', hostId: null },
+          { id: 'ws0', hostId: null },
+          { id: 'ws1', hostId: 'host-b' },
+          { id: 'ws2', hostId: 'host-c' },
+        ] as never,
+        remoteWorkspaces: [],
+        appNavigation: { goToWorkspacesCreate } as never,
+      }
+    );
+
+    await Actions.DeleteWorkspace.execute(ctx, 'ws1', 'host-b');
+
+    expect(showDelete).toHaveBeenCalledOnce();
+    expect(workspacesApi.delete).toHaveBeenCalledWith('ws1', false, 'host-b');
+    expect(selectWorkspace).toHaveBeenCalledExactlyOnceWith('ws2', 'host-c');
+    expect(goToWorkspacesCreate).not.toHaveBeenCalled();
+    showDelete.mockRestore();
+    clearPanes.mockRestore();
+  });
+});
+
+describe('repository actions on another host', () => {
+  it('opens the repo editor on the workspace host', async () => {
+    vi.mocked(repoApi.openEditor).mockResolvedValue({ url: null } as never);
+    const { ctx } = makeCtx({ id: 'ws1' }, { currentHostId: 'host-b' });
+
+    await Actions.RepoOpenInIDE.execute(ctx, 'ws1', 'repo-1');
+
+    expect(repoApi.openEditor).toHaveBeenCalledExactlyOnceWith(
+      'repo-1',
+      expect.any(Object),
+      'host-b'
+    );
+  });
+
+  it('refreshes the changed target branch under that host’s cache keys', async () => {
+    vi.mocked(workspacesApi.change_target_branch).mockResolvedValue(
+      {} as never
+    );
+    const showBranchPicker = vi
+      .spyOn(BranchPickerDialog, 'show')
+      .mockResolvedValue('release' as never);
+    const { ctx, invalidateQueries } = makeCtx(
+      { id: 'ws1' },
+      { currentHostId: 'host-b' }
+    );
+
+    await Actions.GitChangeTarget.execute(ctx, 'ws1', 'repo-1');
+
+    expect(showBranchPicker).toHaveBeenCalledWith(
+      expect.objectContaining({ repoId: 'repo-1', hostId: 'host-b' })
+    );
+    expect(workspacesApi.change_target_branch).toHaveBeenCalledWith(
+      'ws1',
+      { new_target_branch: 'release', repo_id: 'repo-1' },
+      'host-b'
+    );
+    const keys = invalidateQueries.mock.calls.map(([arg]) => arg.queryKey);
+    expect(keys).toContainEqual(workspaceRecordKeys.byId('ws1', 'host-b'));
+    expect(keys).toContainEqual(workspaceRepoKeys.byWorkspace('ws1', 'host-b'));
+    expect(keys).not.toContainEqual(workspaceRecordKeys.byId('ws1', null));
+    showBranchPicker.mockRestore();
+  });
 });
 
 describe('copy workspace path', () => {

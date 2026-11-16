@@ -86,7 +86,10 @@ import {
   useWorkspacePanelState,
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
-import { useInspectModeStore } from '../model/store/useInspectModeStore';
+import {
+  inspectModeScope,
+  useInspectModeStore,
+} from '../model/store/useInspectModeStore';
 import { Actions } from '@/shared/actions';
 import {
   isSpecialIcon,
@@ -808,8 +811,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       targetBranch: repoWithConflicts.target_branch_name,
       conflictedFiles: repoWithConflicts.conflicted_files ?? [],
       repoName: repoWithConflicts.repo_name,
+      hostId,
     });
-  }, [workspaceId, repoWithConflicts, attemptBranch]);
+  }, [workspaceId, repoWithConflicts, attemptBranch, hostId]);
 
   // User profiles, config preference, and latest executor from processes
   const { profiles, config, capabilities } = useUserSystem();
@@ -878,9 +882,13 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     [setLocalMessage]
   );
 
-  // Auto-paste component context from inspect mode
-  const pendingComponentMarkdown = useInspectModeStore(
-    (s) => s.pendingComponentMarkdown
+  // Auto-paste component context from inspect mode: only what was picked in
+  // this workspace's own preview, not in another pane's.
+  const inspectScope = inspectModeScope(hostId, workspaceId);
+  const pendingComponentMarkdown = useInspectModeStore((s) =>
+    s.pendingComponent?.scope === inspectScope
+      ? s.pendingComponent.markdown
+      : null
   );
   const clearPendingComponentMarkdown = useInspectModeStore(
     (s) => s.clearPendingComponentMarkdown
@@ -938,9 +946,13 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       BaseAgentCapability.CONTEXT_USAGE
     );
 
-  // Navigate to agent settings to customise variants
+  // Navigate to agent settings to customise variants: those of the host this
+  // conversation runs on, whose presets the selector is showing.
   const handleCustomise = () => {
-    SettingsDialog.show({ initialSection: 'agents' });
+    SettingsDialog.show({
+      initialSection: 'agents',
+      initialHostId: hostId ?? 'local',
+    });
   };
 
   // Queue interaction

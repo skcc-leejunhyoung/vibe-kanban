@@ -8,7 +8,8 @@
       "title": "Cambios sin guardar",
       "message": "Tienes cambios sin guardar. ¿Estás seguro de que deseas cerrar sin guardar?",
       "discard": "Descartar cambios",
-      "cancel": "Seguir editando"
+      "cancel": "Seguir editando",
+      "switchHostMessage": "Tienes cambios sin guardar para esta máquina. ¿Cambiar de máquina y descartarlos?"
     },
     "layout": {
       "nav": {
@@ -369,6 +370,7 @@
         "renameFailed": "Error al renombrar la configuración. Por favor, inténtalo de nuevo.",
         "saveFailed": "Error al guardar la configuración de los agentes. Por favor, inténtalo de nuevo.",
         "saveConfigFailed": "Error al guardar la configuración. Por favor, inténtalo de nuevo.",
+        "conflict": "La configuración de agentes cambió en este host mientras editabas. Descarta tus cambios para cargar la versión más reciente y vuelve a editar.",
         "schemaNotFound": "Esquema no encontrado para el tipo de ejecutor: {{executor}}"
       },
       "tree": {
@@ -637,7 +639,9 @@
       "remoteHost": "Remote host",
       "noHostAvailable": "No host is available for host-specific settings yet.",
       "pairMachineHint": "Pair a machine to open machine settings.",
-      "selectMachineHint": "Select a machine to open machine settings."
+      "selectMachineHint": "Select a machine to open machine settings.",
+      "unavailableHost": "Host no disponible",
+      "unavailableHostHint": "Esta máquina ya no está disponible. Selecciona otra."
     },
     "automation": {
       "reviewScope": "Review requests monitored: {{repositories}}",

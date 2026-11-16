@@ -173,6 +173,8 @@ export function useUpdateRelayHostMutation() {
         queryClient.invalidateQueries({
           queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
         }),
+        // The account's own copy of the same list (Account > Computers).
+        queryClient.invalidateQueries({ queryKey: ['account-hosts'] }),
       ]);
     },
   });

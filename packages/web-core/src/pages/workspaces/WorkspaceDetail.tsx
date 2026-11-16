@@ -36,6 +36,7 @@ import {
   shouldCloseWorkspacePaneSidebarOnEscape,
   shouldShowWorkspacePaneSidebar,
 } from './workspacePaneSidebar';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 export interface WorkspaceDetailHandle {
   scrollToBottom: (behavior?: 'auto' | 'smooth') => void;
@@ -96,11 +97,16 @@ export const WorkspaceDetail = forwardRef<
     []
   );
 
+  // The workspace was created on this scope's host; without it the document
+  // navigation takes whatever host the URL shows once the request returns.
+  const createHostId = useHostId();
   const handleWorkspaceCreated = useCallback(
     (createdWorkspaceId: string) => {
-      appNavigation.goToWorkspace(createdWorkspaceId);
+      appNavigation.goToWorkspace(createdWorkspaceId, {
+        hostId: createHostId,
+      });
     },
-    [appNavigation]
+    [appNavigation, createHostId]
   );
 
   // Use workspace-specific panel state (pass undefined when in create mode)

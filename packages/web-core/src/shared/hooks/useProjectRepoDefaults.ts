@@ -9,7 +9,9 @@ const SCRATCH_TYPE = ScratchType.PROJECT_REPO_DEFAULTS;
 
 /**
  * Read project repo defaults from scratch storage.
- * Returns null if no defaults have been saved for this project.
+ * Returns null if no defaults have been saved for this project. A failed read
+ * throws instead: reported as "none", the next edit would save a list built
+ * from nothing over the host's real one.
  */
 export async function getProjectRepoDefaults(
   projectId: string,
@@ -28,7 +30,7 @@ export async function getProjectRepoDefaults(
       return null;
     }
     console.error('[useProjectRepoDefaults] Failed to read defaults:', error);
-    return null;
+    throw error;
   }
 }
 

@@ -89,6 +89,9 @@ export const useExecutionProcesses = (
       // Re-serve the last snapshot instantly when returning to a session, so
       // the conversation can render from cache while the stream re-syncs.
       {
+        // The host baked into the endpoint above; the stream would otherwise
+        // scope a `null` (this machine) override to the context host.
+        targetHostId: hostId,
         keepSnapshotForEndpoint: true,
         silenceTimeoutMs: EXECUTION_PROCESS_STREAM_SILENCE_TIMEOUT_MS,
         shouldReconcileAfterSilence,

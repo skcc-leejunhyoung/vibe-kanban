@@ -184,7 +184,8 @@ function WorkspaceSelectionContent({
       const localWorkspaceIds = buildLocalWorkspaceIdSet(
         activeWorkspaces,
         archivedWorkspaces,
-        isArchivedWorkspacesLoading
+        isArchivedWorkspacesLoading,
+        hostId
       );
 
       // Get defaults from most recent workspace

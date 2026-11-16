@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildLinkedIssueCreateState,
   buildLocalWorkspaceIdSet,
+  defaultWorkspaceDraftId,
   resolveGithubLinkedBranchSource,
   toDraftWorkspaceData,
 } from './workspaceCreateState';
@@ -29,6 +30,38 @@ describe('buildLocalWorkspaceIdSet', () => {
     expect(buildLocalWorkspaceIdSet(active, [], true)).toEqual(new Set());
     expect(buildLocalWorkspaceIdSet(active, archived, false)).toEqual(
       new Set(['active', 'archived'])
+    );
+  });
+
+  it('offers only the workspaces of the host the new one is created on', () => {
+    const active = [
+      { id: 'here', hostId: null },
+      { id: 'on-b', hostId: 'host-b' },
+    ];
+    const archived = [{ id: 'old-on-b', hostId: 'host-b' }];
+    expect(buildLocalWorkspaceIdSet(active, archived, false, 'host-b')).toEqual(
+      new Set(['on-b', 'old-on-b'])
+    );
+    expect(buildLocalWorkspaceIdSet(active, archived, false, null)).toEqual(
+      new Set(['here'])
+    );
+    // No host named: every row stays a candidate, as before.
+    expect(buildLocalWorkspaceIdSet(active, archived, false).size).toBe(3);
+  });
+});
+
+describe('defaultWorkspaceDraftId', () => {
+  it('gives each host its own draft on the remote web', () => {
+    // There the draft lives in one browser store shared by every host.
+    const a = defaultWorkspaceDraftId('remote', 'host-a');
+    const b = defaultWorkspaceDraftId('remote', 'host-b');
+    expect(a).not.toBe(b);
+    expect(a.endsWith('@host-a')).toBe(true);
+  });
+
+  it('keeps the plain id on the local web, where each host stores its own', () => {
+    expect(defaultWorkspaceDraftId('local', 'host-a')).toBe(
+      defaultWorkspaceDraftId('local', null)
     );
   });
 });

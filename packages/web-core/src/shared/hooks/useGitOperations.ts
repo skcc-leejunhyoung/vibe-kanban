@@ -11,12 +11,18 @@ import { ForcePushDialog } from '@/shared/dialogs/command-bar/ForcePushDialog';
 import { ReconcileRemoteBranchDialog } from '@/shared/dialogs/command-bar/ReconcileRemoteBranchDialog';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 
+/**
+ * `hostIdOverride` is the host the workspace lives on when the caller is not
+ * rendered in that host's scope (a dialog under the document providers).
+ */
 export function useGitOperations(
   workspaceId: string | undefined,
-  repoId: string | undefined
+  repoId: string | undefined,
+  hostIdOverride?: string | null
 ) {
   const { setError } = useGitOperationsError();
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? contextHostId : hostIdOverride;
 
   const rebase = useRebase(
     workspaceId,
@@ -32,7 +38,8 @@ export function useGitOperations(
           setError(err.message || 'Failed to rebase');
         }
       }
-    }
+    },
+    hostId
   );
 
   const merge = useMerge(
@@ -44,7 +51,8 @@ export function useGitOperations(
           ? String(err.message)
           : 'Failed to merge';
       setError(message);
-    }
+    },
+    hostId
   );
 
   const commit = useCommit(
@@ -56,7 +64,8 @@ export function useGitOperations(
           ? String(err.message)
           : 'Failed to commit';
       setError(message);
-    }
+    },
+    hostId
   );
 
   const forcePush = useForcePush(
@@ -110,7 +119,8 @@ export function useGitOperations(
           ? String(err.message)
           : 'Failed to push';
       setError(message);
-    }
+    },
+    hostId
   );
 
   const changeTargetBranch = useChangeTargetBranch(
@@ -123,7 +133,8 @@ export function useGitOperations(
           ? String(err.message)
           : 'Failed to change target branch';
       setError(message);
-    }
+    },
+    hostId
   );
 
   const isAnyLoading =

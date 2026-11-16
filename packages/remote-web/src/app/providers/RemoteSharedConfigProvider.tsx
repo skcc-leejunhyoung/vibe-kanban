@@ -72,7 +72,7 @@ export function RemoteSharedConfigProvider({
 }
 
 function RemoteSharedConfig({ children }: RemoteSharedConfigProviderProps) {
-  const { isSignedIn, isLoaded } = useAuth();
+  const { isSignedIn, isLoaded, userId } = useAuth();
   const { setTheme } = useTheme();
   const { data: notifications, isLoading: notificationsLoading } =
     useNotifications();
@@ -134,7 +134,13 @@ function RemoteSharedConfig({ children }: RemoteSharedConfigProviderProps) {
   // Sync device-local UI preferences (keyboard shortcuts, theme variant/presets,
   // diff view, quick-chat favorites) with the shared config so they persist and
   // surface on other devices after a reload.
-  useConfigPreferenceSync(config, value.updateAndSaveConfig);
+  // The account is named so another account's leftovers in this browser are
+  // replaced by this account's config instead of being promoted into it.
+  useConfigPreferenceSync(
+    config,
+    value.updateAndSaveConfig,
+    userId ?? undefined,
+  );
 
   return <>{children}</>;
 }

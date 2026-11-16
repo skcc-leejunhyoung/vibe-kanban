@@ -7,6 +7,7 @@ import { OAuthDialog } from '@/shared/dialogs/global/OAuthDialog';
 import { installFakeDomReact } from '@/shared/lib/electric/electricTestKit';
 import { queryClient } from '@/shared/lib/queryClient';
 import { LocalAuthProvider } from '@/shared/providers/auth/LocalAuthProvider';
+import { AppRuntimeProvider } from '@/shared/hooks/useAppRuntime';
 import { REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY } from '@/shared/lib/relayHostQueryKeys';
 import { tokenManager } from '@/shared/lib/auth/tokenManager';
 import { configApi, oauthApi } from '@/shared/lib/api';
@@ -152,13 +153,15 @@ beforeEach(() => {
 async function renderDialog() {
   await dom.render(
     <QueryClientProvider client={queryClient}>
-      <UserSystemProvider>
-        <LocalAuthProvider>
-          <HostUserSystemProvider>
-            <OAuthDialog />
-          </HostUserSystemProvider>
-        </LocalAuthProvider>
-      </UserSystemProvider>
+      <AppRuntimeProvider runtime="local">
+        <UserSystemProvider>
+          <LocalAuthProvider>
+            <HostUserSystemProvider>
+              <OAuthDialog />
+            </HostUserSystemProvider>
+          </LocalAuthProvider>
+        </UserSystemProvider>
+      </AppRuntimeProvider>
     </QueryClientProvider>
   );
   await vi.waitFor(() => expect(env.click).toBeTypeOf('function'));

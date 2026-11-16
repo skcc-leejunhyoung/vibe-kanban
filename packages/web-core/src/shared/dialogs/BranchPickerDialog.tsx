@@ -14,6 +14,7 @@ import { Button } from '@vibe/ui/components/Button';
 import BranchSelector from '@/shared/components/tasks/BranchSelector';
 import { useRepoBranches } from '@/shared/hooks/useRepoBranches';
 import { defineModal } from '@/shared/lib/modals';
+import { useHostIdPinnedWhile } from '@/shared/providers/HostIdProvider';
 
 /**
  * Copy differs a little per caller, so the dialog looks up its title, blurb and
@@ -31,7 +32,7 @@ export interface BranchPickerDialogProps {
   mode: BranchPickerMode;
   /** Repo name shown in the `select` mode title. */
   repoDisplayName?: string;
-  /** Host scope for the branch fetch; defaults to the local host. */
+  /** Host the repo lives on; defaults to the host the dialog opened on. */
   hostId?: string | null;
   /** Pre-selected branch when the dialog opens. */
   initialBranch?: string | null;
@@ -49,11 +50,13 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
     repoId,
     mode,
     repoDisplayName,
-    hostId,
+    hostId: hostIdProp,
     initialBranch,
     excludeCurrentBranch = false,
   }) => {
     const modal = useModal();
+    const openedHostId = useHostIdPinnedWhile(modal.visible);
+    const hostId = hostIdProp === undefined ? openedHostId : hostIdProp;
     const { t } = useTranslation(['tasks', 'common']);
     const [selectedBranch, setSelectedBranch] = useState<string>(
       initialBranch ?? ''

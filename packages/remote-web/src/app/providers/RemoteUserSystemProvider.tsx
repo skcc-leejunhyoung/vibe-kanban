@@ -1,8 +1,7 @@
-import { ReactNode, useCallback, useMemo } from "react";
+import { ReactNode, useMemo } from "react";
 import { useParams } from "@tanstack/react-router";
-import { configApi } from "@/shared/lib/api";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
-import { useUserSystemController } from "@/shared/hooks/useUserSystemController";
+import { useHostUserSystem } from "@/shared/hooks/useHostUserSystem";
 import { UserSystemContext } from "@/shared/hooks/useUserSystem";
 import { useHostId } from "@/shared/providers/HostIdProvider";
 
@@ -20,21 +19,9 @@ export function RemoteUserSystemProvider({
   const { isSignedIn, isLoaded } = useAuth();
   const { hostId: routeHostId } = useParams({ strict: false });
   const hostId = useHostId();
-  const loadConfig = useCallback(() => configApi.getConfig(hostId), [hostId]);
-  const saveConfig = useCallback(
-    (config: Parameters<typeof configApi.saveConfig>[0], revision: string) =>
-      configApi.saveConfig(config, revision, hostId),
-    [hostId],
-  );
-  const userSystemQueryKey = useMemo(
-    () => ["user-system", "remote-route", routeHostId ?? "none"] as const,
-    [routeHostId],
-  );
-  const { value, isLoading } = useUserSystemController({
-    queryKey: userSystemQueryKey,
-    enabled: isLoaded && isSignedIn && hasRemoteRouteHost(routeHostId),
-    load: loadConfig,
-    save: saveConfig,
+  // The cache entry, the load and the save all belong to the route host.
+  const { value, isLoading } = useHostUserSystem(hostId, {
+    enabled: hasRemoteRouteHost(routeHostId),
   });
 
   const contextValue = useMemo(

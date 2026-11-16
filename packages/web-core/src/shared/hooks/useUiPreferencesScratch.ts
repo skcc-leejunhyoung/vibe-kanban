@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useScratch } from '@/shared/hooks/useScratch';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
 import {
   ScratchType,
@@ -288,8 +290,16 @@ export function useUiPreferencesScratch() {
     UI_PREFERENCES_ID
   );
 
+  // Whose blob this is: the signed-in account on the remote web (it lives in
+  // that account's browser storage), this machine on the local web.
+  const runtime = useAppRuntime();
+  const { userId } = useAuth();
+  const owner = runtime === 'remote' ? (userId ?? null) : 'local';
+
   // Track whether we've initialized from server
   const hasInitializedRef = useRef(false);
+  // The owner the store was last filled for (`undefined` before the first).
+  const initializedOwnerRef = useRef<string | null | undefined>(undefined);
   // Track whether we're currently applying server data to prevent save loops
   const isApplyingServerDataRef = useRef(false);
 
@@ -370,6 +380,14 @@ export function useUiPreferencesScratch() {
 
   const { debounced: debouncedSave } = useDebouncedCallback(saveToServer, 500);
 
+  // Another account took over this tab without a reload: read ITS blob
+  // before saving again. Otherwise the next change — or a save still waiting
+  // in the debounce — writes the previous account's preferences under the
+  // new account's key. Declared before the initialization below on purpose.
+  useEffect(() => {
+    hasInitializedRef.current = false;
+  }, [owner]);
+
   // Initialize store from server data when first loaded
   useEffect(() => {
     if (hasInitializedRef.current || isLoading || !isConnected) {
@@ -377,6 +395,23 @@ export function useUiPreferencesScratch() {
     }
 
     hasInitializedRef.current = true;
+    const takenOver =
+      initializedOwnerRef.current !== undefined &&
+      initializedOwnerRef.current !== owner;
+    initializedOwnerRef.current = owner;
+
+    if (!scratchData && takenOver) {
+      // Another account's first visit in this tab: it starts from defaults,
+      // not from the previous account's preferences still in memory.
+      isApplyingServerDataRef.current = true;
+      useUiPreferencesStore.setState(
+        useUiPreferencesStore.getInitialState(),
+        true
+      );
+      setTimeout(() => {
+        isApplyingServerDataRef.current = false;
+      }, 100);
+    }
 
     if (scratchData) {
       // Server has data - apply it to store
@@ -415,7 +450,7 @@ export function useUiPreferencesScratch() {
         isApplyingServerDataRef.current = false;
       }, 100);
     }
-  }, [isLoading, isConnected, scratchData]);
+  }, [isLoading, isConnected, scratchData, owner]);
 
   // Subscribe to store changes and save to server
   useEffect(() => {

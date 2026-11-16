@@ -65,6 +65,7 @@ import {
 } from '@phosphor-icons/react';
 import { useWorkspaceHostOptions } from '@/shared/hooks/useWorkspaceHostOptions';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { defaultWorkspaceDraftId } from '@/shared/lib/workspaceCreateState';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import {
   NEXT_WORKSPACE_BINDING_ID,
@@ -92,9 +93,6 @@ import {
 } from '@/shared/hooks/useHostPrimaryColors';
 
 export type WorkspaceLayoutMode = 'flat' | 'accordion';
-
-// Fixed UUID for the universal workspace draft (same as in useCreateModeState.ts)
-const DRAFT_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
 
 const PAGE_SIZE = 50;
 const EMPTY_GITHUB_ISSUES: NonNullable<
@@ -446,9 +444,12 @@ export function WorkspacesSidebarContainer({
   }, [isSearching, hasMoreWorkspaces]);
 
   // Read persisted draft for sidebar placeholder
+  // On the remote web a draft belongs to one host, so a route that names no
+  // host has no draft to show (and must not fall back to a host-less id).
   const { scratch: draftScratch } = useScratch(
     ScratchType.DRAFT_WORKSPACE,
-    DRAFT_WORKSPACE_ID
+    defaultWorkspaceDraftId(runtime, routeHostId),
+    { enabled: runtime === 'local' || routeHostId !== null }
   );
 
   // Extract draft title from persisted scratch

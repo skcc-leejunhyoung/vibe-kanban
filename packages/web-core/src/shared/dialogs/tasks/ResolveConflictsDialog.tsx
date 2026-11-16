@@ -15,7 +15,7 @@ import { Label } from '@vibe/ui/components/Label';
 import { Switch } from '@vibe/ui/components/Switch';
 import { AgentSelector } from '@/shared/components/tasks/AgentSelector';
 import { ConfigSelector } from '@/shared/components/tasks/ConfigSelector';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useHostUserSystem } from '@/shared/hooks/useHostUserSystem';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
@@ -68,7 +68,10 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
     const queryClient = useQueryClient();
     const routeHostId = useHostId();
     const hostId = hostIdOverride === undefined ? routeHostId : hostIdOverride;
-    const { profiles, config } = useUserSystem();
+    // Agents of the host the conflict is on, not of the document's host.
+    const { profiles, config } = useHostUserSystem(hostId, {
+      enabled: modal.visible,
+    }).value;
     const {
       workspaceId: activeWorkspaceId,
       sessions,
@@ -100,8 +103,13 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
 
     // Get the variant from the session's latest process
     const resolvedSessionId = resolvedSession?.id;
-    const { executionProcesses: sessionProcesses } =
-      useExecutionProcesses(resolvedSessionId);
+    // Only while open: hidden, `hostId` is still the last conflict's host
+    // while the session follows the document, and the pair would be streamed
+    // from a host that never had that session.
+    const { executionProcesses: sessionProcesses } = useExecutionProcesses(
+      modal.visible ? resolvedSessionId : undefined,
+      { hostId }
+    );
     const sessionProfileFromProcesses =
       useMemo((): ExecutorProfileId | null => {
         const config = getLatestConfigFromProcesses(sessionProcesses);
@@ -132,6 +140,11 @@ const ResolveConflictsDialogImpl = create<ResolveConflictsDialogProps>(
       useState(!selectedSessionId);
     const [userSelectedProfile, setUserSelectedProfile] =
       useState<ExecutorProfileId | null>(null);
+    // nice-modal keeps this mounted: an agent picked for one workspace must
+    // not be the one sent for the next workspace (maybe on another host).
+    useEffect(() => {
+      setUserSelectedProfile(null);
+    }, [workspaceId, hostId]);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isAborting, setIsAborting] = useState(false);
     const resolvedElsewhere = useResolvedElsewhere({

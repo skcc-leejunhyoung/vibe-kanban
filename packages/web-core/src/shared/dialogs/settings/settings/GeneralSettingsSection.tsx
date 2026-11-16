@@ -1,12 +1,5 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  useSyncExternalStore,
-} from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
-import { cloneDeep, isEqual, merge } from 'lodash';
 import {
   FolderSimpleIcon,
   MinusIcon,
@@ -71,6 +64,7 @@ import {
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { useTheme } from '@/shared/hooks/useTheme';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useConfigDraft } from '@/shared/hooks/useConfigDraft';
 import { persistLanguage, updateLanguageFromConfig } from '@/i18n/config';
 import { TagManager } from '@/shared/components/TagManager';
 import { useSettingsMachineClient } from './SettingsHostContext';
@@ -345,8 +339,8 @@ export function GeneralSettingsSection() {
   );
   const { config, loading, updateAndSaveConfig, profiles } = useUserSystem();
 
-  const [draft, setDraft] = useState(() => (config ? cloneDeep(config) : null));
-  const [dirty, setDirty] = useState(false);
+  const { draft, hasUnsavedChanges, updateDraft, saveDraft, discardDraft } =
+    useConfigDraft(config, updateAndSaveConfig);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -363,6 +357,13 @@ export function GeneralSettingsSection() {
   const runtime = useAppRuntime();
   const machineClient = useSettingsMachineClient();
   const machineHostId = machineClient?.target.apiHostId;
+  // Theme, colour and language of THIS app come from this machine's config on
+  // the local web and from the shared "Remote" config on the remote web.
+  // Another host's values are that host's own and must not restyle this app.
+  const ownsAppAppearance =
+    runtime === 'remote'
+      ? machineClient === null
+      : machineClient?.target.kind === 'local';
 
   // Executor options for the default coding agent dropdown. Hidden agents are
   // filtered out, but the current default stays visible so the selection holds.
@@ -421,37 +422,11 @@ export function GeneralSettingsSection() {
     }
   };
 
-  useEffect(() => {
-    if (!config) return;
-    if (!dirty) {
-      setDraft(cloneDeep(config));
-    }
-  }, [config, dirty]);
-
-  const hasUnsavedChanges = useMemo(() => {
-    if (!draft || !config) return false;
-    return !isEqual(draft, config);
-  }, [draft, config]);
-
   // Sync dirty state to context for unsaved changes confirmation
   useEffect(() => {
     setContextDirty('general', hasUnsavedChanges);
     return () => setContextDirty('general', false);
   }, [hasUnsavedChanges, setContextDirty]);
-
-  const updateDraft = useCallback(
-    (patch: Partial<typeof config>) => {
-      setDraft((prev: typeof config) => {
-        if (!prev) return prev;
-        const next = merge({}, prev, patch);
-        if (!isEqual(next, config)) {
-          setDirty(true);
-        }
-        return next;
-      });
-    },
-    [config]
-  );
 
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
@@ -487,24 +462,29 @@ export function GeneralSettingsSection() {
         ...draft,
         primary_color: normalizePrimaryColor(draft.primary_color),
       };
-      await updateAndSaveConfig(nextDraft);
-      setTheme(nextDraft.theme);
-      applyPrimaryColor(nextDraft.primary_color);
-      persistPrimaryColor(nextDraft.primary_color);
-      // remote-web has no ThemeProvider and treats appearance as browser-local
-      // (Bootstrap restores it before first paint), so setTheme() is a no-op
-      // there. Apply + persist the user's explicit theme/language change here,
-      // mirroring primary color. This only runs on the save action, so host
-      // config still does not drive the shell's appearance on navigation.
-      if (runtime === 'remote') {
-        applyTheme(nextDraft.theme);
-        persistTheme(nextDraft.theme);
-        if (nextDraft.language) {
-          updateLanguageFromConfig(nextDraft.language);
-          persistLanguage(nextDraft.language);
+      const saved = await saveDraft({ primary_color: nextDraft.primary_color });
+      if (!saved) {
+        // Rejected (conflict, offline, permission): the draft stays as it is.
+        setError(t('settings.general.save.error'));
+        return;
+      }
+      if (ownsAppAppearance) {
+        setTheme(nextDraft.theme);
+        applyPrimaryColor(nextDraft.primary_color);
+        persistPrimaryColor(nextDraft.primary_color);
+        // remote-web has no ThemeProvider and treats appearance as
+        // browser-local (Bootstrap restores it before first paint), so
+        // setTheme() is a no-op there. Apply + persist the explicit
+        // theme/language change here, mirroring primary color.
+        if (runtime === 'remote') {
+          applyTheme(nextDraft.theme);
+          persistTheme(nextDraft.theme);
+          if (nextDraft.language) {
+            updateLanguageFromConfig(nextDraft.language);
+            persistLanguage(nextDraft.language);
+          }
         }
       }
-      setDirty(false);
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch (err) {
@@ -516,18 +496,18 @@ export function GeneralSettingsSection() {
   };
 
   const handleDiscard = () => {
-    if (!config) return;
-    setDraft(cloneDeep(config));
-    setDirty(false);
+    discardDraft();
     setPrimaryColorError(null);
   };
 
   const resetOnboarding = async () => {
     if (!config) return;
-    updateAndSaveConfig({
+    setError(null);
+    const saved = await updateAndSaveConfig({
       onboarding_acknowledged: false,
       remote_onboarding_acknowledged: false,
     });
+    if (!saved) setError(t('settings.general.save.error'));
   };
 
   if (loading) {
@@ -1155,13 +1135,18 @@ export function GeneralSettingsSection() {
                 placeholder={t('settings.general.git.workspaceDir.placeholder')}
               />
             </div>
-            <PrimaryButton
-              variant="tertiary"
-              onClick={handleBrowseWorkspaceDir}
-            >
-              <FolderSimpleIcon className="size-icon-sm" weight="bold" />
-              {t('settings.general.git.workspaceDir.browse')}
-            </PrimaryButton>
+            {/* Browsing needs a machine's file system; the shared "Remote"
+                target has none, and without a host the picker would list
+                whichever host the page is on. */}
+            {machineClient !== null && (
+              <PrimaryButton
+                variant="tertiary"
+                onClick={handleBrowseWorkspaceDir}
+              >
+                <FolderSimpleIcon className="size-icon-sm" weight="bold" />
+                {t('settings.general.git.workspaceDir.browse')}
+              </PrimaryButton>
+            )}
           </div>
         </SettingsField>
 
@@ -1482,13 +1467,17 @@ export function GeneralSettingsSection() {
         </SettingsField>
       </SettingsCard>
 
-      {/* Task Templates */}
-      <SettingsCard
-        title={t('settings.general.taskTemplates.title')}
-        description={t('settings.general.taskTemplates.description')}
-      >
-        <TagManager hostId={machineHostId} />
-      </SettingsCard>
+      {/* Task Templates live on a machine. The shared "Remote" target has
+          none: there the manager would read and edit the tags of whichever
+          host the page is on. */}
+      {machineClient !== null && (
+        <SettingsCard
+          title={t('settings.general.taskTemplates.title')}
+          description={t('settings.general.taskTemplates.description')}
+        >
+          <TagManager hostId={machineClient.target.apiHostId} />
+        </SettingsCard>
+      )}
 
       {/* Safety */}
       <SettingsCard

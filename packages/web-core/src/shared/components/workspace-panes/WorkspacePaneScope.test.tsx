@@ -16,6 +16,7 @@ import { UserSystemContext, useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useUserSystemController } from '@/shared/hooks/useUserSystemController';
 import { configApi } from '@/shared/lib/api';
 import { DEFAULT_CONFIG } from '@/shared/lib/defaultConfig';
+import { getHostUserSystemQueryKey } from '@/shared/lib/hostRequestScope';
 import { installDomlessReact } from '@/shared/lib/electric/electricTestKit';
 import type { AppNavigation } from '@/shared/lib/routes/appNavigation';
 import { HostIdProvider, useHostId } from '@/shared/providers/HostIdProvider';
@@ -110,11 +111,7 @@ const mounts = new Map<string, number>();
 const unmounts = new Map<string, number>();
 
 function keyFor(hostId: string | null) {
-  return runtime === 'remote'
-    ? ['user-system', 'remote-route', hostId ?? 'none']
-    : hostId === null
-      ? ['user-system', 'local']
-      : ['user-system', 'local-route', hostId];
+  return getHostUserSystemQueryKey(runtime, hostId);
 }
 function Probe({ id }: { id: string }) {
   const system = useUserSystem();

@@ -41,6 +41,7 @@ import {
   TwoColumnPickerEmpty,
 } from './SettingsComponents';
 import { useSettingsDirty } from './SettingsDirtyContext';
+import { ApiError } from '@/shared/lib/api';
 import { useSettingsMachineClient } from './SettingsHostContext';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import {
@@ -70,6 +71,25 @@ export function AgentsSettingsSection() {
   // Local editor state
   const [profilesSuccess, setProfilesSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // The host's profiles changed under this draft. Saving the draft again
+  // would replace that change with the older copy the draft started from, so
+  // Save stays off until the draft is discarded and reloaded.
+  const [conflict, setConflict] = useState(false);
+  // A 409 is the host saying its profiles moved on. Without a draft the
+  // reloaded copy makes a retry safe; with one, the retry is what must not
+  // happen.
+  const reportSaveFailure = (
+    error: unknown,
+    fallbackKey: string,
+    hasDraft: boolean
+  ) => {
+    const conflicted =
+      hasDraft && error instanceof ApiError && error.status === 409;
+    if (conflicted) setConflict(true);
+    setSaveError(
+      t(conflicted ? 'settings.agents.errors.conflict' : fallbackKey)
+    );
+  };
 
   // Form-based editor state
   const [selectedExecutorType, setSelectedExecutorType] =
@@ -189,7 +209,7 @@ export function AgentsSettingsSection() {
     from: string,
     to: string
   ) => {
-    if (!localParsedProfiles) return;
+    if (!localParsedProfiles || conflict) return;
     setSaveError(null);
 
     const executorsMap =
@@ -219,19 +239,25 @@ export function AgentsSettingsSection() {
         config?.executor_profile?.executor === executorType &&
         config.executor_profile.variant === from
       ) {
-        await updateAndSaveConfig({
+        const repointed = await updateAndSaveConfig({
           executor_profile: {
             executor: executorType as BaseCodingAgent,
             variant: to,
           },
         });
+        if (!repointed) {
+          // Renamed, but the default still names the old configuration.
+          setSaveError(t('settings.agents.errors.saveConfigFailed'));
+          reloadSystem();
+          return;
+        }
       }
       setProfilesSuccess(true);
       setTimeout(() => setProfilesSuccess(false), 3000);
       reloadSystem();
     } catch (error: unknown) {
       console.error('Failed to rename configuration:', error);
-      setSaveError(t('settings.agents.errors.renameFailed'));
+      reportSaveFailure(error, 'settings.agents.errors.renameFailed', isDirty);
     }
   };
 
@@ -254,7 +280,7 @@ export function AgentsSettingsSection() {
     executorType: string,
     configToDelete: string
   ) => {
-    if (!localParsedProfiles) return;
+    if (!localParsedProfiles || conflict) return;
 
     setSaveError(null);
 
@@ -309,7 +335,11 @@ export function AgentsSettingsSection() {
         reloadSystem();
       } catch (error: unknown) {
         console.error('Failed to save deletion to backend:', error);
-        setSaveError(t('settings.agents.errors.deleteFailed'));
+        reportSaveFailure(
+          error,
+          'settings.agents.errors.deleteFailed',
+          isDirty
+        );
       }
     } catch (error) {
       console.error('Error deleting configuration:', error);
@@ -324,25 +354,24 @@ export function AgentsSettingsSection() {
       : current.includes(executor as BaseCodingAgent)
         ? current
         : [...current, executor as BaseCodingAgent];
-    try {
-      await updateAndSaveConfig({ disabled_executors: next });
-    } catch (err) {
-      console.error('Error toggling executor:', err);
+    setSaveError(null);
+    // A rejected save resolves false rather than throwing; the switch then
+    // shows the host's real value again, and the user is told why.
+    if (!(await updateAndSaveConfig({ disabled_executors: next }))) {
+      setSaveError(t('settings.agents.errors.saveConfigFailed'));
     }
   };
 
   const handleMakeDefault = async (executor: string, config: string) => {
-    try {
-      await updateAndSaveConfig({
-        executor_profile: {
-          executor: executor as BaseCodingAgent,
-          variant: config,
-        },
-      });
-      reloadSystem();
-    } catch (err) {
-      console.error('Error setting default:', err);
-    }
+    setSaveError(null);
+    const saved = await updateAndSaveConfig({
+      executor_profile: {
+        executor: executor as BaseCodingAgent,
+        variant: config,
+      },
+    });
+    if (!saved) setSaveError(t('settings.agents.errors.saveConfigFailed'));
+    reloadSystem();
   };
 
   const handleExecutorConfigChange = (
@@ -404,13 +433,14 @@ export function AgentsSettingsSection() {
       reloadSystem();
     } catch (err: unknown) {
       console.error('Failed to save profiles:', err);
-      setSaveError(t('settings.agents.errors.saveConfigFailed'));
+      reportSaveFailure(err, 'settings.agents.errors.saveConfigFailed', true);
     }
   };
 
   // Save handler for agent configuration
   const handleSave = async () => {
     if (
+      !conflict &&
       isDirty &&
       localParsedProfiles &&
       selectedExecutorType &&
@@ -432,6 +462,8 @@ export function AgentsSettingsSection() {
   const handleDiscard = () => {
     if (isDirty && serverProfilesContent) {
       setIsDirty(false);
+      setConflict(false);
+      setSaveError(null);
       try {
         const parsed = JSON.parse(serverProfilesContent);
         setLocalParsedProfiles(parsed);
@@ -698,7 +730,7 @@ export function AgentsSettingsSection() {
       <SettingsSaveBar
         show={isDirty}
         saving={profilesSaving}
-        saveDisabled={!!profilesError}
+        saveDisabled={!!profilesError || conflict}
         unsavedMessage={t('settings.agents.save.unsavedChanges')}
         onSave={handleSave}
         onDiscard={handleDiscard}

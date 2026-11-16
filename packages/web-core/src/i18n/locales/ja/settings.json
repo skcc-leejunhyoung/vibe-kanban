@@ -8,7 +8,8 @@
       "title": "未保存の変更",
       "message": "未保存の変更があります。保存せずに閉じてもよろしいですか？",
       "discard": "変更を破棄",
-      "cancel": "編集を続ける"
+      "cancel": "編集を続ける",
+      "switchHostMessage": "このマシンに未保存の変更があります。マシンを切り替えて変更を破棄しますか？"
     },
     "layout": {
       "nav": {
@@ -369,6 +370,7 @@
         "renameFailed": "設定の名前を変更できませんでした。もう一度お試しください。",
         "saveFailed": "エージェント設定の保存に失敗しました。もう一度お試しください。",
         "saveConfigFailed": "設定の保存に失敗しました。もう一度お試しください。",
+        "conflict": "編集中にこのホストのエージェント設定が変更されました。変更を破棄して最新の内容を読み込んでから、もう一度編集してください。",
         "schemaNotFound": "実行タイプ {{executor}} のスキーマが見つかりません"
       },
       "tree": {
@@ -637,7 +639,9 @@
       "remoteHost": "Remote host",
       "noHostAvailable": "No host is available for host-specific settings yet.",
       "pairMachineHint": "Pair a machine to open machine settings.",
-      "selectMachineHint": "Select a machine to open machine settings."
+      "selectMachineHint": "Select a machine to open machine settings.",
+      "unavailableHost": "利用できないホスト",
+      "unavailableHostHint": "このマシンは利用できなくなりました。別のマシンを選択してください。"
     },
     "automation": {
       "reviewScope": "Review requests monitored: {{repositories}}",

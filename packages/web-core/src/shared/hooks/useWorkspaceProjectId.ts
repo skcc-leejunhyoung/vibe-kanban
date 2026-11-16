@@ -4,6 +4,7 @@ import { workspacesApi } from '@/shared/lib/api';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { UserContext } from '@/shared/hooks/useUserContext';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
 /**
  * Resolve the project id a workspace belongs to.
@@ -44,9 +45,15 @@ export function useWorkspaceProjectId(
 
   // Local: resolve via the host API. Disabled on remote so we don't issue a
   // pointless host-relay request.
+  // Asked of, and cached per, the host this scope is on: an inactive pane
+  // must not ask the focused pane's host about its own workspace.
   const { data } = useQuery({
-    queryKey: ['workspace-project-id', workspaceId],
-    queryFn: () => workspacesApi.getProjectId(workspaceId as string),
+    queryKey: [
+      'workspace-project-id',
+      workspaceId,
+      getHostRequestScopeQueryKey(hostId),
+    ],
+    queryFn: () => workspacesApi.getProjectId(workspaceId as string, hostId),
     enabled: !!workspaceId && !isRemote,
     staleTime: 5 * 60 * 1000,
   });

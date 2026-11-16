@@ -14,6 +14,7 @@ import {
   subscribeTerminalFontSize,
 } from '@/shared/lib/terminalTheme';
 import { useTerminal } from '@/shared/hooks/useTerminal';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 interface XTermInstanceProps {
   tabId: string;
@@ -62,6 +63,8 @@ export function XTermInstance({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const { theme } = useTheme();
+  // Where this terminal's pane lives; a standalone terminal is this machine.
+  const hostId = useHostId();
   const {
     registerTerminalInstance,
     getTerminalInstance,
@@ -157,6 +160,7 @@ export function XTermInstance({
       createTerminalConnection(
         tabId,
         terminalEndpoint(workspaceId, terminal.cols, terminal.rows),
+        hostId,
         (data) => terminal.write(data),
         () => onCloseRef.current?.()
       );
@@ -185,6 +189,7 @@ export function XTermInstance({
   }, [
     tabId,
     workspaceId,
+    hostId,
     getTerminalInstance,
     registerTerminalInstance,
     createTerminalConnection,

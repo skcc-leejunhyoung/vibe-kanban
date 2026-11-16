@@ -8,7 +8,8 @@
       "title": "Unsaved Changes",
       "message": "You have unsaved changes. Are you sure you want to close without saving?",
       "discard": "Discard Changes",
-      "cancel": "Keep Editing"
+      "cancel": "Keep Editing",
+      "switchHostMessage": "You have unsaved changes for this machine. Switch machines and discard them?"
     },
     "layout": {
       "nav": {
@@ -64,7 +65,9 @@
       "remoteHost": "Remote host",
       "noHostAvailable": "No host is available for host-specific settings yet.",
       "pairMachineHint": "Pair a machine to open machine settings.",
-      "selectMachineHint": "Select a machine to open machine settings."
+      "selectMachineHint": "Select a machine to open machine settings.",
+      "unavailableHost": "Unavailable host",
+      "unavailableHostHint": "This machine is no longer available. Select another one."
     },
     "general": {
       "loading": "Loading settings...",
@@ -556,6 +559,7 @@
         "renameFailed": "Failed to rename configuration. Please try again.",
         "saveFailed": "Failed to save agent configurations. Please try again.",
         "saveConfigFailed": "Failed to save configuration. Please try again.",
+        "conflict": "The agent configurations changed on this host while you were editing. Discard your changes to load the latest version, then edit again.",
         "schemaNotFound": "Schema not found for executor type: {{executor}}"
       },
       "tree": {

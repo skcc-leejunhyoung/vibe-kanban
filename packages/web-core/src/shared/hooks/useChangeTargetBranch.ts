@@ -17,10 +17,12 @@ export function useChangeTargetBranch(
   workspaceId: string | undefined,
   repoId: string | undefined,
   onSuccess?: (data: ChangeTargetBranchResponse) => void,
-  onError?: (err: unknown) => void
+  onError?: (err: unknown) => void,
+  hostIdOverride?: string | null
 ) {
   const queryClient = useQueryClient();
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? contextHostId : hostIdOverride;
 
   return useMutation<
     ChangeTargetBranchResponse,
@@ -45,7 +47,7 @@ export function useChangeTargetBranch(
         });
         // Invalidate workspaceWithSession query to refresh attempt.target_branch
         queryClient.invalidateQueries({
-          queryKey: ['workspaceWithSession', workspaceId],
+          queryKey: ['workspaceWithSession', hostId, workspaceId],
         });
         // Refresh repos to update target_branch in RepoCard
         queryClient.invalidateQueries({

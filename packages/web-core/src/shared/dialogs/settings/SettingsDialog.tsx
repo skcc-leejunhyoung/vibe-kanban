@@ -78,11 +78,13 @@ function SettingsDialogNavigation({
   const { t } = useTranslation('settings');
   const {
     availableHosts,
-    hostsResolved,
+    targetResolved,
     selectedHost,
     selectedHostId,
+    selectedHostUnavailable,
     setSelectedHostId,
   } = useSettingsHost();
+  const { isDirty } = useSettingsDirty();
   const isRemoteShared = isRemoteSharedHostId(selectedHostId);
   const hostSections = SETTINGS_SECTION_DEFINITIONS.filter(
     (section) =>
@@ -96,18 +98,57 @@ function SettingsDialogNavigation({
     value: host.id,
     label: host.status != null ? `${host.label} (${host.status})` : host.label,
   }));
-  const hostSettingsDisabled = !hostsResolved || !selectedHost;
+  // A host that left the list stays the visible selection until the user
+  // picks another; the picker must not name a host the form is not about.
+  if (selectedHostUnavailable && selectedHostId) {
+    hostOptions.push({
+      value: selectedHostId,
+      label: t('settings.hostPicker.unavailableHost', 'Unavailable host'),
+    });
+  }
+  const hostSettingsDisabled = !targetResolved || !selectedHost;
   const sectionButtonRefs = useRef<Map<SettingsSectionType, HTMLButtonElement>>(
     new Map()
   );
-  const hostHint = !hostsResolved
+  const hostHint = !targetResolved
     ? t('settings.general.loading')
-    : availableHosts.length === 0
-      ? t('settings.hostPicker.pairMachineHint')
-      : t('settings.hostPicker.selectMachineHint');
+    : selectedHostUnavailable
+      ? t(
+          'settings.hostPicker.unavailableHostHint',
+          'This machine is no longer available. Select another one.'
+        )
+      : availableHosts.length === 0
+        ? t('settings.hostPicker.pairMachineHint')
+        : t('settings.hostPicker.selectMachineHint');
 
   const handlePairOtherMachines = () => {
     onSectionSelect('relay');
+  };
+
+  // Host sections are mounted per machine, so switching drops the open
+  // section's draft instead of carrying it to the next host. Ask first.
+  const isSwitchingRef = useRef(false);
+  const handleHostChange = async (hostId: string) => {
+    if (hostId === selectedHostId || isSwitchingRef.current) return;
+    if (isDirty && isHostSpecificSettingsSection(activeSection)) {
+      isSwitchingRef.current = true;
+      try {
+        const result = await ConfirmDialog.show({
+          title: t('settings.unsavedChanges.title'),
+          message: t(
+            'settings.unsavedChanges.switchHostMessage',
+            'You have unsaved changes for this machine. Switch machines and discard them?'
+          ),
+          confirmText: t('settings.unsavedChanges.discard'),
+          cancelText: t('settings.unsavedChanges.cancel'),
+          variant: 'destructive',
+        });
+        if (result !== 'confirmed') return;
+      } finally {
+        isSwitchingRef.current = false;
+      }
+    }
+    setSelectedHostId(hostId);
   };
 
   const isSectionDisabled = useCallback(
@@ -232,7 +273,7 @@ function SettingsDialogNavigation({
                 onClick: handlePairOtherMachines,
               },
             ]}
-            onChange={setSelectedHostId}
+            onChange={(hostId) => void handleHostChange(hostId)}
             placeholder={t('settings.layout.nav.selectHost')}
           />
           {hostSettingsDisabled && (
@@ -267,8 +308,14 @@ function SettingsDialogContent({
   const getContainer = useCallback(() => containerRef.current, []);
   const { t } = useTranslation('settings');
   const { isDirty } = useSettingsDirty();
-  const { availableHosts, hostsResolved, selectedHost, selectedHostId } =
-    useSettingsHost();
+  const {
+    availableHosts,
+    hostsResolved,
+    targetResolved,
+    selectedHost,
+    selectedHostId,
+    selectedHostUnavailable,
+  } = useSettingsHost();
   const isRemoteShared = isRemoteSharedHostId(selectedHostId);
 
   const resolvedInitialSection = useMemo<SettingsSectionType>(() => {
@@ -338,11 +385,17 @@ function SettingsDialogContent({
 
   // Switching to the "Remote" device hides machine-only host sections; fall
   // back to the one host section it does support.
+  // Not while the target is still a placeholder: its kind says nothing about
+  // the host the dialog was opened for, and the requested section would be
+  // gone by the time that host is selected.
   useEffect(() => {
-    if (!isHostSectionAvailableForTarget(activeSection, isRemoteShared)) {
+    if (
+      targetResolved &&
+      !isHostSectionAvailableForTarget(activeSection, isRemoteShared)
+    ) {
       setActiveSection('general');
     }
-  }, [activeSection, isRemoteShared]);
+  }, [activeSection, isRemoteShared, targetResolved]);
 
   const handleMobileBack = () => {
     setMobileShowContent(false);
@@ -454,7 +507,14 @@ function SettingsDialogContent({
               {/* Section content */}
               <div className="flex-1 overflow-y-auto">
                 {isHostSpecificSettingsSection(activeSection) ? (
-                  isRemoteShared ? (
+                  // Until the target is final the selection is a placeholder:
+                  // showing its settings as editable would let a save land on
+                  // another host than the one the dialog was opened for.
+                  !targetResolved ? (
+                    <div className="px-6 py-8 text-sm text-low">
+                      {t('settings.general.loading')}
+                    </div>
+                  ) : isRemoteShared ? (
                     <SettingsRemoteUserSystemProvider>
                       <SettingsSection
                         type={activeSection}
@@ -464,17 +524,34 @@ function SettingsDialogContent({
                       />
                     </SettingsRemoteUserSystemProvider>
                   ) : selectedHost ? (
-                    <SettingsMachineUserSystemProvider>
-                      <SettingsSection
-                        type={activeSection}
-                        onClose={handleCloseWithConfirmation}
-                        initialState={initialState}
-                        onNavigate={handleSectionSelect}
-                      />
-                    </SettingsMachineUserSystemProvider>
-                  ) : !hostsResolved ? (
+                    <>
+                      {selectedHostUnavailable && (
+                        <div className="mx-6 mt-4 rounded-sm border border-error/50 bg-error/10 p-3 text-sm text-error">
+                          {t(
+                            'settings.hostPicker.unavailableHostHint',
+                            'This machine is no longer available. Select another one.'
+                          )}
+                        </div>
+                      )}
+                      {/* Keyed by machine: a section's draft, dirty flag and
+                          in-flight save all belong to the host they were made
+                          for and are dropped with it, never applied to the
+                          next. */}
+                      <SettingsMachineUserSystemProvider key={selectedHost.id}>
+                        <SettingsSection
+                          type={activeSection}
+                          onClose={handleCloseWithConfirmation}
+                          initialState={initialState}
+                          onNavigate={handleSectionSelect}
+                        />
+                      </SettingsMachineUserSystemProvider>
+                    </>
+                  ) : selectedHostUnavailable ? (
                     <div className="px-6 py-8 text-sm text-low">
-                      {t('settings.general.loading')}
+                      {t(
+                        'settings.hostPicker.unavailableHostHint',
+                        'This machine is no longer available. Select another one.'
+                      )}
                     </div>
                   ) : availableHosts.length > 0 ? (
                     <div className="px-6 py-8 text-sm text-low">

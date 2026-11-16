@@ -1,4 +1,4 @@
-import { act, createElement } from 'react';
+import { act, createElement, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -531,6 +531,46 @@ describe('useWorkspaces active-first loading', () => {
     expect(enabledByEndpoint[endpoint('host-b', true)]).toBe(true);
     expect(result.isLoading).toBe(false);
     expect(result.workspaces.map(({ id }) => id)).toEqual(['a1']);
+  });
+
+  it('keeps the app below mounted while hosts come online and go offline', async () => {
+    env.runtime = 'remote';
+    let mounts = 0;
+    function Child() {
+      useEffect(() => {
+        mounts += 1;
+      }, []);
+      return null;
+    }
+    const renderWith = (hosts: typeof env.hosts) => {
+      env.hosts = hosts;
+      return act(async () => {
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(
+              UnifiedWorkspaceStreamsProvider,
+              null,
+              createElement(Child)
+            )
+          )
+        );
+      });
+    };
+
+    await renderWith([]);
+    await renderWith([{ id: 'host-a', status: 'online' }]);
+    await renderWith([
+      { id: 'host-a', status: 'online' },
+      { id: 'host-b', status: 'online' },
+    ]);
+    await renderWith([
+      { id: 'host-a', status: 'online' },
+      { id: 'host-b', status: 'offline' },
+    ]);
+    // A remount here closes every dialog and drops every draft in the app.
+    expect(mounts).toBe(1);
   });
 
   it('loads a snapshot host archive only after its active snapshot', async () => {

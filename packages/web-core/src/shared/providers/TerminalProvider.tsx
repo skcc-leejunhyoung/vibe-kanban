@@ -291,6 +291,7 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
     (
       tabId: string,
       endpoint: string,
+      hostId: string | null,
       onData: (data: Uint8Array) => void,
       onExit?: () => void
     ) => {
@@ -342,7 +343,14 @@ export function TerminalProvider({ children }: TerminalProviderProps) {
 
         void (async () => {
           try {
-            const ws = await openLocalApiWebSocket(endpoint);
+            // The tab's own host, also on every reconnect. The transport's
+            // default is the host of whichever pane has focus at that moment,
+            // which would open this shell on another machine.
+            const ws = await openLocalApiWebSocket(endpoint, {
+              hostScope: 'explicit',
+              hostId,
+              relayHostId: hostId,
+            });
             const state = reconnectStateRef.current.get(tabId);
             if (!state || state.intentionallyClosed) {
               ws.close();

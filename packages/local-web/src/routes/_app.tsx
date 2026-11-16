@@ -15,7 +15,7 @@ import { ExecutionProcessesProvider } from '@/shared/providers/ExecutionProcesse
 import { LogsPanelProvider } from '@/shared/providers/LogsPanelProvider';
 import { ActionsProvider } from '@/shared/providers/ActionsProvider';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppUserSystem } from '@/shared/hooks/useAppUserSystem';
 import { SharedAppLayout } from '@/shared/components/ui-new/containers/SharedAppLayout';
 import { HostUserSystemProvider } from '@web/app/providers/HostUserSystemProvider';
 import { useWorkspacePaneShortcuts } from '@/shared/keyboard/useWorkspacePaneShortcuts';
@@ -40,7 +40,10 @@ function KeyboardShortcutsHandler() {
 }
 
 function ReleaseNotesHandler() {
-  const { config, updateAndSaveConfig } = useUserSystem();
+  // The notes are about this app, so the flag is this machine's. The route's
+  // user system belongs to whichever host the focused pane is on, and reading
+  // it here would dismiss that host's pending notes on a mere focus change.
+  const { config, updateAndSaveConfig } = useAppUserSystem();
   const location = useLocation();
 
   useEffect(() => {

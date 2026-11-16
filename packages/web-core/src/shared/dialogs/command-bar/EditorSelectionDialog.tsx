@@ -23,13 +23,17 @@ import { defineModal } from '@/shared/lib/modals';
 export interface EditorSelectionDialogProps {
   selectedAttemptId?: string;
   filePath?: string;
+  /** Host the workspace lives on; the retry must go to the same one. */
+  hostId?: string | null;
 }
 
 const EditorSelectionDialogImpl = create<EditorSelectionDialogProps>(
-  ({ selectedAttemptId, filePath }) => {
+  ({ selectedAttemptId, filePath, hostId }) => {
     const modal = useModal();
-    const handleOpenInEditor = useOpenInEditor(selectedAttemptId, () =>
-      modal.hide()
+    const handleOpenInEditor = useOpenInEditor(
+      selectedAttemptId,
+      () => modal.hide(),
+      hostId
     );
     const [selectedEditor, setSelectedEditor] = useState<EditorType>(
       EditorType.VS_CODE

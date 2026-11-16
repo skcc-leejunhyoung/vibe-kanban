@@ -25,7 +25,6 @@ import {
 } from '@/shared/hooks/useWorkspaceRepo';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
-import { useWorkspaces } from '@/shared/hooks/useWorkspaces';
 import { workspacesApi, type Result } from '@/shared/lib/api';
 import { ResolveConflictsDialog } from '@/shared/dialogs/tasks/ResolveConflictsDialog';
 import { RebaseInProgressDialog } from '@vibe/ui/components/RebaseInProgressDialog';
@@ -59,14 +58,19 @@ function RebaseDialogContent({
   const [error, setError] = useState<string | null>(null);
   const [hasInitializedBranches, setHasInitializedBranches] = useState(false);
 
-  const git = useGitOperations(workspaceId, repoId);
-  // nice-modal keeps this mounted after close: queries must stay on the
-  // dialog's host, not follow the route host to another machine.
+  // nice-modal keeps this mounted after close: the rebase and the queries
+  // must stay on the dialog's host, not follow the route host to another
+  // machine.
+  const git = useGitOperations(workspaceId, repoId, hostId);
   const { data: workspace } = useWorkspaceRecord(workspaceId, { hostId });
-  const { workspaceId: activeWorkspaceId } = useWorkspaceContext();
-  const { workspaces } = useWorkspaces();
+  const { workspaceId: activeWorkspaceId, activeWorkspaces } =
+    useWorkspaceContext();
+  // Looked up on the dialog's host: the same id on another host is another
+  // workspace.
   const isWorkspaceRunning =
-    workspaces.find((w) => w.id === workspaceId)?.isRunning ?? false;
+    activeWorkspaces.find(
+      (w) => w.id === workspaceId && (w.hostId ?? null) === (hostId ?? null)
+    )?.isRunning ?? false;
 
   // Load branches and repo data internally. Fetch from origin on open so the
   // target list is current at the moment of picking, matching the other
@@ -132,6 +136,10 @@ function RebaseDialogContent({
   // every 5-second branchStatus poll that still returns conflicts would
   // re-open the ResolveConflictsDialog (e.g. during long multi-commit rebases).
   const hasRedirectedRef = useRef(false);
+  // The dialog stays mounted: each open (and each target) redirects anew.
+  useEffect(() => {
+    if (modal.visible) hasRedirectedRef.current = false;
+  }, [modal.visible, workspaceId, repoId, hostId]);
 
   // If rebase is in progress, redirect to the appropriate dialog
   // Only show if the user is still viewing this workspace
@@ -177,6 +185,7 @@ function RebaseDialogContent({
     repoStatus,
     workspaceId,
     repoId,
+    hostId,
     workspace?.branch,
     modal,
     activeWorkspaceId,

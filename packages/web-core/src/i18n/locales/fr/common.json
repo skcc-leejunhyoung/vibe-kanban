@@ -413,6 +413,8 @@
     "issueDescriptionPlaceholder": "Entrez la description de la tâche...",
     "createDraftWorkspaceImmediately": "Créer immédiatement un espace de travail brouillon",
     "workspaceHost": "Hôte de l'espace de travail",
+    "workspaceHostOffline": "{{name}} (hors ligne)",
+    "workspaceHostUnavailable": "Hôte indisponible",
     "thisMachine": "Cette machine",
     "createDraftWorkspaceDescription": "Après la création de l'issue, ouvrir le formulaire de création de workspace pré-rempli avec les détails de l'issue",
     "createIssue": "Créer la tâche",

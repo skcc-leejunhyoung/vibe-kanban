@@ -11,12 +11,18 @@ type OpenEditorOptions = {
   repoId?: string;
 };
 
+/**
+ * `hostIdOverride` is the workspace's host when the caller is not rendered in
+ * that host's scope (the editor-selection dialog).
+ */
 export function useOpenInEditor(
   workspaceId?: string,
-  onShowEditorDialog?: () => void
+  onShowEditorDialog?: () => void,
+  hostIdOverride?: string | null
 ) {
   const appRuntime = useAppRuntime();
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? contextHostId : hostIdOverride;
 
   return useCallback(
     async (options?: OpenEditorOptions): Promise<void> => {
@@ -58,6 +64,7 @@ export function useOpenInEditor(
             EditorSelectionDialog.show({
               selectedAttemptId: workspaceId,
               filePath,
+              hostId,
             });
           }
         }

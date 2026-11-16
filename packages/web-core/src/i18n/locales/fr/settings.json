@@ -8,7 +8,8 @@
       "title": "Modifications non enregistrées",
       "message": "Vous avez des modifications non enregistrées. Êtes-vous sûr de vouloir fermer sans enregistrer ?",
       "discard": "Abandonner les modifications",
-      "cancel": "Continuer l'édition"
+      "cancel": "Continuer l'édition",
+      "switchHostMessage": "Vous avez des modifications non enregistrées pour cette machine. Changer de machine et les abandonner ?"
     },
     "layout": {
       "nav": {
@@ -369,6 +370,7 @@
         "renameFailed": "Échec du renommage de la configuration. Veuillez réessayer.",
         "saveFailed": "Échec de l'enregistrement des configurations d'agents. Veuillez réessayer.",
         "saveConfigFailed": "Échec de l'enregistrement de la configuration. Veuillez réessayer.",
+        "conflict": "La configuration des agents a changé sur cet hôte pendant votre modification. Abandonnez vos changements pour charger la dernière version, puis modifiez à nouveau.",
         "schemaNotFound": "Schéma non trouvé pour le type d'exécuteur : {{executor}}"
       },
       "tree": {
@@ -637,7 +639,9 @@
       "remoteHost": "Remote host",
       "noHostAvailable": "No host is available for host-specific settings yet.",
       "pairMachineHint": "Pair a machine to open machine settings.",
-      "selectMachineHint": "Select a machine to open machine settings."
+      "selectMachineHint": "Select a machine to open machine settings.",
+      "unavailableHost": "Hôte indisponible",
+      "unavailableHostHint": "Cette machine n'est plus disponible. Sélectionnez-en une autre."
     },
     "automation": {
       "reviewScope": "Review requests monitored: {{repositories}}",

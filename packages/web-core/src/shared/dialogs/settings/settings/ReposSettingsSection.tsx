@@ -41,6 +41,7 @@ import {
   SettingsSaveBar,
 } from './SettingsComponents';
 import { useSettingsMachineClient } from './SettingsHostContext';
+import { useSettingsDirty } from './SettingsDirtyContext';
 
 interface RepoScriptsFormState {
   display_name: string;
@@ -336,10 +337,11 @@ export function ReposSettingsSection({
     (async () => {
       const names: string[] = [];
       for (const project of allProjects) {
+        // A project whose defaults cannot be read is left out of the list.
         const defaults = await getProjectRepoDefaults(
           project.id,
           machineClient.target.apiHostId
-        );
+        ).catch(() => null);
         if (cancelled) return;
         if (defaults?.some((r) => r.repo_id === selectedRepoId)) {
           names.push(project.name);
@@ -361,6 +363,12 @@ export function ReposSettingsSection({
     if (!draft || !selectedRepo) return false;
     return !isEqual(draft, repoToFormState(selectedRepo));
   }, [draft, selectedRepo]);
+  // Lets the dialog ask before a host switch or a close drops the draft.
+  const { setDirty: setContextDirty } = useSettingsDirty();
+  useEffect(() => {
+    setContextDirty('repos', hasUnsavedChanges);
+    return () => setContextDirty('repos', false);
+  }, [hasUnsavedChanges, setContextDirty]);
 
   // Handle repo selection
   const handleRepoSelect = useCallback(
@@ -402,7 +410,8 @@ export function ReposSettingsSection({
       }
 
       await machineClient.deleteRepo(selectedRepo.id);
-      await queryClient.invalidateQueries({ queryKey: reposQueryKey });
+      // Every surface's copy of a repo list, not only this section's.
+      await queryClient.invalidateQueries({ queryKey: ['repos'] });
       setSelectedRepoId('');
       setSelectedRepo(null);
       setDraft(null);
@@ -417,7 +426,7 @@ export function ReposSettingsSection({
     } finally {
       setRemoving(false);
     }
-  }, [machineClient, queryClient, reposQueryKey, selectedRepo]);
+  }, [machineClient, queryClient, selectedRepo]);
 
   // Handle adding a new repo via folder picker
   const handleAddRepo = useCallback(async () => {
@@ -434,14 +443,14 @@ export function ReposSettingsSection({
       if (!selectedPath) return;
 
       const repo = await machineClient.registerRepo({ path: selectedPath });
-      await queryClient.invalidateQueries({ queryKey: reposQueryKey });
+      await queryClient.invalidateQueries({ queryKey: ['repos'] });
       setSelectedRepoId(repo.id);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : t('settings.repos.addRepo.error')
       );
     }
-  }, [machineClient, queryClient, reposQueryKey, t]);
+  }, [machineClient, queryClient, t]);
 
   // Populate draft from server data
   useEffect(() => {
@@ -499,6 +508,11 @@ export function ReposSettingsSection({
       queryClient.setQueryData(reposQueryKey, (old: Repo[] | undefined) =>
         old?.map((r) => (r.id === updatedRepo.id ? updatedRepo : r))
       );
+      // Other surfaces keep this host's repos under their own keys.
+      void queryClient.invalidateQueries({
+        queryKey: ['repos'],
+        predicate: (query) => !isEqual(query.queryKey, reposQueryKey),
+      });
       // The primary remote may have changed, so recompute ahead/behind status.
       queryClient.invalidateQueries({
         queryKey: ['repoRemoteStatus', updatedRepo.id],

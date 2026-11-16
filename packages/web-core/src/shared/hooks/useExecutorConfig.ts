@@ -203,6 +203,11 @@ interface UseExecutorConfigOptions {
   sessionId?: string;
   /** Route model discovery to this host (remote runtime, host-picker flows). */
   hostId?: string | null;
+  /**
+   * What the selections belong to when that is not a session (a dialog's
+   * workspace + host). A new scope starts without the previous one's picks.
+   */
+  scopeKey?: string;
   onPersist?: (config: ExecutorConfig) => void;
 }
 
@@ -229,6 +234,7 @@ export function useExecutorConfig({
   workspaceId,
   sessionId,
   hostId,
+  scopeKey,
   onPersist,
 }: UseExecutorConfigOptions): UseExecutorConfigResult {
   const contextHostId = useHostId();
@@ -242,7 +248,7 @@ export function useExecutorConfig({
   // when the same chat container navigates to another session.
   useEffect(() => {
     setUserSelections({});
-  }, [sessionId]);
+  }, [sessionId, scopeKey]);
 
   const executor = useEffectiveExecutor(
     userSelections,

@@ -25,7 +25,10 @@ type Options = {
 
 export function useRepoBranches(repoId?: string | null, opts?: Options) {
   const enabled = (opts?.enabled ?? true) && !!repoId;
-  const hostId = opts?.hostId;
+  // Without an explicit host this is the surrounding scope's (the pane's),
+  // not the transport default that follows whichever pane has focus.
+  const contextHostId = useHostId();
+  const hostId = opts?.hostId === undefined ? contextHostId : opts.hostId;
   const fetch = opts?.fetch ?? false;
 
   return useQuery<GitBranch[]>({

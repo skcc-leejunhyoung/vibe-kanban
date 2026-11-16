@@ -524,7 +524,9 @@ async function attachPrAndReport(
 
   if (result.success && result.data.pr_attached && result.data.pr_number) {
     invalidateWorkspaceQueries(ctx.queryClient, workspaceId, ctx.currentHostId);
-    ctx.queryClient.invalidateQueries({ queryKey: ['branch-status'] });
+    ctx.queryClient.invalidateQueries({
+      queryKey: ['branchStatus', workspaceId],
+    });
     await ConfirmDialog.show({
       title: 'Pull Request Linked',
       message: `Linked PR #${result.data.pr_number}${result.data.pr_url ? ` — ${result.data.pr_url}` : ''}`,
@@ -562,18 +564,24 @@ async function linkPrByUrl(
   });
 }
 
-// Helper to find the next workspace to navigate to when removing current workspace
-function getNextWorkspaceId(
-  activeWorkspaces: { id: string; isRunning?: boolean }[],
-  removingWorkspaceId: string
-): string | null {
+// Helper to find the next workspace to navigate to when removing current
+// workspace. The list spans hosts, so the neighbour comes back with its own
+// host: navigating to its id on the removed workspace's host finds nothing.
+function getNextWorkspace(
+  activeWorkspaces: { id: string; hostId?: string | null }[],
+  removingWorkspaceId: string,
+  removingHostId: string | null
+): { id: string; hostId: string | null } | null {
   const currentIndex = activeWorkspaces.findIndex(
-    (ws) => ws.id === removingWorkspaceId
+    (ws) =>
+      ws.id === removingWorkspaceId && (ws.hostId ?? null) === removingHostId
   );
   if (currentIndex >= 0 && activeWorkspaces.length > 1) {
     const nextWorkspace =
       activeWorkspaces[currentIndex + 1] || activeWorkspaces[currentIndex - 1];
-    return nextWorkspace?.id ?? null;
+    return nextWorkspace
+      ? { id: nextWorkspace.id, hostId: nextWorkspace.hostId ?? null }
+      : null;
   }
   return null;
 }
@@ -873,8 +881,8 @@ export const Actions = {
       if (result.action === 'confirmed') {
         // Calculate next workspace before deleting (only if deleting current)
         const isCurrentWorkspace = ctx.currentWorkspaceId === workspaceId;
-        const nextWorkspaceId = isCurrentWorkspace
-          ? getNextWorkspaceId(ctx.activeWorkspaces, workspaceId)
+        const nextWorkspace = isCurrentWorkspace
+          ? getNextWorkspace(ctx.activeWorkspaces, workspaceId, hostId ?? null)
           : null;
 
         await workspacesApi.delete(workspaceId, result.deleteBranches, hostId);
@@ -897,10 +905,10 @@ export const Actions = {
 
         // Navigate away if we deleted the current workspace
         if (isCurrentWorkspace) {
-          if (nextWorkspaceId) {
-            ctx.selectWorkspace(nextWorkspaceId);
+          if (nextWorkspace) {
+            ctx.selectWorkspace(nextWorkspace.id, nextWorkspace.hostId);
           } else {
-            ctx.appNavigation.goToWorkspacesCreate();
+            ctx.appNavigation.goToWorkspacesCreate({ hostId });
           }
         }
       }
@@ -2084,6 +2092,7 @@ export const Actions = {
         // Show editor selection dialog on failure
         EditorSelectionDialog.show({
           selectedAttemptId: workspaceId,
+          hostId,
         });
       }
     },
@@ -3000,6 +3009,7 @@ export const Actions = {
       const baseBranch = await BranchPickerDialog.show({
         repoId,
         mode: 'updateTargetFromBase',
+        hostId: ctx.currentHostId,
       });
       if (!baseBranch) return;
 
@@ -3034,6 +3044,7 @@ export const Actions = {
       const newTargetBranch = await BranchPickerDialog.show({
         repoId,
         mode: 'changeTarget',
+        hostId: ctx.currentHostId,
       });
       if (!newTargetBranch) return;
 
@@ -3050,10 +3061,10 @@ export const Actions = {
         queryKey: ['branchStatus', workspaceId],
       });
       ctx.queryClient.invalidateQueries({
-        queryKey: workspaceRecordKeys.byId(workspaceId),
+        queryKey: workspaceRecordKeys.byId(workspaceId, ctx.currentHostId),
       });
       ctx.queryClient.invalidateQueries({
-        queryKey: workspaceRepoKeys.byWorkspace(workspaceId),
+        queryKey: workspaceRepoKeys.byWorkspace(workspaceId, ctx.currentHostId),
       });
       ctx.queryClient.invalidateQueries({
         queryKey: repoBranchKeys.byRepo(repoId),
@@ -3200,6 +3211,7 @@ export const Actions = {
           ahead: result.error.ahead,
           behind: result.error.behind,
           isTarget: true,
+          hostId: ctx.currentHostId,
         });
         if (choice !== 'force') return;
       }
@@ -3274,11 +3286,15 @@ export const Actions = {
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, _workspaceId, repoId) => {
       try {
-        const response = await repoApi.openEditor(repoId, {
-          editor_type: null,
-          file_path: null,
-          is_remote_web: ctx.appRuntime === 'remote',
-        });
+        const response = await repoApi.openEditor(
+          repoId,
+          {
+            editor_type: null,
+            file_path: null,
+            is_remote_web: ctx.appRuntime === 'remote',
+          },
+          ctx.currentHostId
+        );
         if (response.url) {
           window.open(response.url, '_blank');
         }
@@ -3295,12 +3311,14 @@ export const Actions = {
     icon: GearIcon,
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
-    execute: async (_ctx, _workspaceId, repoId) => {
+    execute: async (ctx, _workspaceId, repoId) => {
+      // The repo id is the workspace host's, so open that host's settings.
       await SettingsDialog.show({
         initialSection: 'repos',
         initialState: {
           repoId,
         },
+        initialHostId: ctx.currentHostId ?? 'local',
       });
     },
   },

@@ -30,7 +30,7 @@ import { SearchableDropdownContainer } from '@/shared/components/ui-new/containe
 import { fuzzySearchMatchAny } from '@vibe/ui/lib/search';
 import type { PullRequestDetail, GitRemote } from 'shared/types';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
-import { useHostId } from '@/shared/providers/HostIdProvider';
+import { useHostIdPinnedWhile } from '@/shared/providers/HostIdProvider';
 import { getHostRequestScopeQueryKey } from '@/shared/lib/hostRequestScope';
 
 const PR_CHECKOUT_POLL_MS = 1_000;
@@ -68,7 +68,9 @@ const CreateWorkspaceFromPrDialogImpl =
   create<CreateWorkspaceFromPrDialogProps>(() => {
     const modal = useModal();
     const appNavigation = useAppNavigation();
-    const hostId = useHostId();
+    // The host this dialog was opened on: its repo list, the selection made
+    // from it and the create request must all be the same machine's.
+    const hostId = useHostIdPinnedWhile(modal.visible);
     const { t } = useTranslation('tasks');
     const queryClient = useQueryClient();
 
@@ -88,8 +90,10 @@ const CreateWorkspaceFromPrDialogImpl =
       enabled: modal.visible,
     });
 
+    // Only while open: hidden, the pin is off and `repos` is whatever host
+    // the document is on, which would preselect its repo for the next open.
     useEffect(() => {
-      if (selectedRepoId) return;
+      if (!modal.visible || selectedRepoId) return;
       if (
         currentWorkspaceRepoId &&
         repos.some((r) => r.id === currentWorkspaceRepoId)
@@ -98,7 +102,7 @@ const CreateWorkspaceFromPrDialogImpl =
       } else if (repos.length === 1) {
         setSelectedRepoId(repos[0].id);
       }
-    }, [repos, selectedRepoId, currentWorkspaceRepoId]);
+    }, [modal.visible, repos, selectedRepoId, currentWorkspaceRepoId]);
 
     const { data: remotes = [], isLoading: isLoadingRemotes } = useQuery({
       queryKey: [
@@ -114,10 +118,10 @@ const CreateWorkspaceFromPrDialogImpl =
     });
 
     useEffect(() => {
-      if (remotes.length > 0 && !selectedRemote) {
+      if (modal.visible && remotes.length > 0 && !selectedRemote) {
         setSelectedRemote(remotes[0].name);
       }
-    }, [remotes, selectedRemote]);
+    }, [modal.visible, remotes, selectedRemote]);
 
     const {
       data: prsResult,
@@ -221,9 +225,11 @@ const CreateWorkspaceFromPrDialogImpl =
               );
           }
         }
-        return result.data;
+        // The host travels with the answer: by the time it arrives the dialog
+        // may be closed and the document on another host.
+        return { data: result.data, hostId };
       },
-      onSuccess: (data) => {
+      onSuccess: ({ data, hostId }) => {
         queryClient.invalidateQueries({ queryKey: ['tasks'] });
         queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         modal.hide();
@@ -236,7 +242,7 @@ const CreateWorkspaceFromPrDialogImpl =
           queryClient.invalidateQueries({ queryKey: ['workspaces'] });
           // The server removed the workspace: don't leave the user on it.
           if (window.location.pathname.includes(workspaceId)) {
-            appNavigation.goToWorkspacesCreate();
+            appNavigation.goToWorkspacesCreate({ hostId });
           }
           void ErrorDialog.show({ title: failedTitle, message });
         });

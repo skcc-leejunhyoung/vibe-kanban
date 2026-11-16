@@ -13,6 +13,10 @@ import {
 import { SettingsHostProvider, useSettingsHost } from './SettingsHostContext';
 import { SettingsMachineUserSystemProvider } from './SettingsMachineUserSystemProvider';
 import { AutomationSettingsSection } from './AutomationSettingsSection';
+import {
+  SettingsDirtyProvider,
+  useSettingsDirty,
+} from './SettingsDirtyContext';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 
 type CheckboxProps = {
@@ -91,12 +95,16 @@ vi.mock('@/shared/hooks/useAppRuntime', () => ({
   useAppRuntime: () => mock.runtime,
 }));
 vi.mock('@/shared/hooks/auth/useAuth', () => ({
-  useAuth: () => ({ isSignedIn: true, userId: 'owner' }),
+  useAuth: () => ({ isLoaded: true, isSignedIn: true, userId: 'owner' }),
 }));
-vi.mock('@/shared/providers/HostIdProvider', () => ({
-  useHostId: () => null,
-  getCurrentHostId: () => null,
-}));
+vi.mock('@/shared/providers/HostIdProvider', async () => {
+  const { createContext } = await import('react');
+  return {
+    HostIdContext: createContext<string | null>(null),
+    useHostId: () => null,
+    getCurrentHostId: () => null,
+  };
+});
 vi.mock('@/shared/hooks/useRemoteCloudHosts', () => ({
   useRemoteCloudHostsState: () => ({
     data: { hosts: [{ id: 'i9', name: 'i9-mbp', status: 'online' }] },
@@ -116,12 +124,14 @@ let client: QueryClient;
 let dom: ReturnType<typeof installFakeDomReact>;
 let selection: ReturnType<typeof useSettingsHost>;
 let system: ReturnType<typeof useUserSystem>;
+let dirty: boolean;
 let persisted: Record<string, Config>;
 let revisions: Record<string, number>;
 let offline: boolean;
 
 function Section() {
   system = useUserSystem();
+  dirty = useSettingsDirty().isDirty;
   return <AutomationSettingsSection />;
 }
 function Scope() {
@@ -135,9 +145,11 @@ function Scope() {
 function tree() {
   return (
     <QueryClientProvider client={client}>
-      <SettingsHostProvider>
-        <Scope />
-      </SettingsHostProvider>
+      <SettingsDirtyProvider>
+        <SettingsHostProvider>
+          <Scope />
+        </SettingsHostProvider>
+      </SettingsDirtyProvider>
     </QueryClientProvider>
   );
 }
@@ -261,11 +273,13 @@ describe('Agent access through host selection and the machine client', () => {
       expect(updateToggle()).toMatchObject({ checked: true, disabled: false });
       expect(writes()).toHaveLength(1);
       expect(writes()[0][0]).toBe('/api/config');
-      expect(writes()[0][1]).toMatchObject(
-        runtime === 'local'
-          ? { hostScope: 'explicit', hostId: 'i9' }
-          : { hostScope: 'none', relayHostId: 'i9' }
-      );
+      // The same explicit host on both webs: the settings form now goes
+      // through the one host-scoped config path every other surface uses.
+      expect(writes()[0][1]).toMatchObject({
+        hostScope: 'explicit',
+        hostId: 'i9',
+        relayHostId: 'i9',
+      });
       expect(
         mock.request.mock.calls.some(
           ([path]) => path === '/api/automation/state'
@@ -423,7 +437,11 @@ describe('Agent access through host selection and the machine client', () => {
     expect(cardHtml()).toContain('This machine (device-main)');
     await act(() => updateToggle().onChange(true));
     await flush();
-    expect(writes()[1][1]).toMatchObject({ hostScope: 'none' });
+    // Explicitly this machine: a `null` host is never rewritten to another.
+    expect(writes()[1][1]).toMatchObject({
+      hostScope: 'explicit',
+      hostId: null,
+    });
     await selectHost('i9');
     expect(updateToggle().checked).toBe(true);
   });
@@ -485,5 +503,18 @@ describe('Agent access through host selection and the machine client', () => {
       expect(await result).toBe(true);
     });
     expect(persisted.i9.language).toBe('KO');
+  });
+
+  it('reports an unsaved memory-sync change so a host switch asks first', async () => {
+    await mount();
+    const enabled = () => mock.checkboxes.get('agent-memory-sync-enabled')!;
+    expect(dirty).toBe(false);
+
+    await act(() => enabled().onChange(!enabled().checked));
+    expect(dirty).toBe(true);
+
+    // Put back by hand: nothing is left to lose.
+    await act(() => enabled().onChange(!enabled().checked));
+    expect(dirty).toBe(false);
   });
 });

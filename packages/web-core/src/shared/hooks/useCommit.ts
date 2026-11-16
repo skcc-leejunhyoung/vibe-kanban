@@ -12,10 +12,12 @@ type CommitParams = {
 export function useCommit(
   workspaceId?: string,
   onSuccess?: (result: CommitWorkspaceResponse) => void,
-  onError?: (err: unknown) => void
+  onError?: (err: unknown) => void,
+  hostIdOverride?: string | null
 ) {
   const queryClient = useQueryClient();
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? contextHostId : hostIdOverride;
 
   return useMutation<CommitWorkspaceResponse, unknown, CommitParams>({
     mutationFn: (params: CommitParams) => {

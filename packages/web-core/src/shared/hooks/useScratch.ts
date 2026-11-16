@@ -5,6 +5,7 @@ import { useLocalStorageScratch } from '@/shared/hooks/useLocalStorageScratch';
 import { scratchApi } from '@/shared/lib/api';
 import { ScratchType, type Scratch, type UpdateScratch } from 'shared/types';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 type ScratchState = {
   scratch: Scratch | null;
@@ -40,6 +41,11 @@ export const useScratch = (
   const runtime = useAppRuntime();
   const { userId } = useAuth();
   const isRemote = runtime === 'remote';
+  // The stream below reads from this host (the pane's, or this machine's at
+  // the app root). Writes must go to the same place: left to the transport's
+  // ambient host they would follow the focused pane instead, saving one
+  // host's scratch — app-wide UI preferences included — into another's.
+  const hostId = useHostId();
 
   // --- localStorage path (remote-web) ---
   const localResult = useLocalStorageScratch(userId, scratchType, id, {
@@ -56,7 +62,9 @@ export const useScratch = (
   const initialData = useCallback((): ScratchState => ({ scratch: null }), []);
 
   const { data, isConnected, isInitialized, error } =
-    useJsonPatchWsStream<ScratchState>(endpoint, serverEnabled, initialData);
+    useJsonPatchWsStream<ScratchState>(endpoint, serverEnabled, initialData, {
+      targetHostId: hostId,
+    });
 
   // Treat deleted scratches as null
   const rawScratch = data?.scratch as (Scratch & { deleted?: boolean }) | null;
@@ -64,14 +72,14 @@ export const useScratch = (
 
   const updateScratch = useCallback(
     async (update: UpdateScratch) => {
-      await scratchApi.update(scratchType, id, update);
+      await scratchApi.update(scratchType, id, update, hostId);
     },
-    [scratchType, id]
+    [scratchType, id, hostId]
   );
 
   const deleteScratch = useCallback(async () => {
-    await scratchApi.delete(scratchType, id);
-  }, [scratchType, id]);
+    await scratchApi.delete(scratchType, id, hostId);
+  }, [scratchType, id, hostId]);
 
   const isLoading = !isInitialized && !error;
 

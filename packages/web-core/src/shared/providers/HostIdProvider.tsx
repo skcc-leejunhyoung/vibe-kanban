@@ -3,6 +3,7 @@ import {
   useContext,
   useLayoutEffect,
   useMemo,
+  useState,
   type ReactNode,
 } from 'react';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
@@ -19,6 +20,19 @@ export const HostIdContext = createContext<string | null>(null);
 
 export function useHostId(): string | null {
   return useContext(HostIdContext);
+}
+
+/**
+ * `useHostId()`, frozen while `active`. Dialogs render under the document
+ * providers and stay mounted after closing, and the document host follows the
+ * focused pane — so a dialog reading it live would switch target while open.
+ * Each activation takes the host of that moment.
+ */
+export function useHostIdPinnedWhile(active: boolean): string | null {
+  const hostId = useHostId();
+  const [pin, setPin] = useState({ active, hostId });
+  if (pin.active !== active) setPin({ active, hostId });
+  return active && pin.active ? pin.hostId : hostId;
 }
 
 export function HostIdProvider({

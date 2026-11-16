@@ -31,7 +31,7 @@ import { AppBarUserPopoverContainer } from './AppBarUserPopoverContainer';
 import { useUserOrganizations } from '@/shared/hooks/useUserOrganizations';
 import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
 import { useAppUpdateStore } from '@/shared/stores/useAppUpdateStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
@@ -89,7 +89,8 @@ export function SharedAppLayout() {
     (s) => s.isLeftSidebarVisible
   );
   const { isSignedIn } = useAuth();
-  const { appVersion } = useUserSystem();
+  // The version of this app, not of the host the focused pane is on.
+  const { appVersion } = useAppMachineSystem();
   const updateVersion = useAppUpdateStore((s) => s.updateVersion);
   const restartForUpdate = useAppUpdateStore((s) => s.restart);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);

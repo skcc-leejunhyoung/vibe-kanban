@@ -15,7 +15,7 @@ import {
 import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { Switch } from '@vibe/ui/components/Switch';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
 import { getRemoteApiUrl, updateRelayHost } from '@/shared/lib/remoteApi';
 import { hostAccountApi } from '@/shared/lib/hostAccountApi';
 import { cn } from '@/shared/lib/utils';
@@ -102,7 +102,9 @@ export function LocalAccountHostSettings({
 }) {
   const { t } = useTranslation('settings');
   const { userId } = useAuth();
-  const { config, loginStatus } = useUserSystem();
+  // This computer's own name and login, not those of the host the focused
+  // pane is on: the name is what this machine gets registered under.
+  const { config, loginStatus } = useAppMachineSystem();
   const client = useQueryClient();
   const action = useAccountSettingsAction();
   const { register: registerHost, reset: resetRegistration } =

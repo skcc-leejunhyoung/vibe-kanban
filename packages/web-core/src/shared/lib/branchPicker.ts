@@ -10,10 +10,15 @@ import { BranchPickerDialog } from '@/shared/dialogs/BranchPickerDialog';
  * Shared by the per-repo target-branch picker (CreateModeRepoPickerBar) and the
  * working-branch row (WorkingBranchRow).
  */
-export async function pickBranchForRepo(repo: Repo): Promise<string | null> {
+export async function pickBranchForRepo(
+  repo: Repo,
+  /** The host the repo is registered on (`null` = this machine). */
+  hostId: string | null
+): Promise<string | null> {
   return BranchPickerDialog.show({
     repoId: repo.id,
     mode: 'select',
     repoDisplayName: repo.display_name || repo.name,
+    hostId,
   });
 }

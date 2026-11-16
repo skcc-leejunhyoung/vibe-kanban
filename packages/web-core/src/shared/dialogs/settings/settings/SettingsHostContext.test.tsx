@@ -14,7 +14,9 @@ const mock = vi.hoisted(() => ({
   runtime: 'remote',
   routeHostId: 'account' as string | null,
   fetchHosts: vi.fn(),
-  localHosts: [] as unknown[],
+  // `null` models the paired-host list still loading.
+  localHosts: [] as unknown[] | null,
+  localHostsFailed: false,
 }));
 vi.mock('@/shared/hooks/useAppRuntime', () => ({
   useAppRuntime: () => mock.runtime,
@@ -26,7 +28,10 @@ vi.mock('@/shared/providers/HostIdProvider', () => ({
   useHostId: () => mock.routeHostId,
 }));
 vi.mock('@/shared/hooks/useRemoteCloudHosts', () => ({
-  useRemoteCloudHostsState: () => ({ data: { hosts: mock.localHosts } }),
+  useRemoteCloudHostsState: () => ({
+    data: mock.localHosts ? { hosts: mock.localHosts } : undefined,
+    isError: mock.localHostsFailed,
+  }),
 }));
 vi.mock('@/shared/lib/remoteApi', () => ({ listRelayHosts: mock.fetchHosts }));
 vi.mock('@/shared/lib/relayPairingStorage', () => ({
@@ -78,6 +83,7 @@ beforeEach(() => {
   mock.runtime = 'remote';
   mock.routeHostId = 'account';
   mock.localHosts = [];
+  mock.localHostsFailed = false;
   client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
@@ -223,23 +229,118 @@ describe('settings host selection while lists change', () => {
     await load([host('account', { name: 'renamed' }), host('shared')]);
     expect(result.selectedHostId).toBe('shared');
   });
-  it('clears a user choice that disappears from the resolved list', async () => {
+  it('keeps a vanished choice selected as unavailable instead of retargeting', async () => {
     mock.routeHostId = null;
     await mount();
     await load([host('account')]);
     await act(() => result.setSelectedHostId('account'));
     await load([]);
-    expect(result.selectedHostId).toBe('remote');
+    expect(result.selectedHostId).toBe('account');
+    // The form stays on the host it was opened for (its last known entry),
+    // flagged unavailable, rather than being unmounted or moved to "Remote".
+    expect(result.selectedHost?.id).toBe('account');
+    expect(result.selectedHostUnavailable).toBe(true);
+    await load([host('account')]);
+    expect(result.selectedHostId).toBe('account');
+    expect(result.selectedHost?.id).toBe('account');
+    expect(result.selectedHostUnavailable).toBe(false);
+  });
+  it('keeps the host it opened on when that host leaves the list', async () => {
+    await mount();
+    await load([host('account'), host('shared')]);
+    expect(result.selectedHostId).toBe('account');
+    await load([host('shared')]);
+    expect(result.selectedHostId).toBe('account');
+    expect(result.selectedHostUnavailable).toBe(true);
+  });
+  it('does not retarget an open dialog when the document route moves to another host', async () => {
+    await mount();
+    await load([host('account'), host('shared')]);
+    expect(result.selectedHostId).toBe('account');
+    for (const focusedHost of ['shared', null, 'shared', 'account']) {
+      mock.routeHostId = focusedHost;
+      await mount();
+      expect(result.selectedHostId).toBe('account');
+    }
+  });
+  it('keeps a host that was asked for by name selected as unavailable when the list fails', async () => {
+    mock.runtime = 'local';
+    mock.routeHostId = null;
+    mock.localHosts = null;
+    mock.localHostsFailed = true;
+    await mount('host-x');
+    // Not "this machine": its settings would be shown under a request for X.
+    expect(result.selectedHostId).toBe('host-x');
+    expect(result.selectedHostUnavailable).toBe(true);
+    expect(result.selectedHost).toBeNull();
+  });
+  it('does the same when the list answers without the host that was asked for', async () => {
+    await mount('gone');
+    await load([host('account')]);
+    expect(result.selectedHostId).toBe('gone');
+    expect(result.selectedHostUnavailable).toBe(true);
+    expect(result.selectedHost).toBeNull();
+  });
+  it('falls back to the default target when only the route host is missing', async () => {
+    mock.routeHostId = 'gone';
+    await mount();
     await load([host('account')]);
     expect(result.selectedHostId).toBe('remote');
+    expect(result.selectedHostUnavailable).toBe(false);
   });
-  it('also follows a late remote-machine list on local web', async () => {
+  it('reads a remote-web request for "local" as no host in particular', async () => {
+    mock.routeHostId = null;
+    await mount('local');
+    await load([host('account')]);
+    expect(result.selectedHostId).toBe('remote');
+    expect(result.selectedHostUnavailable).toBe(false);
+  });
+  it('waits for a late remote-machine list on local web instead of showing this machine', async () => {
+    mock.runtime = 'local';
+    mock.localHosts = null;
+    await mount();
+    // "This machine" is only a placeholder until the list answers.
+    expect(result.selectedHostId).toBe('local');
+    expect(result.targetResolved).toBe(false);
+    mock.localHosts = [{ id: 'account', name: 'Other Mac', status: 'online' }];
+    await mount();
+    expect(result.targetResolved).toBe(true);
+    expect(result.selectedHostId).toBe('account');
+  });
+  it('opens this machine at once on local web without waiting for the host list', async () => {
+    mock.runtime = 'local';
+    mock.routeHostId = null;
+    mock.localHosts = null;
+    await mount();
+    expect(result.targetResolved).toBe(true);
+    expect(result.selectedHostId).toBe('local');
+  });
+  it('holds the remote target back until the host list has answered', async () => {
+    await mount();
+    expect(result.targetResolved).toBe(false);
+    await load([host('account')]);
+    expect(result.targetResolved).toBe(true);
+    expect(result.selectedHostId).toBe('account');
+  });
+  it('stays on this machine when a host is listed only after the list had settled', async () => {
     mock.runtime = 'local';
     await mount();
+    expect(result.targetResolved).toBe(true);
     expect(result.selectedHostId).toBe('local');
     mock.localHosts = [{ id: 'account', name: 'Other Mac', status: 'online' }];
     await mount();
-    expect(result.selectedHostId).toBe('account');
+    expect(result.selectedHostId).toBe('local');
+  });
+  it('keeps this machine selected on local web when another host pane gets focus', async () => {
+    mock.runtime = 'local';
+    mock.routeHostId = null;
+    mock.localHosts = [{ id: 'account', name: 'Other Mac', status: 'online' }];
+    await mount();
+    expect(result.targetResolved).toBe(true);
+    expect(result.selectedHostId).toBe('local');
+    mock.routeHostId = 'account';
+    await mount();
+    expect(result.selectedHostId).toBe('local');
   });
   it('preserves a deliberate local-computer choice after remote machines load', async () => {
     mock.runtime = 'local';

@@ -43,7 +43,7 @@ import type {
   GhCliSupportVariant,
 } from '@/shared/dialogs/auth/GhCliSetupDialog';
 import type { GhCliSetupError } from 'shared/types';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useHostUserSystem } from '@/shared/hooks/useHostUserSystem';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
 import { AgentSelector } from '@/shared/components/tasks/AgentSelector';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
@@ -121,7 +121,10 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     const queryClient = useQueryClient();
     const { t } = useTranslation('tasks');
     const { isLoaded } = useAuth();
-    const { environment, config, profiles } = useUserSystem();
+    // Settings of the host the PR is created on, not of the document's host.
+    const { environment, config, profiles } = useHostUserSystem(hostId, {
+      enabled: modal.visible,
+    }).value;
     const [prTitle, setPrTitle] = useState('');
     const [prBody, setPrBody] = useState('');
     const [prHeadBranch, setPrHeadBranch] = useState('');
@@ -135,6 +138,12 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
     // preserves the backend's workspace-last-agent default for the usual path.
     const [generationExecutorConfig, setGenerationExecutorConfig] =
       useState<ExecutorConfig | null>(null);
+    // nice-modal keeps this mounted: the generation agent picked for one
+    // workspace must not be reused for the next (maybe on another host).
+    const generationScope = `${hostId ?? 'this-machine'}:${attempt.id}`;
+    useEffect(() => {
+      setGenerationExecutorConfig(null);
+    }, [generationScope]);
     // The settings toggle acts as a master switch for the AI generate button;
     // treat an unloaded config as enabled (backend default) so the button shows.
     const aiEnabled = config?.pr_auto_description_enabled !== false;
@@ -153,6 +162,8 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
       scratchConfig: generationExecutorConfig,
       configExecutorProfile: config?.executor_profile,
       disabledExecutors: config?.disabled_executors,
+      hostId,
+      scopeKey: generationScope,
       onPersist: setGenerationExecutorConfig,
     });
 
@@ -194,7 +205,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
 
     const { data: branches = [], isLoading: branchesLoading } = useRepoBranches(
       repoId,
-      { enabled: modal.visible && !!repoId }
+      { enabled: modal.visible && !!repoId, hostId }
     );
 
     const getGhCliHelpTitle = (variant: GhCliSupportVariant) =>
@@ -582,7 +593,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
           setGhCliHelp(null);
         }
       },
-      [attempt.id, isMacEnvironment, modal, t]
+      [attempt.id, hostId, isMacEnvironment, modal, t]
     );
 
     // React to a finished background PR creation. Success is finalized even when
@@ -752,6 +763,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
                         <ModelSelectorContainer
                           agent={effectiveExecutor}
                           workspaceId={attempt.id}
+                          hostId={hostId}
                           presets={variantOptions}
                           selectedPreset={selectedVariant}
                           onPresetSelect={setVariant}

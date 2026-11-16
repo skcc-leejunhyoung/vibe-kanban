@@ -30,6 +30,13 @@ const modelConfig: ModelSelectorConfig = {
         { id: 'high', label: 'High', is_default: false },
       ],
     },
+    {
+      id: 'gpt-5.4',
+      name: 'GPT-5.4',
+      provider_id: null,
+      supports_fast: false,
+      reasoning_options: [],
+    },
   ],
   default_model: 'gpt-5.5',
   agents: [],
@@ -49,15 +56,32 @@ vi.mock('@/shared/hooks/useExecutorDiscovery', () => ({
 vi.mock('@/shared/hooks/usePresetOptions', () => ({
   usePresetOptions: () => ({ data: null }),
 }));
-vi.mock('@/shared/hooks/useUserSystem', () => ({
-  useUserSystem: () => ({
-    profiles: null,
-    profilesRevision: null,
-    setProfiles: vi.fn(),
-    reloadSystem: vi.fn(),
+// Per-host user systems, keyed by host id (`null` = this machine).
+const hostSystems = vi.hoisted(() => ({
+  byHost: new Map<
+    string | null,
+    {
+      profiles: unknown;
+      profilesRevision: string | null;
+      setProfiles: (...args: unknown[]) => void;
+      reloadSystem: () => void;
+    }
+  >(),
+  contextHostId: null as string | null,
+}));
+vi.mock('@/shared/hooks/useHostUserSystem', () => ({
+  useHostUserSystem: (hostId: string | null) => ({
+    value: hostSystems.byHost.get(hostId) ?? {
+      profiles: null,
+      profilesRevision: null,
+      setProfiles: vi.fn(),
+      reloadSystem: vi.fn(),
+    },
   }),
 }));
-vi.mock('@/shared/providers/HostIdProvider', () => ({ useHostId: () => null }));
+vi.mock('@/shared/providers/HostIdProvider', () => ({
+  useHostId: () => hostSystems.contextHostId,
+}));
 vi.mock('@/shared/hooks/useTheme', () => ({
   useTheme: () => ({ theme: 'light' }),
   getResolvedTheme: () => 'light',
@@ -65,9 +89,12 @@ vi.mock('@/shared/hooks/useTheme', () => ({
 vi.mock('@/shared/stores/useUiPreferencesStore', () => ({
   useHiddenModels: () => ({ hiddenKeys: new Set(), isHidden: () => false }),
 }));
+const updateRecentModels = vi.hoisted(() =>
+  vi.fn(async () => ({ content: '', path: '', revision: 'saved' }))
+);
 vi.mock('@/shared/lib/api', () => ({
   isLegacyUnversionedRevision: () => false,
-  profilesApi: {},
+  profilesApi: { updateRecentModels },
 }));
 
 // Render no DOM: capture the popover props and dropdown item handlers instead.
@@ -75,6 +102,7 @@ type PopoverProps = {
   selectedModelId: string | null;
   selectedReasoningId: string | null;
   onModelSelect: (id: string, providerId?: string) => void;
+  onOpenChange: (open: boolean) => void;
 };
 let popover: PopoverProps;
 const menuItems = new Map<string, () => void>();
@@ -127,6 +155,9 @@ beforeEach(() => {
   });
   root = createRoot(container as unknown as HTMLElement);
   menuItems.clear();
+  hostSystems.byHost.clear();
+  hostSystems.contextHostId = null;
+  updateRecentModels.mockClear();
 });
 afterEach(async () => {
   await act(() => root.unmount());
@@ -306,5 +337,90 @@ describe('ModelSelectorContainer with a Settings profile', () => {
     expect(popover.selectedReasoningId).toBe('medium');
     await click('modelSelector.fastOn');
     expect(profile).toEqual({ model: 'gpt-5.5-fast' });
+  });
+});
+
+describe('ModelSelectorContainer recently-used models', () => {
+  const setProfilesA = vi.fn();
+  const setProfilesB = vi.fn();
+  function Picker({ hostId }: { hostId?: string | null }) {
+    return (
+      <ModelSelectorContainer
+        agent={BaseCodingAgent.CODEX}
+        workspaceId={undefined}
+        hostId={hostId}
+        presets={[]}
+        selectedPreset={null}
+        presetOptions={null}
+        executorConfig={null}
+        onOverrideChange={() => {}}
+      />
+    );
+  }
+  beforeEach(() => {
+    setProfilesA.mockClear();
+    setProfilesB.mockClear();
+    hostSystems.byHost.set(null, {
+      profiles,
+      profilesRevision: 'profiles-this-machine',
+      setProfiles: setProfilesA,
+      reloadSystem: vi.fn(),
+    });
+    hostSystems.byHost.set('host-b', {
+      profiles,
+      profilesRevision: 'profiles-host-b',
+      setProfiles: setProfilesB,
+      reloadSystem: vi.fn(),
+    });
+  });
+  async function pickModel() {
+    await act(() => popover.onOpenChange(true));
+    // Not the default model: re-picking the current one saves nothing.
+    await act(() => popover.onModelSelect('gpt-5.4', undefined));
+    await act(async () => {
+      popover.onOpenChange(false);
+      await Promise.resolve();
+    });
+  }
+
+  it('saves a pick for an explicit host with that host’s revision, whatever host surrounds it', async () => {
+    // The surrounding scope (document or pane) is on this machine.
+    hostSystems.contextHostId = null;
+    await act(() => root.render(<Picker hostId="host-b" />));
+    await pickModel();
+    expect(updateRecentModels).toHaveBeenCalledExactlyOnceWith(
+      BaseCodingAgent.CODEX,
+      expect.anything(),
+      'profiles-host-b',
+      'host-b'
+    );
+    expect(setProfilesB).toHaveBeenCalled();
+    expect(setProfilesA).not.toHaveBeenCalled();
+  });
+
+  it('saves a pick for this machine under a scope that is on another host', async () => {
+    hostSystems.contextHostId = 'host-b';
+    await act(() => root.render(<Picker hostId={null} />));
+    await pickModel();
+    expect(updateRecentModels).toHaveBeenCalledExactlyOnceWith(
+      BaseCodingAgent.CODEX,
+      expect.anything(),
+      'profiles-this-machine',
+      null
+    );
+    expect(setProfilesA).toHaveBeenCalled();
+    expect(setProfilesB).not.toHaveBeenCalled();
+  });
+
+  it('follows the surrounding scope when no host is given', async () => {
+    hostSystems.contextHostId = 'host-b';
+    await act(() => root.render(<Picker />));
+    await pickModel();
+    expect(updateRecentModels).toHaveBeenCalledExactlyOnceWith(
+      BaseCodingAgent.CODEX,
+      expect.anything(),
+      'profiles-host-b',
+      'host-b'
+    );
   });
 });

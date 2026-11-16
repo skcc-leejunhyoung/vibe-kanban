@@ -20,10 +20,12 @@ export function usePush(
     err: unknown,
     errorData?: PushError,
     params?: PushWorkspaceRequest
-  ) => void
+  ) => void,
+  hostIdOverride?: string | null
 ) {
   const queryClient = useQueryClient();
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? contextHostId : hostIdOverride;
 
   return useMutation<void, unknown, PushWorkspaceRequest>({
     mutationFn: async (params: PushWorkspaceRequest) => {

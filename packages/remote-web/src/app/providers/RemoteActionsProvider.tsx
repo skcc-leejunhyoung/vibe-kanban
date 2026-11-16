@@ -39,6 +39,7 @@ import {
   isRemoteExecutableWorkspaceAction,
 } from "./remoteExecutableActions";
 import { getActivePaneActionExecutor } from "@/shared/lib/paneActionRegistry";
+import { resolveActionHost } from "@/shared/lib/actionHost";
 
 interface RemoteActionsProviderProps {
   children: ReactNode;
@@ -267,6 +268,8 @@ export function RemoteActionsProvider({
         );
       }
 
+      // One host per run, fixed before the action starts.
+      const target = resolveActionHost(workspaceHostId, executorContext);
       try {
         if (action.id === "settings") {
           await SettingsDialog.show({
@@ -292,7 +295,7 @@ export function RemoteActionsProvider({
         }
 
         if (isRemoteExecutableWorkspaceAction(action) && workspaceId) {
-          await action.execute(executorContext, workspaceId, workspaceHostId);
+          await action.execute(executorContext, workspaceId, target.hostId);
           return;
         }
 
@@ -301,13 +304,7 @@ export function RemoteActionsProvider({
           workspaceId &&
           _repoIdOrProjectId
         ) {
-          await action.execute(
-            workspaceHostId === undefined
-              ? executorContext
-              : { ...executorContext, currentHostId: workspaceHostId },
-            workspaceId,
-            _repoIdOrProjectId,
-          );
+          await action.execute(target.context, workspaceId, _repoIdOrProjectId);
           return;
         }
 

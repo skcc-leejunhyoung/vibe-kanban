@@ -3,7 +3,7 @@ import type { OrganizationWithRole } from 'shared/types';
 import { AppBarUserPopover } from '@vibe/ui/components/AppBarUserPopover';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
 import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
 import { useActions } from '@/shared/hooks/useActions';
 import { Actions } from '@/shared/actions';
@@ -22,7 +22,8 @@ export function AppBarUserPopoverContainer({
 }: AppBarUserPopoverContainerProps) {
   const { executeAction } = useActions();
   const { isSignedIn, userId } = useAuth();
-  const { loginStatus } = useUserSystem();
+  // The account signed in on this machine, not on the focused pane's host.
+  const { loginStatus } = useAppMachineSystem();
   const setSelectedOrgId = useOrganizationStore((s) => s.setSelectedOrgId);
   const [open, setOpen] = useState(false);
   const [avatarError, setAvatarError] = useState(false);

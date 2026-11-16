@@ -29,7 +29,10 @@ import { useHostId } from '@/shared/providers/HostIdProvider';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
 import { usePreviewNavigation } from '@/shared/hooks/usePreviewNavigation';
 import { PreviewDevToolsBridge } from '@/shared/lib/previewDevToolsBridge';
-import { useInspectModeStore } from '@/features/workspace-chat/model/store/useInspectModeStore';
+import {
+  inspectModeScope,
+  useInspectModeStore,
+} from '@/features/workspace-chat/model/store/useInspectModeStore';
 import type { PreviewDevToolsMessage } from '@/shared/types/previewDevTools';
 import { openExternalUrl } from '@vibe/ui/lib/open-url';
 import { getTargetDevPort, transformProxyUrlToDevUrl } from './previewUrl';
@@ -364,11 +367,25 @@ export function PreviewBrowserContainer({
   const [allowManualUrl, setAllowManualUrl] = useState(false);
   const [immediateLoad, setImmediateLoad] = useState(false);
 
-  // Inspect mode state
-  const isInspectMode = useInspectModeStore((s) => s.isInspectMode);
-  const toggleInspectMode = useInspectModeStore((s) => s.toggleInspectMode);
-  const setPendingComponentMarkdown = useInspectModeStore(
+  // Inspect mode state, for this pane's workspace only.
+  const inspectScope = inspectModeScope(hostId, previewWorkspaceId);
+  const isInspectMode = useInspectModeStore(
+    (s) => s.inspectScope === inspectScope
+  );
+  const toggleInspectModeForScope = useInspectModeStore(
+    (s) => s.toggleInspectMode
+  );
+  const toggleInspectMode = useCallback(
+    () => toggleInspectModeForScope(inspectScope),
+    [toggleInspectModeForScope, inspectScope]
+  );
+  const setPendingComponentMarkdownForScope = useInspectModeStore(
     (s) => s.setPendingComponentMarkdown
+  );
+  const setPendingComponentMarkdown = useCallback(
+    (markdown: string) =>
+      setPendingComponentMarkdownForScope(inspectScope, markdown),
+    [setPendingComponentMarkdownForScope, inspectScope]
   );
 
   // ─── Navigation Bridge ────────────────────────────────────────────────────

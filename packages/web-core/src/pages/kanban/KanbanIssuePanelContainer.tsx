@@ -127,13 +127,14 @@ export function KanbanIssuePanelContainer({
   const { activeWorkspaces, archivedWorkspaces, isArchivedWorkspacesLoading } =
     useWorkspaceContext();
 
-  // Build set of local workspace IDs that exist on this machine
-  const localWorkspaceIds = useMemo(
-    () =>
+  // Workspaces that exist on the host a new workspace is being created on.
+  const localWorkspaceIdsFor = useCallback(
+    (hostId: string | null | undefined) =>
       buildLocalWorkspaceIdSet(
         activeWorkspaces,
         archivedWorkspaces,
-        isArchivedWorkspacesLoading
+        isArchivedWorkspacesLoading,
+        hostId
       ),
     [activeWorkspaces, archivedWorkspaces, isArchivedWorkspacesLoading]
   );
@@ -492,6 +493,33 @@ export function KanbanIssuePanelContainer({
     currentAssigneeIds,
     currentTagIds,
   ]);
+  // The picker lists reachable hosts, but the form may hold one that is not
+  // (a restored draft whose host went offline). It is added to the list as
+  // what it is, so the picker shows the host the workspace would be created
+  // on instead of going blank.
+  const selectableWorkspaceHosts = useMemo(() => {
+    const selectedId = displayData.workspaceHostId;
+    if (
+      selectedId == null ||
+      workspaceHosts.some((host) => host.id === selectedId)
+    ) {
+      return workspaceHosts;
+    }
+    const listed = availableWorkspaceHosts.find(
+      (host) => host.id === selectedId
+    );
+    return [
+      ...workspaceHosts,
+      {
+        id: selectedId,
+        name: listed
+          ? t('kanban.workspaceHostOffline', '{{name}} (offline)', {
+              name: listed.name,
+            })
+          : t('kanban.workspaceHostUnavailable', 'Unavailable host'),
+      },
+    ];
+  }, [availableWorkspaceHosts, displayData.workspaceHostId, t, workspaceHosts]);
   const latestDescriptionRef = useRef<string | null>(
     displayData.description ?? null
   );
@@ -1104,7 +1132,7 @@ export function KanbanIssuePanelContainer({
           // Get defaults from most recent workspace
           const defaults = await getWorkspaceDefaults(
             workspaces,
-            localWorkspaceIds,
+            localWorkspaceIdsFor(displayData.workspaceHostId),
             projectId,
             displayData.workspaceHostId
           );
@@ -1163,7 +1191,7 @@ export function KanbanIssuePanelContainer({
     kanbanCreateDefaultParentIssueId,
     openWorkspaceCreateFromState,
     workspaces,
-    localWorkspaceIds,
+    localWorkspaceIdsFor,
     closeKanbanIssuePanel,
     issueComposerKey,
     getAttachmentIds,
@@ -1202,7 +1230,7 @@ export function KanbanIssuePanelContainer({
 
     const defaults = await getWorkspaceDefaults(
       workspaces,
-      localWorkspaceIds,
+      localWorkspaceIdsFor(hostId),
       projectId,
       hostId
     );
@@ -1244,7 +1272,7 @@ export function KanbanIssuePanelContainer({
     cancelDebouncedDescription,
     updateIssue,
     workspaces,
-    localWorkspaceIds,
+    localWorkspaceIdsFor,
     projectId,
     openWorkspaceCreateFromState,
     githubIssueLinks,
@@ -1414,7 +1442,7 @@ export function KanbanIssuePanelContainer({
       targetDate={selectedIssue?.target_date ?? null}
       completedAt={selectedIssue?.completed_at ?? null}
       onDateChange={mode === 'edit' ? handleDateChange : undefined}
-      workspaceHosts={workspaceHosts}
+      workspaceHosts={selectableWorkspaceHosts}
       issueId={selectedKanbanIssueId}
       creatorUser={issueCreator}
       parentIssue={parentIssue}
@@ -1475,6 +1503,9 @@ export function KanbanIssuePanelContainer({
       )}
       renderIntake={() => (
         <IssueIntakeSection
+          // Agent, preset and repo picks belong to the host they were made
+          // for; another workspace host starts the section over.
+          key={displayData.workspaceHostId ?? 'context-host'}
           projectId={projectId}
           hostId={displayData.workspaceHostId}
           title={displayData.title}

@@ -40,6 +40,15 @@ function LinkGithubIssueContent(props: LinkGithubIssueDialogProps) {
   const [selectedHostId, setSelectedHostId] = useState(props.hostId ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // nice-modal keeps this mounted: each open starts on the host it was opened
+  // for and empty, not with the host, URL and error of the previous issue.
+  useEffect(() => {
+    if (!modal.visible) return;
+    setSelectedHostId(props.hostId ?? '');
+    setMode('create');
+    setUrl('');
+    setError(null);
+  }, [modal.visible, props.hostId, props.issueId]);
   const target = useMemo<MachineTarget>(
     () =>
       selectedHostId

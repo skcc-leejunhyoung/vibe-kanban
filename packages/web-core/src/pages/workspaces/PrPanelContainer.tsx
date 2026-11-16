@@ -208,6 +208,7 @@ export function PrPanelContainer({
             ahead: result.error.ahead,
             behind: result.error.behind,
             isTarget: true,
+            hostId,
           });
           if (choice !== 'force') return;
 

@@ -12,10 +12,12 @@ type MergeParams = {
 export function useMerge(
   workspaceId?: string,
   onSuccess?: () => void,
-  onError?: (err: unknown) => void
+  onError?: (err: unknown) => void,
+  hostIdOverride?: string | null
 ) {
   const queryClient = useQueryClient();
-  const hostId = useHostId();
+  const contextHostId = useHostId();
+  const hostId = hostIdOverride === undefined ? contextHostId : hostIdOverride;
 
   return useMutation<void, unknown, MergeParams>({
     mutationFn: (params: MergeParams) => {
@@ -35,7 +37,7 @@ export function useMerge(
       // Merging into a remote-only target materializes it as a local branch and
       // persists the new target branch on the workspace repo.
       queryClient.invalidateQueries({
-        queryKey: ['workspaceWithSession', workspaceId],
+        queryKey: ['workspaceWithSession', hostId, workspaceId],
       });
       queryClient.invalidateQueries({
         queryKey: workspaceRepoKeys.byWorkspace(workspaceId, hostId),

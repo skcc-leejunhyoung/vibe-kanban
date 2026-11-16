@@ -1,13 +1,14 @@
 import { useEffect, useRef } from 'react';
 import { ProjectsGuideDialog } from '@vibe/ui/components/ProjectsGuideDialog';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
 import { ProjectKanban } from '@/pages/kanban/ProjectKanban';
 
 const PROJECTS_GUIDE_ID = 'projects-guide';
 
 export function LocalProjectKanban() {
-  const { config, updateAndSaveConfig, loading } = useUserSystem();
+  // The guide record is this app's, not the focused pane's host's.
+  const { config, updateAndSaveConfig, loading } = useAppMachineSystem();
   const { isLoaded, isSignedIn } = useAuth();
   const hasAutoShownProjectsGuide = useRef(false);
 

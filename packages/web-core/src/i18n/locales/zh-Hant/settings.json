@@ -8,7 +8,8 @@
       "title": "未儲存的變更",
       "message": "您有未儲存的變更。確定要關閉而不儲存嗎？",
       "discard": "放棄變更",
-      "cancel": "繼續編輯"
+      "cancel": "繼續編輯",
+      "switchHostMessage": "此機器有未儲存的變更。要切換機器並捨棄這些變更嗎？"
     },
     "layout": {
       "nav": {
@@ -369,6 +370,7 @@
         "renameFailed": "重新命名設定失敗。請重試。",
         "saveFailed": "儲存代理設定失敗。請重試。",
         "saveConfigFailed": "儲存設定失敗。請重試。",
+        "conflict": "在您編輯期間，此主機上的代理設定已變更。請放棄您的變更以載入最新版本，然後重新編輯。",
         "schemaNotFound": "找不到執行器類型 {{executor}} 的結構描述"
       },
       "tree": {
@@ -637,7 +639,9 @@
       "remoteHost": "Remote host",
       "noHostAvailable": "No host is available for host-specific settings yet.",
       "pairMachineHint": "Pair a machine to open machine settings.",
-      "selectMachineHint": "Select a machine to open machine settings."
+      "selectMachineHint": "Select a machine to open machine settings.",
+      "unavailableHost": "無法使用的主機",
+      "unavailableHostHint": "此機器已無法使用，請選擇其他機器。"
     },
     "automation": {
       "reviewScope": "Review requests monitored: {{repositories}}",

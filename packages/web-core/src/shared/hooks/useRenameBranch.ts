@@ -48,7 +48,7 @@ export function useRenameBranch(
     onSuccess: (data) => {
       if (workspaceId) {
         queryClient.invalidateQueries({
-          queryKey: ['workspaceWithSession', workspaceId],
+          queryKey: ['workspaceWithSession', hostId, workspaceId],
         });
         queryClient.invalidateQueries({
           queryKey: workspaceRecordKeys.byId(workspaceId, hostId),

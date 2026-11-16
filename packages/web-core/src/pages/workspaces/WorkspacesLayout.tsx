@@ -32,13 +32,14 @@ import { ChangesPanelContainer } from './ChangesPanelContainer';
 import { CreateChatBoxContainer } from '@/shared/components/CreateChatBoxContainer';
 import { PreviewBrowserContainer } from './PreviewBrowserContainer';
 import { WorkspacesGuideDialog } from '@/shared/dialogs/shared/WorkspacesGuideDialog';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
 import { useWorkspacePanelState } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useEscapeToClose } from '@/shared/keyboard/useEscapeToClose';
 import { Scope } from '@/shared/keyboard/registry';
 import { useUnfocusedChatKeys } from './workspaceChatKeyboard';
 import { WorkspaceDetail, type WorkspaceDetailHandle } from './WorkspaceDetail';
+import { useHostId } from '@/shared/providers/HostIdProvider';
 
 const WORKSPACES_GUIDE_ID = 'workspaces-guide';
 
@@ -113,10 +114,15 @@ export function WorkspacesLayout({
     });
   }, [isCreateMode, seedVersion]);
 
-  const createModeProviderKey =
+  // The form's repos, attachments and agent choice are one host's. A route
+  // that moves to another host starts a new form instead of submitting the
+  // previous host's ids there.
+  const createHostId = useHostId();
+  const createModeProviderKey = `${createHostId ?? 'this-machine'}:${
     createModeSeed.version > 0
       ? `create-mode-seed-${createModeSeed.version}`
-      : 'create-mode-seed-default';
+      : 'create-mode-seed-default'
+  }`;
 
   const isMobile = useIsMobile();
   const [mobileTab, setMobileTab] = useMobileActiveTab();
@@ -131,11 +137,15 @@ export function WorkspacesLayout({
     []
   );
 
+  // The workspace was created on this scope's host; without it the document
+  // navigation takes whatever host the URL shows once the request returns.
   const handleWorkspaceCreated = useCallback(
     (createdWorkspaceId: string) => {
-      appNavigation.goToWorkspace(createdWorkspaceId);
+      appNavigation.goToWorkspace(createdWorkspaceId, {
+        hostId: createHostId,
+      });
     },
-    [appNavigation]
+    [appNavigation, createHostId]
   );
 
   // Use workspace-specific panel state (pass undefined when in create mode)
@@ -164,11 +174,14 @@ export function WorkspacesLayout({
       isLeftMainPanelVisible
   );
 
+  // Which guides were shown is the app's own record, not the route host's:
+  // otherwise opening a workspace on another host shows the guide again and
+  // writes the flag into that host's config.
   const {
     config,
     updateAndSaveConfig,
     loading: configLoading,
-  } = useUserSystem();
+  } = useAppMachineSystem();
   const hasAutoShownWorkspacesGuide = useRef(false);
 
   // Auto-show Workspaces Guide on first visit

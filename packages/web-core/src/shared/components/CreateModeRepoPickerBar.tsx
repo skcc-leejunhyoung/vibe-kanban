@@ -100,6 +100,7 @@ function RepoTargetBranchControl({
   // one.
   const isActivePane = useIsActivePane();
   const { config } = useUserSystem();
+  const hostId = useHostId();
   const {
     targetBranches,
     targetBranchModes,
@@ -131,7 +132,7 @@ function RepoTargetBranchControl({
     setPickError(null);
     setPicking(true);
     try {
-      const picked = await pickBranchForRepo(repo);
+      const picked = await pickBranchForRepo(repo, hostId);
       if (picked) setTargetBranch(repo.id, picked, 'existing');
     } catch (error) {
       setPickError(
@@ -142,7 +143,7 @@ function RepoTargetBranchControl({
     } finally {
       setPicking(false);
     }
-  }, [repo, setTargetBranch, t]);
+  }, [repo, hostId, setTargetBranch, t]);
 
   const selectNew = useCallback(() => {
     setPickError(null);
@@ -318,14 +319,14 @@ export function CreateModeRepoPickerBar({
         return false;
       }
 
-      const selectedBranch = await pickBranchForRepo(repo);
+      const selectedBranch = await pickBranchForRepo(repo, hostId);
       if (!selectedBranch) return false;
 
       addRepo(repo);
       setTargetBranch(repo.id, selectedBranch, 'existing');
       return true;
     },
-    [addRepo, selectedRepoIds, setTargetBranch]
+    [addRepo, hostId, selectedRepoIds, setTargetBranch]
   );
 
   const handleChooseRepo = useCallback(async () => {
@@ -368,9 +369,11 @@ export function CreateModeRepoPickerBar({
     await runPickerAction(
       'browse',
       async () => {
+        // Browse the same host the path is then registered on.
         const selectedPath = await FolderPickerDialog.show({
           title: t('dialogs.selectGitRepository'),
           description: t('dialogs.chooseExistingRepo'),
+          hostId,
         });
         if (!selectedPath) return;
 
@@ -392,6 +395,7 @@ export function CreateModeRepoPickerBar({
               title: t('git.createRepo.browseDialog.title'),
               description: t('git.createRepo.browseDialog.description'),
               value: currentPath,
+              hostId,
             }),
           onCreateRepo: async ({ parentPath, folderName }) => {
             const repo = await repoApi.init(
@@ -530,9 +534,11 @@ export function CreateModeRepoPickerBar({
                 const unconfiguredRepo = repos.find(
                   (repo) => !repo.setup_script
                 );
+                // The repo id is this host's, so open this host's settings.
                 SettingsDialog.show({
                   initialSection: 'repos',
                   initialState: { repoId: unconfiguredRepo?.id },
+                  initialHostId: hostId ?? 'local',
                 });
               }}
             >

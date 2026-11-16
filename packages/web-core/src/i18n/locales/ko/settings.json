@@ -8,7 +8,8 @@
       "title": "저장되지 않은 변경 사항",
       "message": "저장되지 않은 변경 사항이 있습니다. 저장하지 않고 닫으시겠습니까?",
       "discard": "변경 사항 삭제",
-      "cancel": "계속 편집"
+      "cancel": "계속 편집",
+      "switchHostMessage": "이 기기에 저장되지 않은 변경 사항이 있습니다. 기기를 바꾸고 변경 사항을 버리시겠습니까?"
     },
     "layout": {
       "nav": {
@@ -548,6 +549,7 @@
         "renameFailed": "구성 이름을 변경하지 못했습니다. 다시 시도해 주세요.",
         "saveFailed": "에이전트 구성을 저장하지 못했습니다. 다시 시도해 주세요.",
         "saveConfigFailed": "구성을 저장하지 못했습니다. 다시 시도해 주세요.",
+        "conflict": "편집하는 동안 이 호스트의 에이전트 구성이 변경되었습니다. 변경 사항을 취소해 최신 버전을 불러온 뒤 다시 편집해 주세요.",
         "schemaNotFound": "실행자 유형 {{executor}}에 대한 스키마를 찾을 수 없습니다"
       },
       "tree": {
@@ -843,7 +845,9 @@
       "remoteHost": "Remote host",
       "noHostAvailable": "No host is available for host-specific settings yet.",
       "pairMachineHint": "Pair a machine to open machine settings.",
-      "selectMachineHint": "Select a machine to open machine settings."
+      "selectMachineHint": "Select a machine to open machine settings.",
+      "unavailableHost": "사용할 수 없는 호스트",
+      "unavailableHostHint": "이 기기는 더 이상 사용할 수 없습니다. 다른 기기를 선택하세요."
     },
     "remoteAccess": {
       "accessAccounts": "접근이 허용된 계정",

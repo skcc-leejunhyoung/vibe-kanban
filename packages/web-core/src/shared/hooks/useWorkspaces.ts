@@ -631,10 +631,14 @@ export function UnifiedWorkspaceStreamsProvider({
     return children;
   }
 
+  // The sources are ONE child (an array), not spread: spread, `children`
+  // would shift position whenever a host came online or went offline, and
+  // React would remount the whole app below — closing every dialog and
+  // dropping every draft because of another host's status.
   return createElement(
     RemoteWorkspaceStreamsContext.Provider,
     { value: streams },
-    ...onlineHostIds.map((hostId) =>
+    onlineHostIds.map((hostId) =>
       createElement(RemoteHostWorkspaceStreamSource, {
         key: hostId,
         hostId,

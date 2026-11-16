@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { isEqual } from 'lodash';
 import { GithubReviewScope } from './GithubReviewScope';
 import { useTranslation } from 'react-i18next';
 import type {
@@ -28,6 +29,7 @@ import {
   useSettingsMachineClient,
 } from './SettingsHostContext';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useSettingsDirty } from './SettingsDirtyContext';
 import {
   AUTOMATION_CONNECTOR_DEFAULTS,
   type AutomationConnector,
@@ -601,6 +603,23 @@ export function AutomationSettingsSection() {
   const [connector, setConnector] = useState<ConnectorDraft | null>(null);
   const [rule, setRule] = useState<RuleDraft | null>(null);
   const [routine, setRoutine] = useState<RoutineDraft | null>(null);
+
+  // An open editor or an unsaved memory-sync change is a draft of THIS host:
+  // the dialog asks before a host switch or a close drops it.
+  const hasDraft =
+    connector !== null ||
+    rule !== null ||
+    routine !== null ||
+    mutationMatchText.trim() !== '' ||
+    mutationReplacementText.trim() !== '' ||
+    (memoryConfig !== null &&
+      !!config?.agent_memory_sync &&
+      !isEqual(memoryConfig, config.agent_memory_sync));
+  const { setDirty: setContextDirty } = useSettingsDirty();
+  useEffect(() => {
+    setContextDirty('automation', hasDraft);
+    return () => setContextDirty('automation', false);
+  }, [hasDraft, setContextDirty]);
 
   const refreshLogs = useCallback(async () => {
     if (!machineClient) return;

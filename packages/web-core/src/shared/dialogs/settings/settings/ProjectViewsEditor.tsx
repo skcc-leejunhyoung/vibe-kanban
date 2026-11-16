@@ -12,6 +12,7 @@ import {
 import { Switch } from '@vibe/ui/components/Switch';
 import { StatusDot } from '@vibe/ui/components/StatusDot';
 import { cn } from '@/shared/lib/utils';
+import { useSettingsDirty } from './SettingsDirtyContext';
 import type { IssuePriority, ProjectMilestone, Tag } from 'shared/remote-types';
 import type { OrganizationMemberWithProfile } from 'shared/types';
 import {
@@ -106,6 +107,12 @@ export function ProjectViewsEditor({
 
   const effectiveViews = draft ?? views;
   const dirty = draft !== null;
+  // Lets the dialog ask before a close or a host switch drops the batch.
+  const { setDirty: setContextDirty } = useSettingsDirty();
+  useEffect(() => {
+    setContextDirty('project-views', dirty);
+    return () => setContextDirty('project-views', false);
+  }, [dirty, setContextDirty]);
 
   const updateView = useCallback(
     (id: string, patch: Partial<ProjectViewDefinition>) => {

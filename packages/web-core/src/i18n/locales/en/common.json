@@ -448,6 +448,8 @@
     "issueDescriptionPlaceholder": "Enter task description here...",
     "createDraftWorkspaceImmediately": "Create draft workspace immediately",
     "workspaceHost": "Workspace host",
+    "workspaceHostOffline": "{{name}} (offline)",
+    "workspaceHostUnavailable": "Unavailable host",
     "thisMachine": "This machine",
     "createDraftWorkspaceDescription": "After creating the issue, open the workspace creation form pre-filled with the issue details",
     "createIssue": "Create Issue",

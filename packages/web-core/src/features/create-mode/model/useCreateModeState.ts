@@ -26,6 +26,8 @@ import { resolveCreateModeBootstrap } from '@/features/create-mode/model/createM
 import { useWorkspaceCreateDefaults } from '@/shared/hooks/useWorkspaceCreateDefaults';
 import { getValidProjectRepoDefaults } from '@/shared/hooks/useProjectRepoDefaults';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
+import { defaultWorkspaceDraftId } from '@/shared/lib/workspaceCreateState';
 import type {
   CreateModeInitialState,
   LinkedIssue,
@@ -215,8 +217,6 @@ function draftReducer(state: DraftState, action: DraftAction): DraftState {
 // Constants
 // ============================================================================
 
-const DRAFT_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
-
 function getLatestWorkspaceIdForRemoteProject({
   remoteWorkspaces,
   localWorkspaceIds,
@@ -299,7 +299,8 @@ export function useCreateModeState({
 }: UseCreateModeStateParams): UseCreateModeStateResult {
   const { profiles, config, loading: systemLoading } = useUserSystem();
   const hostId = useHostId();
-  const scratchId = draftId ?? DRAFT_WORKSPACE_ID;
+  const runtime = useAppRuntime();
+  const scratchId = draftId ?? defaultWorkspaceDraftId(runtime, hostId);
 
   const {
     scratch,
@@ -502,9 +503,11 @@ export function useCreateModeState({
         if (cancelled) return;
 
         const availableRepoIds = new Set(allRepos.map((r) => r.id));
+        // The same host the repo list above came from.
         const scratchDefaults = await getValidProjectRepoDefaults(
           remoteProjectId,
-          availableRepoIds
+          availableRepoIds,
+          hostId
         );
         if (cancelled) return;
 

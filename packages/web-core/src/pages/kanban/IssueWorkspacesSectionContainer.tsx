@@ -166,7 +166,8 @@ export function IssueWorkspacesSectionContainer({
     const localWorkspaceIds = buildLocalWorkspaceIdSet(
       activeWorkspaces,
       archivedWorkspaces,
-      isArchivedWorkspacesLoading
+      isArchivedWorkspacesLoading,
+      hostId
     );
 
     const defaults = await getWorkspaceDefaults(
@@ -287,7 +288,7 @@ export function IssueWorkspacesSectionContainer({
             getHostWorkspaceKey(localWorkspaceId, null)
           )
             ? null
-            : (ownerHostId ?? workspaceHostMap.get(localWorkspaceId));
+            : (ownerHostId ?? workspaceHostMap.get(localWorkspaceId) ?? null);
           await workspacesApi.unlinkFromIssue(localWorkspaceId, hostId);
         } catch (error) {
           ConfirmDialog.show({
@@ -384,7 +385,14 @@ export function IssueWorkspacesSectionContainer({
         });
       }
     },
-    [localWorkspacesById, workspacesWithStats, t, issueId, getIssue]
+    [
+      localWorkspacesById,
+      workspaceHostMap,
+      workspacesWithStats,
+      t,
+      issueId,
+      getIssue,
+    ]
   );
 
   // Actions for the section header

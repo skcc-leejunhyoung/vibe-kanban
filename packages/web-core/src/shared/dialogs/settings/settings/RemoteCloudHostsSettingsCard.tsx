@@ -18,7 +18,7 @@ import {
 } from './SettingsComponents';
 import { PairingCodeInput } from './PairingCodeInput';
 import { normalizeEnrollmentCode } from '@/shared/lib/relayPake';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppMachineSystem } from '@/shared/hooks/useAppUserSystem';
 import {
   usePairRelayHostMutation,
   useRelayRemoteHostsQuery,
@@ -49,7 +49,9 @@ export function RemoteCloudHostsSettingsCardContent({
   const [editingHostId, setEditingHostId] = useState<string | null>(null);
   const [editingHostName, setEditingHostName] = useState('');
   const hasAppliedInitialHostRef = useRef(false);
-  const { machineId } = useUserSystem();
+  // This machine's id (to keep it out of its own pairing list), not the id
+  // of the host the focused pane is on.
+  const { machineId } = useAppMachineSystem();
 
   const { data: relayHosts = [], isLoading: relayHostsLoading } = useQuery({
     ...useRelayRemoteHostsQuery(),

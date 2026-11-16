@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { readFolderFavorites } from './useConfigPreferenceSync';
+import {
+  mayPromoteLocalPreferences,
+  readFolderFavorites,
+} from './useConfigPreferenceSync';
 
 describe('readFolderFavorites', () => {
   it('preserves the host identity for remote favorites', () => {
@@ -23,5 +26,21 @@ describe('readFolderFavorites', () => {
         { path: '/repo/invalid', name: 'invalid', hostId: 123 },
       ])
     ).toEqual([{ path: '/repo/valid', name: 'valid', hostId: 'host-1' }]);
+  });
+});
+
+describe('promoting browser-local preferences into a config', () => {
+  it('keeps the one-time promotion for a single-owner config', () => {
+    expect(mayPromoteLocalPreferences(null, undefined)).toBe(true);
+    expect(mayPromoteLocalPreferences('user-a', undefined)).toBe(true);
+  });
+
+  it('promotes for the account the browser values belong to', () => {
+    expect(mayPromoteLocalPreferences(null, 'user-a')).toBe(true);
+    expect(mayPromoteLocalPreferences('user-a', 'user-a')).toBe(true);
+  });
+
+  it("never promotes one account's leftovers into another account", () => {
+    expect(mayPromoteLocalPreferences('user-a', 'user-b')).toBe(false);
   });
 });

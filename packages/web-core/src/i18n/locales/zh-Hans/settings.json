@@ -8,7 +8,8 @@
       "title": "未保存的更改",
       "message": "您有未保存的更改。确定要关闭而不保存吗？",
       "discard": "放弃更改",
-      "cancel": "继续编辑"
+      "cancel": "继续编辑",
+      "switchHostMessage": "此机器有未保存的更改。要切换机器并放弃这些更改吗？"
     },
     "layout": {
       "nav": {
@@ -369,6 +370,7 @@
         "renameFailed": "重命名配置失败。请重试。",
         "saveFailed": "保存代理配置失败。请重试。",
         "saveConfigFailed": "保存配置失败。请重试。",
+        "conflict": "在您编辑期间，此主机上的代理配置已更改。请放弃您的更改以加载最新版本，然后重新编辑。",
         "schemaNotFound": "未找到执行器类型 {{executor}} 的架构"
       },
       "tree": {
@@ -637,7 +639,9 @@
       "remoteHost": "Remote host",
       "noHostAvailable": "No host is available for host-specific settings yet.",
       "pairMachineHint": "Pair a machine to open machine settings.",
-      "selectMachineHint": "Select a machine to open machine settings."
+      "selectMachineHint": "Select a machine to open machine settings.",
+      "unavailableHost": "不可用的主机",
+      "unavailableHostHint": "此机器已不可用，请选择其他机器。"
     },
     "automation": {
       "reviewScope": "Review requests monitored: {{repositories}}",
