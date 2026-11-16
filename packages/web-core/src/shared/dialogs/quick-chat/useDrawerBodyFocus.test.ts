@@ -190,6 +190,24 @@ describe('Drawer body focus transitions', () => {
     expect(focused).toBe(shell);
   });
 
+  it('leaves the shell focus of a press alone so the header can drag', async () => {
+    vi.useFakeTimers();
+    try {
+      pane = new EventTarget();
+      await render();
+      const shell = element(true);
+      focused = shell;
+      pane.dispatchEvent(new Event('mousedown'));
+      pane.dispatchEvent(new Event('focus'));
+      expect(focused).toBe(shell);
+      vi.runAllTimers();
+      pane.dispatchEvent(new Event('focus'));
+      expect(focused).toBe(body);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('removes the pane-shell focus listener while inactive', async () => {
     pane = new EventTarget();
     await render();

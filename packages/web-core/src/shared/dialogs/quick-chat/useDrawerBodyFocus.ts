@@ -65,10 +65,23 @@ export function useDrawerBodyFocus(
     const pane = body.closest('[data-workspace-pane]');
     if (!pane) return;
     // Pane cycling focuses its shell after child effects have already run.
-    const focusBody = () => {
-      if (!isModalKeyboardActive()) body.focus({ preventScroll: true });
+    // A press focuses the shell too (mousedown's default), but moving focus
+    // mid-press cancels the drag it starts, e.g. moving the pane by its header.
+    let pressed = false;
+    const press = () => {
+      pressed = true;
+      setTimeout(() => (pressed = false));
     };
+    const focusBody = () => {
+      if (!pressed && !isModalKeyboardActive()) {
+        body.focus({ preventScroll: true });
+      }
+    };
+    pane.addEventListener('mousedown', press, true);
     pane.addEventListener('focus', focusBody);
-    return () => pane.removeEventListener('focus', focusBody);
+    return () => {
+      pane.removeEventListener('mousedown', press, true);
+      pane.removeEventListener('focus', focusBody);
+    };
   }, [bodyRef, enabled]);
 }
