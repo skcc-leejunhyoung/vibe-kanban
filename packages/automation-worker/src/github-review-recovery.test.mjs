@@ -637,6 +637,27 @@ test("full poll separates app/search #42, assigned seed, source activity and hea
     h.context,
   );
   const activity = [];
+  const notifications = [];
+  h.state.rules.push({
+    id: "notify",
+    enabled: true,
+    script: vm.runInNewContext(
+      source.match(/const defaultGithubPrCommentRuleScript = (`[^]*?`);/)[1],
+    ),
+  });
+  vm.runInContext(
+    functionSource("createVibePullRequestCommentNotification"),
+    h.context,
+  );
+  const vibeApi = h.context.vibeApi;
+  h.context.vibeApi = async (connector, method, endpoint, body) => {
+    if (endpoint === "/v1/notifications/pull-request-comment") {
+      assert.equal(method, "POST");
+      notifications.push(body);
+      return {};
+    }
+    return vibeApi(connector, method, endpoint, body);
+  };
   const runRules = h.context.runRules;
   h.context.runRules = async (event) => {
     if (event.type === "pr_comment") activity.push(event);
@@ -705,12 +726,32 @@ test("full poll separates app/search #42, assigned seed, source activity and hea
       rows = [
         {
           id: 2,
-          state: "APPROVED",
-          body: "review body",
+          state: repo === "example/app" ? "APPROVED" : "CHANGES_REQUESTED",
+          body: repo === "example/app" ? "" : " \n\t",
           submitted_at: stamp,
           user: { login: "other" },
           url: `https://api.github.com/repos/${repo}/pulls/42/reviews/2`,
           html_url: `https://github.com/${repo}/pull/42#pullrequestreview-2`,
+        },
+        {
+          id: 3,
+          state: "COMMENTED",
+          body: "",
+          submitted_at: stamp,
+          user: { login: "other" },
+          url: `https://api.github.com/repos/${repo}/pulls/42/reviews/3`,
+        },
+      ];
+    else if (url.pathname.endsWith("/pulls/comments"))
+      rows = [
+        {
+          id: 4,
+          pull_request_url: `https://api.github.com/repos/${repo}/pulls/42`,
+          url: `https://api.github.com/repos/${repo}/pulls/comments/4`,
+          html_url: `https://github.com/${repo}/pull/42#discussion_r4`,
+          user: { login: "other" },
+          body: "inline comment",
+          created_at: stamp,
         },
       ];
     return { ok: true, text: async () => JSON.stringify(rows) };
@@ -724,7 +765,28 @@ test("full poll separates app/search #42, assigned seed, source activity and hea
   await h.context.pollGithub(h.github);
   assert.equal(h.store.issues.size, 2);
   assert.equal(h.store.tags.size, 2);
-  assert.equal(activity.length, 4);
+  assert.equal(activity.length, 6);
+  assert.equal(notifications.length, 6);
+  for (const [repo, state, preview] of [
+    ["example/app", "approved", "승인 (본문 없음)"],
+    [repository, "changes_requested", "변경 요청 (본문 없음)"],
+  ]) {
+    const reviews = activity.filter(
+      (event) => event.repo === repo && event.reviewState,
+    );
+    assert.equal(reviews.length, 1);
+    assert.equal(reviews[0].reviewState, state);
+    assert.equal(reviews[0].body, preview);
+    assert.equal(
+      notifications.filter((body) => body.comment_preview === preview).length,
+      1,
+    );
+  }
+  assert.equal(
+    notifications.filter((body) => body.comment_preview === "inline comment")
+      .length,
+    2,
+  );
   assert.ok(activity.every((event) => event.url.includes(`/${event.repo}/`)));
   const mapped = h.target.config.issueMap;
   assert.notEqual(mapped["example/app#42"], mapped[`${repository}#42`]);
@@ -744,6 +806,8 @@ test("full poll separates app/search #42, assigned seed, source activity and hea
   const updates = h.events.filter((event) => event.type === "pr_updated");
   assert.equal(updates.length, 1);
   assert.equal(updates[0].repo, repository);
+  assert.equal(activity.length, 6);
+  assert.equal(notifications.length, 6);
 });
 
 test("one pending import retry does not hold a new rule destination behind its backoff", async () => {
@@ -978,7 +1042,10 @@ test("a manual poll waits for its issue sync outside the connector's poll slot",
   // The sync is still running, yet interval polls are no longer skipped.
   assert.equal(manualDone, false);
   assert.equal(context.pollInFlight.size, 0);
-  assert.equal((await context.pollConnector("github", false)).skipped, undefined);
+  assert.equal(
+    (await context.pollConnector("github", false)).skipped,
+    undefined,
+  );
   release({ synced: 7, recovered: 1, backfilled: 2 });
   const result = await manual;
   assert.deepEqual(
