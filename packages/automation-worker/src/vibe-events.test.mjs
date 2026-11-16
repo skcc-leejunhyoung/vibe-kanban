@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { routineRunTrigger } from './routines.mjs';
 import {
   COALESCE_DEFAULTS,
   DEFAULT_KINDS,
@@ -46,6 +47,19 @@ function fakeClock() {
 function journal(host, cursor, kind, extra = {}) {
   return { cursor, at: '2026-10-21T05:00:00Z', kind, host_id: `${host}-id`, host_name: host, workspace_id: 'ws-1', session_id: 's-1', execution_id: 'e-1', autopilot: false, data: {}, ...extra };
 }
+
+test('Drawer comment identity survives prompt rendering and persisted run history', () => {
+  const event = journalEventToWorkerEvent(journal('host', 2, 'drawer.comment', {
+    data: { note_id: 'synthetic-note', comment_id: 'synthetic-comment' },
+  }));
+  assert.equal(event.noteId, 'synthetic-note');
+  assert.equal(event.commentId, 'synthetic-comment');
+  assert.match(renderPromptTemplate('{{events}}', { events: [event] }), /synthetic-comment/);
+  const trigger = routineRunTrigger({ events: [event] });
+  assert.equal(trigger.events[0].commentId, 'synthetic-comment');
+  assert.equal(trigger.events[0].noteId, 'synthetic-note');
+  assert.equal(trigger.events[0].data, undefined);
+});
 
 test('kind prefixes match like the server journal', () => {
   assert.equal(kindMatches('process.failed', ['process.']), true);

@@ -95,7 +95,7 @@ function harness({
     if (endpoint === '/api/automation-actions/status')
       return { hostId: h.hostId || 'host' };
     if (endpoint === '/api/workspaces/autopilot')
-      return {
+      return h.noAutopilot ? { data: null } : {
         data: {
           session: { id: h.sessionId || 'session' },
           executor_config: { executor: 'CODEX' },
@@ -390,6 +390,58 @@ test('a lost queue response recovers the message id from the host receipt after 
   await restarted.retry({ force: true });
   assert.equal(restarted.posts, 0);
   assert.equal(h.store.queue.length, 1);
+});
+
+for (const batch of [false, true]) {
+  test(`distinct Drawer comments stay ordered across restart (${batch ? 'batch' : 'single'})`, async () => {
+    const h = harness();
+    const r = routine({ trigger: { type: 'vk_event' } });
+    h.state.routines.push(r);
+    const event = (count) => ({ count, ...(batch
+      ? { events: [{ kind: 'drawer.comment', commentId: `comment-${count}`, noteId: `note-${count}` }] }
+      : { kind: 'drawer.comment', commentId: `comment-${count}`, noteId: `note-${count}` }) });
+    await h.run(r, event(1), 'comment-one');
+    const restarted = harness({ state: structuredClone(h.persisted), store: h.store });
+    const result = await restarted.run(restarted.state.routines[0], event(2), 'comment-two');
+    assert.equal(result.run.status, 'succeeded');
+    assert.equal(result.run.skipped, undefined);
+    assert.deepEqual(h.store.queue.map((m) => m.data.message), ['Synthetic check 1', 'Synthetic check 2']);
+    await restarted.run(restarted.state.routines[0], event(2), 'comment-two');
+    assert.equal(restarted.posts, 1);
+  });
+}
+
+test('a lost Drawer admission response retries the same receipt without dropping the next comment', async () => {
+  const h = harness();
+  const r = routine({ trigger: { type: 'vk_event' } });
+  h.state.routines.push(r);
+  h.loseResponse = true;
+  const first = await h.run(r, { kind: 'drawer.comment', count: 1 }, 'comment-one');
+  assert.equal(first.run.status, 'retrying');
+  assert.equal(h.state.routineIdempotency['comment-one'], undefined);
+  const restored = structuredClone(h.persisted);
+  recoverInterruptedAutomationState(restored);
+  const restarted = harness({ state: restored, store: h.store });
+  await restarted.run(restored.routines[0], { kind: 'drawer.comment', count: 2 }, 'comment-two');
+  await restarted.retry({ force: true });
+  assert.deepEqual(h.store.queue.map((m) => m.data.message), ['Synthetic check 1', 'Synthetic check 2']);
+  assert.ok(restarted.state.routineIdempotency['comment-one']);
+  assert.ok(restarted.state.routineIdempotency['comment-two']);
+});
+
+test('an absent Autopilot leaves a Drawer delivery retryable instead of successful', async () => {
+  const h = harness();
+  const r = routine({ trigger: { type: 'vk_event' } });
+  h.state.routines.push(r);
+  h.noAutopilot = true;
+  const result = await h.run(r, { kind: 'drawer.comment', count: 1 }, 'comment-one');
+  assert.equal(result.run.status, 'retrying');
+  assert.equal(h.state.routineIdempotency['comment-one'], undefined);
+  assert.equal(h.posts, 0);
+  h.noAutopilot = false;
+  await h.retry({ force: true });
+  assert.equal(h.posts, 1);
+  assert.ok(h.state.routineIdempotency['comment-one']);
 });
 
 test('an uncertain prior queue admission blocks new sends until its outcome is known', async () => {

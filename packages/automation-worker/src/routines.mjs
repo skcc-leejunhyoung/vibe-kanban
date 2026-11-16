@@ -401,6 +401,8 @@ export function routineRunTrigger(event) {
     'count',
     'notificationId',
     'notificationType',
+    'noteId',
+    'commentId',
     'autopilotClaimed',
   ];
   const trigger = Object.fromEntries(

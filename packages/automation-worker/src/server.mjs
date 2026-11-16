@@ -1419,6 +1419,8 @@ async function executeRoutineAction(routine, event) {
         checkedAt: Date.now(),
       });
       if (!autopilot?.data?.session?.id) {
+        if ((event.events || [event]).some((item) => item.kind === 'drawer.comment'))
+          throw new Error('Drawer comment delivery waits for an active autopilot');
         await log('info', 'send_prompt skipped: no active autopilot', {
           routineId: routine.id,
           targetHostId: action.targetHostId,
@@ -1488,7 +1490,9 @@ async function executeRoutineAction(routine, event) {
       if (
         pending.data.messages?.some(
           (message) => message.id === queued.messageId
-        )
+        ) &&
+        // A queued check cannot stand in for a different user's comment.
+        !(event.events || [event]).some((item) => item.kind === 'drawer.comment')
       ) {
         await releaseClaimedNotifications(routine, event);
         await log(

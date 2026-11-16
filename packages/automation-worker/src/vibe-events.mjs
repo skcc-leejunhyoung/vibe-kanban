@@ -94,6 +94,8 @@ export function journalEventToWorkerEvent(event) {
     data.start_error ? `paused: ${String(data.start_error).slice(0, 120)}` : null,
     // artifact.input_required: which form waits.
     data.artifact_id ? `artifact ${String(data.artifact_id).slice(0, 80)}` : null,
+    event.kind === 'drawer.comment' && data.comment_id
+      ? `comment ${String(data.comment_id).slice(0, 80)}` : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -111,6 +113,10 @@ export function journalEventToWorkerEvent(event) {
     workspaceId: event.workspace_id || null,
     sessionId: event.session_id || null,
     executionId: event.execution_id || null,
+    ...(event.kind === 'drawer.comment' ? {
+      noteId: data.note_id || null,
+      commentId: data.comment_id || null,
+    } : {}),
     at: event.at || null,
     title,
     data,
