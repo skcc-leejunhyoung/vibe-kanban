@@ -566,8 +566,8 @@ const PR_GENERATION_SESSION_NAME: &str = "create-pr";
 
 /// Generate for a caller with no client to try again for it (the vibe PR
 /// follow-up): while this workspace or the global limit is busy, wait for a
-/// slot instead of answering "try again later". `since` is when the caller's
-/// step began; a draft of that step the server died in is cleared away first.
+/// slot instead of answering "try again later". Startup reaps interrupted
+/// drafts by their durable ephemeral flag, never by their user-editable name.
 ///
 /// Nobody is there to answer this draft either. Under a policy that asks
 /// (`Supervised`, `Plan`) its agent would wait on an approval until the
@@ -577,7 +577,6 @@ pub(crate) async fn generate_pr_description_when_free(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
     mut request: GeneratePrDescriptionRequest,
-    since: chrono::DateTime<chrono::Utc>,
 ) -> Result<GeneratePrDescriptionResponse, ApiError> {
     let executor_config =
         resolve_generation_executor_config(deployment, workspace, request.executor_config.take())
@@ -591,7 +590,6 @@ pub(crate) async fn generate_pr_description_when_free(
             Err(_) => tokio::time::sleep(Duration::from_secs(5)).await,
         }
     };
-    delete_interrupted_generation_sessions(deployment, workspace.id, since).await;
     generate_pr_description_inner(
         deployment,
         workspace,
@@ -607,34 +605,6 @@ pub(crate) async fn generate_pr_description_when_free(
 fn unattended(mut config: ExecutorConfig) -> ExecutorConfig {
     config.permission_policy = Some(PermissionPolicy::DontAsk);
     config
-}
-
-/// Delete the throwaway sessions of drafts a server restart cut off. Every
-/// attempt deletes its own session when it ends, and the caller holds the
-/// workspace's generation slot, so a draft session still here — created since
-/// `since`, with nothing running — belongs to an attempt that died with the
-/// server. Left alone, its failed process shows the workspace as failed.
-async fn delete_interrupted_generation_sessions(
-    deployment: &DeploymentImpl,
-    workspace_id: Uuid,
-    since: chrono::DateTime<chrono::Utc>,
-) {
-    let pool = &deployment.db().pool;
-    let Ok(sessions) = Session::find_by_workspace_id(pool, workspace_id).await else {
-        return;
-    };
-    for session in sessions {
-        if session.name.as_deref() != Some(PR_GENERATION_SESSION_NAME) || session.created_at < since
-        {
-            continue;
-        }
-        let idle =
-            ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
-                .await;
-        if matches!(idle, Ok(false)) {
-            delete_pr_generation_session(deployment, session.id).await;
-        }
-    }
 }
 
 async fn generate_pr_description_inner(

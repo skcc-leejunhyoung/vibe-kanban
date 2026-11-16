@@ -1,12 +1,9 @@
 use std::{
     future::Future,
-    io,
-    pin::Pin,
     sync::{
-        Arc, Mutex as StdMutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
-    task::{Context, Poll},
 };
 
 use axum::{
@@ -18,10 +15,7 @@ use axum::{
 use futures_util::StreamExt;
 use hyper::{client::conn::http1 as client_http1, upgrade};
 use hyper_util::rt::TokioIo;
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::Mutex,
-};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tokio_yamux::{Control, Session, StreamHandle};
 use ws_bridge::axum_ws_stream_io;
@@ -171,14 +165,9 @@ async fn send_request_over_stream(
     path: &str,
 ) -> Option<hyper::Response<hyper::body::Incoming>> {
     let stream_id = stream.id();
-    let head = Arc::<StdMutex<Vec<u8>>>::default();
-    let io = HeadRecorder {
-        inner: stream,
-        head: head.clone(),
-    };
     let result = async {
         let (mut sender, connection) = client_http1::Builder::new()
-            .handshake(TokioIo::new(io))
+            .handshake(TokioIo::new(stream))
             .await?;
         tokio::spawn(async move {
             if let Err(error) = connection.with_upgrades().await {
@@ -189,71 +178,15 @@ async fn send_request_over_stream(
     }
     .await;
     if let Err(error) = &result {
-        // A parse error (e.g. `Parse(Version)`) means the stream carried
-        // non-HTTP bytes; the head and stream id show what arrived and where.
+        // Response bytes can contain private data, including non-ASCII text.
         tracing::warn!(
             ?error,
             path = %path,
             stream_id,
-            response_head = %head.lock().unwrap().escape_ascii(),
             "relay proxy request failed"
         );
     }
     result.ok()
-}
-
-/// Enough of the response shape to tell an HTTP head from JSON, SSE, or a
-/// binary frame.
-const RESPONSE_HEAD_LOG_BYTES: usize = 16;
-
-/// Keeps the shape of the first bytes read from a relay stream for the failure
-/// log. Letters and digits are masked (`x`, `0`) so no secret reaches the log;
-/// punctuation, control, and binary bytes are kept.
-struct HeadRecorder {
-    inner: StreamHandle,
-    head: Arc<StdMutex<Vec<u8>>>,
-}
-
-impl AsyncRead for HeadRecorder {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let start = buf.filled().len();
-        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
-        let mut head = self.head.lock().unwrap();
-        let room = RESPONSE_HEAD_LOG_BYTES.saturating_sub(head.len());
-        let read = &buf.filled()[start..];
-        head.extend(read[..read.len().min(room)].iter().map(|&byte| {
-            if byte.is_ascii_alphabetic() {
-                b'x'
-            } else if byte.is_ascii_digit() {
-                b'0'
-            } else {
-                byte
-            }
-        }));
-        poll
-    }
-}
-
-impl AsyncWrite for HeadRecorder {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
 }
 
 fn normalized_relay_path(uri: &axum::http::Uri, strip_prefix: &str) -> String {

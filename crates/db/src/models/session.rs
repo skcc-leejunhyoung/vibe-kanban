@@ -361,6 +361,39 @@ impl Session {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn leftover_cleanup_preserves_user_sessions_named_like_pr_drafts() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let workspace = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'synthetic/work')")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let user = Uuid::new_v4();
+        let draft = Uuid::new_v4();
+        for (id, ephemeral) in [(user, false), (draft, true)] {
+            sqlx::query(
+                "INSERT INTO sessions (id, workspace_id, name, ephemeral) \
+                 VALUES (?, ?, 'create-pr', ?)",
+            )
+            .bind(id)
+            .bind(workspace)
+            .bind(ephemeral)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert_eq!(Session::delete_leftover_ephemeral(&pool).await.unwrap(), 1);
+        assert!(Session::find_by_id(&pool, user).await.unwrap().is_some());
+        assert!(Session::find_by_id(&pool, draft).await.unwrap().is_none());
+    }
+
     /// The guard that keeps script/setup sessions (`dev-server`, `gh-cli`,
     /// `cursor`) out of auto-resume now that every creation path seeds here:
     /// none of those names parse as a coding agent. Coding agents are left out

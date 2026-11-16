@@ -97,7 +97,9 @@ async fn answer(mut stream: StreamHandle) {
             let _ = stream.shutdown().await;
         }
         _ => {
-            let _ = stream.write_all(b"{\"not\":\"http\"}\r\n\r\n").await;
+            let _ = stream
+                .write_all("{\"name\":\"가나다\"}\r\n\r\n".as_bytes())
+                .await;
             let _ = stream.shutdown().await;
         }
     }
@@ -157,7 +159,7 @@ async fn run(logs: Logs) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
 
-    // Non-HTTP reply: 502, delivered once, logged with the masked byte shape.
+    // Non-HTTP reply: 502, delivered once, logged without response bytes.
     let mut signed = get_request("/api/workspaces?archived=false");
     signed
         .headers_mut()
@@ -170,10 +172,14 @@ async fn run(logs: Logs) {
     assert!(line.contains("fixture-host"), "{line}");
     assert!(line.contains("stream_id="), "{line}");
     assert!(
-        line.contains(r#"response_head={\"xxx\":\"xxxx\"}\r\n"#),
-        "{line}"
+        !line.contains("response_head="),
+        "response bytes leaked: {line}"
     );
-    assert!(!line.contains("not"), "response text leaked: {line}");
+    assert!(!line.contains("가나다"), "response text leaked: {line}");
+    assert!(
+        !line.contains(r"\xea\xb0\x80"),
+        "response bytes leaked: {line}"
+    );
 
     let response = proxy(&control, get_request("/preview/index.html")).await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);

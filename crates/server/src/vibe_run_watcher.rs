@@ -14,9 +14,9 @@
 //! the row, so a wait survives restarts.
 //!
 //! A run in the push / PR follow-up after its merge belongs to
-//! [`crate::vibe_pr_follow_up`], which bounds its own steps. One that has no
-//! worker there and has not moved for a while is blocked here with the reason
-//! and the step a retry resumes in.
+//! [`crate::vibe_pr_follow_up`], which holds a claim until each step finishes.
+//! One that has no worker there and has not moved for a while is blocked here
+//! with the reason and the step a retry resumes in.
 
 use std::{
     collections::{HashMap, HashSet},

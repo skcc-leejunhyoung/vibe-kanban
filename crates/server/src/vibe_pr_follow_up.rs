@@ -58,10 +58,8 @@ use crate::{
 /// How often runs owing their follow-up are looked for when nothing rang
 /// [`PR_FOLLOW_UP`] (a run from before a restart, a start that failed).
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
-/// A push runs the repo's pre-push hook, which may build or test. Past this
-/// the run is blocked with the reason rather than left waiting on a remote
-/// that never answers.
-const GIT_STEP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Warn about slow git/PR calls without releasing their workspace claim.
+const GIT_STEP_WARN_AFTER: Duration = Duration::from_secs(10 * 60);
 /// Title of a PR whose draft came back without one.
 const FALLBACK_TITLE: &str = "Pull request";
 
@@ -370,22 +368,26 @@ fn open_pr_for_head<'a>(merges: &'a [Merge], head: &str, work_branch: &str) -> O
 }
 
 /// Run a route handler to its end on a blocking thread — the git and `gh`
-/// calls inside block — and stop waiting after `limit`.
-async fn bounded<F>(limit: Duration, what: &str, handler: F) -> Result<F::Output, String>
+/// calls inside block. A slow call retains its claim until its real outcome.
+async fn run_git_step<F>(warn_after: Duration, what: &str, handler: F) -> Result<F::Output, String>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
     let runtime = tokio::runtime::Handle::current();
-    let task = tokio::task::spawn_blocking(move || runtime.block_on(handler));
-    match tokio::time::timeout(limit, task).await {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(format!("{what} stopped unexpectedly: {e}")),
-        Err(_) => Err(format!(
-            "{what} did not finish within {} minutes",
-            limit.as_secs() / 60
-        )),
-    }
+    let mut task = tokio::task::spawn_blocking(move || runtime.block_on(handler));
+    let result = match tokio::time::timeout(warn_after, &mut task).await {
+        Ok(result) => result,
+        Err(_) => {
+            // Blocking git/gh calls cannot be cancelled by dropping their handle.
+            tracing::warn!(
+                what,
+                "git step is still running; keeping its workspace claim"
+            );
+            task.await
+        }
+    };
+    result.map_err(|e| format!("{what} stopped unexpectedly: {e}"))
 }
 
 /// What a `/git` or `/pull-requests` handler answered, for a caller with no
@@ -560,8 +562,8 @@ impl FollowUpSteps for Live {
             {
                 continue;
             }
-            let answer = bounded(
-                GIT_STEP_TIMEOUT,
+            let answer = run_git_step(
+                GIT_STEP_WARN_AFTER,
                 "the push",
                 git::push_target_branch(
                     Extension(workspace.clone()),
@@ -657,8 +659,6 @@ impl FollowUpSteps for Live {
                     head_branch: head_branch.clone(),
                     executor_config: run.pr_draft_config(),
                 },
-                // The run entered this step at `updated_at`.
-                run.updated_at,
             )
             .await
             .map_err(|e| format!("{}: drafting the pull request failed: {e}", repo.name))?;
@@ -681,8 +681,8 @@ impl FollowUpSteps for Live {
                 "{}: creating the pull request ({} → {})",
                 repo.name, plan.head, plan.base
             );
-            let answer = bounded(
-                GIT_STEP_TIMEOUT,
+            let answer = run_git_step(
+                GIT_STEP_WARN_AFTER,
                 "the request",
                 pr::create_pr(
                     Extension(workspace.clone()),
@@ -729,6 +729,32 @@ mod tests {
     const PR_URL: &str = "https://github.com/acme/widgets/pull/7";
     /// What `finished` logs once the scripted PR is open.
     const FINISHED: &str = "finished: https://github.com/acme/widgets/pull/7";
+
+    #[tokio::test]
+    async fn a_slow_git_step_keeps_its_claim_and_reports_its_real_outcome() {
+        for outcome in [Ok("pushed"), Err("remote refused")] {
+            let workspace_id = Uuid::new_v4();
+            let claim = Claim::take(workspace_id).unwrap();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, released) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                let _claim = claim;
+                run_git_step(Duration::from_millis(1), "test push", async move {
+                    started.send(()).unwrap();
+                    released.await.unwrap();
+                    outcome
+                })
+                .await
+            });
+            ready.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(!task.is_finished());
+            assert!(Claim::take(workspace_id).is_none());
+            release.send(()).unwrap();
+            assert_eq!(task.await.unwrap().unwrap(), outcome);
+            assert!(Claim::take(workspace_id).is_some());
+        }
+    }
 
     /// Steps that answer from a script (success once it runs out) and log what
     /// the follow-up asked of them.
