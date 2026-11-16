@@ -179,8 +179,9 @@ vk events list --since 0 --json | jq '.events | map(.kind) | group_by(.) | map({
 
 Every call carries the command name (`x-vibe-agent-command`) and your session id to the host's
 audit log, so the user can see what ran. Errors come on stderr (`error: ...`) with exit code 1; `--json` turns them into
-`{"success":false,"error":...,"status":...}`. Exit 3 = server unreachable, exit 4 = denied
-by agent access.
+`{"success":false,"error":...,"status":...}`; a failure from an account-access host (`--host`)
+carries `request_id` (inside `error` when the body broke off), the id that host's log gives the
+request. Exit 3 = server unreachable, exit 4 = denied by agent access.
 
 ## Safety rules
 

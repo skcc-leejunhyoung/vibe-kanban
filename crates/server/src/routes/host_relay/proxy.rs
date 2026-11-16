@@ -107,7 +107,8 @@ async fn forward_http(
         .proxy_http(&method, &target_path, &headers, &body_bytes)
         .await?;
 
-    Ok(relay_http_response(response, host_id, &target_path))
+    // Log the path only: query strings can carry values that stay out of logs.
+    Ok(relay_http_response(response, host_id, parts.uri.path()))
 }
 
 async fn forward_ws(
@@ -162,7 +163,7 @@ fn upstream_api_uri(tail: &str, query: Option<&str>) -> Result<Uri, ApiError> {
         .map_err(|_| ApiError::BadRequest("Invalid rewritten relay path".to_string()))
 }
 
-fn relay_http_response(response: ProxiedResponse, host_id: Uuid, target_path: &str) -> Response {
+fn relay_http_response(response: ProxiedResponse, host_id: Uuid, path: &str) -> Response {
     let mut builder = Response::builder().status(response.status);
     for (name, value) in &response.headers {
         if !is_hop_by_hop_header(name.as_str()) {
@@ -173,7 +174,7 @@ fn relay_http_response(response: ProxiedResponse, host_id: Uuid, target_path: &s
     // The status already went out when the upstream body breaks off, so the
     // caller only sees a truncated body ("error decoding response body") and no
     // hop logs anything. Record where and after how many bytes it broke.
-    let path = target_path.to_owned();
+    let path = path.to_owned();
     let mut sent = 0usize;
     let body = response.body.inspect(move |chunk| match chunk {
         Ok(bytes) => sent += bytes.len(),

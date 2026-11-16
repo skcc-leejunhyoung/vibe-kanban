@@ -3481,19 +3481,35 @@ struct Ctx {
 type CliResult = Result<Value, VkError>;
 
 /// Fold the discovered-options SSE into `{options}` the way the web picker
-/// does: start from `{options: {}}` and apply each event as a JSON Patch. A
-/// cold probe sends the provisional `/options` (loading) and then nested
-/// updates such as `/options/model_selector/models` and
-/// `/options/loading_models`, which must land inside `options`.
+/// does: start from `{options: {}}` and apply each op as a JSON Patch, a
+/// `replace` of a missing member falling back to `add` (web-core
+/// `applyUpsertPatch`). A cold probe sends the provisional `/options`
+/// (loading) and then nested updates such as `/options/model_selector/models`
+/// and `/options/loading_models`, which must land inside `options`; the
+/// provisional options omit an unset `default_model`, which the probe then
+/// replaces.
 fn discovered_options_state(events: Vec<(String, String)>) -> Value {
+    use json_patch::{AddOperation, PatchOperation};
+
     let mut state = json!({ "options": {} });
     for (event, data) in events {
         if event != "json_patch" {
             continue;
         }
-        if let Ok(patch) = serde_json::from_str::<json_patch::Patch>(&data) {
-            // A patch that does not apply leaves the state as it was.
-            let _ = json_patch::patch(&mut state, &patch);
+        let Ok(patch) = serde_json::from_str::<json_patch::Patch>(&data) else {
+            continue;
+        };
+        for op in patch.0 {
+            // An op that does not apply leaves the state as it was.
+            if json_patch::patch(&mut state, std::slice::from_ref(&op)).is_err()
+                && let PatchOperation::Replace(replace) = op
+            {
+                let add = PatchOperation::Add(AddOperation {
+                    path: replace.path,
+                    value: replace.value,
+                });
+                let _ = json_patch::patch(&mut state, &[add]);
+            }
         }
     }
     state
@@ -5738,9 +5754,10 @@ mod tests {
         let patch = |value: Value| ("json_patch".to_string(), value.to_string());
         let events = vec![
             ("ready".to_string(), String::new()),
+            // As serialized: an unset `default_model` is omitted.
             patch(json!([{"op": "replace", "path": "/options", "value": {
                 "loading_models": true,
-                "model_selector": {"models": [{"id": "stale-model"}], "default_model": null}
+                "model_selector": {"models": [{"id": "stale-model"}]}
             }}])),
             patch(
                 json!([{"op": "replace", "path": "/options/model_selector/models",

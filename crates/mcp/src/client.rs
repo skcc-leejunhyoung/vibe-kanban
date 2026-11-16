@@ -302,7 +302,7 @@ impl VkClient {
     /// Send and read the body of a successful response. A read whose body
     /// broke off after the 200 (a relay hop dropping the stream mid-transfer)
     /// is repeated once; writes never are — a lost body cannot tell whether
-    /// the write ran.
+    /// the write ran — and neither is a read that ran out its timeout.
     async fn read_body(
         &self,
         request: reqwest::RequestBuilder,
@@ -329,7 +329,7 @@ impl VkClient {
             let request_id = request_id_of(&response);
             match response.text().await {
                 Ok(text) => return Ok((text, request_id)),
-                Err(error) => match replay.take() {
+                Err(error) => match replay.take().filter(|_| !error.is_timeout()) {
                     Some(again) => request = again,
                     None => {
                         return Err(VkError::Parse(match request_id {
@@ -2867,6 +2867,50 @@ mod tests {
         let value: Value = client.get("/workspaces/x/review").await.unwrap();
         assert_eq!(value, json!({"ok": true}));
         assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn read_timing_out_mid_body_is_not_retried() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = vec![0; 8192];
+                    let _ = socket.read(&mut buf).await;
+                    // Headers and part of the body, then stall past the timeout.
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 50\r\n\r\n{\"success\":")
+                        .await;
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                });
+            }
+        });
+        let client = VkClient::new(&base, "test/1");
+        let error = client
+            .exec(
+                "GET",
+                "/execution-processes",
+                false,
+                &[],
+                None,
+                Some(Duration::from_millis(300)),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, VkError::Parse(_)), "{error:?}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
