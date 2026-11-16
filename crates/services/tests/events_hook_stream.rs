@@ -437,3 +437,89 @@ async fn ephemeral_session_runs_stay_out_of_the_agent_journal() {
         .collect();
     assert!(leaked.is_empty(), "throwaway run leaked: {leaked:?}");
 }
+
+/// If the session classification query fails, a throwaway run must not be
+/// reported as a user turn merely because its execution row is readable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn session_lookup_failure_does_not_publish_process_events() {
+    let (_temp, hooked, store) = hooked_db().await;
+    let workspace = Workspace::create(
+        &hooked,
+        &CreateWorkspace {
+            branch: "vk/session-query-failure".into(),
+            name: None,
+        },
+        Uuid::new_v4(),
+    )
+    .await
+    .unwrap();
+    let session = Session::create(
+        &hooked,
+        &CreateSession {
+            executor: None,
+            variant: None,
+            name: None,
+        },
+        Uuid::new_v4(),
+        workspace.id,
+    )
+    .await
+    .unwrap();
+    Session::mark_ephemeral(&hooked, session.id).await.unwrap();
+    // Keep process reads working while making the classification query fail.
+    sqlx::query("ALTER TABLE sessions RENAME COLUMN ephemeral TO unavailable_ephemeral")
+        .execute(&hooked)
+        .await
+        .unwrap();
+    assert!(Session::is_ephemeral(&hooked, session.id).await.is_err());
+    let id = Uuid::new_v4();
+    ExecutionProcess::create(
+        &hooked,
+        &CreateExecutionProcess {
+            session_id: session.id,
+            executor_action: ExecutorAction::new(
+                ExecutorActionType::ScriptRequest(ScriptRequest {
+                    script: "true".into(),
+                    language: ScriptRequestLanguage::Bash,
+                    context: ScriptContext::SetupScript,
+                    working_dir: None,
+                }),
+                None,
+            ),
+            run_reason: ExecutionProcessRunReason::CodingAgent,
+        },
+        id,
+        &[],
+    )
+    .await
+    .unwrap();
+    for status in ["running", "completed"] {
+        if status == "completed" {
+            ExecutionProcess::update_completion(
+                &hooked,
+                id,
+                ExecutionProcessStatus::Completed,
+                Some(0),
+            )
+            .await
+            .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if streamed_ops(&store).iter().any(|op| {
+                    op["value"]["id"] == id.to_string() && op["value"]["status"] == status
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the process update must reach the live stream");
+    }
+    let events = agent_journal::list(0, &["process.".to_string()], 4000).events;
+    assert!(
+        events.iter().all(|event| event.execution_id != Some(id)),
+        "an unclassified run leaked into the agent journal"
+    );
+}

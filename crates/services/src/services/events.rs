@@ -187,10 +187,10 @@ async fn publish_row(
                 .map(|session| session.workspace_id);
             // A throwaway one-shot run is deleted as soon as its caller reads
             // the result, so journal consumers must never chase it.
-            if !Session::is_ephemeral(&db.pool, process.session_id)
-                .await
-                .unwrap_or(false)
-            {
+            if matches!(
+                Session::is_ephemeral(&db.pool, process.session_id).await,
+                Ok(false)
+            ) {
                 crate::services::agent_journal::observe_process(
                     process,
                     workspace_id,
