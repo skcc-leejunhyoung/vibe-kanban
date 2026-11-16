@@ -67,11 +67,17 @@
       "pairMachineHint": "Pair a machine to open machine settings.",
       "selectMachineHint": "Select a machine to open machine settings.",
       "unavailableHost": "Unavailable host",
-      "unavailableHostHint": "This machine is no longer available. Select another one."
+      "unavailableHostHint": "The selected host is no longer available. Select another one.",
+      "unavailableNamedHost": "{{name}} (unavailable)",
+      "unconfirmedNamedHost": "{{name}} (not confirmed)",
+      "unavailableNamedHostHint": "{{name}} is no longer available. Select another one.",
+      "hostListFailedHint": "Could not load the host list, so the selected host cannot be confirmed. Try again later or select another one."
     },
     "general": {
       "loading": "Loading settings...",
       "loadError": "Failed to load configuration.",
+      "loadErrorFor": "Could not load the settings of {{host}}.",
+      "appPreferencesElsewhere": "App preferences (sizes, diff display, split screen, message input, …) are edited under “{{target}}”.",
       "save": {
         "button": "Save Settings",
         "success": "✓ Settings saved successfully!",
@@ -835,6 +841,8 @@
         "defaultRepos": {
           "label": "Default Repositories",
           "description": "Repositories that are automatically added when creating workspaces from this project's issues.",
+          "savedOn": "Saved on {{host}}.",
+          "pickHost": "Select a machine in the settings host picker to edit its default repositories.",
           "empty": "No default repositories configured",
           "addButton": "Add",
           "addNew": "Add new repository...",

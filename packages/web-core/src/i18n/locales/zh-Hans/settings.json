@@ -43,6 +43,8 @@
     "general": {
       "loading": "加载设置中...",
       "loadError": "加载配置失败。",
+      "loadErrorFor": "无法加载 {{host}} 的设置。",
+      "appPreferencesElsewhere": "应用偏好（尺寸、差异显示、分屏、消息输入等）请在“{{target}}”下编辑。",
       "save": {
         "button": "保存设置",
         "success": "✓ 设置保存成功！",
@@ -623,6 +625,8 @@
         "defaultRepos": {
           "label": "Default Repositories",
           "description": "Repositories that are automatically added when creating workspaces from this project's issues.",
+          "savedOn": "保存在 {{host}} 上。",
+          "pickHost": "请在设置的主机选择器中选择一台机器，以编辑其默认仓库。",
           "empty": "No default repositories configured",
           "addButton": "Add",
           "addNew": "Add new repository...",
@@ -646,7 +650,11 @@
       "pairMachineHint": "Pair a machine to open machine settings.",
       "selectMachineHint": "Select a machine to open machine settings.",
       "unavailableHost": "不可用的主机",
-      "unavailableHostHint": "此机器已不可用，请选择其他机器。"
+      "unavailableHostHint": "所选主机已不可用。请选择其他主机。",
+      "unavailableNamedHost": "{{name}}（不可用）",
+      "unconfirmedNamedHost": "{{name}}（未确认）",
+      "unavailableNamedHostHint": "{{name}} 已不可用。请选择其他主机。",
+      "hostListFailedHint": "无法加载主机列表，因此无法确认所选主机。请稍后重试或选择其他主机。"
     },
     "automation": {
       "reviewScope": "Review requests monitored: {{repositories}}",

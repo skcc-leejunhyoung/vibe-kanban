@@ -273,6 +273,8 @@ describe('settings host selection while lists change', () => {
     expect(result.selectedHostId).toBe('host-x');
     expect(result.selectedHostUnavailable).toBe(true);
     expect(result.selectedHost).toBeNull();
+    // Said as "could not be confirmed", not as "gone".
+    expect(result.hostListFailed).toBe(true);
   });
   it('does the same when the list answers without the host that was asked for', async () => {
     await mount('gone');
@@ -280,6 +282,7 @@ describe('settings host selection while lists change', () => {
     expect(result.selectedHostId).toBe('gone');
     expect(result.selectedHostUnavailable).toBe(true);
     expect(result.selectedHost).toBeNull();
+    expect(result.hostListFailed).toBe(false);
   });
   it('falls back to the default target when only the route host is missing', async () => {
     mock.routeHostId = 'gone';

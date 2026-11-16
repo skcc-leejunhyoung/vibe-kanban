@@ -285,6 +285,7 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
               <div className="flex gap-3 flex-col sm:flex-row">
                 <AgentSelector
                   profiles={profiles}
+                  disabledExecutors={config?.disabled_executors}
                   selectedExecutorProfile={effectiveProfile}
                   onChange={setUserSelectedProfile}
                   disabled={!createNewSession}

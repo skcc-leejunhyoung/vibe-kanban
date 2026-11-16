@@ -43,6 +43,8 @@
     "general": {
       "loading": "載入設定中...",
       "loadError": "載入設定失敗。",
+      "loadErrorFor": "無法載入 {{host}} 的設定。",
+      "appPreferencesElsewhere": "應用程式偏好（尺寸、差異顯示、分割畫面、訊息輸入等）請在「{{target}}」下編輯。",
       "save": {
         "button": "儲存設定",
         "success": "✓ 設定儲存成功！",
@@ -623,6 +625,8 @@
         "defaultRepos": {
           "label": "Default Repositories",
           "description": "Repositories that are automatically added when creating workspaces from this project's issues.",
+          "savedOn": "儲存在 {{host}} 上。",
+          "pickHost": "請在設定的主機選擇器中選擇一台機器，以編輯其預設儲存庫。",
           "empty": "No default repositories configured",
           "addButton": "Add",
           "addNew": "Add new repository...",
@@ -646,7 +650,11 @@
       "pairMachineHint": "Pair a machine to open machine settings.",
       "selectMachineHint": "Select a machine to open machine settings.",
       "unavailableHost": "無法使用的主機",
-      "unavailableHostHint": "此機器已無法使用，請選擇其他機器。"
+      "unavailableHostHint": "所選主機已無法使用。請選擇其他主機。",
+      "unavailableNamedHost": "{{name}}（無法使用）",
+      "unconfirmedNamedHost": "{{name}}（未確認）",
+      "unavailableNamedHostHint": "{{name}} 已無法使用。請選擇其他主機。",
+      "hostListFailedHint": "無法載入主機清單，因此無法確認所選主機。請稍後再試或選擇其他主機。"
     },
     "automation": {
       "reviewScope": "Review requests monitored: {{repositories}}",

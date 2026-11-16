@@ -87,7 +87,10 @@ import {
   getProjectRepoDefaults,
   saveProjectRepoDefaults,
 } from '@/shared/hooks/useProjectRepoDefaults';
-import { useSettingsMachineClient } from './SettingsHostContext';
+import {
+  useSettingsHost,
+  useSettingsMachineClient,
+} from './SettingsHostContext';
 import { ProjectViewsEditor } from './ProjectViewsEditor';
 
 interface FormState {
@@ -349,7 +352,11 @@ export function RemoteProjectsSettingsSection({
   const { t } = useTranslation(['settings', 'common', 'projects']);
   const { setDirty: setContextDirty } = useSettingsDirty();
   const { isSignedIn, isLoaded } = useAuth();
-  const machineClient = useSettingsMachineClient();
+  // Default repositories belong to the settings target. Until that target
+  // is final it is only a placeholder, so nothing of it is read or written.
+  const { targetResolved, selectedHost } = useSettingsHost();
+  const settingsMachineClient = useSettingsMachineClient();
+  const machineClient = targetResolved ? settingsMachineClient : null;
   const machineHostId = machineClient?.target.apiHostId;
   const machineScopeKey = machineHostId ?? 'local';
   const activeMachineScopeRef = useRef(machineScopeKey);
@@ -374,6 +381,12 @@ export function RemoteProjectsSettingsSection({
   // Default repos state
   const [defaultRepos, setDefaultRepos] = useState<DraftWorkspaceRepo[]>([]);
   const [isLoadingDefaults, setIsLoadingDefaults] = useState(false);
+  // Edits are saved as the whole list, so they are only accepted once the
+  // host's current list has been read: built on an empty or failed load they
+  // would replace the defaults the host already has.
+  const [defaultReposReady, setDefaultReposReady] = useState(false);
+  // Bumped by "Retry" after a failed read.
+  const [defaultReposReload, setDefaultReposReload] = useState(0);
   const [allRepos, setAllRepos] = useState<Repo[]>([]);
   const [defaultReposError, setDefaultReposError] = useState<string | null>(
     null
@@ -530,6 +543,7 @@ export function RemoteProjectsSettingsSection({
 
   // Load default repos and registered repos when project changes
   useEffect(() => {
+    setDefaultReposReady(false);
     if (!selectedProjectId || !machineClient) {
       setDefaultRepos([]);
       setAllRepos([]);
@@ -555,6 +569,7 @@ export function RemoteProjectsSettingsSection({
         if (cancelled) return;
         setDefaultRepos(repos ?? []);
         setAllRepos(registeredRepos);
+        setDefaultReposReady(true);
       })
       .catch(() => {
         if (cancelled) return;
@@ -571,7 +586,7 @@ export function RemoteProjectsSettingsSection({
     return () => {
       cancelled = true;
     };
-  }, [machineClient, machineHostId, selectedProjectId, t]);
+  }, [machineClient, machineHostId, selectedProjectId, t, defaultReposReload]);
 
   const defaultRepoIds = useMemo(
     () => new Set(defaultRepos.map((r) => r.repo_id)),
@@ -607,7 +622,7 @@ export function RemoteProjectsSettingsSection({
 
   const handleAddDefaultRepo = useCallback(
     async (repo: Repo) => {
-      if (!selectedProjectId) return;
+      if (!selectedProjectId || !defaultReposReady) return;
       setDefaultReposError(null);
       try {
         const branch = await pickBranchForRepo(repo);
@@ -645,6 +660,7 @@ export function RemoteProjectsSettingsSection({
     },
     [
       selectedProjectId,
+      defaultReposReady,
       defaultRepos,
       pickBranchForRepo,
       machineClient,
@@ -654,7 +670,7 @@ export function RemoteProjectsSettingsSection({
   );
 
   const handleAddNewDefaultRepo = useCallback(async () => {
-    if (!selectedProjectId) return;
+    if (!selectedProjectId || !defaultReposReady) return;
     setDefaultReposError(null);
     try {
       if (!machineClient) return;
@@ -672,6 +688,7 @@ export function RemoteProjectsSettingsSection({
     }
   }, [
     selectedProjectId,
+    defaultReposReady,
     handleAddDefaultRepo,
     machineClient,
     machineHostId,
@@ -680,7 +697,7 @@ export function RemoteProjectsSettingsSection({
 
   const handleRemoveDefaultRepo = useCallback(
     async (repoId: string) => {
-      if (!selectedProjectId) return;
+      if (!selectedProjectId || !defaultReposReady) return;
       setDefaultReposError(null);
       const updated = defaultRepos.filter((r) => r.repo_id !== repoId);
       setDefaultRepos(updated);
@@ -698,7 +715,7 @@ export function RemoteProjectsSettingsSection({
         );
       }
     },
-    [selectedProjectId, defaultRepos, machineHostId, t]
+    [selectedProjectId, defaultReposReady, defaultRepos, machineHostId, t]
   );
 
   const fetchBranchesForRepo = useCallback(
@@ -730,7 +747,7 @@ export function RemoteProjectsSettingsSection({
 
   const handleChangeBranch = useCallback(
     async (repoId: string, newBranch: string) => {
-      if (!selectedProjectId) return;
+      if (!selectedProjectId || !defaultReposReady) return;
       const updated = defaultRepos.map((r) =>
         r.repo_id === repoId ? { ...r, target_branch: newBranch } : r
       );
@@ -749,7 +766,7 @@ export function RemoteProjectsSettingsSection({
         );
       }
     },
-    [selectedProjectId, defaultRepos, machineHostId, t]
+    [selectedProjectId, defaultReposReady, defaultRepos, machineHostId, t]
   );
 
   const visibleStatusCount = useMemo(
@@ -1303,10 +1320,36 @@ export function RemoteProjectsSettingsSection({
                   'settings:settings.remoteProjects.form.defaultRepos.description'
                 )}
               </p>
+              {/* They live on one machine, the settings target: say which,
+                  or that one has to be picked (the shared "Remote" settings
+                  have no machine to keep them). */}
+              {targetResolved && (
+                <p className="text-sm text-low mt-1">
+                  {machineClient && selectedHost
+                    ? t(
+                        'settings:settings.remoteProjects.form.defaultRepos.savedOn',
+                        { host: selectedHost.label }
+                      )
+                    : t(
+                        'settings:settings.remoteProjects.form.defaultRepos.pickHost'
+                      )}
+                </p>
+              )}
             </div>
 
             {defaultReposError && (
-              <p className="text-sm text-red-500">{defaultReposError}</p>
+              <div className="flex flex-wrap items-center gap-base">
+                <p className="text-sm text-red-500">{defaultReposError}</p>
+                {!defaultReposReady && !isLoadingDefaults && machineClient && (
+                  <button
+                    type="button"
+                    onClick={() => setDefaultReposReload((n) => n + 1)}
+                    className="rounded-sm border border-border px-base py-half text-sm text-normal hover:text-high"
+                  >
+                    {t('common:buttons.retry')}
+                  </button>
+                )}
+              </div>
             )}
 
             {isLoadingDefaults ? (
@@ -1421,10 +1464,11 @@ export function RemoteProjectsSettingsSection({
             )}
 
             <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+              <DropdownMenuTrigger asChild disabled={!defaultReposReady}>
                 <button
                   type="button"
-                  className="flex items-center gap-half px-base py-half text-high hover:bg-secondary rounded-sm transition-colors"
+                  disabled={!defaultReposReady}
+                  className="flex items-center gap-half px-base py-half text-high hover:bg-secondary rounded-sm transition-colors disabled:opacity-50 disabled:pointer-events-none"
                 >
                   <div className="flex items-center justify-center size-icon-sm">
                     <PlusIcon className="size-icon-xs" weight="bold" />

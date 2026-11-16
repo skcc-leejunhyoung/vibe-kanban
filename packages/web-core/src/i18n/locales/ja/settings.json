@@ -43,6 +43,8 @@
     "general": {
       "loading": "設定を読み込み中...",
       "loadError": "設定の読み込みに失敗しました。",
+      "loadErrorFor": "{{host}} の設定を読み込めませんでした。",
+      "appPreferencesElsewhere": "アプリの設定（サイズ、差分表示、分割画面、メッセージ入力など）は「{{target}}」で編集します。",
       "save": {
         "button": "設定を保存",
         "success": "✓ 設定が正常に保存されました！",
@@ -623,6 +625,8 @@
         "defaultRepos": {
           "label": "Default Repositories",
           "description": "Repositories that are automatically added when creating workspaces from this project's issues.",
+          "savedOn": "{{host}} に保存されます。",
+          "pickHost": "既定のリポジトリを編集するには、設定のホスト選択でマシンを選んでください。",
           "empty": "No default repositories configured",
           "addButton": "Add",
           "addNew": "Add new repository...",
@@ -646,7 +650,11 @@
       "pairMachineHint": "Pair a machine to open machine settings.",
       "selectMachineHint": "Select a machine to open machine settings.",
       "unavailableHost": "利用できないホスト",
-      "unavailableHostHint": "このマシンは利用できなくなりました。別のマシンを選択してください。"
+      "unavailableHostHint": "選択したホストは利用できなくなりました。別のホストを選んでください。",
+      "unavailableNamedHost": "{{name}}（利用不可）",
+      "unconfirmedNamedHost": "{{name}}（未確認）",
+      "unavailableNamedHostHint": "{{name}} は利用できなくなりました。別のホストを選んでください。",
+      "hostListFailedHint": "ホスト一覧を読み込めなかったため、選択したホストを確認できません。後でもう一度試すか、別のホストを選んでください。"
     },
     "automation": {
       "reviewScope": "Review requests monitored: {{repositories}}",

@@ -85,6 +85,25 @@ describe('fetchRemoteCloudHostsState', () => {
     expect(state.hosts.map((host) => host.id)).toEqual(['i9']);
   });
 
+  it('still leaves this machine out when its cloud host id cannot be looked up', async () => {
+    const state = await fetchRemoteCloudHostsState({
+      listPairedHosts: async () => [],
+      listCloudHosts: async () => [
+        relayHost({
+          id: 'self',
+          machine_id: 'this-machine',
+          auth_mode: 'account',
+        }),
+        relayHost({ machine_id: 'other-machine', auth_mode: 'account' }),
+      ],
+      getSelfHostId: async () => {
+        throw new Error('local lookup failed');
+      },
+      getSelfMachineId: () => 'this-machine',
+    });
+    expect(state.hosts.map((host) => host.id)).toEqual(['i9']);
+  });
+
   it('does not report an empty host list when the pairing lookup fails', async () => {
     const error = new Error('pairing store unavailable');
 

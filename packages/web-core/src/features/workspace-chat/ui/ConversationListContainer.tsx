@@ -12,7 +12,6 @@ import {
   type ReactNode,
 } from 'react';
 import { SpinnerIcon } from '@phosphor-icons/react';
-import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -65,12 +64,7 @@ import {
   collapseCompletedTurnSteps,
   countCollapsedSteps,
 } from '@/shared/lib/aggregateEntries';
-import {
-  REMOTE_SHARED_USER_SYSTEM_QUERY_KEY,
-  loadRemoteSharedUserSystemInfo,
-} from '@/shared/lib/remoteSharedConfig';
-import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
-import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { useAppUserSystem } from '@/shared/hooks/useAppUserSystem';
 import { usePersistedExpanded } from '@/shared/stores/useUiPreferencesStore';
 import { useConversationHistory } from '../model/hooks/useConversationHistory';
 import { useSetTokenUsageInfo } from '../model/contexts/EntriesContext';
@@ -563,20 +557,12 @@ function CollapsedStepsRow({
   );
 }
 
-// Like Quick Chat's pane preference: the remote app is one surface across
-// hosts, so it reads the account-wide "Remote" config there and the host
-// config locally.
+// Like Quick Chat's pane preference, a habit of the person reading: it comes
+// from the app's own settings (this machine locally, the account-wide "Remote"
+// config on the remote web), so conversations on two hosts side by side read
+// the same way.
 function useCollapseCompletedTurnSteps(): boolean {
-  const runtime = useAppRuntime();
-  const { config } = useUserSystem();
-  const shared = useQuery({
-    queryKey: REMOTE_SHARED_USER_SYSTEM_QUERY_KEY,
-    queryFn: loadRemoteSharedUserSystemInfo,
-    enabled: runtime === 'remote',
-    staleTime: 5 * 60 * 1000,
-  });
-  const source = runtime === 'remote' ? shared.data?.config : config;
-  return source?.collapse_completed_turn_steps ?? true;
+  return useAppUserSystem().config?.collapse_completed_turn_steps ?? true;
 }
 
 function renderRowContent(

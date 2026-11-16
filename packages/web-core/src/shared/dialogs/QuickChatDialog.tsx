@@ -147,8 +147,14 @@ function QuickChatHostPanel({
   onSubmittingChange,
   onOpenWorkspace,
 }: QuickChatHostPanelProps) {
-  const { config, profiles, configError, configRefreshing, reloadSystem } =
-    useUserSystem();
+  const {
+    config,
+    profiles,
+    configError,
+    configErrorMessage,
+    configRefreshing,
+    reloadSystem,
+  } = useUserSystem();
   const queryClient = useQueryClient();
   const isAutopilotMode = mode === 'autopilot';
 
@@ -487,7 +493,10 @@ function QuickChatHostPanel({
   if (configError && !config) {
     return (
       <div className="flex flex-wrap items-center gap-base text-sm text-error">
-        <span>{`Could not load the settings of ${hostLabel}, so nothing can be started there yet.`}</span>
+        <span>
+          {`Could not load the settings of ${hostLabel}, so nothing can be started there yet.`}
+          {configErrorMessage ? ` (${configErrorMessage})` : ''}
+        </span>
         <button
           type="button"
           onClick={() => void reloadSystem()}
@@ -1084,7 +1093,15 @@ const QuickChatDialogImpl = create<QuickChatDialogProps>((props) => {
             hostsLoading ? 'text-low' : 'text-error'
           }`}
         >
-          <span>{unavailableReason}</span>
+          <span>
+            {unavailableReason}
+            {/* Why the list failed (signed out, cloud unreachable, …), where
+                that is what the message is about: not for a host the list
+                still shows as offline. */}
+            {!hostsLoading && hostsError && selectedHost?.state !== 'offline'
+              ? ` (${getErrorMessage(hostsError)})`
+              : ''}
+          </span>
           {!hostsLoading && (
             <button
               type="button"

@@ -54,6 +54,8 @@ export interface UserSystemContextType {
   // State
   loading: boolean;
   configError: boolean;
+  /** Why the config could not be loaded (offline, access revoked, …). */
+  configErrorMessage?: string | null;
   configRefreshing: boolean;
 }
 

@@ -68,6 +68,36 @@ function isHostSectionAvailableForTarget(
   return isRemoteShared ? REMOTE_SHARED_HOST_SECTIONS.has(sectionId) : true;
 }
 
+/**
+ * What to say about a selected host that is not in the list: named after it
+ * when it is known, and "unknown" rather than "gone" when the list itself
+ * could not be loaded. Never "this machine": that is the local host's label.
+ */
+function useUnavailableHostText() {
+  const { t } = useTranslation('settings');
+  const { selectedHost, selectedHostUnavailable, hostListFailed } =
+    useSettingsHost();
+  const unavailableName = selectedHostUnavailable
+    ? (selectedHost?.label ?? null)
+    : null;
+  const unavailableLabel = unavailableName
+    ? t(
+        hostListFailed
+          ? 'settings.hostPicker.unconfirmedNamedHost'
+          : 'settings.hostPicker.unavailableNamedHost',
+        { name: unavailableName }
+      )
+    : t('settings.hostPicker.unavailableHost', 'Unavailable host');
+  const unavailableHint = hostListFailed
+    ? t('settings.hostPicker.hostListFailedHint')
+    : unavailableName
+      ? t('settings.hostPicker.unavailableNamedHostHint', {
+          name: unavailableName,
+        })
+      : t('settings.hostPicker.unavailableHostHint');
+  return { unavailableLabel, unavailableHint };
+}
+
 function SettingsDialogNavigation({
   activeSection,
   onSectionSelect,
@@ -86,6 +116,7 @@ function SettingsDialogNavigation({
   } = useSettingsHost();
   const { isDirty } = useSettingsDirty();
   const isRemoteShared = isRemoteSharedHostId(selectedHostId);
+  const { unavailableLabel, unavailableHint } = useUnavailableHostText();
   const hostSections = SETTINGS_SECTION_DEFINITIONS.filter(
     (section) =>
       section.group === 'host' &&
@@ -103,7 +134,7 @@ function SettingsDialogNavigation({
   if (selectedHostUnavailable && selectedHostId) {
     hostOptions.push({
       value: selectedHostId,
-      label: t('settings.hostPicker.unavailableHost', 'Unavailable host'),
+      label: unavailableLabel,
     });
   }
   const hostSettingsDisabled = !targetResolved || !selectedHost;
@@ -113,10 +144,7 @@ function SettingsDialogNavigation({
   const hostHint = !targetResolved
     ? t('settings.general.loading')
     : selectedHostUnavailable
-      ? t(
-          'settings.hostPicker.unavailableHostHint',
-          'This machine is no longer available. Select another one.'
-        )
+      ? unavailableHint
       : availableHosts.length === 0
         ? t('settings.hostPicker.pairMachineHint')
         : t('settings.hostPicker.selectMachineHint');
@@ -316,6 +344,7 @@ function SettingsDialogContent({
     selectedHostId,
     selectedHostUnavailable,
   } = useSettingsHost();
+  const { unavailableHint } = useUnavailableHostText();
   const isRemoteShared = isRemoteSharedHostId(selectedHostId);
 
   const resolvedInitialSection = useMemo<SettingsSectionType>(() => {
@@ -527,10 +556,7 @@ function SettingsDialogContent({
                     <>
                       {selectedHostUnavailable && (
                         <div className="mx-6 mt-4 rounded-sm border border-error/50 bg-error/10 p-3 text-sm text-error">
-                          {t(
-                            'settings.hostPicker.unavailableHostHint',
-                            'This machine is no longer available. Select another one.'
-                          )}
+                          {unavailableHint}
                         </div>
                       )}
                       {/* Keyed by machine: a section's draft, dirty flag and
@@ -548,10 +574,7 @@ function SettingsDialogContent({
                     </>
                   ) : selectedHostUnavailable ? (
                     <div className="px-6 py-8 text-sm text-low">
-                      {t(
-                        'settings.hostPicker.unavailableHostHint',
-                        'This machine is no longer available. Select another one.'
-                      )}
+                      {unavailableHint}
                     </div>
                   ) : availableHosts.length > 0 ? (
                     <div className="px-6 py-8 text-sm text-low">

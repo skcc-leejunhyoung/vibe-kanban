@@ -337,7 +337,14 @@ export function GeneralSettingsSection() {
       defaultValue: 'Browser Default',
     })
   );
-  const { config, loading, updateAndSaveConfig, profiles } = useUserSystem();
+  const {
+    config,
+    loading,
+    updateAndSaveConfig,
+    profiles,
+    configErrorMessage,
+    reloadSystem,
+  } = useUserSystem();
 
   const { draft, hasUnsavedChanges, updateDraft, saveDraft, discardDraft } =
     useConfigDraft(config, updateAndSaveConfig);
@@ -516,7 +523,7 @@ export function GeneralSettingsSection() {
   if (loading) {
     return (
       <>
-        <AppSizeFields />
+        {editsThisApp && <AppSizeFields />}
         <div className="flex items-center justify-center py-8 gap-2">
           <SpinnerIcon
             className="size-icon-lg animate-spin text-brand"
@@ -531,10 +538,24 @@ export function GeneralSettingsSection() {
   if (!config) {
     return (
       <>
-        <AppSizeFields />
+        {editsThisApp && <AppSizeFields />}
         <div className="py-8">
-          <div className="bg-error/10 border border-error/50 rounded-sm p-4 text-error">
-            {t('settings.general.loadError')}
+          <div className="flex flex-wrap items-center gap-base bg-error/10 border border-error/50 rounded-sm p-4 text-error">
+            <span>
+              {t('settings.general.loadErrorFor', {
+                host:
+                  machineClient?.target.label ??
+                  t('settings.hostPicker.remoteShared', 'Remote'),
+              })}
+              {configErrorMessage ? ` (${configErrorMessage})` : ''}
+            </span>
+            <button
+              type="button"
+              onClick={() => void reloadSystem()}
+              className="rounded-sm border border-error/50 px-base py-half text-sm"
+            >
+              {t('common:buttons.retry')}
+            </button>
           </div>
         </div>
       </>
@@ -582,6 +603,19 @@ export function GeneralSettingsSection() {
         </div>
       )}
 
+      {/* Say where the app's own preferences are: under another host they
+          are not shown, and their absence alone would look like a loss. */}
+      {!editsThisApp && (
+        <p className="text-sm text-low">
+          {t('settings.general.appPreferencesElsewhere', {
+            target:
+              runtime === 'remote'
+                ? t('settings.hostPicker.remoteShared', 'Remote')
+                : t('settings.hostPicker.thisMachine', 'This machine'),
+          })}
+        </p>
+      )}
+
       {/* Appearance */}
       <SettingsCard
         title={t('settings.general.appearance.title')}
@@ -599,25 +633,31 @@ export function GeneralSettingsSection() {
           />
         </SettingsField>
 
-        <SettingsField
-          label={t('settings.general.appearance.themeVariant.label')}
-          description={t('settings.general.appearance.themeVariant.helper')}
-        >
-          <SettingsSelect
-            value={themeVariant}
-            options={themeVariantOptions}
-            onChange={(value) => setThemeVariant(value)}
-            actions={[
-              {
-                label: t('settings.general.themeEditor.manage'),
-                icon: PaletteIcon,
-                onClick: () => {
-                  void ThemeVariantEditorDialog.show();
+        {/* This app's own preferences (browser stores and the app's own
+            settings) are offered only where the app's settings are edited:
+            under another host they would look like that host's and change
+            this app at once, outside the host's save and discard. */}
+        {editsThisApp && (
+          <SettingsField
+            label={t('settings.general.appearance.themeVariant.label')}
+            description={t('settings.general.appearance.themeVariant.helper')}
+          >
+            <SettingsSelect
+              value={themeVariant}
+              options={themeVariantOptions}
+              onChange={(value) => setThemeVariant(value)}
+              actions={[
+                {
+                  label: t('settings.general.themeEditor.manage'),
+                  icon: PaletteIcon,
+                  onClick: () => {
+                    void ThemeVariantEditorDialog.show();
+                  },
                 },
-              },
-            ]}
-          />
-        </SettingsField>
+              ]}
+            />
+          </SettingsField>
+        )}
 
         <SettingsField
           label={t('settings.general.appearance.primaryColor.label')}
@@ -665,69 +705,78 @@ export function GeneralSettingsSection() {
           />
         </SettingsField>
 
-        <SettingsCheckbox
-          id="show-context-bar"
-          label={t('settings.general.appearance.contextBar.label')}
-          description={t('settings.general.appearance.contextBar.helper')}
-          checked={contextBarVisible}
-          onChange={setContextBarVisible}
-        />
+        {editsThisApp && (
+          <>
+            <SettingsCheckbox
+              id="show-context-bar"
+              label={t('settings.general.appearance.contextBar.label')}
+              description={t('settings.general.appearance.contextBar.helper')}
+              checked={contextBarVisible}
+              onChange={setContextBarVisible}
+            />
 
-        <AppSizeFields />
+            <AppSizeFields />
 
-        <TerminalFontSizeField />
+            <TerminalFontSizeField />
+          </>
+        )}
       </SettingsCard>
 
-      <SettingsCard
-        title={t('settings.general.diff.title', {
-          defaultValue: 'Diff display',
-        })}
-        description={t('settings.general.diff.description', {
-          defaultValue: 'Choose how file changes are displayed.',
-        })}
-      >
-        <SettingsField
-          label={t('settings.general.diff.layout.label', {
-            defaultValue: 'Layout',
+      {editsThisApp && (
+        <SettingsCard
+          title={t('settings.general.diff.title', {
+            defaultValue: 'Diff display',
           })}
-          description={t('settings.general.diff.layout.helper', {
-            defaultValue:
-              'Unified shows changes in one column. Split shows old and new versions side by side.',
+          description={t('settings.general.diff.description', {
+            defaultValue: 'Choose how file changes are displayed.',
           })}
         >
-          <SettingsSelect
-            value={diffViewMode}
-            options={[
-              {
-                value: 'unified' as DiffViewMode,
-                label: t('settings.general.diff.layout.unified', {
-                  defaultValue: 'Unified',
-                }),
-              },
-              {
-                value: 'split' as DiffViewMode,
-                label: t('settings.general.diff.layout.split', {
-                  defaultValue: 'Split',
-                }),
-              },
-            ]}
-            onChange={(value: DiffViewMode) => setDiffViewMode(value)}
-          />
-        </SettingsField>
+          <SettingsField
+            label={t('settings.general.diff.layout.label', {
+              defaultValue: 'Layout',
+            })}
+            description={t('settings.general.diff.layout.helper', {
+              defaultValue:
+                'Unified shows changes in one column. Split shows old and new versions side by side.',
+            })}
+          >
+            <SettingsSelect
+              value={diffViewMode}
+              options={[
+                {
+                  value: 'unified' as DiffViewMode,
+                  label: t('settings.general.diff.layout.unified', {
+                    defaultValue: 'Unified',
+                  }),
+                },
+                {
+                  value: 'split' as DiffViewMode,
+                  label: t('settings.general.diff.layout.split', {
+                    defaultValue: 'Split',
+                  }),
+                },
+              ]}
+              onChange={(value: DiffViewMode) => setDiffViewMode(value)}
+            />
+          </SettingsField>
 
-        <SettingsCheckbox
-          id="expand-chat-file-changes"
-          label={t('settings.general.diff.expandChatFileChanges.label', {
-            defaultValue: 'Expand file changes in chat by default',
-          })}
-          description={t('settings.general.diff.expandChatFileChanges.helper', {
-            defaultValue:
-              'Show file-change diffs expanded in the conversation. You can still collapse each file individually.',
-          })}
-          checked={expandChatFileChanges}
-          onChange={setExpandChatFileChanges}
-        />
-      </SettingsCard>
+          <SettingsCheckbox
+            id="expand-chat-file-changes"
+            label={t('settings.general.diff.expandChatFileChanges.label', {
+              defaultValue: 'Expand file changes in chat by default',
+            })}
+            description={t(
+              'settings.general.diff.expandChatFileChanges.helper',
+              {
+                defaultValue:
+                  'Show file-change diffs expanded in the conversation. You can still collapse each file individually.',
+              }
+            )}
+            checked={expandChatFileChanges}
+            onChange={setExpandChatFileChanges}
+          />
+        </SettingsCard>
+      )}
 
       {/* Editor */}
       <SettingsCard
@@ -1333,11 +1382,9 @@ export function GeneralSettingsSection() {
         />
       </SettingsCard>
 
-      {/* Conversation: shown for the config this app's chat actually reads,
-          the host config locally and the shared "Remote" config on remote-web. */}
-      {(runtime === 'remote'
-        ? machineClient === null
-        : machineClient !== null) && (
+      {/* Conversation: an app preference, so shown where the app's own
+          settings are edited, which is the config the chat reads. */}
+      {editsThisApp && (
         <SettingsCard
           title={t('settings.general.conversation.title')}
           description={t('settings.general.conversation.description')}
@@ -1390,47 +1437,51 @@ export function GeneralSettingsSection() {
       )}
 
       {/* Workspace List */}
-      <SettingsCard
-        title={t('settings.general.workspaceList.title')}
-        description={t('settings.general.workspaceList.description')}
-      >
-        <SettingsField
-          label={t('settings.general.workspaceList.statusesLabel')}
-          description={t('settings.general.workspaceList.statusesHelper')}
-        >
-          <WorkspaceStatusListEditor
-            statuses={issueStatuses}
-            onChange={setIssueStatuses}
-            defaultStatuses={DEFAULT_WORKSPACE_ISSUE_STATUSES}
-          />
-        </SettingsField>
-      </SettingsCard>
+      {editsThisApp && (
+        <>
+          <SettingsCard
+            title={t('settings.general.workspaceList.title')}
+            description={t('settings.general.workspaceList.description')}
+          >
+            <SettingsField
+              label={t('settings.general.workspaceList.statusesLabel')}
+              description={t('settings.general.workspaceList.statusesHelper')}
+            >
+              <WorkspaceStatusListEditor
+                statuses={issueStatuses}
+                onChange={setIssueStatuses}
+                defaultStatuses={DEFAULT_WORKSPACE_ISSUE_STATUSES}
+              />
+            </SettingsField>
+          </SettingsCard>
 
-      <SettingsCard
-        title={t('settings.general.rightSidebar.title')}
-        description={t('settings.general.rightSidebar.description')}
-      >
-        <SettingsField
-          label={t('settings.general.rightSidebar.orderLabel')}
-          description={t('settings.general.rightSidebar.orderHelper')}
-        >
-          <RightSidebarSectionOrderEditor
-            order={rightSidebarSectionOrder}
-            onChange={setRightSidebarSectionOrder}
-          />
-        </SettingsField>
-      </SettingsCard>
+          <SettingsCard
+            title={t('settings.general.rightSidebar.title')}
+            description={t('settings.general.rightSidebar.description')}
+          >
+            <SettingsField
+              label={t('settings.general.rightSidebar.orderLabel')}
+              description={t('settings.general.rightSidebar.orderHelper')}
+            >
+              <RightSidebarSectionOrderEditor
+                order={rightSidebarSectionOrder}
+                onChange={setRightSidebarSectionOrder}
+              />
+            </SettingsField>
+          </SettingsCard>
+        </>
+      )}
 
-      <SettingsCard
-        title={t('settings.general.splitScreen.title', {
-          defaultValue: 'Split screen',
-        })}
-        description={t('settings.general.splitScreen.description', {
-          defaultValue:
-            'Choose how many pages can open together before links fall back to a new window.',
-        })}
-      >
-        {editsThisApp && (
+      {editsThisApp && (
+        <SettingsCard
+          title={t('settings.general.splitScreen.title', {
+            defaultValue: 'Split screen',
+          })}
+          description={t('settings.general.splitScreen.description', {
+            defaultValue:
+              'Choose how many pages can open together before links fall back to a new window.',
+          })}
+        >
           <SettingsCheckbox
             id="quick-chat-open-in-new-pane"
             label={t('settings.general.splitScreen.quickChatNewPane.label')}
@@ -1442,38 +1493,38 @@ export function GeneralSettingsSection() {
               updateDraft({ quick_chat_open_in_new_pane: checked })
             }
           />
-        )}
-        {/* The standalone terminal is a local-app surface: the cloud app has no
+          {/* The standalone terminal is a local-app surface: the cloud app has no
             host id to route a home-directory PTY to, so its command palette
             never offers the action this toggle governs. */}
-        {runtime === 'local' && editsThisApp && (
-          <SettingsCheckbox
-            id="terminal-open-in-new-pane"
-            label={t('settings.general.splitScreen.terminalNewPane.label')}
-            description={t(
-              'settings.general.splitScreen.terminalNewPane.helper'
-            )}
-            checked={draft?.terminal_open_in_new_pane ?? false}
-            onChange={(checked) =>
-              updateDraft({ terminal_open_in_new_pane: checked })
-            }
-          />
-        )}
-        <SettingsField
-          label={t('settings.general.splitScreen.maxPanes', {
-            defaultValue: 'Maximum panes',
-          })}
-        >
-          <SettingsSelect
-            value={String(maxSplitPanes)}
-            options={WORKSPACE_PANE_COUNTS.map((value) => ({
-              value: String(value),
-              label: String(value),
-            }))}
-            onChange={(value) => setMaxSplitPanes(Number(value))}
-          />
-        </SettingsField>
-      </SettingsCard>
+          {runtime === 'local' && (
+            <SettingsCheckbox
+              id="terminal-open-in-new-pane"
+              label={t('settings.general.splitScreen.terminalNewPane.label')}
+              description={t(
+                'settings.general.splitScreen.terminalNewPane.helper'
+              )}
+              checked={draft?.terminal_open_in_new_pane ?? false}
+              onChange={(checked) =>
+                updateDraft({ terminal_open_in_new_pane: checked })
+              }
+            />
+          )}
+          <SettingsField
+            label={t('settings.general.splitScreen.maxPanes', {
+              defaultValue: 'Maximum panes',
+            })}
+          >
+            <SettingsSelect
+              value={String(maxSplitPanes)}
+              options={WORKSPACE_PANE_COUNTS.map((value) => ({
+                value: String(value),
+                label: String(value),
+              }))}
+              onChange={(value) => setMaxSplitPanes(Number(value))}
+            />
+          </SettingsField>
+        </SettingsCard>
+      )}
 
       {/* Task Templates live on a machine. The shared "Remote" target has
           none: there the manager would read and edit the tags of whichever

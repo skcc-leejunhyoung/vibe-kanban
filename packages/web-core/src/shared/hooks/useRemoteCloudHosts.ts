@@ -1,12 +1,17 @@
 import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AppBarHost, AppBarHostStatus } from '@vibe/ui/components/AppBar';
-import type { PairRelayHostRequest, RelayPairedHost } from 'shared/types';
+import type {
+  PairRelayHostRequest,
+  RelayPairedHost,
+  UserSystemInfo,
+} from 'shared/types';
 import type { RelayHost } from 'shared/remote-types';
 import { relayApi } from '@/shared/lib/api';
 import { useAppRuntime } from '@/shared/hooks/useAppRuntime';
 import { listRelayHosts } from '@/shared/lib/remoteApi';
 import { REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY } from '@/shared/lib/relayHostQueryKeys';
+import { getHostUserSystemQueryKey } from '@/shared/lib/hostRequestScope';
 
 export type RemoteCloudHostStatus = AppBarHostStatus;
 
@@ -29,6 +34,13 @@ interface RemoteCloudHostDataSources {
   listCloudHosts: () => Promise<RelayHost[]>;
   /** This machine's own cloud host id, which must not be listed as remote. */
   getSelfHostId?: () => Promise<string | null>;
+  /**
+   * This machine's id (`machine_id` of its `/api/info`). The cloud records the
+   * same id for this machine's host (unique per owner), and the backend's own
+   * self check compares it the same way, so it is always applied: it also
+   * recognises this machine when the cloud host id cannot be looked up.
+   */
+  getSelfMachineId?: () => string | null;
 }
 
 function normalizeRemoteCloudHostStatus(
@@ -52,6 +64,12 @@ export async function fetchRemoteCloudHostsState(
     sources.getSelfHostId?.() ?? null,
   ]);
   const selfHostId = self.status === 'fulfilled' ? self.value : null;
+  const selfMachineId = sources.getSelfMachineId?.() ?? null;
+  // This machine is shown as itself ("This machine"); listed again under its
+  // cloud name it would be a second target with its own settings cache.
+  const isSelf = (host: RelayHost) =>
+    host.id === selfHostId ||
+    (selfMachineId !== null && host.machine_id === selfMachineId);
   if (cloud.status === 'rejected') throw cloud.reason;
   const remoteHostsById = new Map(cloud.value.map((host) => [host.id, host]));
   if (
@@ -81,7 +99,7 @@ export async function fetchRemoteCloudHostsState(
     .sort((a, b) => b.pairedAt.localeCompare(a.pairedAt));
 
   for (const host of remoteHostsById.values()) {
-    if (host.auth_mode === 'account' && host.id !== selfHostId)
+    if (host.auth_mode === 'account' && !isSelf(host))
       hosts.push({
         id: host.id,
         name: host.name,
@@ -101,6 +119,7 @@ export async function fetchRemoteCloudHostsState(
 
 export function useRemoteCloudHostsState(options?: { enabled?: boolean }) {
   const runtime = useAppRuntime();
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: REMOTE_CLOUD_HOSTS_STATE_QUERY_KEY,
     queryFn: () =>
@@ -111,6 +130,13 @@ export function useRemoteCloudHostsState(options?: { enabled?: boolean }) {
         // registration would otherwise list it a second time as remote.
         getSelfHostId:
           runtime === 'local' ? relayApi.getSelfRelayHostId : undefined,
+        getSelfMachineId:
+          runtime === 'local'
+            ? () =>
+                queryClient.getQueryData<UserSystemInfo>(
+                  getHostUserSystemQueryKey('local', null)
+                )?.machine_id ?? null
+            : undefined,
       }),
     staleTime: 30_000,
     refetchInterval: 30_000,

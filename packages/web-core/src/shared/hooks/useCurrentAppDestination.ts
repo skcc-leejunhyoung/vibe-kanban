@@ -3,7 +3,10 @@ import { useLocation } from '@tanstack/react-router';
 import { createHmrContext } from '@/shared/lib/hmrContext';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useSelfCloudHostId } from '@/shared/hooks/useSelfCloudHostId';
-import type { AppDestination } from '@/shared/lib/routes/appNavigation';
+import {
+  foldSelfHostDestination,
+  type AppDestination,
+} from '@/shared/lib/routes/appNavigation';
 
 // Split panes render workspace views whose "current destination" is the pane's
 // own, not the document URL's. Providing an override here scopes every
@@ -31,12 +34,21 @@ export function useCurrentAppDestination(): AppDestination | null {
   const appNavigation = useAppNavigation();
   const location = useLocation();
   const override = useContext(AppDestinationOverrideContext);
-  // The parser folds this machine's own cloud host id to the local host, so
-  // the document route is parsed again once that id is known.
+  // A route naming this machine by its own cloud host id is this machine.
+  // The parser folds it once the id is known; folding again here, with the id
+  // read in this hook, is what makes the route be parsed again when the id
+  // arrives. The React Compiler derives memo inputs from what the body reads,
+  // so an id listed only as a dependency would be dropped and the document
+  // would keep addressing this machine through the relay until the URL moved.
   const { hostId: selfHostId } = useSelfCloudHostId();
 
   return useMemo(
-    () => override ?? appNavigation.resolveFromPath(location.href),
+    () =>
+      override ??
+      foldSelfHostDestination(
+        appNavigation.resolveFromPath(location.href),
+        selfHostId
+      ),
     [override, appNavigation, location.href, selfHostId]
   );
 }

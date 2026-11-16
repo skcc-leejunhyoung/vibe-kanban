@@ -37,6 +37,7 @@ export function useUserSystemController({
     data: userSystemInfo,
     isLoading,
     isError: configError,
+    error: configLoadError,
     isFetching: configRefreshing,
   } = useQuery({
     queryKey,
@@ -209,6 +210,11 @@ export function useUserSystemController({
       reloadSystem,
       loading,
       configError,
+      configErrorMessage: configLoadError
+        ? configLoadError instanceof Error
+          ? configLoadError.message
+          : String(configLoadError)
+        : null,
       configRefreshing,
     }),
     [
@@ -217,6 +223,7 @@ export function useUserSystemController({
       capabilities,
       config,
       configError,
+      configLoadError,
       configRefreshing,
       environment,
       loading,

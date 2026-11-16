@@ -86,6 +86,11 @@ interface SettingsHostContextValue {
    * themselves: an open form is never moved to another host behind their back.
    */
   selectedHostUnavailable: boolean;
+  /**
+   * The host list could not be loaded and nothing is known from before, so
+   * "not listed" means "unknown", not "gone".
+   */
+  hostListFailed: boolean;
   setSelectedHostId: (hostId: SettingsHostTargetId) => void;
 }
 
@@ -182,16 +187,21 @@ export function SettingsHostProvider({
     useRemoteCloudHostsState({
       enabled: runtime === 'local',
     });
-  const { data: relayHosts = NO_RELAY_HOSTS, isLoading: relayHostsLoading } =
-    useQuery({
-      queryKey: RELAY_REMOTE_HOSTS_QUERY_KEY,
-      queryFn: listRelayHosts,
-      enabled: runtime === 'remote' && isSignedIn,
-      staleTime: 30_000,
-    });
+  const {
+    data: relayHosts = NO_RELAY_HOSTS,
+    isLoading: relayHostsLoading,
+    isError: relayHostsFailed,
+    isFetched: relayHostsFetched,
+  } = useQuery({
+    queryKey: RELAY_REMOTE_HOSTS_QUERY_KEY,
+    queryFn: listRelayHosts,
+    enabled: runtime === 'remote' && isSignedIn,
+    staleTime: 30_000,
+  });
   const {
     data: pairedRelayHosts = NO_PAIRED_HOSTS,
     isLoading: pairedRelayHostsLoading,
+    isError: pairedRelayHostsFailed,
   } = usePairedRelayHostsQuery(runtime === 'remote' && isSignedIn);
   const relayHostsResolved = useMemo(() => {
     if (!isSignedIn) {
@@ -306,6 +316,14 @@ export function SettingsHostProvider({
     (lastListedHost?.id === selectedHostId ? lastListedHost : null);
   const selectedHostUnavailable =
     hostListSettled && selectedHostId !== null && listedHost === null;
+  const hostListFailed =
+    runtime === 'local'
+      ? localRemoteHostsFailed === true && localRemoteHosts === undefined
+      : (relayHostsFailed &&
+          relayHostsFetched &&
+          relayHosts === NO_RELAY_HOSTS) ||
+        // Hosts paired in this browser are listed only through the pairings.
+        (pairedRelayHostsFailed && pairedRelayHosts === NO_PAIRED_HOSTS);
 
   const value = useMemo<SettingsHostContextValue>(
     () => ({
@@ -315,6 +333,7 @@ export function SettingsHostProvider({
       selectedHostId,
       selectedHost,
       selectedHostUnavailable,
+      hostListFailed,
       setSelectedHostId,
     }),
     [
@@ -324,6 +343,7 @@ export function SettingsHostProvider({
       selectedHost,
       selectedHostId,
       selectedHostUnavailable,
+      hostListFailed,
     ]
   );
 

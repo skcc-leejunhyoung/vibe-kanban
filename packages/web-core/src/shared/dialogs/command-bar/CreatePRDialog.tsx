@@ -747,6 +747,7 @@ const CreatePRDialogImpl = create<CreatePRDialogProps>(
                       {profiles && (
                         <AgentSelector
                           profiles={profiles}
+                          disabledExecutors={config?.disabled_executors}
                           selectedExecutorProfile={
                             effectiveExecutor
                               ? {

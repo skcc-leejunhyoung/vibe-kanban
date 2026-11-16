@@ -43,6 +43,8 @@
     "general": {
       "loading": "Chargement des paramètres...",
       "loadError": "Échec du chargement de la configuration.",
+      "loadErrorFor": "Impossible de charger les paramètres de {{host}}.",
+      "appPreferencesElsewhere": "Les préférences de l'application (tailles, affichage des diffs, écran partagé, saisie des messages, …) se modifient sous « {{target}} ».",
       "save": {
         "button": "Enregistrer les paramètres",
         "success": "✓ Paramètres enregistrés avec succès !",
@@ -623,6 +625,8 @@
         "defaultRepos": {
           "label": "Default Repositories",
           "description": "Repositories that are automatically added when creating workspaces from this project's issues.",
+          "savedOn": "Enregistrés sur {{host}}.",
+          "pickHost": "Sélectionnez une machine dans le sélecteur d'hôte des paramètres pour modifier ses dépôts par défaut.",
           "empty": "No default repositories configured",
           "addButton": "Add",
           "addNew": "Add new repository...",
@@ -646,7 +650,11 @@
       "pairMachineHint": "Pair a machine to open machine settings.",
       "selectMachineHint": "Select a machine to open machine settings.",
       "unavailableHost": "Hôte indisponible",
-      "unavailableHostHint": "Cette machine n'est plus disponible. Sélectionnez-en une autre."
+      "unavailableHostHint": "L'hôte sélectionné n'est plus disponible. Sélectionnez-en un autre.",
+      "unavailableNamedHost": "{{name}} (indisponible)",
+      "unconfirmedNamedHost": "{{name}} (non confirmé)",
+      "unavailableNamedHostHint": "{{name}} n'est plus disponible. Sélectionnez-en un autre.",
+      "hostListFailedHint": "Impossible de charger la liste des hôtes : l'hôte sélectionné ne peut pas être confirmé. Réessayez plus tard ou sélectionnez-en un autre."
     },
     "automation": {
       "reviewScope": "Review requests monitored: {{repositories}}",
