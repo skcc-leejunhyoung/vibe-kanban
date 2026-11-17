@@ -3,6 +3,7 @@ const ROUTES = ['routine_result', 'needs_investigation', 'needs_user'];
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const MAX_EVENTS = 8;
 const MAX_REQUEST_BYTES = 24576;
+const MAX_COMPLETION_BYTES = 16384;
 
 // This is a classification candidate, never permission to execute or dismiss work.
 export async function evaluateAutopilotShadow({
@@ -46,7 +47,7 @@ export async function evaluateAutopilotShadow({
         record.omitted_events = events.length - MAX_EVENTS;
       const contexts = [];
       for (const [index, item] of events.slice(0, MAX_EVENTS).entries()) {
-        controller.signal.throwIfAborted();
+        checkDeadline();
         const result = {
           event_index: index,
           route: 'needs_investigation',
@@ -72,7 +73,7 @@ export async function evaluateAutopilotShadow({
               item.hostId,
               controller.signal
             );
-            controller.signal.throwIfAborted();
+            checkDeadline();
             if (typeof machineId !== 'string' || !machineId)
               throw new Error('unresolved event host');
             const context = await completionContext(
@@ -89,7 +90,7 @@ export async function evaluateAutopilotShadow({
           }
         }
       }
-      controller.signal.throwIfAborted();
+      checkDeadline();
       if (!contexts.length) return finish('skipped');
       const body = JSON.stringify({
         model: MODEL,
@@ -117,6 +118,7 @@ export async function evaluateAutopilotShadow({
       });
       if (Buffer.byteLength(body) > MAX_REQUEST_BYTES)
         return finish('fallback', 'input_limit');
+      checkDeadline();
       const response = await fetchImpl('https://api.openai.com/v1/decisions', {
         method: 'POST',
         redirect: 'error',
@@ -159,7 +161,7 @@ export async function evaluateAutopilotShadow({
         )
           return finish('fallback', 'invalid_response');
       }
-      controller.signal.throwIfAborted();
+      checkDeadline();
       for (const answer of data.answers) {
         const result = results[Number(answer.name.slice(6))];
         if (answer.type === 'refusal') {
@@ -185,6 +187,11 @@ export async function evaluateAutopilotShadow({
         controller.signal.aborted ? 'timeout' : 'unavailable'
       );
     }
+  }
+
+  function checkDeadline() {
+    if (Date.now() - started >= timeoutMs) controller.abort();
+    controller.signal.throwIfAborted();
   }
 
   function finish(status, reason) {
@@ -226,16 +233,16 @@ async function completionContext(item, readHost, signal) {
   const entry = page.entries.findLast(
     (value) => value.entry_type?.type === 'assistant_message'
   );
-  if (typeof entry?.content !== 'string' || !entry.content.trim())
-    throw new Error('missing result');
+  if (typeof entry?.content !== 'string') throw new Error('missing result');
   const text = entry.content;
-  // Skip credential-shaped content rather than trying to make a secret safe to send.
+  // Reject the whole oversized result before scanning; a suffix can hide credentials.
   if (
-    /(?:\b(?:Bearer|Basic)\s+\S+|\bsk-[\w-]{16,}|\bgh[pousr]_[\w]{16,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+\b|-----BEGIN[^\n]*PRIVATE KEY|\b[\w-]*(?:password|passwd|api[_-]?key|secret|token|authorization|cookie|credential|private[_-]?key)[\w-]*["']?\s*[=:]\s*["']?\S+)/i.test(
-      text
-    )
+    text.length > MAX_COMPLETION_BYTES ||
+    Buffer.byteLength(text) > MAX_COMPLETION_BYTES
   )
-    throw new Error('sensitive result');
+    throw new Error('completion limit');
+  if (!text.trim()) throw new Error('missing result');
+  if (containsCredentials(text)) throw new Error('sensitive result');
   return {
     kind: 'process.completed',
     status: 'completed',
@@ -250,6 +257,30 @@ async function completionContext(item, readHost, signal) {
       )
       .slice(-2000),
   };
+}
+
+function containsCredentials(text) {
+  // Inspect escaped quotes too, while keeping the original text for redaction.
+  const scan = text.replace(/\\+/g, '');
+  if (
+    /(?:\b(?:Bearer|Basic)\s+\S+|\bsk-[\w-]{16,}|\bgh[pousr]_[\w]{16,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+\b|-----BEGIN[^\n]*PRIVATE KEY)/i.test(
+      scan
+    )
+  )
+    return true;
+  // Consume each key once instead of backtracking over overlapping key suffixes.
+  for (const key of scan.matchAll(/[\w-]+/g)) {
+    if (
+      /(?:password|passwd|api[_-]?key|secret|token|authorization|cookie|credential|private[_-]?key)/i.test(
+        key[0]
+      ) &&
+      /^["'`]?\s*(?:\]\s*)?[=:]\s*\S/.test(
+        scan.slice(key.index + key[0].length)
+      )
+    )
+      return true;
+  }
+  return false;
 }
 
 function validPage(page, item) {

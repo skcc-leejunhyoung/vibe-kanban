@@ -58,7 +58,12 @@ mismatched hosts are skipped. Only the final assistant message, limited to
 tool output, identifiers, and notification claim tokens. URLs, email addresses,
 UUIDs, and common absolute paths in the assistant message are redacted;
 credential-shaped messages (including prefixed keys such as `client_secret`
-and `SERVICE_API_KEY`) are skipped before truncation. Redaction runs before
+and `SERVICE_API_KEY`) are skipped before truncation. The scan also checks
+escaped JSON strings and bracket assignments such as `config["client_secret"]`;
+it consumes each key once instead of repeatedly scanning overlapping suffixes.
+Raw assistant messages over 16 KiB are excluded before credential scanning or
+redaction, even when their final 2,000 characters would fit the request.
+Redaction runs before
 truncation so long URLs and paths cannot expose an unredacted suffix.
 Redaction is best effort: the remaining completion text can still contain
 private work. Enable this only where sending
@@ -66,7 +71,9 @@ that text to the configured provider is appropriate. Drawer comments, cloud
 notifications, approvals, and other event types stay on the rule-only path.
 
 Each observation has a three-second deadline, at most eight eligible events,
-one API request, a 24 KiB request limit, and a 64 KiB response limit. A refusal,
+one API request, a 24 KiB request limit, and a 64 KiB response limit. Elapsed time
+is checked before the paid request as well as by the abort timer, so delayed
+timer callbacks cannot admit an already expired request. A refusal,
 missing evidence, malformed response, unavailable host, timeout, or HTTP failure
 records a fallback candidate without affecting agent delivery. Confidence is
 advisory, not an accuracy guarantee. Full context, completion text, API keys,

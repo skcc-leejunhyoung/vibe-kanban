@@ -177,6 +177,100 @@ test('credential-shaped completion text is excluded before any external request'
   }
 });
 
+test('escaped JSON and bracket assignments never send opaque credentials', async () => {
+  const material = 'synthetic-opaque-oauth-material';
+  const plain = JSON.stringify({ client_secret: material });
+  for (const text of [
+    JSON.stringify({ response: plain }),
+    JSON.stringify(JSON.stringify(plain)),
+    `config["client_secret"] = "${material}";`,
+    `config['clientSecret'] = '${material}';`,
+    `config[\`client_secret\`] = '${material}';`,
+    `env["SERVICE_API_KEY"] = '${material}';`,
+    JSON.stringify({ response: `env["SERVICE_API_KEY"] = '${material}';` }),
+  ]) {
+    const h = fixture({ text });
+    const result = await h.evaluate();
+    assert.equal(result.results[0].reason, 'context_unavailable');
+    assert.equal(h.requests.length, 0);
+    assert.ok(!JSON.stringify(result).includes(material));
+  }
+  const h = fixture({
+    text: 'Documented client_secret without assigning any value.',
+  });
+  assert.equal((await h.evaluate()).status, 'completed');
+  assert.equal(h.requests.length, 1);
+});
+
+test('oversized source text is excluded before expensive scanning, including UTF-8 byte limits', async () => {
+  for (const text of [
+    'client_secret'.repeat(30000),
+    'r'.repeat(16385),
+    '한'.repeat(6000),
+  ]) {
+    const h = fixture({ text });
+    const result = await h.evaluate();
+    assert.equal(result.results[0].reason, 'context_unavailable');
+    assert.equal(h.requests.length, 0);
+  }
+  const h = fixture({ text: 'r'.repeat(16384) });
+  assert.equal((await h.evaluate()).status, 'completed');
+  assert.equal(h.requests.length, 1);
+});
+
+test('excluded evidence cannot leak into the request for another event in the batch', async () => {
+  for (const text of [
+    JSON.stringify({
+      response: JSON.stringify({ client_secret: 'synthetic-batch-material' }),
+    }),
+    'client_secret'.repeat(30000),
+  ]) {
+    const h = fixture({ text });
+    const readHost = h.readHost;
+    h.readHost = async (item, path, signal) => {
+      const response = await readHost(item, path, signal);
+      if (item.executionId !== executionId && response.data)
+        response.data.entries = response.data.entries.map((entry) => ({
+          ...entry,
+          content: 'Synthetic routine complete.',
+        }));
+      return response;
+    };
+    const result = await h.evaluate({
+      events: [
+        completion,
+        { ...completion, executionId: '00000000-0000-4000-8000-000000000003' },
+      ],
+    });
+    assert.equal(result.results[0].reason, 'context_unavailable');
+    assert.equal(result.results[1].source, 'decisions');
+    assert.equal(h.requests.length, 1);
+    const request = JSON.parse(h.requests[0].options.body);
+    assert.deepEqual(
+      request.questions.map(({ name }) => name),
+      ['event_1']
+    );
+    assert.ok(!request.input.includes('synthetic-batch-material'));
+    assert.ok(!request.input.includes('client_secret'));
+  }
+});
+
+test('synchronous collection cannot start a paid request after its deadline', async (t) => {
+  let now = 1000;
+  t.mock.method(Date, 'now', () => now);
+  const h = fixture();
+  const readHost = h.readHost;
+  h.readHost = async (item, path, signal) => {
+    const response = await readHost(item, path, signal);
+    if (path.endsWith('limit=20')) now += 3000;
+    return response;
+  };
+  const result = await h.evaluate();
+  assert.equal(result.status, 'fallback');
+  assert.equal(result.reason, 'timeout');
+  assert.equal(h.requests.length, 0);
+});
+
 test('redaction happens before truncation so a long URL or path cannot leak its suffix', async () => {
   for (const text of [
     `https://example.test/${'synthetic-private-segment/'.repeat(150)}`,
