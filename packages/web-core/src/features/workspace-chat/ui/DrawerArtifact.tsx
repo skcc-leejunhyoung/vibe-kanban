@@ -85,7 +85,11 @@ export function DrawerArtifact({
     if (!source) return { error: 'artifacts.drawer.unavailable' };
     try {
       return buildArtifactPreview(
-        new TextDecoder().decode(Uint8Array.from(source.bytes)),
+        // Compact dashboard cards without resizing charts or changing their palette.
+        new TextDecoder().decode(Uint8Array.from(source.bytes)) +
+          '<style>body{margin:0!important;padding:4px!important}' +
+          '.card,.host-card,.usage-card{height:auto!important;min-height:0!important;' +
+          'max-width:100%;box-sizing:border-box;padding:12px!important;border-color:transparent!important}</style>',
         value.path,
         value.files.map((file) => ({
           ...file,
@@ -214,7 +218,7 @@ export function DrawerArtifact({
   if (!preview || !('srcDoc' in preview))
     return <p role="status">{t('artifacts.loading')}</p>;
   return (
-    <figure className="my-half rounded-sm border border-border bg-panel text-base">
+    <figure className="my-half min-w-0 text-base">
       <div className="relative">
         <span
           ref={focusTarget}
@@ -234,7 +238,7 @@ export function DrawerArtifact({
         />
       </div>
       <figcaption
-        className="px-base py-half text-sm text-low"
+        className="px-half py-half text-sm text-low"
         aria-live="polite"
       >
         <p>{state.current.message}</p>

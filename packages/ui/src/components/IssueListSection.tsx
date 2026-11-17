@@ -133,7 +133,7 @@ export function IssueListSection({
             className={cn(
               'flex items-center justify-between',
               'h-8 px-double py-base',
-              'bg-panel border-y border-border',
+              'bg-panel',
               'cursor-pointer transition-colors outline-none',
               'hover:bg-secondary',
               isFocused && KEYBOARD_CURSOR_RING

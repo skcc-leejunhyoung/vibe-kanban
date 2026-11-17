@@ -149,7 +149,7 @@ export function IssueListRow({
         >
           <div
             className={cn(
-              'flex items-center justify-between gap-double px-double py-half',
+              'relative flex items-center justify-between gap-double px-double py-half',
               'transition-colors',
               !snapshot.isDragging && 'hover:bg-secondary',
               (isSelected || isChecked) && 'bg-secondary'
@@ -162,11 +162,12 @@ export function IssueListRow({
               {/* Multi-select checkbox — shown on hover or when selection is
                 active. Pointer/touch starts are swallowed so grabbing the
                 checkbox never begins a row drag. */}
-              <div className="relative shrink-0 w-4 flex items-center justify-center">
+              <div className="absolute inset-y-0 left-0 flex w-double items-center justify-center">
                 <div
                   className={cn(
-                    'items-center justify-center',
-                    showCheckbox ? 'flex' : 'hidden group-hover/row:flex'
+                    'flex items-center justify-center',
+                    !showCheckbox &&
+                      'opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100'
                   )}
                   onClick={(e) => e.stopPropagation()}
                   onMouseDown={(e) => e.stopPropagation()}
@@ -174,6 +175,7 @@ export function IssueListRow({
                   onPointerDown={(e) => e.stopPropagation()}
                 >
                   <Checkbox
+                    aria-label={`Select ${issue.simple_id}`}
                     checked={isChecked}
                     onCheckedChange={(checked) => {
                       onCheckboxChange?.(checked);
@@ -255,9 +257,10 @@ export function IssueListRow({
                   onPointerDown={(e) => e.stopPropagation()}
                   onTouchStart={(e) => e.stopPropagation()}
                   className={cn(
-                    'items-center justify-center size-icon-sm rounded-sm',
+                    'absolute right-0 top-1/2 -translate-y-1/2 flex items-center justify-center size-icon-sm rounded-sm',
                     'text-low hover:text-normal hover:bg-panel transition-colors',
-                    isCursor ? 'flex' : 'hidden group-hover/row:flex'
+                    !isCursor &&
+                      'opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100'
                   )}
                   aria-label="Issue actions"
                 >

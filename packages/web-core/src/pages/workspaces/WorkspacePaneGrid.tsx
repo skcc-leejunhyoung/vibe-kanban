@@ -73,7 +73,7 @@ function KanbanPaneShortcuts({ enabled }: { enabled: boolean }) {
 }
 
 const paneSeparatorClassName =
-  'relative z-10 w-1 shrink-0 bg-border/60 transition-colors';
+  'relative z-10 w-1 shrink-0 bg-transparent transition-colors';
 
 function PaneChrome({
   paneId,
@@ -176,7 +176,7 @@ function PaneChrome({
       <div
         aria-hidden
         className={cn(
-          'pointer-events-none absolute inset-0 z-30 border border-brand transition-opacity',
+          'pointer-events-none absolute inset-x-0 top-0 z-30 h-px bg-brand transition-opacity',
           active && showActiveRing ? 'opacity-60' : 'opacity-0'
         )}
       />
@@ -204,7 +204,7 @@ function PaneHeaderShell({
         event.dataTransfer.effectAllowed = 'move';
         event.dataTransfer.setData(workspacePaneDragType, paneId);
       }}
-      className="relative flex h-7 shrink-0 cursor-grab items-center gap-2 border-b border-border bg-secondary px-2 active:cursor-grabbing"
+      className="relative flex h-7 shrink-0 cursor-grab items-center gap-2 border-b border-border/40 bg-secondary px-2 active:cursor-grabbing"
     >
       <span className="min-w-0 flex-1 truncate text-xs text-normal">
         {title}

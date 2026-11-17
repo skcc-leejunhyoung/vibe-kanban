@@ -49,7 +49,7 @@ export function DrawerPage({ initialNoteId }: { initialNoteId?: string }) {
           </h1>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-hidden p-base">
+      <div className="min-h-0 flex-1 overflow-hidden p-half">
         <DrawerTab
           variant="page"
           initialNoteId={initialNoteId ?? null}

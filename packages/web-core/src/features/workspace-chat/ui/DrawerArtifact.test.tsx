@@ -88,6 +88,12 @@ describe('Drawer read-only dashboard', () => {
       actions: [],
       initial: { editable: false },
     });
+    const source = vi.mocked(buildArtifactPreview).mock.calls[0][0];
+    expect(source).toContain(
+      '.card,.host-card,.usage-card{height:auto!important'
+    );
+    expect(source).not.toContain('background:');
+    expect(source).not.toMatch(/[;{]color:/);
   });
   it('shows the last update time in KST', () => {
     expect(render()).toContain(

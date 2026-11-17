@@ -312,7 +312,7 @@ export function DrawerTab({
     <div
       ref={rootRef}
       className={cn(
-        'grid gap-base',
+        'grid gap-half',
         // A fixed height in the dialog: the list and the note share it and
         // each scrolls, instead of a long note stretching the dialog past the
         // list.
@@ -371,7 +371,7 @@ export function DrawerTab({
           }
         }}
         className={cn(
-          'flex min-h-0 flex-col overflow-hidden rounded-md border border-border bg-secondary',
+          'flex min-h-0 flex-col overflow-hidden rounded-md bg-secondary',
           showDetail && narrow && 'hidden'
         )}
       >
@@ -540,7 +540,7 @@ export function DrawerTab({
           })
         }
         className={cn(
-          'flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border bg-primary',
+          'flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md bg-primary',
           !showDetail && narrow && 'hidden'
         )}
       >
@@ -704,7 +704,7 @@ function NoteDetail({
   const edited = note.updated_at !== note.created_at;
   return (
     <>
-      <div className="flex items-start gap-base border-b border-border p-base">
+      <div className="flex shrink-0 items-start gap-base border-b border-border/40 p-half">
         <button
           type="button"
           onClick={onBack}
@@ -774,12 +774,12 @@ function NoteDetail({
         tabIndex={0}
         role="region"
         aria-label={note.title}
-        className="min-h-0 flex-1 overflow-y-auto [overflow-wrap:anywhere]"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto [overflow-wrap:anywhere]"
       >
-        <div className="p-base">
+        <div className="shrink-0 p-half">
           <NoteBody note={note} />
         </div>
-        <div className="flex flex-col gap-base border-t border-border p-base">
+        <div className="mt-auto flex shrink-0 flex-col gap-base border-t border-border/40 p-half">
           {foldResolvedComments(comments).map((item) =>
             item.kind === 'resolved' ? (
               <ResolvedGroup
@@ -812,44 +812,46 @@ function NoteDetail({
             </button>
           )}
           <div ref={endRef} />
-          <div className="flex items-end gap-half rounded-md border border-border bg-secondary px-base py-half">
-            <AutoResizeTextarea
-              value={draft}
-              onChange={setDraft}
-              preventNewlines={false}
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                  event.preventDefault();
-                  void send();
-                  return;
-                }
-                // Keep the draft and return to the keyboard-scrollable body.
-                if (
-                  isPlainEscape(event) &&
-                  !event.defaultPrevented &&
-                  !event.nativeEvent.isComposing
-                ) {
-                  event.preventDefault();
-                  scrollRef.current?.focus({ preventScroll: true });
-                }
-              }}
-              placeholder="Comment…"
-              rows={1}
-              className="max-h-[160px] min-h-[28px] min-w-0 flex-1 overflow-y-auto py-half text-high placeholder:text-low"
-            />
-            <button
-              type="button"
-              onClick={() => void send()}
-              disabled={!draft.trim() || sending}
-              title="Send (⌘↩)"
-              aria-label="Send"
-              className="mb-half rounded-md bg-brand p-half text-on-brand hover:bg-brand-hover disabled:opacity-50"
-            >
-              <PaperPlaneRightIcon weight="fill" className="size-icon-xs" />
-            </button>
-          </div>
-          {error && <p className="text-sm text-error">{error}</p>}
         </div>
+      </div>
+      <div className="shrink-0 p-half">
+        <div className="flex items-end gap-half rounded-md border border-border bg-secondary px-base py-half">
+          <AutoResizeTextarea
+            value={draft}
+            onChange={setDraft}
+            preventNewlines={false}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                event.preventDefault();
+                void send();
+                return;
+              }
+              // Keep the draft and return to the keyboard-scrollable body.
+              if (
+                isPlainEscape(event) &&
+                !event.defaultPrevented &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                scrollRef.current?.focus({ preventScroll: true });
+              }
+            }}
+            placeholder="Comment…"
+            rows={1}
+            className="max-h-[160px] min-h-[28px] min-w-0 flex-1 overflow-y-auto py-half text-high placeholder:text-low"
+          />
+          <button
+            type="button"
+            onClick={() => void send()}
+            disabled={!draft.trim() || sending}
+            title="Send (⌘↩)"
+            aria-label="Send"
+            className="mb-half rounded-md bg-brand p-half text-on-brand hover:bg-brand-hover disabled:opacity-50"
+          >
+            <PaperPlaneRightIcon weight="fill" className="size-icon-xs" />
+          </button>
+        </div>
+        {error && <p className="text-sm text-error">{error}</p>}
       </div>
     </>
   );

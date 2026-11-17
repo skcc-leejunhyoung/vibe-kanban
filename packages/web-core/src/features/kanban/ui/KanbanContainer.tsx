@@ -1743,13 +1743,8 @@ export function KanbanContainer() {
   }
 
   return (
-    <div className="flex flex-col h-full space-y-base">
-      <div
-        className={cn(
-          'px-double pt-double space-y-base',
-          isMobile && 'px-base pt-base'
-        )}
-      >
+    <div className="flex min-h-0 flex-col h-full gap-half">
+      <div className="px-base pt-half space-y-half">
         <div className="flex items-center gap-half">
           <h2 className={cn('text-2xl font-medium', isMobile && 'text-lg')}>
             {projectName}
@@ -1861,7 +1856,7 @@ export function KanbanContainer() {
             // the Tab order; outline-none hides the native focus ring in favor
             // of the per-card focus ring.
             tabIndex={-1}
-            className="flex-1 overflow-x-auto px-double outline-none"
+            className="flex-1 overflow-x-auto px-half pb-half outline-none"
             onFocus={() => setIsBoardFocused(true)}
             onBlur={(e) => {
               // Only blur when focus leaves the board entirely, not when moving
@@ -1878,7 +1873,7 @@ export function KanbanContainer() {
                 return (
                   <KanbanBoard key={status.id}>
                     <KanbanHeader>
-                      <div className="border-t sticky border-b top-0 z-20 flex shrink-0 items-center justify-between gap-2 p-base bg-secondary">
+                      <div className="sticky top-0 z-20 flex shrink-0 items-center justify-between gap-2 p-base bg-secondary">
                         <div className="flex items-center gap-2">
                           <div
                             className="h-2 w-2 rounded-full shrink-0"
@@ -1957,7 +1952,7 @@ export function KanbanContainer() {
           // tabIndex=-1 lets clicks on empty list space claim focus so
           // arrow/Enter navigation turns on there too (mirrors the board).
           tabIndex={-1}
-          className="flex-1 overflow-y-auto px-double outline-none"
+          className="flex-1 overflow-y-auto px-half pb-half outline-none"
           onFocus={() => setIsBoardFocused(true)}
           onBlur={(e) => {
             if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
