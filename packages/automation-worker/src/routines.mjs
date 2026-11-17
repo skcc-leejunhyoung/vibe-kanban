@@ -76,6 +76,24 @@ export function normalizeRoutine(input) {
       throw new Error('send_prompt target must be "autopilot"');
     if (!actionInput.sessionId && actionInput.target !== 'autopilot')
       throw new Error('send_prompt sessionId or target "autopilot" is required');
+    if (actionInput.routing !== undefined) {
+      const routing = actionInput.routing;
+      if (
+        !routing ||
+        actionInput.target !== 'autopilot' ||
+        actionInput.sessionId ||
+        routing.mode !== 'active' ||
+        !Number.isFinite(routing.minConfidence) ||
+        routing.minConfidence <= 0 ||
+        routing.minConfidence > 1 ||
+        Object.keys(routing).some(
+          (key) => !['mode', 'minConfidence'].includes(key)
+        )
+      )
+        throw new Error(
+          'active routing requires an Autopilot target and an explicit confidence threshold'
+        );
+    }
     if (actionInput.queue !== undefined && typeof actionInput.queue !== 'boolean')
       throw new Error('send_prompt queue must be a boolean');
   }
@@ -250,7 +268,10 @@ export function automationEventKey(event) {
 }
 
 export function isIndeterminateActionError(error) {
-  return /409[\s\S]*automation action is already running/i.test(String(error));
+  return (
+    error?.indeterminate === true ||
+    /409[\s\S]*automation action is already running/i.test(String(error))
+  );
 }
 
 export function pruneAutomationState(state, now = Date.now()) {

@@ -129,3 +129,6 @@ docs/local
 /artifacts/
 /SKC-4774-validation.md
 /docs/frontend-ui-library-refactor-audit.md
+
+# Local Python adapter test bytecode
+/packages/automation-worker/scripts/__pycache__/

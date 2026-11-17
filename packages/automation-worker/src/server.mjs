@@ -1,5 +1,7 @@
 import { createNotificationRouting } from './notification-routing.mjs';
 import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
+import { routeAutopilot } from './autopilot-router.mjs';
+import { collectReconciliation, validateReconciliationScope } from './autopilot-reconcile.mjs';
 import {
   githubReviewRepositories,
   githubReviewIssueId,
@@ -124,6 +126,9 @@ const HOST = process.env.HOST || '0.0.0.0';
 const RULE_TIMEOUT_MS = Number(process.env.RULE_TIMEOUT_MS || 10000);
 const AUTOPILOT_DECISIONS_SHADOW =
   process.env.AUTOPILOT_DECISIONS_SHADOW === 'true' &&
+  !process.argv.includes('--self-test');
+const AUTOPILOT_DECISIONS_ACTIVE =
+  process.env.AUTOPILOT_DECISIONS_ACTIVE === 'true' &&
   !process.argv.includes('--self-test');
 const AUTOPILOT_DECISIONS_API_KEY = process.env.AUTOPILOT_DECISIONS_API_KEY || '';
 // A rule that throws (e.g. the Vibe issue create failed) drops its event into a
@@ -535,6 +540,22 @@ async function route(req, res) {
 
   if (!isAuthorized(req)) {
     sendJson(res, 401, { error: 'unauthorized' });
+    return;
+  }
+
+  if (url.pathname === '/api/autopilot/reconcile' && req.method === 'POST') {
+    if (!AUTOPILOT_DECISIONS_ACTIVE || !state.enabled)
+      return sendJson(res, 409, { error: 'active routing is disabled' });
+    const input = await readBodyJson(req);
+    try {
+      sendJson(res, 200, await reconcileRoutineAutopilot(input));
+    } catch {
+      sendJson(res, 503, {
+        status: 'error',
+        changed: true,
+        errors: ['reconciliation_incomplete'],
+      });
+    }
     return;
   }
 
@@ -1268,6 +1289,15 @@ async function runRoutine(routine, event, idempotencyKey) {
     status: 'running',
     updatedAt: Date.now(),
   };
+  // Keep the admission mode fixed across retries and rollout configuration changes.
+  if (AUTOPILOT_DECISIONS_ACTIVE && routine.action?.type === 'send_prompt' &&
+      routine.action.input?.target === 'autopilot' && !routine.action.input.sessionId &&
+      routine.action.input.routing?.mode === 'active') {
+    state.routineClaims[idempotencyKey].autopilotRouting = {
+      mode: 'active', started_at: run.startedAt, minConfidence: routine.action.input.routing.minConfidence,
+      targetHostId, connectorId: routine.action.connectorId,
+    };
+  }
   routineInFlight.add(routine.id);
   if (targetHostId) routineHostInFlight.add(targetHostId);
   try {
@@ -1323,6 +1353,9 @@ function completeRoutineRun(routine, key, run, result) {
     status: 'succeeded',
     updatedAt: Date.now(),
   });
+  if (claim.autopilotRouting)
+    claim.autopilotRouting.agent_admitted =
+      claim.autopilotRouting.delivery === 'agent' && !result?.skipped;
   state.routineIdempotency[key] = claim.runId;
   if (run) {
     run.status = 'succeeded';
@@ -1494,16 +1527,236 @@ function observeAutopilotShadow(routine, event) {
   })();
 }
 
+const reconciliationInFlight = new Set();
+async function reconcileRoutineAutopilot(input) {
+  const connector = findConnector(input.connectorId);
+  const github = findConnector(input.githubConnectorId);
+  if (
+    !connector.enabled ||
+    connector.type !== 'vibe_kanban' ||
+    !github.enabled ||
+    github.type !== 'github' ||
+    connector.config.projectId !== input.projectId
+  )
+    throw new Error('enabled, scoped reconciliation connectors required');
+  const repositories = githubReviewRepositories(github.config);
+  if (!repositories.length) throw new Error('repository allowlist required');
+  validateReconciliationScope(input, repositories);
+  const catalog = await vibeApi(connector, 'GET', '/v1/hosts');
+  for (const machineId of input.hosts) {
+    if (
+      !catalog.hosts?.some(
+        (host) => host.machine_id === machineId && host.access_role === 'owner'
+      ) ||
+      !connector.config.hostBridges?.[machineId]?.baseUrl
+    )
+      throw new Error('owned configured host required');
+  }
+  const key = createHash('sha256')
+    .update(
+      JSON.stringify([
+        connector.id,
+        github.id,
+        input.projectId,
+        input.reviewTagId,
+        [...input.hosts].sort(),
+      ])
+    )
+    .digest('hex');
+  if (reconciliationInFlight.has(key))
+    throw new Error('reconciliation already running');
+  reconciliationInFlight.add(key);
+  try {
+    const record = ((state.autopilotReconciliations ||= {})[key] ||= {});
+    const login = await withTimeout(
+      githubLogin(github),
+      15000,
+      'GitHub identity timeout'
+    );
+    const collect = () =>
+      collectReconciliation({
+        scope: input,
+        repositories,
+        github: async (path) => {
+          const response = await fetch(
+            `${(github.config.apiBase || 'https://api.github.com').replace(/\/$/, '')}${path}`,
+            {
+              headers: githubHeaders(github.config.token),
+              signal: AbortSignal.timeout(15000),
+            }
+          );
+          if (!response.ok) throw new Error('GitHub reconciliation failed');
+          return response.json();
+        },
+        discover: async (repository) =>
+          githubSearchPrs(
+            github,
+            repository,
+            `is:open review-requested:${login}`,
+            login
+          ),
+        vibe: (method, path, body) => vibeApi(connector, method, path, body),
+        host: (machineId) =>
+          vibeApi(
+            connector,
+            'GET',
+            '/api/automation-actions/autopilot-snapshot',
+            undefined,
+            connector.config.hostBridges[machineId].baseUrl
+          ),
+      });
+    const routed = await routeAutopilot({
+      event: { kind: 'autopilot.reconcile' },
+      record,
+      persist: () => persistState(true),
+      reconciliation: {
+        scope: input,
+        collect: () => withTimeout(collect(), 90000, 'reconciliation timeout'),
+        acknowledgedAt: input.acknowledgedAt,
+      },
+    });
+    return routed.report;
+  } finally {
+    reconciliationInFlight.delete(key);
+  }
+}
+
+async function completionNotification(connector, item, signal) {
+  const response = await vibeApi(
+    connector,
+    'GET',
+    `/v1/notifications/${encodeURIComponent(item.notificationId)}`,
+    undefined,
+    undefined,
+    undefined,
+    signal
+  );
+  const notification = response.data || response;
+  const match = /^execution:([0-9a-f-]{36}):Completed$/i.exec(
+    notification.source_key || ''
+  );
+  if (
+    notification.id !== item.notificationId ||
+    notification.revision !== item.notificationRevision ||
+    notification.intent !== 'raw_event' ||
+    !match ||
+    !notification.payload?.host_id ||
+    !notification.payload?.workspace_id
+  )
+    throw new Error('notification is not a bound completion');
+  return {
+    ...item,
+    hostId: notification.payload.host_id,
+    workspaceId: notification.payload.workspace_id,
+    executionId: match[1],
+  };
+}
+
+async function routeRoutineAutopilot(routine, event, connector) {
+  const key = event.routineIdempotencyKey;
+  const claim = state.routineClaims[key];
+  const record = claim.autopilotRouting;
+  if (!record) throw new Error('active routing admission is missing');
+  const run = state.routineRuns.find((item) => item.idempotencyKey === key);
+  if (run) run.autopilotRouting = record;
+  let catalog;
+  const result = await routeAutopilot({
+    event,
+    record,
+    persist: () => persistState(true),
+    hydrateEvent: (item, signal) =>
+      completionNotification(connector, item, signal),
+    apiKey: AUTOPILOT_DECISIONS_API_KEY,
+    minConfidence: record.minConfidence,
+    allowNewActions:
+      AUTOPILOT_DECISIONS_ACTIVE &&
+      routine.action.input.routing?.mode === 'active',
+    async resolveHost(hostId, signal) {
+      catalog ||= vibeApi(
+        connector,
+        'GET',
+        '/v1/hosts',
+        undefined,
+        undefined,
+        undefined,
+        signal
+      );
+      const host = (await catalog).hosts?.find(
+        (item) => item.id === hostId && item.access_role === 'owner'
+      );
+      const bridge = connector.config?.hostBridges?.[host?.machine_id];
+      if (!bridge?.baseUrl) throw new Error('unconfigured owned host');
+      return {
+        machineId: host.machine_id,
+        get: (path, signal) =>
+          vibeApi(
+            connector,
+            'GET',
+            path,
+            undefined,
+            bridge.baseUrl,
+            undefined,
+            signal
+          ),
+        post: (path, body, signal) =>
+          vibeApi(
+            connector,
+            'POST',
+            path,
+            body,
+            bridge.baseUrl,
+            undefined,
+            signal
+          ),
+      };
+    },
+    completeNotification: (item, receipt) =>
+      notificationRouting.completeResult(routine, item, receipt),
+  });
+  record.finished_at = new Date().toISOString();
+  record.suppressed = result.remaining.length === 0;
+  record.status = 'completed';
+  record.delivery = record.suppressed ? 'handled' : 'agent';
+  await persistState(true);
+  if (!result.remaining.length) return null;
+  return {
+    ...event,
+    ...(result.remaining.length === 1 ? result.remaining[0] : {}),
+    events: result.remaining,
+    count: result.remaining.length,
+    routineIdempotencyKey: key,
+  };
+}
+
 async function executeRoutineAction(routine, event) {
   const action = routine.action || {};
   const connector = findConnector(String(action.connectorId || 'vibe-default'));
-  if (!connector.enabled || connector.type !== 'vibe_kanban') throw new Error('enabled Vibe connector is required');
+  if (!connector.enabled || connector.type !== 'vibe_kanban')
+    throw new Error('enabled Vibe connector is required');
   const input = cloneData(action.input || {});
+  const previousRouting =
+    state.routineClaims[event.routineIdempotencyKey]?.autopilotRouting;
+  if (
+    previousRouting &&
+    (action.type !== 'send_prompt' ||
+      input.target !== 'autopilot' ||
+      input.sessionId ||
+      previousRouting.targetHostId !== action.targetHostId ||
+      previousRouting.connectorId !== connector.id)
+  )
+    throw Object.assign(
+      new Error(
+        '409 automation action is already running: routing target changed'
+      ),
+      { indeterminate: true }
+    );
   const bridge = action.targetHostId
     ? connector.config?.hostBridges?.[action.targetHostId]
     : null;
   if (action.targetHostId && !bridge?.baseUrl)
-    throw new Error(`target host offline or unconfigured: ${action.targetHostId}`);
+    throw new Error(
+      `target host offline or unconfigured: ${action.targetHostId}`
+    );
   if (bridge) validateRoutineScope(bridge, input);
   if (bridge) {
     const host = await vibeApi(
@@ -1524,9 +1777,21 @@ async function executeRoutineAction(routine, event) {
     idempotencyKey: event.routineIdempotencyKey,
   };
   if (action.type === 'run_rule') {
-    const rule = state.rules.find(item => item.id === input.ruleId && item.enabled && (!item.kind || item.kind === 'script'));
+    const rule = state.rules.find(
+      (item) =>
+        item.id === input.ruleId &&
+        item.enabled &&
+        (!item.kind || item.kind === 'script')
+    );
     if (!rule) throw new Error('enabled registered script Rule required');
-    return runRule(rule, { ...event, ...meta, source: 'routine', type: 'rule', targetHostId: action.targetHostId, connectorId: connector.id });
+    return runRule(rule, {
+      ...event,
+      ...meta,
+      source: 'routine',
+      type: 'rule',
+      targetHostId: action.targetHostId,
+      connectorId: connector.id,
+    });
   }
   if (action.type === 'create_issue') {
     const result = await createVibeIssue(
@@ -1548,7 +1813,12 @@ async function executeRoutineAction(routine, event) {
       bridge.baseUrl,
       meta
     );
-    await scheduleRoutineStop(connector, bridge.baseUrl, result, maxExecutionSeconds);
+    await scheduleRoutineStop(
+      connector,
+      bridge.baseUrl,
+      result,
+      maxExecutionSeconds
+    );
     await Promise.all([
       rememberRoutineOrigin(result?.data?.workspace?.id, meta),
       rememberRoutineOrigin(result?.data?.execution_process?.id, meta),
@@ -1556,11 +1826,20 @@ async function executeRoutineAction(routine, event) {
     return result;
   }
   if (action.type === 'send_prompt') {
-    const { sessionId: explicitSessionId, target, scope: _scope, queue, prompt, ...payload } = input;
+    const {
+      sessionId: explicitSessionId,
+      target,
+      scope: _scope,
+      routing: _routing,
+      queue,
+      prompt,
+      ...payload
+    } = input;
     let sessionId = explicitSessionId;
     let executorConfig = payload.executor_config;
     if (!sessionId) {
-      if (target !== 'autopilot') throw new Error('sessionId or target "autopilot" is required');
+      if (target !== 'autopilot')
+        throw new Error('sessionId or target "autopilot" is required');
       const autopilot = await vibeApi(
         connector,
         'GET',
@@ -1576,8 +1855,14 @@ async function executeRoutineAction(routine, event) {
         checkedAt: Date.now(),
       });
       if (!autopilot?.data?.session?.id) {
-        if ((event.events || [event]).some((item) => item.kind === 'drawer.comment'))
-          throw new Error('Drawer comment delivery waits for an active autopilot');
+        if (
+          (event.events || [event]).some(
+            (item) => item.kind === 'drawer.comment'
+          )
+        )
+          throw new Error(
+            'Drawer comment delivery waits for an active autopilot'
+          );
         await log('info', 'send_prompt skipped: no active autopilot', {
           routineId: routine.id,
           targetHostId: action.targetHostId,
@@ -1588,7 +1873,13 @@ async function executeRoutineAction(routine, event) {
       sessionId = autopilot.data.session.id;
       executorConfig ||= autopilot.data.executor_config;
       if (!executorConfig?.executor)
-        throw new Error('autopilot executor config is unavailable; set input.executor_config');
+        throw new Error(
+          'autopilot executor config is unavailable; set input.executor_config'
+        );
+    }
+    if (!explicitSessionId && previousRouting) {
+      event = await routeRoutineAutopilot(routine, event, connector);
+      if (!event) return { handled: 'routine_result', suppressed: true };
     }
     const queued = state.routineQueuedPrompts[routine.id];
     if (
@@ -1649,7 +1940,9 @@ async function executeRoutineAction(routine, event) {
           (message) => message.id === queued.messageId
         ) &&
         // A queued check cannot stand in for a different user's comment.
-        !(event.events || [event]).some((item) => item.kind === 'drawer.comment')
+        !(event.events || [event]).some(
+          (item) => item.kind === 'drawer.comment'
+        )
       ) {
         await releaseClaimedNotifications(routine, event);
         await log(
@@ -1664,7 +1957,7 @@ async function executeRoutineAction(routine, event) {
         return { skipped: 'previous routine prompt is still queued' };
       }
     }
-    if (!explicitSessionId) observeAutopilotShadow(routine, event);
+    if (!explicitSessionId && !previousRouting) observeAutopilotShadow(routine, event);
     let queuedPrompt;
     const build = async (event) => {
       const message = renderPromptTemplate(prompt, event);

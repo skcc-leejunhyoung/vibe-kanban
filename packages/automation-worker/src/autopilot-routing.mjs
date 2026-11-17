@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 const MODEL = 'gpt-6-luna';
 const ROUTES = ['routine_result', 'needs_investigation', 'needs_user'];
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -81,7 +82,10 @@ export async function evaluateAutopilotShadow({
               readHost,
               controller.signal
             );
-            contexts.push({ event_index: index, ...context });
+            const { evidence_hash, ...evidence } = context;
+            result.evidence_hash = evidence_hash;
+            result.truncated = context.truncated;
+            contexts.push({ event_index: index, ...evidence });
             result.source = 'fallback';
             result.reason = 'decision_unavailable';
           } catch {
@@ -119,6 +123,7 @@ export async function evaluateAutopilotShadow({
       if (Buffer.byteLength(body) > MAX_REQUEST_BYTES)
         return finish('fallback', 'input_limit');
       checkDeadline();
+      record.request_started = true;
       const response = await fetchImpl('https://api.openai.com/v1/decisions', {
         method: 'POST',
         redirect: 'error',
@@ -180,6 +185,20 @@ export async function evaluateAutopilotShadow({
         data.usage.input_tokens >= 0
       )
         record.input_tokens = data.usage.input_tokens;
+      const cached = data.usage?.input_tokens_details?.cached_tokens;
+      if (
+        Number.isSafeInteger(cached) &&
+        cached >= 0 &&
+        cached <= record.input_tokens
+      )
+        record.cached_input_tokens = cached;
+      const written = data.usage?.input_tokens_details?.cache_write_tokens;
+      if (
+        Number.isSafeInteger(written) &&
+        written >= 0 &&
+        written + (record.cached_input_tokens || 0) <= record.input_tokens
+      )
+        record.cache_write_tokens = written;
       return finish('completed');
     } catch {
       return finish(
@@ -246,6 +265,7 @@ async function completionContext(item, readHost, signal) {
   return {
     kind: 'process.completed',
     status: 'completed',
+    evidence_hash: createHash('sha256').update(text.trim()).digest('hex'),
     truncated: text.length > 2000,
     result_text: text
       .replace(/https?:\/\/\S+/gi, '[url]')

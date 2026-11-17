@@ -254,6 +254,52 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
       }
       return recovered;
     },
+    async completeResult(routine, item, receipt) {
+      const response = await api(
+        routine,
+        'GET',
+        `/v1/notifications/${encodeURIComponent(item.notificationId)}/result-receipt?revision=${item.notificationRevision}`
+      ).catch((error) => {
+        if ([404, 405, 409].includes(error.status)) return { status: 'unsupported' };
+        throw error;
+      });
+      const previous = response?.data || response;
+      if (previous?.status === 'unsupported') return false;
+      const proof = previous?.proof;
+      if (previous?.status === 'completed') {
+        if (
+          proof?.source_host_id !== item.hostId ||
+          proof?.result_receipt?.execution_id !== receipt.execution_id ||
+          proof?.result_receipt?.result_hash !== receipt.result_hash ||
+          !Object.entries(receipt).every(
+            ([key, value]) => proof.result_receipt[key] === value
+          )
+        )
+          throw new Error('completion receipt mismatch');
+        known.delete(keyOf(item));
+        return true;
+      }
+      if (previous?.status !== 'missing')
+        throw new Error('completion receipt unavailable');
+      let current = itemsOf({ events: [item] })[0];
+      if (!current) return false;
+      if (!current.notificationClaim.claim_token) {
+        // Retry snapshots omit tokens; read this claim without replaying unrelated handoffs.
+        const page = await api(routine, 'GET', `/v1/notification-claims?lease_id=${encodeURIComponent(current.notificationClaim.lease_id)}&instance_id=${encodeURIComponent(instanceId)}`);
+        const fresh = page.claims?.find((row) => row.id === item.notificationId && row.revision === item.notificationRevision);
+        if (!fresh?.claim_token) return false;
+        current = { ...current, notificationClaim: { ...current.notificationClaim, claim_token: fresh.claim_token } };
+        known.set(keyOf(item), current);
+      }
+      const completed = await owned(
+        request(routine, current, 'complete-result', {
+          source_host_id: item.hostId,
+          result_receipt: receipt,
+        })
+      );
+      if (completed) known.delete(keyOf(item));
+      return completed;
+    },
     // `build(event)` renders the delivery for the alerts this worker still owns,
     // so an expired member never blocks, or appears in, the rest of its batch.
     async deliver(routine, event, build) {

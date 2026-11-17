@@ -1,0 +1,350 @@
+//! Read-only result collection. This never changes a task, review, or workspace status.
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use sqlx::{Row, SqliteConnection, SqlitePool};
+use uuid::Uuid;
+
+pub fn result_key(execution: Uuid) -> String {
+    format!("autopilot-result:{execution}")
+}
+
+/// Typed scheduling facts only; no prompts, logs, or message content leave the host.
+pub async fn reconciliation_snapshot(pool: &SqlitePool) -> Result<Value, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let rows = sqlx::query("SELECT id,archived,updated_at FROM workspaces WHERE autopilot=0 AND ephemeral=0 ORDER BY id").fetch_all(&mut *tx).await?;
+    let mut workspaces = Vec::new();
+    for row in rows {
+        let workspace: Uuid = row.get("id");
+        let sessions = sqlx::query("SELECT id FROM sessions WHERE workspace_id=? ORDER BY id")
+            .bind(workspace)
+            .fetch_all(&mut *tx)
+            .await?;
+        let mut facts = Vec::new();
+        for session in sessions {
+            let id: Uuid = session.get("id");
+            let queue: Option<String> = sqlx::query_scalar(
+                "SELECT messages FROM session_queued_messages WHERE session_id=?",
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let executions = sqlx::query("SELECT id,status,dropped,updated_at FROM execution_processes WHERE session_id=? AND run_reason!='devserver' AND (status='running' OR created_at=(SELECT MAX(created_at) FROM execution_processes WHERE session_id=? AND run_reason!='devserver')) ORDER BY id")
+                .bind(id).bind(id).fetch_all(&mut *tx).await?;
+            let pending: i64 = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM pending_rate_limit_resumes WHERE session_id=?)+(SELECT COUNT(*) FROM scheduled_resumes WHERE session_id=? AND status='pending')")
+                .bind(id).bind(id).fetch_one(&mut *tx).await?;
+            facts.push(json!({"id":id,"queue_hash":format!("{:x}",Sha256::digest(queue.unwrap_or_else(|| "[]".into()).as_bytes())),"pending_resumes":pending,
+                "executions":executions.into_iter().map(|e| json!({"id":e.get::<Uuid,_>("id"),"status":e.get::<String,_>("status"),"dropped":e.get::<bool,_>("dropped"),"updated_at":e.get::<String,_>("updated_at")})).collect::<Vec<_>>() }));
+        }
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pending_execution_starts WHERE workspace_id=?",
+        )
+        .bind(workspace)
+        .fetch_one(&mut *tx)
+        .await?;
+        workspaces.push(json!({"id":workspace,"archived":row.get::<bool,_>("archived"),"updated_at":row.get::<String,_>("updated_at"),"pending_starts":pending,"sessions":facts}));
+    }
+    tx.commit().await?;
+    Ok(json!({"complete":true,"workspaces":workspaces}))
+}
+
+async fn snapshot(conn: &mut SqliteConnection, execution: Uuid) -> Result<Value, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT e.session_id,s.workspace_id,e.executor_action,e.updated_at AS execution_version,w.updated_at AS workspace_version, \
+        (e.status='completed' AND e.exit_code=0 AND e.dropped=0 AND e.run_reason='codingagent') AS completed, \
+        (w.archived=0 AND w.ephemeral=0 AND w.autopilot=0) AS open_workspace, \
+        EXISTS(SELECT 1 FROM execution_processes n JOIN sessions ns ON ns.id=n.session_id WHERE ns.workspace_id=w.id AND n.dropped=0 AND n.run_reason!='devserver' AND n.id!=e.id AND (n.status='running' OR n.created_at>=e.created_at)) AS newer_work, \
+        EXISTS(SELECT 1 FROM session_queued_messages q JOIN sessions qs ON qs.id=q.session_id WHERE qs.workspace_id=w.id AND q.messages!='[]') AS queued, \
+        EXISTS(SELECT 1 FROM pending_execution_starts p WHERE p.workspace_id=w.id) AS pending_start, \
+        EXISTS(SELECT 1 FROM pending_rate_limit_resumes p JOIN sessions ps ON ps.id=p.session_id WHERE ps.workspace_id=w.id) AS pending_resume, \
+        EXISTS(SELECT 1 FROM scheduled_resumes p JOIN sessions ps ON ps.id=p.session_id WHERE ps.workspace_id=w.id AND p.status='pending') AS scheduled, \
+        (EXISTS(SELECT 1 FROM vibe_runs v WHERE v.workspace_id=w.id) OR EXISTS(SELECT 1 FROM pull_requests p WHERE p.workspace_id=w.id)) AS protected_work, \
+        EXISTS(SELECT 1 FROM session_message_index_state i WHERE i.execution_id=e.id) AS indexed, \
+        (SELECT i.content FROM session_message_index i WHERE i.execution_id=e.id AND i.entry_type='assistant_message' ORDER BY i.entry_index DESC LIMIT 1) AS result_text \
+        FROM execution_processes e JOIN sessions s ON s.id=e.session_id JOIN workspaces w ON w.id=s.workspace_id WHERE e.id=?",
+    ).bind(execution).fetch_optional(&mut *conn).await?;
+    let Some(row) = row else {
+        return Ok(json!({"execution_id":execution,"eligible":false,"reason":"missing_execution"}));
+    };
+    let session: Uuid = row.get("session_id");
+    let workspace: Uuid = row.get("workspace_id");
+    let action = serde_json::from_str::<Value>(&row.get::<String, _>("executor_action"))
+        .unwrap_or(Value::Null);
+    let automated = action["automation_origin"]["routine_id"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty());
+    let terminal = action.get("next_action").is_none_or(Value::is_null);
+    let review = action["typ"]["type"] == "ReviewRequest";
+    let text: Option<String> = row.get("result_text");
+    let hash = text
+        .as_deref()
+        .filter(|s| !s.trim().is_empty() && s.len() <= 16384)
+        .map(|s| format!("{:x}", Sha256::digest(s.trim().as_bytes())));
+    let eligible = automated
+        && terminal
+        && !review
+        && hash.is_some()
+        && row.get::<bool, _>("completed")
+        && row.get::<bool, _>("open_workspace")
+        && row.get::<bool, _>("indexed")
+        && ![
+            "newer_work",
+            "queued",
+            "pending_start",
+            "pending_resume",
+            "scheduled",
+            "protected_work",
+        ]
+        .iter()
+        .any(|key| row.get::<bool, _>(*key));
+    let version = format!(
+        "{:x}",
+        Sha256::digest(
+            json!([
+                execution,
+                session,
+                workspace,
+                row.get::<String, _>("execution_version"),
+                row.get::<String, _>("workspace_version"),
+                hash,
+                eligible
+            ])
+            .to_string()
+            .as_bytes()
+        )
+    );
+    Ok(
+        json!({"execution_id":execution,"session_id":session,"workspace_id":workspace,"eligible":eligible,
+        "reason":if eligible {"routine_completion"} else {"agent_required"},"version":version,"result_hash":hash}),
+    )
+}
+
+pub async fn guard(pool: &SqlitePool, execution: Uuid) -> Result<Value, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    let mut value = snapshot(&mut conn, execution).await?;
+    let saved: Option<String> = sqlx::query_scalar("SELECT response FROM automation_action_receipts WHERE idempotency_key=? AND action='autopilot_result' AND status='succeeded'")
+        .bind(result_key(execution)).fetch_optional(&mut *conn).await?;
+    value["receipt"] = saved
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    Ok(value)
+}
+
+pub async fn record(
+    pool: &SqlitePool,
+    execution: Uuid,
+    version: &str,
+    result_hash: &str,
+) -> anyhow::Result<Value> {
+    let key = result_key(execution);
+    let mut tx = pool.begin().await?;
+    // Take SQLite's write lock before checking the snapshot, closing queue/start races.
+    let inserted = sqlx::query("INSERT OR IGNORE INTO automation_action_receipts(idempotency_key,action,status) VALUES(?,'autopilot_result','running')")
+        .bind(&key).execute(&mut *tx).await?.rows_affected();
+    if inserted == 0 {
+        let row = sqlx::query(
+            "SELECT action,status,response FROM automation_action_receipts WHERE idempotency_key=?",
+        )
+        .bind(&key)
+        .fetch_one(&mut *tx)
+        .await?;
+        anyhow::ensure!(
+            row.get::<String, _>("action") == "autopilot_result"
+                && row.get::<String, _>("status") == "succeeded",
+            "result admission is indeterminate"
+        );
+        let saved: Value = serde_json::from_str(&row.get::<String, _>("response"))?;
+        anyhow::ensure!(
+            saved["execution_id"] == execution.to_string(),
+            "result receipt mismatch"
+        );
+        return Ok(saved);
+    }
+    let current = snapshot(&mut tx, execution).await?;
+    anyhow::ensure!(
+        current["eligible"] == true
+            && current["version"] == version
+            && current["result_hash"] == result_hash,
+        "completion changed or requires an agent"
+    );
+    let response = json!({"action":"autopilot_result","status":"recorded","execution_id":execution,
+        "workspace_id":current["workspace_id"],"session_id":current["session_id"],"result_hash":result_hash,"version":version});
+    sqlx::query("UPDATE automation_action_receipts SET status='succeeded',response=?,updated_at=CURRENT_TIMESTAMP WHERE idempotency_key=?")
+        .bind(response.to_string()).bind(&key).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    async fn fixture() -> (SqlitePool, Uuid, Uuid, Uuid) {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let workspace = Uuid::new_v4();
+        let session = Uuid::new_v4();
+        let execution = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces(id,branch) VALUES(?,'synthetic-branch')")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions(id,workspace_id) VALUES(?,?)")
+            .bind(session)
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let action = json!({"typ":{"type":"CodingAgentInitialRequest"},"next_action":null,"automation_origin":{"routine_id":"synthetic-routine","routine_chain":[]}});
+        sqlx::query("INSERT INTO execution_processes(id,session_id,run_reason,executor_action,status,exit_code) VALUES(?,?,'codingagent',?,'completed',0)")
+            .bind(execution).bind(session).bind(action.to_string()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO session_message_index(session_id,execution_id,entry_index,entry_type,content,created_at) VALUES(?,?,0,'assistant_message','Synthetic routine complete.','2001-01-01')")
+            .bind(session).bind(execution).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO session_message_index_state(execution_id) VALUES(?)")
+            .bind(execution)
+            .execute(&pool)
+            .await
+            .unwrap();
+        (pool, workspace, session, execution)
+    }
+
+    #[tokio::test]
+    async fn reconciliation_reads_all_sessions_without_message_content() {
+        let (pool, workspace, session, _) = fixture().await;
+        let other = Uuid::new_v4();
+        sqlx::query("INSERT INTO sessions(id,workspace_id) VALUES(?,?)")
+            .bind(other)
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let before = reconciliation_snapshot(&pool).await.unwrap();
+        assert_eq!(
+            before["workspaces"][0]["sessions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        sqlx::query("INSERT INTO session_queued_messages(session_id,messages) VALUES(?,?)")
+            .bind(session)
+            .bind(r#"[{"id":"synthetic-message","data":{"message":"synthetic private text"}}]"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let after = reconciliation_snapshot(&pool).await.unwrap();
+        assert_ne!(before, after);
+        assert!(!after.to_string().contains("synthetic private text"));
+        sqlx::query("UPDATE workspaces SET autopilot=1 WHERE id=?")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            reconciliation_snapshot(&pool).await.unwrap()["workspaces"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn result_receipts_are_atomic_and_replayable_after_workspace_changes() {
+        let (pool, workspace, _, execution) = fixture().await;
+        let proof = guard(&pool, execution).await.unwrap();
+        assert_eq!(proof["eligible"], true);
+        let result = record(
+            &pool,
+            execution,
+            proof["version"].as_str().unwrap(),
+            proof["result_hash"].as_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE workspaces SET archived=1 WHERE id=?")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let replay = record(&pool, execution, "stale", "stale").await.unwrap();
+        assert_eq!(result, replay);
+        assert_eq!(guard(&pool, execution).await.unwrap()["receipt"], result);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM automation_action_receipts")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn new_queue_and_changed_evidence_cannot_be_closed_by_an_old_decision() {
+        let (pool, _, session, execution) = fixture().await;
+        let proof = guard(&pool, execution).await.unwrap();
+        sqlx::query("INSERT INTO session_queued_messages(session_id,messages) VALUES(?,'[{\"id\":\"synthetic-user-request\"}]')").bind(session).execute(&pool).await.unwrap();
+        assert_eq!(guard(&pool, execution).await.unwrap()["eligible"], false);
+        assert!(
+            record(
+                &pool,
+                execution,
+                proof["version"].as_str().unwrap(),
+                proof["result_hash"].as_str().unwrap()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM automation_action_receipts")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        sqlx::query("DELETE FROM session_queued_messages")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE session_message_index SET content='Synthetic changed result.'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            record(
+                &pool,
+                execution,
+                proof["version"].as_str().unwrap(),
+                proof["result_hash"].as_str().unwrap()
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_failed_review_and_chained_work_stay_on_the_agent_path() {
+        for change in [
+            "UPDATE execution_processes SET executor_action='{}'",
+            "UPDATE execution_processes SET status='failed'",
+            "UPDATE execution_processes SET dropped=1",
+            "UPDATE execution_processes SET executor_action=json_set(executor_action,'$.typ.type','ReviewRequest')",
+            "UPDATE execution_processes SET executor_action=json_set(executor_action,'$.next_action',json('{}'))",
+            "UPDATE workspaces SET autopilot=1",
+            "DELETE FROM session_message_index_state",
+        ] {
+            let (pool, _, _, execution) = fixture().await;
+            sqlx::query(change).execute(&pool).await.unwrap();
+            assert_eq!(
+                guard(&pool, execution).await.unwrap()["eligible"],
+                false,
+                "{change}"
+            );
+        }
+    }
+}

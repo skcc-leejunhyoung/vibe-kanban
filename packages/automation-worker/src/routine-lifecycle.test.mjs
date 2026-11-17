@@ -14,6 +14,7 @@ import {
 import { carriesRetryExhausted, renderPromptTemplate } from './vibe-events.mjs';
 import { createNotificationRouting } from './notification-routing.mjs';
 import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
+import { routeAutopilot } from './autopilot-router.mjs';
 
 const source = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
 function productionFunction(name) {
@@ -26,6 +27,8 @@ const functions = [
   'runRoutine',
   'executeRoutineAction',
   'observeAutopilotShadow',
+  'routeRoutineAutopilot',
+  'completionNotification',
   'removeRoutine',
   'completeRoutineRun',
   'processRetryQueue',
@@ -60,7 +63,13 @@ function harness({
   state: restored,
   store = { queue: [], receipts: new Map() },
   shadow = false,
-  shadowEvaluate = async () => ({ mode: 'shadow', status: 'completed', delivery: 'unchanged', results: [] }),
+  active = false,
+  shadowEvaluate = async () => ({
+    mode: 'shadow',
+    status: 'completed',
+    delivery: 'unchanged',
+    results: [],
+  }),
 } = {}) {
   const state = restored || {
     connectors: [
@@ -91,19 +100,41 @@ function harness({
     routineBuffers: {},
     eventReceipts: {},
   };
-  const h = { state, store, logs: [], calls: [], posts: 0, releases: 0, shadowCalls: 0 };
+  const h = {
+    state,
+    store,
+    logs: [],
+    calls: [],
+    posts: 0,
+    releases: 0,
+    shadowCalls: 0,
+  };
   const api = async (_, method, endpoint, payload, baseUrl, meta) => {
     h.calls.push({ method, endpoint, baseUrl });
     if (h.fail) throw new Error('synthetic offline');
+    if (endpoint === '/v1/hosts')
+      return {
+        hosts: [
+          {
+            id: '10000000-0000-4000-8000-000000000002',
+            machine_id: 'host',
+            access_role: 'owner',
+          },
+        ],
+      };
+    if (endpoint.startsWith('/api/automation-actions/autopilot-results/'))
+      return h.resultGuard;
     if (endpoint === '/api/automation-actions/status')
       return { hostId: h.hostId || 'host' };
     if (endpoint === '/api/workspaces/autopilot')
-      return h.noAutopilot ? { data: null } : {
-        data: {
-          session: { id: h.sessionId || 'session' },
-          executor_config: { executor: 'CODEX' },
-        },
-      };
+      return h.noAutopilot
+        ? { data: null }
+        : {
+            data: {
+              session: { id: h.sessionId || 'session' },
+              executor_config: { executor: 'CODEX' },
+            },
+          };
     if (endpoint.startsWith('/api/automation-actions/receipts/'))
       return (
         store.receipts.get(decodeURIComponent(endpoint.split('/').at(-1))) || {
@@ -154,6 +185,8 @@ function harness({
     MAX_LOGS: 500,
     RULE_TIMEOUT_MS: 1000,
     AUTOPILOT_DECISIONS_SHADOW: shadow,
+    AUTOPILOT_DECISIONS_ACTIVE: active,
+    routeAutopilot,
     AUTOPILOT_DECISIONS_API_KEY: 'synthetic-key',
     autopilotObservations: {},
     persistAutopilotObservations: async () => {
@@ -396,6 +429,18 @@ test('journal host IDs resolve through owned machine IDs and one catalog serves 
       }
       if (baseUrl === 'https://source.invalid') {
         reads += 1;
+        if (endpoint === '/v1/hosts')
+          return {
+            hosts: [
+              {
+                id: '10000000-0000-4000-8000-000000000002',
+                machine_id: 'host',
+                access_role: 'owner',
+              },
+            ],
+          };
+        if (endpoint.startsWith('/api/automation-actions/autopilot-results/'))
+          return h.resultGuard;
         if (endpoint === '/api/automation-actions/status')
           return {
             hostId: scenario === 'mismatch' ? 'wrong-machine' : machineId,
@@ -886,15 +931,40 @@ for (const batch of [false, true]) {
     const h = harness();
     const r = routine({ trigger: { type: 'vk_event' } });
     h.state.routines.push(r);
-    const event = (count) => ({ count, ...(batch
-      ? { events: [{ kind: 'drawer.comment', commentId: `comment-${count}`, noteId: `note-${count}` }] }
-      : { kind: 'drawer.comment', commentId: `comment-${count}`, noteId: `note-${count}` }) });
+    const event = (count) => ({
+      count,
+      ...(batch
+        ? {
+            events: [
+              {
+                kind: 'drawer.comment',
+                commentId: `comment-${count}`,
+                noteId: `note-${count}`,
+              },
+            ],
+          }
+        : {
+            kind: 'drawer.comment',
+            commentId: `comment-${count}`,
+            noteId: `note-${count}`,
+          }),
+    });
     await h.run(r, event(1), 'comment-one');
-    const restarted = harness({ state: structuredClone(h.persisted), store: h.store });
-    const result = await restarted.run(restarted.state.routines[0], event(2), 'comment-two');
+    const restarted = harness({
+      state: structuredClone(h.persisted),
+      store: h.store,
+    });
+    const result = await restarted.run(
+      restarted.state.routines[0],
+      event(2),
+      'comment-two'
+    );
     assert.equal(result.run.status, 'succeeded');
     assert.equal(result.run.skipped, undefined);
-    assert.deepEqual(h.store.queue.map((m) => m.data.message), ['Synthetic check 1', 'Synthetic check 2']);
+    assert.deepEqual(
+      h.store.queue.map((m) => m.data.message),
+      ['Synthetic check 1', 'Synthetic check 2']
+    );
     await restarted.run(restarted.state.routines[0], event(2), 'comment-two');
     assert.equal(restarted.posts, 1);
   });
@@ -905,15 +975,26 @@ test('a lost Drawer admission response retries the same receipt without dropping
   const r = routine({ trigger: { type: 'vk_event' } });
   h.state.routines.push(r);
   h.loseResponse = true;
-  const first = await h.run(r, { kind: 'drawer.comment', count: 1 }, 'comment-one');
+  const first = await h.run(
+    r,
+    { kind: 'drawer.comment', count: 1 },
+    'comment-one'
+  );
   assert.equal(first.run.status, 'retrying');
   assert.equal(h.state.routineIdempotency['comment-one'], undefined);
   const restored = structuredClone(h.persisted);
   recoverInterruptedAutomationState(restored);
   const restarted = harness({ state: restored, store: h.store });
-  await restarted.run(restored.routines[0], { kind: 'drawer.comment', count: 2 }, 'comment-two');
+  await restarted.run(
+    restored.routines[0],
+    { kind: 'drawer.comment', count: 2 },
+    'comment-two'
+  );
   await restarted.retry({ force: true });
-  assert.deepEqual(h.store.queue.map((m) => m.data.message), ['Synthetic check 1', 'Synthetic check 2']);
+  assert.deepEqual(
+    h.store.queue.map((m) => m.data.message),
+    ['Synthetic check 1', 'Synthetic check 2']
+  );
   assert.ok(restarted.state.routineIdempotency['comment-one']);
   assert.ok(restarted.state.routineIdempotency['comment-two']);
 });
@@ -923,7 +1004,11 @@ test('an absent Autopilot leaves a Drawer delivery retryable instead of successf
   const r = routine({ trigger: { type: 'vk_event' } });
   h.state.routines.push(r);
   h.noAutopilot = true;
-  const result = await h.run(r, { kind: 'drawer.comment', count: 1 }, 'comment-one');
+  const result = await h.run(
+    r,
+    { kind: 'drawer.comment', count: 1 },
+    'comment-one'
+  );
   assert.equal(result.run.status, 'retrying');
   assert.equal(h.state.routineIdempotency['comment-one'], undefined);
   assert.equal(h.posts, 0);
@@ -1301,4 +1386,75 @@ test('exhausted claims expire while their retry records still prevent automatic 
   assert.equal(h.state.routines.length, 0);
   assert.equal(h.state.retryQueue.length, 0);
   assert.ok(h.state.routineIdempotency['synthetic-key']);
+});
+
+test('active Autopilot delivery consumes a recorded native result without queuing an agent', async () => {
+  const h = harness({ active: true });
+  const r = routine();
+  r.action.input.routing = { mode: 'active', minConfidence: 0.99 };
+  h.state.routines.push(r);
+  const execution = '10000000-0000-4000-8000-000000000001';
+  h.resultGuard = {
+    hostId: 'host',
+    execution_id: execution,
+    eligible: false,
+    receipt: {
+      action: 'autopilot_result',
+      status: 'recorded',
+      execution_id: execution,
+    },
+  };
+  const result = await h.context.runRoutine(
+    r,
+    {
+      id: 'synthetic-result',
+      kind: 'process.completed',
+      hostId: '10000000-0000-4000-8000-000000000002',
+      executionId: execution,
+    },
+    'synthetic-active'
+  );
+  assert.equal(result.ok, true);
+  assert.equal(h.posts, 0);
+  assert.equal(
+    h.state.routineClaims['synthetic-active'].autopilotRouting.suppressed,
+    true
+  );
+  assert.equal(h.state.routineClaims['synthetic-active'].status, 'succeeded');
+});
+
+test('active global flag alone preserves legacy delivery until a Routine opts in', async () => {
+  const h = harness({ active: true });
+  const r = routine();
+  h.state.routines.push(r);
+  const result = await h.context.runRoutine(
+    r,
+    { kind: 'process.completed' },
+    'synthetic-legacy'
+  );
+  assert.equal(result.ok, true);
+  assert.equal(h.posts, 1);
+});
+
+
+test('rollout cannot change a retained legacy admission into agentless handling', async () => {
+  const h = harness({ active: true }); const r = routine();
+  r.action.input.routing = { mode: 'active', minConfidence: .99 };
+  h.state.routineClaims['synthetic-prior-legacy'] = { status: 'retrying' };
+  const execution = '10000000-0000-4000-8000-000000000001';
+  h.resultGuard = { hostId: 'host', execution_id: execution, eligible: false,
+    receipt: { action: 'autopilot_result', status: 'recorded', execution_id: execution } };
+  await h.context.executeRoutineAction(r, { kind: 'process.completed', hostId: '10000000-0000-4000-8000-000000000002', executionId: execution, routineIdempotencyKey: 'synthetic-prior-legacy' });
+  assert.equal(h.posts, 1);
+  assert.equal(h.state.routineClaims['synthetic-prior-legacy'].autopilotRouting, undefined);
+});
+
+test('rollback recovers retained native completion receipts with the global flag off', async () => {
+  const h = harness(); const r = routine();
+  h.state.routineClaims['synthetic-prior-active'] = { status: 'retrying', autopilotRouting: { mode: 'active', targetHostId: 'host', connectorId: 'vibe', minConfidence: .99 } };
+  const execution = '10000000-0000-4000-8000-000000000001';
+  h.resultGuard = { hostId: 'host', execution_id: execution, eligible: false,
+    receipt: { action: 'autopilot_result', status: 'recorded', execution_id: execution } };
+  const result = await h.context.executeRoutineAction(r, { kind: 'process.completed', hostId: '10000000-0000-4000-8000-000000000002', executionId: execution, routineIdempotencyKey: 'synthetic-prior-active' });
+  assert.equal(h.posts, 0); assert.equal(result.suppressed, true);
 });

@@ -28,25 +28,26 @@ settings page rather than calling the API directly.
 
 ### Environment
 
-| Var | Default | Purpose |
-| --- | --- | --- |
-| `ADMIN_TOKEN` | _(required)_ | Token for the UI/API. The worker refuses to start without it. |
-| `HOST` | `0.0.0.0` | Bind address. |
-| `PORT` | `8787` | Listen port. |
-| `RULE_TIMEOUT_MS` | `10000` | Max wall-clock per rule run. |
-| `RETRY_MAX_ATTEMPTS` | `5` | Times a failed rule run (e.g. the Vibe issue create failed) is auto-retried before being marked `exhausted`. |
-| `RETRY_BASE_DELAY_MS` | `60000` | First retry backoff; doubles each attempt. |
-| `RETRY_MAX_DELAY_MS` | `3600000` | Cap on the retry backoff. |
-| `AUTOPILOT_DECISIONS_SHADOW` | `false` | Set exactly `true` to record advisory Decisions classifications alongside Autopilot delivery. |
-| `AUTOPILOT_DECISIONS_API_KEY` | _(unset)_ | Server-only OpenAI API key for shadow classification; separate API billing applies. |
+| Var                           | Default      | Purpose                                                                                                      |
+| ----------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------ |
+| `ADMIN_TOKEN`                 | _(required)_ | Token for the UI/API. The worker refuses to start without it.                                                |
+| `HOST`                        | `0.0.0.0`    | Bind address.                                                                                                |
+| `PORT`                        | `8787`       | Listen port.                                                                                                 |
+| `RULE_TIMEOUT_MS`             | `10000`      | Max wall-clock per rule run.                                                                                 |
+| `RETRY_MAX_ATTEMPTS`          | `5`          | Times a failed rule run (e.g. the Vibe issue create failed) is auto-retried before being marked `exhausted`. |
+| `RETRY_BASE_DELAY_MS`         | `60000`      | First retry backoff; doubles each attempt.                                                                   |
+| `RETRY_MAX_DELAY_MS`          | `3600000`    | Cap on the retry backoff.                                                                                    |
+| `AUTOPILOT_DECISIONS_SHADOW`  | `false`      | Set exactly `true` to record advisory Decisions classifications alongside Autopilot delivery.                |
+| `AUTOPILOT_DECISIONS_ACTIVE`  | `false`      | Enable opt-in active Routine routing and the periodic reconciliation API.                                    |
+| `AUTOPILOT_DECISIONS_API_KEY` | _(unset)_    | Server-only OpenAI API key for Decisions classification; separate API billing applies.                       |
 
 ### Autopilot Decisions shadow mode
 
 Shadow mode observes the existing Autopilot `send_prompt` path, including
 retries. It runs in the background: the prompt, executor, queue, notification
 handoff, and delivery result remain unchanged. Explicit-session actions bypass
-it. This release has no mode that suppresses agent calls or executes decisions.
-It is disabled by default and always disabled by `--self-test`.
+it. Active routing is a separate opt-in described below.
+Shadow mode is disabled by default and always disabled by `--self-test`.
 
 When enabled, the observer resolves each event's remote host ID through the
 owned host catalog to its configured machine ID, then verifies the bridge's
@@ -96,11 +97,124 @@ journal disables new observations until repaired and the worker restarted;
 delivery continues normally. Unreferenced journal entries expire after 14 days,
 while entries for retained claims remain available for retry deduplication.
 
-The Docker Compose automation service passes both environment variables through
+The Docker Compose automation service passes these environment variables through
 from its environment file. Configure the key locally on the server; do not put
 it in a Routine, prompt, source file, or browser. Activating shadow mode requires
 restarting the worker with those settings. Tests use synthetic data and mocked
 API responses, without provider calls.
+
+### Active routing and durable completion
+
+Set `AUTOPILOT_DECISIONS_ACTIVE=true` on the worker, and opt each existing
+`send_prompt` Autopilot Routine in with:
+
+```json
+{
+  "target": "autopilot",
+  "queue": true,
+  "prompt": "Inspect {{count}} events",
+  "routing": { "mode": "active", "minConfidence": 0.98 }
+}
+```
+
+The threshold is explicit and must be calibrated against labelled observations;
+0.98 above is a configuration example, not a measured accuracy guarantee. When
+both flags are on, opted-in routines use active routing once, without a duplicate
+shadow request. Other routines retain their existing behavior. `--self-test`
+disables both flags. No model is allowed to approve a PR, send a prompt, or change
+work/review status directly.
+
+Only successful, indexed, automation-origin execution results in non-review
+workspaces can qualify. Manual work, chained actions, Autopilot sessions,
+archived/ephemeral workspaces, tracked PRs and Vibe review runs, interactive
+artifacts, newer execution, queued messages, pending starts/resumes and missing
+evidence stay on the agent path. All other event kinds, including user comments
+and approvals, retain agent delivery. The host independently checks these facts,
+binds the final result hash and fresh version, and writes a stable
+`autopilot-result:<execution>` receipt in one SQLite write transaction. This
+receipt records result collection; it does **not** mark the underlying task done.
+
+A matching high-confidence `routine_result` can skip the agent only after this
+native receipt succeeds. A timeout/refusal, low confidence, or changed host
+snapshot keeps the existing agent route. Model intent and outcome are persisted
+before paid calls and before mutation. Unknown mutation outcomes hold the same
+retry key until native proof is recovered; retries do not buy a second decision
+or switch an already frozen agent disposition into completion.
+
+Claimed cloud completion notifications are first bound to the canonical
+`execution:<id>:Completed` source key, source host and workspace. The central
+`complete-result` transaction checks ownership, live lease/claim deadlines,
+revision, source identity and receipt before consuming the alert. A GET of the
+old revision's `result-receipt` recovers a lost acknowledgement after restart.
+An expired claim remains on the existing user fallback path. Provider text,
+claim tokens and completion text are excluded from active routing records.
+
+### Periodic reconciliation without an agent turn
+
+`scripts/ap-system-one.py` is an opt-in entrypoint around an **installed** `ap`.
+It reuses its original periodic gate for cancellation, backoff, in-flight and
+manual delegation guards, and its official `checkpoint --evidence` writer. It
+never dispatches or approves a review itself. Install this entrypoint in place
+of the existing scheduler command, rather than adding a second scheduler:
+
+```sh
+python3 packages/automation-worker/scripts/ap-system-one.py --ap /path/to/ap --config /path/to/private-config.json gate
+```
+
+The private JSON configuration needs `enabled`, `connectorId`,
+`githubConnectorId`, `projectId`, `reviewTagId`, `hosts` (configured native machine
+IDs), `defaultRepository` and optional `tracked` entries containing `repository`
+and `number`. Keep it in ignored/private runtime storage. The default is disabled
+unless `enabled` is exactly `true`; the worker active flag must also be enabled.
+The adapter expects the existing `ap` registry/checkpoint interface and falls
+back to its original gate on an unsupported registry or failed source read.
+No live `ap`, launchd job or runtime ledger is changed by this implementation.
+
+When the existing gate says its 30-minute checkpoint is due, the adapter reads
+registered PRs from the schedule, board and dispatch ledger. The authenticated
+worker `/api/autopilot/reconcile` endpoint independently reads all review-tagged
+issues (100-row pages, including candidates without sessions), every linked PR,
+review-requested PRs in the GitHub connector's explicit repository allowlist,
+current heads and all decision reviews, plus every session's queue/execution and
+resume facts on each configured owned host. Host snapshots contain hashes and
+typed facts, never queue text. Autopilot/ephemeral workspaces and the adapter's
+periodic delegation workspaces are excluded from self-triggering comparisons.
+
+Both periodic checks and completion events enter the same router. Unchanged
+facts are handled by code, with no Decisions request or agent admission. A new
+baseline, changed head, same-head new/dismissed review, changed queue or registry,
+or incomplete source read retains the original agent delegation. The adapter
+preserves all pending/cancelled/held ledger states; it never marks them complete.
+Only a fresh official successful checkpoint can acknowledge a changed baseline.
+Collection failure cannot advance it. No successful partial discovery is recorded.
+
+### Measure before promotion
+
+Run the offline evaluator against local worker state and observations:
+
+```sh
+node packages/automation-worker/scripts/evaluate-autopilot.mjs /path/state.json /path/autopilot-observations.json /path/labels.json /path/prices.json
+```
+
+Use `-` for an omitted optional file. Labels are an array of
+`{"runKey":"synthetic-key","eventIndex":0,"expectedRoute":"needs_investigation"}`;
+expected routes are `routine_result`, `needs_investigation`, and `needs_user`.
+Prices are explicit `inputPerMillion`, `cachedInputPerMillion`, `cacheWritePerMillion` and `agentCallCost`
+values, using the same currency. No changing price or agent cost is hardcoded.
+The JSON report includes confusion counts, false routine labels, unmatched
+labels, coverage/fallbacks/timeouts, p50/p90 latency, tokens, completed suppressed
+runs and actual agent admissions. Pending or unknown request/cache-write usage makes cost
+unknown; missing cached usage makes the known-token estimate an upper bound.
+Cache writes are counted separately within the input total; they are not charged a second time as uncached input. See the [official Decisions guide](https://developers.openai.com/api/docs/guides/decisions). Fixed subscription cash savings remain unknown. Avoided agent cost and net
+savings are hypothetical estimates from the supplied baseline, not a bill.
+
+Before enabling active routing, label a representative shadow sample, inspect
+all false routine classifications, and choose the confidence threshold from
+those results. Start with one Routine and check its suppressed outcomes and
+receipt recovery before expanding. Disabling the global flag stops new suppression actions; retained claims still recover prior receipts and frozen delivery outcomes without new model calls. Compare measured latency and hypothetical
+savings with the legacy baseline; keep active routing off if the safety or cost
+criteria are not met. Runtime provider/host evaluation is separate from mocked
+regression tests; the repository does not claim live accuracy or savings.
 
 ## Retry Queue
 
@@ -381,7 +495,19 @@ after three days, with hourly cleanup even when hosts are offline.
   "config": {
     "vibeConnectorId": "vibe-default",
     "pollSeconds": 15,
-    "kinds": ["process.failed", "approval.pending", "vibe.phase", "workspace.status_note", "cloud.notification", "git.operation_failed", "pr.", "session.rate_limited", "session.waiting_on_blockers", "workspace.cleanup_blocked", "artifact.input_required"],
+    "kinds": [
+      "process.failed",
+      "approval.pending",
+      "vibe.phase",
+      "workspace.status_note",
+      "cloud.notification",
+      "git.operation_failed",
+      "pr.",
+      "session.rate_limited",
+      "session.waiting_on_blockers",
+      "workspace.cleanup_blocked",
+      "artifact.input_required"
+    ],
     "excludeAutopilot": true
   }
 }
@@ -448,7 +574,13 @@ current turn instead of failing with 409.
   "id": "autopilot-wake",
   "enabled": true,
   "trigger": { "type": "vk_event", "connectorId": "vibe-events" },
-  "coalesce": { "windowSeconds": 30, "minIntervalSeconds": 120, "maxPerHour": 20, "maxWaitSeconds": 300, "immediate": ["approval.pending", "process.failed"] },
+  "coalesce": {
+    "windowSeconds": 30,
+    "minIntervalSeconds": 120,
+    "maxPerHour": 20,
+    "maxWaitSeconds": 300,
+    "immediate": ["approval.pending", "process.failed"]
+  },
   "action": {
     "type": "send_prompt",
     "connectorId": "vibe-default",
@@ -470,12 +602,20 @@ tick, at the cost of a turn even when nothing changed.
 {
   "id": "autopilot-poll",
   "enabled": true,
-  "trigger": { "type": "schedule", "cron": "*/10 * * * *", "timezone": "Asia/Seoul" },
+  "trigger": {
+    "type": "schedule",
+    "cron": "*/10 * * * *",
+    "timezone": "Asia/Seoul"
+  },
   "action": {
     "type": "send_prompt",
     "connectorId": "vibe-default",
     "targetHostId": "<host uuid>",
-    "input": { "target": "autopilot", "queue": true, "prompt": "autopilot/cursor 이후 이벤트를 vk events list --since 로 읽어 AGENTS.md대로 처리. 없으면 '변화 없음' 한 줄." }
+    "input": {
+      "target": "autopilot",
+      "queue": true,
+      "prompt": "autopilot/cursor 이후 이벤트를 vk events list --since 로 읽어 AGENTS.md대로 처리. 없으면 '변화 없음' 한 줄."
+    }
   }
 }
 ```

@@ -161,3 +161,13 @@ test('registered rule schedules require a host and accept only a Rule reference'
   for (const input of [{}, { ruleId: '' }, { ruleId: 'synthetic-publisher', script: 'arbitrary code' }])
     assert.throws(() => normalizeRoutine({ ...routine, action: { ...routine.action, input } }), /registered ruleId/);
 });
+
+
+test('active routing requires an explicit confidence threshold and only targets Autopilot', () => {
+  const spec = { trigger: { type: 'vk_event' }, action: { type: 'send_prompt', connectorId: 'synthetic-vibe', targetHostId: 'synthetic-machine', input: { target: 'autopilot', prompt: 'Synthetic inspection', routing: { mode: 'active', minConfidence: .99 } } } };
+  assert.equal(normalizeRoutine(spec).action.input.routing.minConfidence, .99);
+  for (const routing of [{ mode: 'active' }, { mode: 'active', minConfidence: 0 }, { mode: 'active', minConfidence: 1.1 }, { mode: 'active', minConfidence: .99, unsafe: true }]) {
+    assert.throws(() => normalizeRoutine({ ...spec, action: { ...spec.action, input: { ...spec.action.input, routing } } }), /confidence threshold/);
+  }
+  assert.throws(() => normalizeRoutine({ ...spec, action: { ...spec.action, input: { ...spec.action.input, sessionId: 'synthetic-session' } } }), /confidence threshold/);
+});

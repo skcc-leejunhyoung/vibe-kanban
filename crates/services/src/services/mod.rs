@@ -4,6 +4,7 @@ pub mod artifact_interactions;
 pub mod artifacts;
 pub mod auth;
 pub mod automation;
+pub mod autopilot;
 pub mod config;
 pub mod container;
 pub mod diff_stream;
