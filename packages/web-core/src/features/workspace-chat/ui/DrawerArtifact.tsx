@@ -85,10 +85,7 @@ export function DrawerArtifact({
     if (!source) return { error: 'artifacts.drawer.unavailable' };
     try {
       return buildArtifactPreview(
-        // Dashboard cards are articles; keep their authored heights and status colors.
-        new TextDecoder().decode(Uint8Array.from(source.bytes)) +
-          '<style>body{margin:0!important;padding:4px!important}' +
-          'article{padding:12px!important}</style>',
+        new TextDecoder().decode(Uint8Array.from(source.bytes)),
         value.path,
         value.files.map((file) => ({
           ...file,

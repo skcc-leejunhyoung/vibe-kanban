@@ -22,7 +22,9 @@ vi.mock('@/shared/lib/api', () => ({
 }));
 const clients: QueryClient[] = [];
 const source =
-  '<style>.card{height:220px;color:navy}.chart{height:100%}</style>' +
+  '<style>body{margin:8px;padding:16px}' +
+  '.card{box-sizing:border-box;height:220px;width:220px;padding:0;color:navy}' +
+  '.chart{height:100%;width:100%}</style>' +
   '<article class="card"><svg class="chart"></svg></article>';
 const document: DrawerArtifactDocument = {
   id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -92,15 +94,10 @@ describe('Drawer read-only dashboard', () => {
       initial: { editable: false },
     });
   });
-  it('keeps authored chart dimensions and colors without depending on card class names', () => {
+  it('passes authored dashboard HTML unchanged so padding cannot resize charts', () => {
     render();
     const previewSource = vi.mocked(buildArtifactPreview).mock.calls[0][0];
-    expect(previewSource.startsWith(source)).toBe(true);
-    const layout = previewSource.slice(source.length);
-    expect(layout).not.toMatch(
-      /(?:height|width|color|background|border|font)[\w-]*:/
-    );
-    expect(layout).not.toMatch(/[.#][\w-]+/);
+    expect(previewSource).toBe(source);
   });
   it('shows the last update time in KST', () => {
     expect(render()).toContain(
