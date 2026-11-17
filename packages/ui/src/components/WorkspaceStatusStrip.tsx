@@ -222,12 +222,7 @@ export function StatusNoteChip({
 }) {
   const { t } = useTranslation('common');
   return (
-    <div
-      className={cn(
-        'my-half inline-flex max-w-full items-center gap-base rounded-sm border border-l-2 bg-secondary px-base py-half text-xs',
-        writing ? 'border-l-brand' : 'border-l-low'
-      )}
-    >
+    <div className="my-half inline-flex max-w-full items-center gap-base rounded-sm bg-secondary px-base py-half text-xs">
       {writing && <RunningDots />}
       <span className="shrink-0 font-medium text-low">
         {writing ? t('status.writing') : t('status.updated')}

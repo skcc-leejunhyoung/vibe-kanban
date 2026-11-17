@@ -21,6 +21,9 @@ vi.mock('@/shared/lib/api', () => ({
   drawerArtifactsApi: { document: vi.fn(), snapshot: vi.fn() },
 }));
 const clients: QueryClient[] = [];
+const source =
+  '<style>.card{height:220px;color:navy}.chart{height:100%}</style>' +
+  '<article class="card"><svg class="chart"></svg></article>';
 const document: DrawerArtifactDocument = {
   id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   note_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
@@ -31,7 +34,7 @@ const document: DrawerArtifactDocument = {
     {
       path: 'dashboard.html',
       mime: 'text/html',
-      bytes: [...new TextEncoder().encode('<html></html>')],
+      bytes: [...new TextEncoder().encode(source)],
     },
   ],
 };
@@ -88,12 +91,16 @@ describe('Drawer read-only dashboard', () => {
       actions: [],
       initial: { editable: false },
     });
-    const source = vi.mocked(buildArtifactPreview).mock.calls[0][0];
-    expect(source).toContain(
-      '.card,.host-card,.usage-card{height:auto!important'
+  });
+  it('keeps authored chart dimensions and colors without depending on card class names', () => {
+    render();
+    const previewSource = vi.mocked(buildArtifactPreview).mock.calls[0][0];
+    expect(previewSource.startsWith(source)).toBe(true);
+    const layout = previewSource.slice(source.length);
+    expect(layout).not.toMatch(
+      /(?:height|width|color|background|border|font)[\w-]*:/
     );
-    expect(source).not.toContain('background:');
-    expect(source).not.toMatch(/[;{]color:/);
+    expect(layout).not.toMatch(/[.#][\w-]+/);
   });
   it('shows the last update time in KST', () => {
     expect(render()).toContain(

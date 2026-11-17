@@ -85,11 +85,10 @@ export function DrawerArtifact({
     if (!source) return { error: 'artifacts.drawer.unavailable' };
     try {
       return buildArtifactPreview(
-        // Compact dashboard cards without resizing charts or changing their palette.
+        // Dashboard cards are articles; keep their authored heights and status colors.
         new TextDecoder().decode(Uint8Array.from(source.bytes)) +
           '<style>body{margin:0!important;padding:4px!important}' +
-          '.card,.host-card,.usage-card{height:auto!important;min-height:0!important;' +
-          'max-width:100%;box-sizing:border-box;padding:12px!important;border-color:transparent!important}</style>',
+          'article{padding:12px!important}</style>',
         value.path,
         value.files.map((file) => ({
           ...file,
