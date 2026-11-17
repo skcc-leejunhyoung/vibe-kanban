@@ -346,29 +346,68 @@ export function pruneAutomationState(state, now = Date.now()) {
 export function recoverInterruptedAutomationState(state) {
   for (const buffer of Object.values(state.routineBuffers || {}))
     buffer.events = (buffer.events || []).map(sanitizeNotificationEvent);
-  for (const item of [...(state.pendingRoutineEvents || []), ...(state.retryQueue || [])]) {
+  for (const item of [
+    ...(state.pendingRoutineEvents || []),
+    ...(state.retryQueue || []),
+  ]) {
     item.event = sanitizeNotificationEvent(item.event);
-    if (item.event?.kind === 'cloud.notification') item.label = item.event.title;
+    if (item.event?.kind === 'cloud.notification')
+      item.label = item.event.title;
   }
   for (const receipt of Object.values(state.eventReceipts || {})) {
     if (receipt.status === 'running') receipt.status = 'indeterminate';
   }
-  for (const claim of Object.values(state.routineClaims || {})) {
+  const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+  const recoverable = new Set(
+    (state.routineRuns || [])
+      .filter((run) => {
+        if (
+          run.status !== 'running' ||
+          state.routineClaims?.[run.idempotencyKey]?.autopilotRouting?.mode !==
+            'active'
+        )
+          return false;
+        const events = Array.isArray(run.trigger?.events)
+          ? run.trigger.events
+          : [run.trigger];
+        return (
+          events.length > 0 &&
+          events.every(
+            (item) =>
+              item &&
+              typeof item.id === 'string' &&
+              ((item.kind === 'process.completed' &&
+                uuid.test(item.executionId) &&
+                uuid.test(item.hostId)) ||
+                (item.kind === 'cloud.notification' &&
+                  uuid.test(item.notificationId) &&
+                  Number.isSafeInteger(item.notificationRevision) &&
+                  item.notificationRevision > 0 &&
+                  uuid.test(item.notificationClaim?.lease_id)))
+          )
+        );
+      })
+      .map((run) => run.idempotencyKey)
+  );
+  for (const [key, claim] of Object.entries(state.routineClaims || {})) {
     if (claim.status !== 'running') continue;
-    claim.status = 'exhausted';
+    claim.status = recoverable.has(key) ? 'retrying' : 'exhausted';
+    if (recoverable.has(key)) claim.autopilotRouting.recovering = true;
     claim.updatedAt = Date.now();
   }
   for (const run of state.routineRuns || []) {
     if (run.trigger) run.trigger = sanitizeNotificationEvent(run.trigger);
     if (run.status !== 'running' || !run.idempotencyKey) continue;
-    run.status = 'exhausted';
-    run.error = 'interrupted with an indeterminate action outcome; review the target before running again';
+    run.status = recoverable.has(run.idempotencyKey) ? 'retrying' : 'exhausted';
+    run.error = recoverable.has(run.idempotencyKey)
+      ? 'interrupted; recovering the existing admission receipts'
+      : 'interrupted with an indeterminate action outcome; review the target before running again';
     run.finishedAt ||= new Date().toISOString();
     state.routineClaims[run.idempotencyKey] = {
       ...state.routineClaims[run.idempotencyKey],
       runId: run.id,
       routineId: run.routineId,
-      status: 'exhausted',
+      status: run.status,
       updatedAt: Date.now(),
     };
   }
@@ -422,6 +461,12 @@ export function routineRunTrigger(event) {
     'count',
     'notificationId',
     'notificationType',
+    'notificationRevision',
+    'notificationIntent',
+    'notificationClaim',
+    'connectorId',
+    'routineChain',
+    'originRoutineId',
     'noteId',
     'commentId',
     'autopilotClaimed',

@@ -17,14 +17,29 @@ def rows(value):
     return list(value.values()) if isinstance(value, dict) else value if isinstance(value, list) else []
 
 
+def semantic_registry(value):
+    if isinstance(value, dict):
+        return {key: semantic_registry(item) for key, item in value.items()
+                if key not in ('updated_at', 'checked_at', 'last_checked_at', 'observed_at', 'seen_at')}
+    if isinstance(value, list):
+        return [semantic_registry(item) for item in value]
+    return value
+
+
 def registry(ap, config):
     schedule = ap['load'](ap['SCHED'], None)
     board = ap['load'](ap['BOARD'], None)
     dispatch = ap['load'](ap['DISPATCH'], None)
     if not all(isinstance(value, dict) for value in (schedule, board, dispatch)):
         raise ValueError('registry unavailable')
+    tasks = ap['load'](ap['DELEG'], {}).get('tasks', {})
+    periodic = [task for task in rows(tasks) if task.get('kind') == 'periodic']
+    periodic_sessions = {task.get('session') for task in periodic if task.get('session')}
+    periodic_keys = {'delegate:' + key for key, task in tasks.items() if task.get('kind') == 'periodic'}
+    requests = {key: item for key, item in dispatch.get('requests', {}).items()
+                if item.get('pr') and key not in periodic_keys and item.get('session') not in periodic_sessions}
     refs = list(config.get('tracked', []))
-    entries = [{**row, 'pr': row.get('pr', key)} for key, row in board.get('rows', {}).items()] + rows(dispatch.get('requests', {}))
+    entries = [{**row, 'pr': row.get('pr', key)} for key, row in board.get('rows', {}).items()] + rows(requests)
     for key in ap['PENDING_KEYS']:
         entries += rows(schedule.get(key, []))
     for entry in entries:
@@ -39,12 +54,12 @@ def registry(ap, config):
         refs.append({'repository': match[1], 'number': int(match[2])})
     # Scheduling, cancellation and hold records are inputs, never rewritten here.
     stable = {key: schedule.get(key) for key in ap['PENDING_KEYS']}
-    stable.update(board=board, dispatch=dispatch)
-    digest = hashlib.sha256(json.dumps(stable, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    # Rendering and this periodic job's own dispatch cannot trigger the next job.
+    stable.update(board={'rows': board.get('rows', {}), 'needs': board.get('needs', [])}, dispatch=requests)
+    digest = hashlib.sha256(json.dumps(semantic_registry(stable), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     tracked = sorted({(ref['repository'].lower(), ref['number']) for ref in refs})
     scope = {key: config[key] for key in ('connectorId', 'githubConnectorId', 'projectId', 'reviewTagId', 'hosts')}
     scope.update(tracked=[{'repository': repo, 'number': number} for repo, number in tracked], registryHash=digest)
-    tasks = ap['load'](ap['DELEG'], {}).get('tasks', {})
     scope['ignoreWorkspaces'] = sorted({task['ws'] for task in rows(tasks) if task.get('kind') == 'periodic' and task.get('ws')})
     checkpoints = [schedule.get(key, {}) for key, _ in ap['CHECKPOINTS']]
     if all(item.get('status') == 'success' and item.get('by') == ap['CHECKPOINT_BY'] and

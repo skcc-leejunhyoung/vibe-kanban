@@ -427,6 +427,8 @@ const githubIssueLinkInFlight = new Map();
 // ponytail: keep comment snapshots in memory; use an indexed persistent store
 // if discussions outgrow worker memory. Restart/reset deliberately does a full read.
 const githubCommentSyncCache = new Map();
+let logsDirty = false;
+let logFlushTimer = null;
 let writeQueue = Promise.resolve();
 let autopilotWriteQueue = Promise.resolve();
 let autopilotObservations = {};
@@ -464,6 +466,7 @@ async function bootstrap() {
   ensureDefaults();
   pruneAutomationState(state);
   await restoreAutopilotObservations();
+  await restoreInterruptedRoutineRuns();
   artifactChannels = createArtifactChannels({ state, persist: () => persistState(true), runRule });
   for (const snapshot of Object.values(state.routineBuffers)) for (const event of snapshot.events || []) notificationRouting.restore(event);
   for (const item of [...state.pendingRoutineEvents,...state.retryQueue]) notificationRouting.restore(item.event || {});
@@ -471,7 +474,6 @@ async function bootstrap() {
   await persistState();
   scheduleAll();
   restoreRoutineDeadlines();
-  await restoreInterruptedRoutineRuns();
   await drainPendingRoutineEvents();
 }
 
@@ -1355,7 +1357,10 @@ function completeRoutineRun(routine, key, run, result) {
   });
   if (claim.autopilotRouting)
     claim.autopilotRouting.agent_admitted =
-      claim.autopilotRouting.delivery === 'agent' && !result?.skipped;
+      (claim.autopilotRouting.delivery === 'agent' ||
+        result?.recovered === 'existing agent admission') &&
+      !result?.skipped;
+  if (claim.autopilotRouting) delete claim.autopilotRouting.recovering;
   state.routineIdempotency[key] = claim.runId;
   if (run) {
     run.status = 'succeeded';
@@ -1377,8 +1382,24 @@ async function restoreInterruptedRoutineRuns() {
     const hasRetry = state.retryQueue.some(
       (item) => item.event?.routineIdempotencyKey === run.idempotencyKey
     );
-    if (!hasRetry)
-      await queueRoutineEvent(run.routineId, run.trigger, run.idempotencyKey);
+    if (!hasRetry) {
+      const claim = state.routineClaims[run.idempotencyKey];
+      const routine = state.routines.find((item) => item.id === run.routineId);
+      if (claim?.autopilotRouting?.recovering && routine) {
+        await enqueueRoutineRetry(
+          routine,
+          run.trigger,
+          run.idempotencyKey,
+          new Error('recovering interrupted Autopilot admission')
+        );
+        const retry = state.retryQueue.find(
+          (item) => item.event?.routineIdempotencyKey === run.idempotencyKey
+        );
+        if (retry) retry.nextAttemptAt = Date.now();
+        await persistState(true);
+      } else
+        await queueRoutineEvent(run.routineId, run.trigger, run.idempotencyKey);
+    }
   }
 }
 
@@ -1776,6 +1797,30 @@ async function executeRoutineAction(routine, event) {
     routineChain: [...(event.routineChain || []), routine.id],
     idempotencyKey: event.routineIdempotencyKey,
   };
+  if (previousRouting?.recovering) {
+    const tick = notificationRoutingTicks.get(routine.id);
+    if (
+      tick &&
+      (event.events || [event]).some((item) => item.notificationClaim)
+    )
+      await tick;
+    const receipt = await vibeApi(
+      connector,
+      'GET',
+      `/api/automation-actions/receipts/${encodeURIComponent(meta.idempotencyKey)}`,
+      undefined,
+      bridge.baseUrl
+    );
+    if (
+      receipt.status === 'succeeded' &&
+      ['queue_prompt', 'notification_handoff'].includes(receipt.action)
+    )
+      return receipt.response || { recovered: 'existing agent admission' };
+    if (receipt.status !== 'missing')
+      throw new Error(
+        '409 automation action is already running: interrupted admission is indeterminate'
+      );
+  }
   if (action.type === 'run_rule') {
     const rule = state.rules.find(
       (item) =>
@@ -1957,7 +2002,8 @@ async function executeRoutineAction(routine, event) {
         return { skipped: 'previous routine prompt is still queued' };
       }
     }
-    if (!explicitSessionId && !previousRouting) observeAutopilotShadow(routine, event);
+    if (!explicitSessionId && !previousRouting)
+      observeAutopilotShadow(routine, event);
     let queuedPrompt;
     const build = async (event) => {
       const message = renderPromptTemplate(prompt, event);
@@ -5679,9 +5725,6 @@ async function readJson(filePath, fallback) {
 async function persistState(strict = false) {
   await enqueueWrite(STATE_PATH, JSON.stringify(state, null, 2), strict);
 }
-
-let logsDirty = false;
-let logFlushTimer = null;
 
 // Logs are written from hot poll loops; coalesce the full-file rewrites into at
 // most one flush per second instead of one disk write per log line.

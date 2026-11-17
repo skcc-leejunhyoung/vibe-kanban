@@ -171,3 +171,44 @@ test('active routing requires an explicit confidence threshold and only targets 
   }
   assert.throws(() => normalizeRoutine({ ...spec, action: { ...spec.action, input: { ...spec.action.input, sessionId: 'synthetic-session' } } }), /confidence threshold/);
 });
+
+test('restart recovery retains cloud claim identity without credentials and rejects incomplete snapshots', () => {
+  const event = {
+    id: 'synthetic-cloud',
+    kind: 'cloud.notification',
+    notificationId: '10000000-0000-4000-8000-000000000001',
+    notificationType: 'workspace_task_completed',
+    notificationRevision: 2,
+    notificationIntent: 'raw_event',
+    notificationClaim: {
+      lease_id: '10000000-0000-4000-8000-000000000002',
+      claim_token: 'synthetic-sensitive-token',
+    },
+    data: { payload: { body: 'synthetic private content' } },
+  };
+  const trigger = routineRunTrigger(event);
+  assert.equal(trigger.notificationRevision, 2);
+  assert.equal(
+    trigger.notificationClaim.lease_id,
+    event.notificationClaim.lease_id
+  );
+  assert.ok(!JSON.stringify(trigger).includes('synthetic-sensitive-token'));
+  assert.ok(!JSON.stringify(trigger).includes('synthetic private content'));
+  const state = {
+    routineClaims: {
+      valid: { status: 'running', autopilotRouting: { mode: 'active' } },
+      incomplete: { status: 'running', autopilotRouting: { mode: 'active' } },
+    },
+    routineRuns: [
+      { idempotencyKey: 'valid', status: 'running', trigger },
+      {
+        idempotencyKey: 'incomplete',
+        status: 'running',
+        trigger: { ...trigger, notificationRevision: undefined },
+      },
+    ],
+  };
+  recoverInterruptedAutomationState(state);
+  assert.equal(state.routineClaims.valid.status, 'retrying');
+  assert.equal(state.routineClaims.incomplete.status, 'exhausted');
+});

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('ap_system_one', os.path.join(os.path.dirname(__file__), 'ap-system-one.py'))
 adapter = importlib.util.module_from_spec(spec)
@@ -25,6 +26,7 @@ class PeriodicTests(unittest.TestCase):
                          api=lambda path, body, **kwargs: calls.append(('request', body)) or report or {'status': 'ok', 'changed': False, 'errors': [], 'fingerprint': 'a' * 64, 'counts': {'issues': 0, 'prs': 0, 'hosts': 1}},
                          cmd_checkpoint=lambda args: calls.append(('checkpoint', args.evidence)) or checkpoint)
         config = {'connectorId': 'synthetic-vibe', 'githubConnectorId': 'synthetic-github', 'projectId': 'synthetic-project', 'reviewTagId': 'synthetic-tag', 'hosts': ['synthetic-machine'], 'defaultRepository': 'synthetic/widgets'}
+        self.ap, self.config = namespace, config
         adapter.install(namespace, config)
         return namespace['periodic_gate'], calls, values
 
@@ -34,6 +36,43 @@ class PeriodicTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_self_dispatch_and_rendering_do_not_change_the_registry(self):
+        _, _, values = self.fixture()
+        values['board']['rows']['17'] = {'repo': 'synthetic/widgets', 'status': 'waiting', 'updated_at': '2002-03-04T00:00:00Z'}
+        before = adapter.registry(self.ap, self.config)['registryHash']
+        values['deleg']['tasks']['synthetic-periodic'] = {'kind': 'periodic', 'session': 'synthetic-session', 'ws': '10000000-0000-4000-8000-000000000001'}
+        values['dispatch']['requests']['delegate:synthetic-periodic'] = {'session': 'synthetic-session', 'pr': 17, 'status': 'completed'}
+        values['dispatch']['last_selection'] = {'synthetic-machine': 'CODEX'}
+        values['board']['last_render_at'] = '2002-03-04T00:05:00Z'
+        values['board']['rows']['17']['updated_at'] = '2002-03-04T00:05:00Z'
+        self.assertEqual(adapter.registry(self.ap, self.config)['registryHash'], before)
+        values['board']['rows']['17']['status'] = 'cancelled'
+        self.assertNotEqual(adapter.registry(self.ap, self.config)['registryHash'], before)
+        values['dispatch']['requests']['synthetic-review'] = {'pr': 18, 'repo': 'synthetic/widgets', 'status': 'queued'}
+        self.assertIn({'repository': 'synthetic/widgets', 'number': 18}, adapter.registry(self.ap, self.config)['tracked'])
+
+    def test_one_agent_checkpoint_establishes_a_quiet_baseline(self):
+        _, _, values = self.fixture()
+        self.config['projectId'] = '20000000-0000-4000-8000-000000000001'
+        self.config['reviewTagId'] = '20000000-0000-4000-8000-000000000002'
+        scopes = []
+        for index in range(4):
+            scopes.append(adapter.registry(self.ap, self.config))
+            values['dispatch']['requests']['delegate:synthetic-' + str(index)] = {'status': 'completed', 'session': 'synthetic-' + str(index)}
+        module = (Path(spec.origin).parent.parent / 'src' / 'autopilot-reconcile.mjs').as_uri()
+        source = "import {reconcileAutopilot,collectReconciliation} from " + json.dumps(module) + ";" + """
+import {readFileSync} from 'node:fs';
+const scopes=JSON.parse(readFileSync(0,'utf8'));const record={};const flags=[];let now=Date.parse('2002-03-04T00:00:00Z');
+for(const [index,scope] of scopes.entries()){
+ now+=1800000;
+ const collect=()=>collectReconciliation({scope,repositories:['synthetic/widgets'],discover:async()=>[],github:async()=>({}),vibe:async()=>({issues:[],total_count:0,offset:0}),host:async()=>({hostId:'synthetic-machine',complete:true,workspaces:[]})});
+ flags.push((await reconcileAutopilot({scope,record,collect,persist:async()=>{},now:()=>now,acknowledgedAt:index?new Date(now-1500000).toISOString():undefined})).changed);
+}
+console.log(JSON.stringify(flags));
+"""
+        result = subprocess.run(['node', '--input-type=module', '-e', source], input=json.dumps(scopes), capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout), [True, False, False, False])
 
     def test_acknowledgement_cannot_be_newer_than_its_evidence(self):
         path = os.path.join(self.folder, 'evidence.json')
@@ -83,11 +122,12 @@ class PeriodicTests(unittest.TestCase):
         gate, calls, values = self.fixture()
         values['board']['rows']['17'] = {'status': 'cancelled', 'repo': 'synthetic/widgets'}
         values['schedule']['pending_admissions'] = [{'pr': 18, 'status': 'waiting', 'repo': 'synthetic/widgets'}]
+        values['schedule']['tracked_reconcile_checkpoint'] = {'heads': {'https://github.com/synthetic/widgets/pull/19': 'synthetic-head'}}
         before = repr(values)
         gate(['periodic due'])
         self.assertEqual(repr(values), before)
         body = next(value for name, value in calls if name == 'request')
-        self.assertEqual(body['tracked'], [{'repository': 'synthetic/widgets', 'number': 17}, {'repository': 'synthetic/widgets', 'number': 18}])
+        self.assertEqual(body['tracked'], [{'repository': 'synthetic/widgets', 'number': 17}, {'repository': 'synthetic/widgets', 'number': 18}, {'repository': 'synthetic/widgets', 'number': 19}])
 
 
 if __name__ == '__main__':

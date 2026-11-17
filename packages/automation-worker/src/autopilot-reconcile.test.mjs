@@ -25,7 +25,10 @@ function fixture() {
     collectReconciliation({
       scope,
       repositories: ['synthetic/widgets'],
-      discover: async () => [{ repository: 'synthetic/widgets', number: 8 }],
+      discover: async () => {
+        h.discoverCalls = (h.discoverCalls || 0) + 1;
+        return [{ repository: 'synthetic/widgets', number: 8 }];
+      },
       github: async (path) => {
         h.reads.push(path);
         return path.includes('/reviews?')
@@ -70,6 +73,7 @@ test('discovery covers all issue pages, including sessionless issues, and reques
   const snapshot = await h.collect();
   assert.deepEqual(snapshot.counts, { issues: 101, prs: 2, hosts: 1 });
   assert.ok(h.reads.includes(100));
+  assert.equal(h.discoverCalls, 1);
   assert.ok(
     h.reads.includes(
       '/repos/synthetic/widgets/pulls/8/reviews?per_page=100&page=1'
@@ -214,10 +218,11 @@ test('a new non-decision review still changes the snapshot without being interpr
   assert.deepEqual(after.facts.heads[0].reviews, []);
 });
 
-
 test('a head change during reads and an invalid page count reject the whole snapshot', async () => {
-  const changed = fixture(); changed.heads = [head, 'c'.repeat(40)];
+  const changed = fixture();
+  changed.heads = [head, 'c'.repeat(40)];
   await assert.rejects(changed.collect(), /PR changed/);
-  const invalid = fixture(); invalid.issueCount = -1;
+  const invalid = fixture();
+  invalid.issueCount = -1;
   await assert.rejects(invalid.collect(), /incomplete issue discovery/);
 });

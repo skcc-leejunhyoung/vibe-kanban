@@ -4,11 +4,72 @@ const percentile = (values, p) =>
     ? [...values].sort((a, b) => a - b)[Math.ceil(values.length * p) - 1]
     : null;
 
+// Gate logs record a skipped delegation only after the official checkpoint succeeds.
+function periodicSummary(rows) {
+  const available = Array.isArray(rows);
+  const outcomes = new Map();
+  for (const row of rows || []) {
+    const item = row?.periodic;
+    const at = Date.parse(row?.at);
+    if (!item || !Number.isFinite(at)) continue;
+    let key, status;
+    if (
+      item.status === 'handled' &&
+      item.source === 'code' &&
+      typeof item.evidence === 'string' &&
+      item.evidence
+    ) {
+      key = `handled:${item.evidence}`;
+      status = 'suppressed';
+    } else if (
+      ['started', 'queued', 'uncertain'].includes(item.status) &&
+      typeof item.id === 'string' &&
+      item.id
+    ) {
+      key = `agent:${item.id}`;
+      status = item.status === 'uncertain' ? 'unresolved' : 'admitted';
+    } else continue;
+    const previous = outcomes.get(key);
+    // A later uncertain observation cannot erase confirmed admission.
+    if (
+      previous?.status === 'admitted' ||
+      (previous && status === 'suppressed')
+    )
+      continue;
+    outcomes.set(key, {
+      status,
+      at,
+      ms: Number.isFinite(row.ms) && row.ms >= 0 ? row.ms : null,
+    });
+  }
+  const values = [...outcomes.values()];
+  const times = values.map((row) => row.at);
+  const durations = values
+    .map((row) => row.ms)
+    .filter((value) => value !== null);
+  return {
+    available,
+    runs: values.length,
+    suppressedRuns: values.filter((row) => row.status === 'suppressed').length,
+    agentAdmissions: values.filter((row) => row.status === 'admitted').length,
+    unresolvedRuns: values.filter((row) => row.status === 'unresolved').length,
+    observedFrom: times.length
+      ? new Date(Math.min(...times)).toISOString()
+      : null,
+    observedTo: times.length
+      ? new Date(Math.max(...times)).toISOString()
+      : null,
+    gateP50Ms: percentile(durations, 0.5),
+    gateP90Ms: percentile(durations, 0.9),
+  };
+}
+
 export function evaluateAutopilotRecords({
   observations = {},
   claims = {},
   labels = [],
   prices = {},
+  periodicLog,
 }) {
   const records = new Map(
     Object.entries(observations).map(([key, row]) => [key, { shadow: row }])
@@ -100,9 +161,10 @@ export function evaluateAutopilotRecords({
     .filter((n) => Number.isFinite(n) && n >= 0);
   const active = [...records.values()].filter((row) => row.active);
   const completed = active.filter((row) => row.claimStatus === 'succeeded');
-  const suppressed = completed.filter(
-    (row) => row.active.suppressed === true
-  ).length;
+  const periodic = periodicSummary(periodicLog);
+  const suppressed =
+    completed.filter((row) => row.active.suppressed === true).length +
+    periodic.suppressedRuns;
   const ratesKnown = ['inputPerMillion', 'cachedInputPerMillion'].every(
     (key) => Number.isFinite(prices[key]) && prices[key] >= 0
   );
@@ -124,7 +186,8 @@ export function evaluateAutopilotRecords({
       ? suppressed * prices.agentCallCost
       : null;
   return {
-    runs: records.size,
+    runs: records.size + periodic.runs,
+    periodic,
     classification: {
       samples: candidates.length,
       eventResults: results.length,
@@ -151,15 +214,17 @@ export function evaluateAutopilotRecords({
       confusion,
     },
     delivery: {
-      activeRuns: active.length,
-      completedRuns: completed.length,
+      activeRuns: active.length + periodic.runs,
+      completedRuns: completed.length + periodic.runs - periodic.unresolvedRuns,
       suppressedRuns: suppressed,
-      agentAdmissions: completed.filter(
-        (row) => row.active.agent_admitted === true
-      ).length,
-      unresolvedRuns: active.length - completed.length,
+      agentAdmissions:
+        completed.filter((row) => row.active.agent_admitted === true).length +
+        periodic.agentAdmissions,
+      unresolvedRuns:
+        active.length - completed.length + periodic.unresolvedRuns,
     },
     estimates: {
+      scope: periodic.available ? 'completion_and_periodic' : 'completion_only',
       decisionsCost: decisionCost,
       decisionsCostIsUpperBound: unknownCached > 0,
       avoidedAgentCost: avoidedCost,

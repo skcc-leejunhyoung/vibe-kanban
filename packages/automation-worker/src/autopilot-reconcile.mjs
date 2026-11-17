@@ -169,13 +169,6 @@ export async function collectReconciliation({
     if (offset >= 100000)
       throw new Error('issue discovery exceeds reconciliation limit');
   }
-  for (const repository of repositories) {
-    for (const pr of await discover(repository)) {
-      if (!Number.isSafeInteger(pr.number) || pr.number < 1)
-        throw new Error('invalid discovered PR');
-      prs.set(`${repository}#${pr.number}`, { repository, number: pr.number });
-    }
-  }
   const heads = [];
   for (const [key, pr] of [...prs].sort(([a], [b]) => a.localeCompare(b))) {
     const path = `/repos/${pr.repository}/pulls/${pr.number}`;

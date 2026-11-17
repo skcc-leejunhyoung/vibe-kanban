@@ -31,6 +31,7 @@ const functions = [
   'completionNotification',
   'removeRoutine',
   'completeRoutineRun',
+  'restoreInterruptedRoutineRuns',
   'processRetryQueue',
   'removeRetryItem',
   'routineConditionMatches',
@@ -201,6 +202,7 @@ function harness({
     routineInFlight: new Set(),
     routineHostInFlight: new Set(),
     retryInFlight: new Set(),
+    notificationRoutingTicks: new Map(),
     autopilotPresence: new Map(),
     cloneData: structuredClone,
     routineRunTrigger,
@@ -1457,4 +1459,167 @@ test('rollback recovers retained native completion receipts with the global flag
     receipt: { action: 'autopilot_result', status: 'recorded', execution_id: execution } };
   const result = await h.context.executeRoutineAction(r, { kind: 'process.completed', hostId: '10000000-0000-4000-8000-000000000002', executionId: execution, routineIdempotencyKey: 'synthetic-prior-active' });
   assert.equal(h.posts, 0); assert.equal(result.suppressed, true);
+});
+
+for (const stage of ['collected', 'pending_decision', 'admitted']) {
+  test(`interrupted active ${stage} resumes through the existing queue without duplicate admission`, async () => {
+    const h = harness({ active: true });
+    const r = routine({ trigger: { type: 'execution_completed' } });
+    h.state.routines.push(r);
+    const key = 'synthetic-interrupted';
+    const event = {
+      id: 'synthetic-event',
+      kind: 'process.completed',
+      executionId: '10000000-0000-4000-8000-000000000001',
+      hostId: '10000000-0000-4000-8000-000000000002',
+    };
+    h.modelCalls = 0;
+    h.context.routeAutopilot = (options) =>
+      routeAutopilot({
+        ...options,
+        evaluate: async () => {
+          h.modelCalls++;
+          return { status: 'fallback', results: [] };
+        },
+      });
+    h.state.routineRuns.push({
+      id: 'synthetic-run',
+      routineId: r.id,
+      idempotencyKey: key,
+      status: 'running',
+      trigger: routineRunTrigger(event),
+    });
+    h.state.routineClaims[key] = {
+      runId: 'synthetic-run',
+      routineId: r.id,
+      status: 'running',
+      autopilotRouting: {
+        mode: 'active',
+        targetHostId: 'host',
+        connectorId: 'vibe',
+        minConfidence: 0.99,
+        candidate: { status: 'pending' },
+      },
+    };
+    h.resultGuard = {
+      hostId: 'host',
+      execution_id: event.executionId,
+      eligible: true,
+      version: 'a'.repeat(64),
+      result_hash: 'b'.repeat(64),
+    };
+    if (stage === 'collected')
+      h.resultGuard.receipt = {
+        action: 'autopilot_result',
+        status: 'recorded',
+        execution_id: event.executionId,
+      };
+    if (stage === 'admitted')
+      h.store.receipts.set(key, {
+        status: 'succeeded',
+        action: 'queue_prompt',
+        response: null,
+      });
+    recoverInterruptedAutomationState(h.state);
+    assert.equal(h.state.routineClaims[key].status, 'retrying');
+    await h.context.restoreInterruptedRoutineRuns();
+    await h.context.restoreInterruptedRoutineRuns();
+    assert.equal(h.state.retryQueue.length, 1);
+    await h.retry({ force: true });
+    assert.equal(h.state.routineClaims[key].status, 'succeeded');
+    assert.equal(h.state.retryQueue.length, 0);
+    assert.equal(h.posts, stage === 'pending_decision' ? 1 : 0);
+    assert.equal(h.shadowCalls, 0);
+    assert.equal(h.modelCalls, 0);
+    await h.retry({ force: true });
+    assert.equal(h.posts, stage === 'pending_decision' ? 1 : 0);
+  });
+}
+
+test('cloud result recovery preserves revision and lease identity and reuses a central acknowledgement', async () => {
+  const h = harness();
+  const r = routine({ trigger: { type: 'vk_event' } });
+  h.state.routines.push(r);
+  const executionId = '10000000-0000-4000-8000-000000000001';
+  const hostId = '10000000-0000-4000-8000-000000000002';
+  const workspaceId = '10000000-0000-4000-8000-000000000003';
+  const event = {
+    id: 'synthetic-cloud',
+    kind: 'cloud.notification',
+    notificationId: '10000000-0000-4000-8000-000000000004',
+    notificationRevision: 2,
+    notificationType: 'workspace_task_completed',
+    notificationIntent: 'raw_event',
+    notificationClaim: {
+      lease_id: '10000000-0000-4000-8000-000000000005',
+      claim_token: 'synthetic-omitted-token',
+    },
+  };
+  const receipt = {
+    action: 'autopilot_result',
+    status: 'recorded',
+    execution_id: executionId,
+    workspace_id: workspaceId,
+    result_hash: 'b'.repeat(64),
+    version: 'a'.repeat(64),
+  };
+  const identity = JSON.stringify([
+    event.id,
+    event.kind,
+    event.notificationId,
+    event.notificationRevision,
+  ]);
+  h.state.routineClaims['synthetic-cloud-recovery'] = {
+    runId: 'synthetic-run',
+    routineId: r.id,
+    status: 'running',
+    autopilotRouting: {
+      mode: 'active',
+      targetHostId: 'host',
+      connectorId: 'vibe',
+      minConfidence: 0.99,
+      bindings: { [identity]: { hostId, executionId, workspaceId } },
+    },
+  };
+  h.state.routineRuns.push({
+    id: 'synthetic-run',
+    routineId: r.id,
+    idempotencyKey: 'synthetic-cloud-recovery',
+    status: 'running',
+    trigger: routineRunTrigger(event),
+  });
+  h.resultGuard = {
+    hostId: 'host',
+    execution_id: executionId,
+    workspace_id: workspaceId,
+    eligible: false,
+    receipt,
+  };
+  let receiptReads = 0;
+  const routing = createNotificationRouting({
+    instanceId: 'synthetic-instance',
+    api: async (_, method, path) => {
+      assert.equal(method, 'GET');
+      assert.ok(path.endsWith('/result-receipt?revision=2'));
+      receiptReads++;
+      return {
+        status: 'completed',
+        proof: { source_host_id: hostId, result_receipt: receipt },
+      };
+    },
+  });
+  h.context.notificationRouting.completeResult = (...args) =>
+    routing.completeResult(...args);
+  recoverInterruptedAutomationState(h.state);
+  await h.context.restoreInterruptedRoutineRuns();
+  assert.ok(
+    !JSON.stringify(h.state.retryQueue).includes('synthetic-omitted-token')
+  );
+  await h.retry({ force: true });
+  assert.equal(
+    h.state.routineClaims['synthetic-cloud-recovery'].status,
+    'succeeded'
+  );
+  assert.equal(receiptReads, 1);
+  assert.equal(h.posts, 0);
 });

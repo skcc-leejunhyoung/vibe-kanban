@@ -146,8 +146,18 @@ Claimed cloud completion notifications are first bound to the canonical
 `complete-result` transaction checks ownership, live lease/claim deadlines,
 revision, source identity and receipt before consuming the alert. A GET of the
 old revision's `result-receipt` recovers a lost acknowledgement after restart.
-An expired claim remains on the existing user fallback path. Provider text,
-claim tokens and completion text are excluded from active routing records.
+A new revision preserves the old completion proof, including proofs repaired by
+the additive migration. An expired claim remains on the existing user fallback
+path. Provider text, claim tokens and completion text are excluded from active
+routing records.
+
+After a worker restart, interrupted active completion events with complete routing
+identities enter the existing retry queue under their original key. Cloud claim
+revision and lease identity are retained without tokens. Recovery checks any
+existing agent-admission receipt first, then the result receipt; a pending paid
+classification is reused without another request. Unsupported/incomplete history
+keeps the manual recovery boundary. Automatic recovery still respects disabled
+workers and routines, and the retained admission mode during rollback.
 
 ### Periodic reconciliation without an agent turn
 
@@ -187,14 +197,30 @@ or incomplete source read retains the original agent delegation. The adapter
 preserves all pending/cancelled/held ledger states; it never marks them complete.
 Only a fresh official successful checkpoint can acknowledge a changed baseline.
 Collection failure cannot advance it. No successful partial discovery is recorded.
+The registry hash excludes the periodic job's own dispatches, model-selection
+metadata, render metadata and observation timestamps. PR dispatch state, board
+content and pending/cancelled/held intentions still participate. Review-request
+discovery runs once per repository, retaining full pagination.
 
 ### Measure before promotion
 
 Run the offline evaluator against local worker state and observations:
 
 ```sh
-node packages/automation-worker/scripts/evaluate-autopilot.mjs /path/state.json /path/autopilot-observations.json /path/labels.json /path/prices.json
+node packages/automation-worker/scripts/evaluate-autopilot.mjs /path/state.json /path/autopilot-observations.json /path/labels.json /path/prices.json /path/ap-gate.jsonl
 ```
+
+The optional fifth input is the existing ap gate JSONL log. It counts only
+`periodic.status=handled` with `source=code` and an evidence reference as a skipped
+delegation, after official checkpoint confirmation. Repeated evidence references
+and repeated queued/started task IDs count once; holds and in-flight observations
+are not admissions. Unknown admission outcomes remain unresolved. The `periodic`
+section exposes its counts, observed time range, and p50/p90 of the whole gate
+cycle (not model latency). These counts also contribute to the aggregate delivery
+and hypothetical savings fields. With this input omitted, `periodic.available`
+is false and estimates explicitly have `scope=completion_only`. Supply matched
+time ranges for the state/observation inputs and gate log before comparing totals.
+Malformed JSONL fails rather than reporting a partial cost total.
 
 Use `-` for an omitted optional file. Labels are an array of
 `{"runKey":"synthetic-key","eventIndex":0,"expectedRoute":"needs_investigation"}`;

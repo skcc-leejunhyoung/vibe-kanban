@@ -1719,6 +1719,45 @@ mod tests {
             NotificationRoutingState::AutopilotConsumed
         );
         assert_eq!(f.jobs(&n).await, 0);
+        sqlx::query("UPDATE notifications SET created_at=clock_timestamp(),seen=false,dismissed_at=NULL WHERE id=$1").bind(n.id).execute(&f.pool).await.unwrap();
+        let reraised = f.load(&n).await;
+        assert_eq!(reraised.revision, n.revision + 1);
+        let reason: String = sqlx::query_scalar(
+            "SELECT reason FROM notification_dispatches WHERE notification_id=$1 AND revision=$2",
+        )
+        .bind(n.id)
+        .bind(n.revision)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+        assert_eq!(reason, "routine_result");
+        assert_eq!(
+            admit_result(&f.pool, f.user, n.id, payload())
+                .await
+                .unwrap()
+                .0
+                .data,
+            first
+        );
+        assert!(!f.load(&n).await.seen);
+        // Upgrade repair also recovers proofs superseded by the previous trigger.
+        sqlx::query("UPDATE notification_dispatches SET reason='superseded' WHERE notification_id=$1 AND revision=$2").bind(n.id).bind(n.revision).execute(&f.pool).await.unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261117100000_preserve_routine_result_receipts.sql"
+        ))
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            admit_result(&f.pool, f.user, n.id, payload())
+                .await
+                .unwrap()
+                .0
+                .data,
+            first
+        );
+        assert_eq!(f.load(&n).await.revision, reraised.revision);
+        assert!(!f.load(&n).await.seen);
         sqlx::query("UPDATE autopilot_notification_leases SET expires_at=NOW()-INTERVAL '1 hour' WHERE id=$1").bind(f.lease).execute(&f.pool).await.unwrap();
         assert_eq!(
             admit_result(&f.pool, f.user, n.id, payload())
