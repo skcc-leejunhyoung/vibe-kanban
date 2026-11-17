@@ -7,6 +7,7 @@ const MAX_REQUEST_BYTES = 24576;
 // This is a classification candidate, never permission to execute or dismiss work.
 export async function evaluateAutopilotShadow({
   event,
+  resolveMachineId,
   readHost,
   apiKey,
   fetchImpl = globalThis.fetch,
@@ -67,8 +68,15 @@ export async function evaluateAutopilotShadow({
           result.reason = 'missing_api_key';
         } else {
           try {
+            const machineId = await resolveMachineId(
+              item.hostId,
+              controller.signal
+            );
+            controller.signal.throwIfAborted();
+            if (typeof machineId !== 'string' || !machineId)
+              throw new Error('unresolved event host');
             const context = await completionContext(
-              item,
+              { ...item, machineId },
               readHost,
               controller.signal
             );
@@ -192,7 +200,7 @@ export async function evaluateAutopilotShadow({
 
 async function completionContext(item, readHost, signal) {
   const host = await readHost(item, '/api/automation-actions/status', signal);
-  if (host?.hostId !== item.hostId) throw new Error('host mismatch');
+  if (host?.hostId !== item.machineId) throw new Error('host mismatch');
   const path = `/api/execution-processes/${item.executionId}/normalized-logs`;
   const first = (await readHost(item, `${path}?offset=0&limit=1`, signal))
     ?.data;
@@ -223,7 +231,7 @@ async function completionContext(item, readHost, signal) {
   const text = entry.content;
   // Skip credential-shaped content rather than trying to make a secret safe to send.
   if (
-    /(?:\b(?:Bearer|Basic)\s+\S+|\bsk-[\w-]{16,}|\bgh[pousr]_[\w]{16,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+\b|-----BEGIN[^\n]*PRIVATE KEY|\b(?:password|api[_-]?key|secret|(?:access[_-]?|refresh[_-]?)?token|authorization|cookie|credential)["']?\s*[=:]\s*["']?\S+)/i.test(
+    /(?:\b(?:Bearer|Basic)\s+\S+|\bsk-[\w-]{16,}|\bgh[pousr]_[\w]{16,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+\b|-----BEGIN[^\n]*PRIVATE KEY|\b[\w-]*(?:password|passwd|api[_-]?key|secret|token|authorization|cookie|credential|private[_-]?key)[\w-]*["']?\s*[=:]\s*["']?\S+)/i.test(
       text
     )
   )
@@ -233,14 +241,14 @@ async function completionContext(item, readHost, signal) {
     status: 'completed',
     truncated: text.length > 2000,
     result_text: text
-      .slice(-2000)
       .replace(/https?:\/\/\S+/gi, '[url]')
       .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email]')
       .replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi, '[id]')
       .replace(
         /(?:\/(?:Users|home|tmp|private|var|Volumes|workspace)\/|[A-Z]:\\)[^\s"'<>]+/gi,
         '[path]'
-      ),
+      )
+      .slice(-2000),
   };
 }
 

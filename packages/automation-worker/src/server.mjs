@@ -99,6 +99,10 @@ const fetch = withGithubConditionalGet((url, options) =>
 const PORT = Number(process.env.PORT || 8787);
 const DATA_DIR = process.env.AUTOMATION_DATA_DIR || path.resolve('data');
 const STATE_PATH = path.join(DATA_DIR, 'state.json');
+const AUTOPILOT_OBSERVATIONS_PATH = path.join(
+  DATA_DIR,
+  'autopilot-observations.json'
+);
 const LOG_PATH = path.join(DATA_DIR, 'logs.json');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const MAX_LOGS = 500;
@@ -419,6 +423,8 @@ const githubIssueLinkInFlight = new Map();
 // if discussions outgrow worker memory. Restart/reset deliberately does a full read.
 const githubCommentSyncCache = new Map();
 let writeQueue = Promise.resolve();
+let autopilotWriteQueue = Promise.resolve();
+let autopilotObservations = {};
 let artifactChannels = createArtifactChannels({ state, persist: () => persistState(true), runRule });
 
 if (process.argv.includes('--self-test')) {
@@ -452,6 +458,7 @@ async function bootstrap() {
   logs = await readJson(LOG_PATH, []);
   ensureDefaults();
   pruneAutomationState(state);
+  await restoreAutopilotObservations();
   artifactChannels = createArtifactChannels({ state, persist: () => persistState(true), runRule });
   for (const snapshot of Object.values(state.routineBuffers)) for (const event of snapshot.events || []) notificationRouting.restore(event);
   for (const item of [...state.pendingRoutineEvents,...state.retryQueue]) notificationRouting.restore(item.event || {});
@@ -1342,33 +1349,117 @@ async function restoreInterruptedRoutineRuns() {
   }
 }
 
+async function restoreAutopilotObservations() {
+  try {
+    const saved = JSON.parse(
+      await fs.readFile(AUTOPILOT_OBSERVATIONS_PATH, 'utf8')
+    );
+    if (
+      !saved ||
+      typeof saved !== 'object' ||
+      Array.isArray(saved) ||
+      Object.values(saved).some(
+        (record) =>
+          !record ||
+          record.mode !== 'shadow' ||
+          !['pending', 'completed', 'skipped', 'fallback'].includes(
+            record.status
+          ) ||
+          !Number.isFinite(Date.parse(record.started_at))
+      )
+    )
+      throw new Error('invalid observation journal');
+    autopilotObservations = saved;
+  } catch (error) {
+    // A missing journal is new; an unreadable one must not repeat paid calls.
+    autopilotObservations = error.code === 'ENOENT' ? {} : null;
+  }
+  for (const [key, claim] of Object.entries(state.routineClaims)) {
+    const saved = autopilotObservations?.[key];
+    if (saved) claim.autopilotShadow = saved;
+  }
+  for (const run of state.routineRuns) {
+    const saved = autopilotObservations?.[run.idempotencyKey];
+    if (!saved) continue;
+    run.autopilotShadow = saved;
+  }
+}
+
+async function persistAutopilotObservations() {
+  const cutoff = Date.now() - 14 * 86400000;
+  for (const [key, record] of Object.entries(autopilotObservations)) {
+    if (Date.parse(record.started_at) < cutoff && !state.routineClaims[key])
+      delete autopilotObservations[key];
+  }
+  await enqueueWrite(
+    AUTOPILOT_OBSERVATIONS_PATH,
+    JSON.stringify(autopilotObservations),
+    true
+  );
+}
+
 function observeAutopilotShadow(routine, event) {
   if (!AUTOPILOT_DECISIONS_SHADOW) return;
-  const claim = state.routineClaims[event.routineIdempotencyKey];
+  const key = event.routineIdempotencyKey;
+  const claim = state.routineClaims[key];
   if (!claim || claim.autopilotShadow) return;
   const startedAt = new Date().toISOString();
-  const run = state.routineRuns.find(
-    (item) => item.idempotencyKey === event.routineIdempotencyKey
-  );
+  const run = state.routineRuns.find((item) => item.idempotencyKey === key);
+  const saved = autopilotObservations?.[key];
+  if (saved) {
+    claim.autopilotShadow = saved;
+    if (run) run.autopilotShadow = saved;
+    return;
+  }
+  if (!autopilotObservations) {
+    claim.autopilotShadow = {
+      mode: 'shadow',
+      status: 'fallback',
+      reason: 'observation_storage_unavailable',
+    };
+    if (run) run.autopilotShadow = claim.autopilotShadow;
+    return;
+  }
   claim.autopilotShadow = {
     mode: 'shadow',
     status: 'pending',
     started_at: startedAt,
   };
+  autopilotObservations[key] = claim.autopilotShadow;
   if (run) run.autopilotShadow = claim.autopilotShadow;
-  // Persist before a paid call; pending after a crash stays unknown and is not retried.
   void (async () => {
     let result;
     try {
-      await persistState(true);
+      await persistAutopilotObservations();
       const connector = findConnector(
         String(routine.action.connectorId || 'vibe-default')
       );
+      let hosts;
       result = await evaluateAutopilotShadow({
         event,
         apiKey: AUTOPILOT_DECISIONS_API_KEY,
+        async resolveMachineId(hostId, signal) {
+          hosts ||= vibeApi(
+            connector,
+            'GET',
+            '/v1/hosts',
+            undefined,
+            undefined,
+            undefined,
+            signal
+          );
+          const host = (await hosts).hosts?.find(
+            (item) => item.id === hostId && item.access_role === 'owner'
+          );
+          if (
+            !host?.machine_id ||
+            !connector.config?.hostBridges?.[host.machine_id]?.baseUrl
+          )
+            throw new Error('unconfigured event host');
+          return host.machine_id;
+        },
         readHost(item, apiPath, signal) {
-          const bridge = connector.config?.hostBridges?.[item.hostId];
+          const bridge = connector.config?.hostBridges?.[item.machineId];
           if (!bridge?.baseUrl) throw new Error('unconfigured event host');
           return vibeApi(
             connector,
@@ -1393,9 +1484,10 @@ function observeAutopilotShadow(routine, event) {
       started_at: startedAt,
       finished_at: new Date().toISOString(),
     };
+    autopilotObservations[key] = claim.autopilotShadow;
     if (run) run.autopilotShadow = claim.autopilotShadow;
     try {
-      await persistState();
+      await persistAutopilotObservations();
     } catch {
       // Shadow persistence must never change delivery or its retry state.
     }
@@ -5315,7 +5407,10 @@ function scheduleLogFlush() {
 function enqueueWrite(filePath, content, strict = false) {
   // Keep the chain alive: one rejected write must not permanently stall every
   // future persist. Artifact dispatch claims must report failures to the caller.
-  const pending = writeQueue.then(async () => {
+  // Shadow I/O has its own queue so it cannot hold delivery's durable claim.
+  const queue =
+    filePath === AUTOPILOT_OBSERVATIONS_PATH ? autopilotWriteQueue : writeQueue;
+  const pending = queue.then(async () => {
     try {
       const tmpPath = `${filePath}.${process.pid}.tmp`;
       await fs.writeFile(tmpPath, content);
@@ -5328,7 +5423,9 @@ function enqueueWrite(filePath, content, strict = false) {
       if (strict) throw error;
     }
   });
-  writeQueue = pending.catch(() => {});
+  if (filePath === AUTOPILOT_OBSERVATIONS_PATH)
+    autopilotWriteQueue = pending.catch(() => {});
+  else writeQueue = pending.catch(() => {});
   return pending;
 }
 

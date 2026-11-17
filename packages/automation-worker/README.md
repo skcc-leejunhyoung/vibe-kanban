@@ -48,14 +48,20 @@ handoff, and delivery result remain unchanged. Explicit-session actions bypass
 it. This release has no mode that suppresses agent calls or executes decisions.
 It is disabled by default and always disabled by `--self-test`.
 
-When enabled, the observer checks each event's configured host identity and
-reads the completed execution's normalized log tail. Only the final assistant
-message, limited to 2,000 characters, can be sent to OpenAI's
+When enabled, the observer resolves each event's remote host ID through the
+owned host catalog to its configured machine ID, then verifies the bridge's
+native host identity before reading the completed execution's normalized log
+tail. One catalog lookup serves the entire batch; unowned, unconfigured, or
+mismatched hosts are skipped. Only the final assistant message, limited to
+2,000 characters, can be sent to OpenAI's
 `POST /v1/decisions` with `gpt-6-luna`. It excludes event titles, user prompts,
 tool output, identifiers, and notification claim tokens. URLs, email addresses,
 UUIDs, and common absolute paths in the assistant message are redacted;
-credential-shaped messages are skipped. Redaction is best effort: the remaining
-completion text can still contain private work. Enable this only where sending
+credential-shaped messages (including prefixed keys such as `client_secret`
+and `SERVICE_API_KEY`) are skipped before truncation. Redaction runs before
+truncation so long URLs and paths cannot expose an unredacted suffix.
+Redaction is best effort: the remaining completion text can still contain
+private work. Enable this only where sending
 that text to the configured provider is appropriate. Drawer comments, cloud
 notifications, approvals, and other event types stay on the rule-only path.
 
@@ -66,14 +72,22 @@ records a fallback candidate without affecting agent delivery. Confidence is
 advisory, not an accuracy guarantee. Full context, completion text, API keys,
 and provider error bodies are never included in the observation record.
 
-Observations are stored as `autopilotShadow` on the existing Routine run and
-claim, available through the existing status API. They include the event index,
-candidate route, source, safe reason code, elapsed time, and input token count
+Observations are exposed as `autopilotShadow` on the existing Routine run and
+claim, available through the existing status API. An independent
+`autopilot-observations.json` journal in `AUTOMATION_DATA_DIR` preserves the
+latest observation across restarts. Its atomic writes use a separate queue
+from delivery state and logs: even a stalled observation write cannot delay
+prompt delivery. Each observation includes the event index, candidate route,
+source, safe reason code, elapsed time, and input token count
 when returned. A completed observation does not mean the underlying work is
 complete. A pending observation is persisted before a paid call; retries and
 restarts do not re-evaluate that claim, even when its outcome remains unknown.
 After a restart, a stale pending observation is unmeasured, not a successful
-classification. Observation storage failure also preserves delivery.
+classification. Observation storage failure also preserves delivery and prevents
+the paid call until its pending record is durable. An unreadable or malformed
+journal disables new observations until repaired and the worker restarted;
+delivery continues normally. Unreferenced journal entries expire after 14 days,
+while entries for retained claims remain available for retry deduplication.
 
 The Docker Compose automation service passes both environment variables through
 from its environment file. Configure the key locally on the server; do not put

@@ -4,6 +4,7 @@ import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
 
 const executionId = '00000000-0000-4000-8000-000000000001';
 const hostId = '00000000-0000-4000-8000-000000000002';
+const machineId = 'synthetic-native-machine';
 const completion = { kind: 'process.completed', executionId, hostId };
 
 function fixture({
@@ -16,8 +17,7 @@ function fixture({
   h.readHost = async (item, path, signal) => {
     h.reads.push(path);
     assert.ok(signal instanceof AbortSignal);
-    if (path === '/api/automation-actions/status')
-      return { hostId: item.hostId };
+    if (path === '/api/automation-actions/status') return { hostId: machineId };
     return {
       data: {
         execution_id: item.executionId,
@@ -61,6 +61,10 @@ function fixture({
   h.evaluate = (event = completion, options = {}) =>
     evaluateAutopilotShadow({
       event,
+      resolveMachineId: async (id) => {
+        assert.equal(id, hostId);
+        return machineId;
+      },
       readHost: h.readHost,
       fetchImpl: h.fetchImpl,
       apiKey: 'synthetic-key',
@@ -156,6 +160,12 @@ test('credential-shaped completion text is excluded before any external request'
     'Synthetic response with api_key=synthetic-credential',
     '{"password": "synthetic-password"}',
     '{"access_token": "synthetic-credential"}',
+    '{"client_secret": "synthetic-oauth-material"}',
+    '{"clientSecret": "synthetic-oauth-material"}',
+    'OPENAI_API_KEY=synthetic-provider-material',
+    'AWS_SECRET_ACCESS_KEY=synthetic-provider-material',
+    'SERVICE_REFRESH_TOKEN=synthetic-provider-material',
+    'service-private-key: synthetic-private-material',
     'Synthetic response with Basic synthetic-credential',
     'Synthetic response with eyJsynthetic.synthetic.synthetic',
     '-----BEGIN SYNTHETIC PRIVATE KEY-----',
@@ -165,6 +175,49 @@ test('credential-shaped completion text is excluded before any external request'
     assert.equal(result.results[0].reason, 'context_unavailable');
     assert.equal(h.requests.length, 0);
   }
+});
+
+test('redaction happens before truncation so a long URL or path cannot leak its suffix', async () => {
+  for (const text of [
+    `https://example.test/${'synthetic-private-segment/'.repeat(150)}`,
+    `/home/synthetic/${'synthetic-private-segment/'.repeat(150)}`,
+  ]) {
+    const h = fixture({ text });
+    await h.evaluate();
+    assert.equal(h.requests.length, 1);
+    assert.ok(
+      !h.requests[0].options.body.includes('synthetic-private-segment')
+    );
+    assert.equal(
+      JSON.parse(JSON.parse(h.requests[0].options.body).input)[0].truncated,
+      true
+    );
+  }
+});
+
+test('unresolved machine identity never reads host data and cannot trust event-supplied identity', async () => {
+  for (const machine of [undefined, '', 42]) {
+    const h = fixture();
+    const result = await h.evaluate(
+      { ...completion, machineId },
+      {
+        resolveMachineId: async () => machine,
+      }
+    );
+    assert.equal(result.results[0].reason, 'context_unavailable');
+    assert.equal(h.reads.length, 0);
+    assert.equal(h.requests.length, 0);
+  }
+  const h = fixture();
+  const readHost = h.readHost;
+  h.readHost = (item, ...args) => {
+    assert.equal(item.machineId, machineId);
+    return readHost(item, ...args);
+  };
+  assert.equal(
+    (await h.evaluate({ ...completion, machineId: 'untrusted-host' })).status,
+    'completed'
+  );
 });
 
 test('a mixed batch preserves indexes and asks one question per eligible completion', async () => {
@@ -299,6 +352,20 @@ test('HTTP failures and malformed or oversized bodies produce only safe fallback
 
 test('a hung collector or provider is bounded even if it ignores cancellation', async () => {
   const never = () => new Promise(() => {});
+  const late = fixture();
+  let resolveHost;
+  const resolver = await late.evaluate(completion, {
+    resolveMachineId: () =>
+      new Promise((resolve) => {
+        resolveHost = resolve;
+      }),
+    timeoutMs: 10,
+  });
+  assert.equal(resolver.reason, 'timeout');
+  resolveHost(machineId);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(late.reads.length, 0);
+  assert.equal(late.requests.length, 0);
   const h = fixture();
   const collector = await h.evaluate(completion, {
     readHost: never,

@@ -13,8 +13,14 @@ import {
 } from './routines.mjs';
 import { carriesRetryExhausted, renderPromptTemplate } from './vibe-events.mjs';
 import { createNotificationRouting } from './notification-routing.mjs';
+import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
 
 const source = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
+function productionFunction(name) {
+  const match = new RegExp(`^(?:async )?function ${name}\\(`, 'm').exec(source);
+  assert.ok(match, `Missing production function ${name}`);
+  return source.slice(match.index, source.indexOf('\n}\n', match.index) + 2);
+}
 const functions = [
   'runDueRoutines',
   'runRoutine',
@@ -28,13 +34,7 @@ const functions = [
   'runRule',
   'createRuleContext',
 ]
-  .map((name) => {
-    const match = new RegExp(`^(?:async )?function ${name}\\(`, 'm').exec(
-      source
-    );
-    assert.ok(match, `Missing production function ${name}`);
-    return source.slice(match.index, source.indexOf('\n}\n', match.index) + 2);
-  })
+  .map(productionFunction)
   .join('\n');
 
 function routine(input = {}) {
@@ -155,6 +155,12 @@ function harness({
     RULE_TIMEOUT_MS: 1000,
     AUTOPILOT_DECISIONS_SHADOW: shadow,
     AUTOPILOT_DECISIONS_API_KEY: 'synthetic-key',
+    autopilotObservations: {},
+    persistAutopilotObservations: async () => {
+      if (h.failShadowWrite)
+        throw new Error('synthetic observation storage failure');
+      h.persistedObservations = structuredClone(context.autopilotObservations);
+    },
     evaluateAutopilotShadow: async (input) => {
       h.shadowCalls += 1;
       return shadowEvaluate(input);
@@ -275,7 +281,7 @@ test('shadow failures and its strict persistence failure leave delivery successf
         throw new Error('Synthetic private diagnostic');
       },
     });
-    h.failNextStrictWrite = storageFailure;
+    h.failShadowWrite = storageFailure;
     const r = routine();
     h.state.routines.push(r);
     await h.run(r, {}, 'synthetic-shadow-error');
@@ -346,6 +352,354 @@ test('an unknown pending observation survives restart without re-evaluation', as
     restarted.state.routineRuns[0].autopilotShadow.status,
     'pending'
   );
+});
+
+test('journal host IDs resolve through owned machine IDs and one catalog serves a whole batch', async () => {
+  for (const scenario of [
+    'owned',
+    'foreign',
+    'unconfigured',
+    'mismatch',
+    'unavailable',
+  ]) {
+    const remoteId = '00000000-0000-4000-8000-000000000021';
+    const machineId = 'synthetic-event-machine';
+    const executionId = '00000000-0000-4000-8000-000000000022';
+    const h = harness({ shadow: true });
+    const r = routine();
+    h.state.routines.push(r);
+    if (scenario !== 'unconfigured')
+      h.state.connectors[0].config.hostBridges[machineId] = {
+        baseUrl: 'https://source.invalid',
+      };
+    const api = h.context.vibeApi;
+    let catalogs = 0;
+    let reads = 0;
+    let models = 0;
+    h.context.vibeApi = async (...args) => {
+      const [, method, endpoint, , baseUrl, , signal] = args;
+      if (endpoint === '/v1/hosts') {
+        catalogs += 1;
+        assert.equal(method, 'GET');
+        assert.ok(signal instanceof AbortSignal);
+        if (scenario === 'unavailable')
+          throw new Error('synthetic catalog failure');
+        return {
+          hosts: [
+            {
+              id: remoteId,
+              machine_id: machineId,
+              access_role: scenario === 'foreign' ? 'member' : 'owner',
+            },
+          ],
+        };
+      }
+      if (baseUrl === 'https://source.invalid') {
+        reads += 1;
+        if (endpoint === '/api/automation-actions/status')
+          return {
+            hostId: scenario === 'mismatch' ? 'wrong-machine' : machineId,
+          };
+        assert.ok(
+          endpoint.startsWith(
+            `/api/execution-processes/${executionId}/normalized-logs`
+          )
+        );
+        return {
+          data: {
+            execution_id: executionId,
+            status: 'completed',
+            total: 1,
+            has_more: false,
+            entries: [
+              {
+                entry_type: { type: 'assistant_message' },
+                content: 'Synthetic routine complete.',
+              },
+            ],
+          },
+        };
+      }
+      return api(...args);
+    };
+    h.context.evaluateAutopilotShadow = (input) =>
+      evaluateAutopilotShadow({
+        ...input,
+        fetchImpl: async (_, options) => {
+          models += 1;
+          const body = JSON.parse(options.body);
+          return Response.json({
+            model: 'gpt-6-luna',
+            answers: body.questions.map(({ name }) => ({
+              name,
+              type: 'choice',
+              choice: 'routine_result',
+              confidence: 0.9,
+            })),
+          });
+        },
+      });
+    const item = {
+      kind: 'process.completed',
+      hostId: remoteId,
+      executionId,
+      machineId: 'untrusted-machine',
+    };
+    await h.run(r, { events: [item, item] }, 'synthetic-host-resolution');
+    await new Promise((resolve) => setImmediate(resolve));
+    const result = h.state.routineRuns[0].autopilotShadow;
+    assert.equal(h.posts, 1);
+    assert.equal(catalogs, 1);
+    assert.equal(models, scenario === 'owned' ? 1 : 0);
+    assert.equal(result.status, scenario === 'owned' ? 'completed' : 'skipped');
+    if (['foreign', 'unconfigured', 'unavailable'].includes(scenario))
+      assert.equal(reads, 0);
+  }
+});
+
+test(
+  'held shadow disk writes cannot block production delivery persistence or lose restart deduplication',
+  { timeout: 2000 },
+  async (t) => {
+    const h = harness({ shadow: true });
+    const r = routine();
+    h.state.routines.push(r);
+    const files = new Map();
+    let release;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    t.after(() => release());
+    let entered;
+    const writing = new Promise((resolve) => {
+      entered = resolve;
+    });
+    let hold = true;
+    Object.assign(h.context, {
+      STATE_PATH: 'synthetic-state.json',
+      AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
+      process: { pid: 1 },
+      console: { error() {} },
+      fs: {
+        async writeFile(file, content) {
+          if (file.startsWith('synthetic-observations.json') && hold) {
+            hold = false;
+            entered();
+            await held;
+          }
+          files.set(file, content);
+        },
+        async rename(from, to) {
+          files.set(to, files.get(from));
+          files.delete(from);
+        },
+        async readFile(file) {
+          return files.get(file);
+        },
+      },
+    });
+    vm.runInContext(
+      'let writeQueue = Promise.resolve(); let autopilotWriteQueue = Promise.resolve();\n' +
+        [
+          'persistState',
+          'persistAutopilotObservations',
+          'enqueueWrite',
+          'restoreAutopilotObservations',
+        ]
+          .map(productionFunction)
+          .join('\n'),
+      h.context
+    );
+    const sending = h.run(r, {}, 'synthetic-independent-writes');
+    await writing;
+    await sending;
+    assert.equal(h.posts, 1);
+    assert.equal(h.state.routineRuns[0].status, 'succeeded');
+    assert.equal(
+      h.shadowCalls,
+      0,
+      'a paid call must wait for the durable observation'
+    );
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.shadowCalls, 1);
+    assert.equal(
+      JSON.parse(files.get('synthetic-observations.json'))[
+        'synthetic-independent-writes'
+      ].status,
+      'completed'
+    );
+
+    // The main state can lag a background result; the independent journal wins.
+    h.state.routineRuns[0].autopilotShadow.status = 'pending';
+    h.state.routineClaims[
+      'synthetic-independent-writes'
+    ].autopilotShadow.status = 'pending';
+    await h.context.restoreAutopilotObservations();
+    assert.equal(h.state.routineRuns[0].autopilotShadow.status, 'completed');
+    h.context.observeAutopilotShadow(r, {
+      routineIdempotencyKey: 'synthetic-independent-writes',
+    });
+    assert.equal(h.shadowCalls, 1);
+  }
+);
+
+test('pending journal entries prevent paid replay even when the main state predates observation', async () => {
+  const h = harness({ shadow: true });
+  const key = 'synthetic-journal-only';
+  const trimmedKey = 'synthetic-trimmed-history';
+  h.state.routineClaims[key] = {};
+  h.state.routineClaims[trimmedKey] = {
+    autopilotShadow: { status: 'pending' },
+  };
+  h.state.routineRuns.push({ idempotencyKey: key });
+  Object.assign(h.context, {
+    AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
+    fs: {
+      readFile: async () =>
+        JSON.stringify({
+          [key]: {
+            mode: 'shadow',
+            status: 'pending',
+            started_at: new Date().toISOString(),
+          },
+          [trimmedKey]: {
+            mode: 'shadow',
+            status: 'completed',
+            started_at: new Date().toISOString(),
+          },
+        }),
+    },
+  });
+  vm.runInContext(
+    productionFunction('restoreAutopilotObservations'),
+    h.context
+  );
+  await h.context.restoreAutopilotObservations();
+  h.context.observeAutopilotShadow(routine(), { routineIdempotencyKey: key });
+  assert.equal(h.shadowCalls, 0);
+  assert.equal(h.state.routineRuns[0].autopilotShadow.status, 'pending');
+  assert.equal(
+    h.state.routineClaims[trimmedKey].autopilotShadow.status,
+    'completed'
+  );
+});
+
+test('unreadable or malformed observation journals disable paid calls while preserving delivery', async () => {
+  for (const data of [
+    '{broken',
+    '[]',
+    'null',
+    '{"synthetic":{"status":"completed"}}',
+    new Error('synthetic storage offline'),
+  ]) {
+    const h = harness({ shadow: true });
+    Object.assign(h.context, {
+      AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
+      fs: {
+        readFile: async () => {
+          if (data instanceof Error) throw data;
+          return data;
+        },
+      },
+    });
+    vm.runInContext(
+      productionFunction('restoreAutopilotObservations'),
+      h.context
+    );
+    await h.context.restoreAutopilotObservations();
+    const r = routine();
+    h.state.routines.push(r);
+    await h.run(r, {}, 'synthetic-unavailable-journal');
+    assert.equal(h.posts, 1);
+    assert.equal(h.shadowCalls, 0);
+    assert.equal(
+      h.state.routineRuns[0].autopilotShadow.reason,
+      'observation_storage_unavailable'
+    );
+  }
+});
+
+test('a failed observation write does not poison either production persistence queue', async () => {
+  const h = harness({ shadow: true });
+  const r = routine();
+  h.state.routines.push(r);
+  const written = [];
+  let fail = true;
+  Object.assign(h.context, {
+    STATE_PATH: 'synthetic-state.json',
+    AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
+    process: { pid: 1 },
+    console: { error() {} },
+    fs: {
+      async writeFile(file) {
+        if (file.startsWith('synthetic-observations.json') && fail) {
+          fail = false;
+          throw new Error('synthetic disk failure');
+        }
+        written.push(file);
+      },
+      async rename() {},
+    },
+  });
+  vm.runInContext(
+    'let writeQueue = Promise.resolve(); let autopilotWriteQueue = Promise.resolve();\n' +
+      ['persistState', 'persistAutopilotObservations', 'enqueueWrite']
+        .map(productionFunction)
+        .join('\n'),
+    h.context
+  );
+  await h.run(r, {}, 'synthetic-failed-observation-write');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.posts, 1);
+  assert.equal(h.shadowCalls, 0);
+  assert.equal(
+    h.state.routineRuns[0].autopilotShadow.reason,
+    'observation_unavailable'
+  );
+  assert.ok(written.includes('synthetic-observations.json.1.tmp'));
+  assert.ok(written.includes('synthetic-state.json.1.tmp'));
+});
+
+test('new journals initialize safely and retention preserves live claims', async () => {
+  const h = harness();
+  Object.assign(h.context, {
+    AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
+    fs: {
+      readFile: async () => {
+        throw Object.assign(new Error('synthetic absent journal'), {
+          code: 'ENOENT',
+        });
+      },
+    },
+  });
+  vm.runInContext(
+    ['restoreAutopilotObservations', 'persistAutopilotObservations']
+      .map(productionFunction)
+      .join('\n'),
+    h.context
+  );
+  await h.context.restoreAutopilotObservations();
+  assert.deepEqual(Object.keys(h.context.autopilotObservations), []);
+  const old = {
+    mode: 'shadow',
+    status: 'pending',
+    started_at: new Date(Date.now() - 30 * 86400000).toISOString(),
+  };
+  h.context.autopilotObservations = {
+    expired: { ...old },
+    retained: { ...old },
+    recent: { ...old, started_at: new Date().toISOString() },
+  };
+  h.state.routineClaims.retained = {};
+  let saved;
+  h.context.enqueueWrite = async (file, content, strict) => {
+    assert.equal(file, 'synthetic-observations.json');
+    assert.equal(strict, true);
+    saved = JSON.parse(content);
+  };
+  await h.context.persistAutopilotObservations();
+  assert.deepEqual(Object.keys(saved).sort(), ['recent', 'retained']);
 });
 
 test('successful one-shots are removed durably without resurrecting their occurrence', async () => {
