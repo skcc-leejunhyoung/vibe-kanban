@@ -30,9 +30,21 @@ pub async fn reconciliation_snapshot(pool: &SqlitePool) -> Result<Value, sqlx::E
             .await?;
             let executions = sqlx::query("SELECT id,status,dropped,updated_at FROM execution_processes WHERE session_id=? AND run_reason!='devserver' AND (status='running' OR created_at=(SELECT MAX(created_at) FROM execution_processes WHERE session_id=? AND run_reason!='devserver')) ORDER BY id")
                 .bind(id).bind(id).fetch_all(&mut *tx).await?;
-            let pending: i64 = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM pending_rate_limit_resumes WHERE session_id=?)+(SELECT COUNT(*) FROM scheduled_resumes WHERE session_id=? AND status='pending')")
-                .bind(id).bind(id).fetch_one(&mut *tx).await?;
-            facts.push(json!({"id":id,"queue_hash":format!("{:x}",Sha256::digest(queue.unwrap_or_else(|| "[]".into()).as_bytes())),"pending_resumes":pending,
+            let rows = sqlx::query("SELECT id,'rate_limit' AS kind,execution_process_id,resume_at AS due_at,resume_prompt AS prompt,NULL AS schedule,0 AS recurring FROM pending_rate_limit_resumes WHERE session_id=? UNION ALL SELECT id,'scheduled',NULL,next_fire_at,prompt,schedule,recurring FROM scheduled_resumes WHERE session_id=? AND status='pending' ORDER BY kind,id")
+                .bind(id).bind(id).fetch_all(&mut *tx).await?;
+            let mut resumes = Vec::new();
+            for resume in rows {
+                let content = json!([
+                    resume.get::<String, _>("prompt"),
+                    resume.get::<Option<String>, _>("schedule"),
+                    resume.get::<bool, _>("recurring")
+                ]);
+                resumes.push(json!({"id":resume.get::<Uuid,_>("id"),"kind":resume.get::<String,_>("kind"),
+                    "execution_id":resume.get::<Option<Uuid>,_>("execution_process_id"),
+                    "due_at":resume.try_get::<chrono::DateTime<chrono::Utc>,_>("due_at")?.to_rfc3339(),
+                    "content_hash":format!("{:x}",Sha256::digest(content.to_string().as_bytes()))}));
+            }
+            facts.push(json!({"id":id,"queue_hash":format!("{:x}",Sha256::digest(queue.unwrap_or_else(|| "[]".into()).as_bytes())),"pending_resumes":resumes.len(),"resumes":resumes,
                 "executions":executions.into_iter().map(|e| json!({"id":e.get::<Uuid,_>("id"),"status":e.get::<String,_>("status"),"dropped":e.get::<bool,_>("dropped"),"updated_at":e.get::<String,_>("updated_at")})).collect::<Vec<_>>() }));
         }
         let pending: i64 = sqlx::query_scalar(
@@ -252,6 +264,39 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn reconciliation_tracks_resume_changes_without_exposing_prompts() {
+        let (pool, _, session, execution) = fixture().await;
+        let resume = Uuid::new_v4();
+        sqlx::query("INSERT INTO scheduled_resumes(id,session_id,cron_id,prompt,schedule,next_fire_at) VALUES(?,?,'synthetic-cron','synthetic scheduled prompt','0 * * * *','2002-03-04T01:00:00Z')")
+            .bind(resume).bind(session).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO pending_rate_limit_resumes(id,session_id,execution_process_id,resume_at,resume_prompt) VALUES(?,?,?,'2002-03-04T02:00:00Z','synthetic rate-limit prompt')")
+            .bind(Uuid::new_v4()).bind(session).bind(execution).execute(&pool).await.unwrap();
+        let mut previous = reconciliation_snapshot(&pool).await.unwrap();
+        assert_eq!(
+            previous["workspaces"][0]["sessions"][0]["pending_resumes"],
+            2
+        );
+        for change in [
+            "UPDATE scheduled_resumes SET next_fire_at='2002-03-05T01:00:00Z'",
+            "UPDATE scheduled_resumes SET prompt='changed synthetic scheduled prompt'",
+            "UPDATE scheduled_resumes SET schedule='30 * * * *',recurring=1",
+            "UPDATE pending_rate_limit_resumes SET resume_at='2002-03-05T02:00:00Z'",
+            "UPDATE pending_rate_limit_resumes SET resume_prompt='changed synthetic rate-limit prompt'",
+        ] {
+            sqlx::query(change).execute(&pool).await.unwrap();
+            let current = reconciliation_snapshot(&pool).await.unwrap();
+            assert_ne!(previous, current, "{change}");
+            assert!(!current.to_string().contains("prompt"));
+            previous = current;
+        }
+        sqlx::query("UPDATE pending_rate_limit_resumes SET last_checked_at='2002-03-06T00:00:00Z'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(previous, reconciliation_snapshot(&pool).await.unwrap());
     }
 
     #[tokio::test]

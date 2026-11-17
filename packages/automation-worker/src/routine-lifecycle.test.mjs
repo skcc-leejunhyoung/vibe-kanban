@@ -1438,6 +1438,112 @@ test('active global flag alone preserves legacy delivery until a Routine opts in
   assert.equal(h.posts, 1);
 });
 
+test('lost result replies survive a transient recovery failure within the retry budget', async () => {
+  const h = harness({ active: true });
+  const r = routine({ trigger: { type: 'execution_completed' } });
+  r.action.input.routing = { mode: 'active', minConfidence: 0.95 };
+  h.state.routines.push(r);
+  const key = 'synthetic-result-recovery';
+  const executionId = '10000000-0000-4000-8000-000000000001';
+  h.resultGuard = {
+    hostId: 'host',
+    execution_id: executionId,
+    eligible: true,
+    version: 'a'.repeat(64),
+    result_hash: 'b'.repeat(64),
+  };
+  let modelCalls = 0;
+  h.context.routeAutopilot = (options) =>
+    routeAutopilot({
+      ...options,
+      evaluate: async () => {
+        modelCalls++;
+        return {
+          status: 'completed',
+          results: [
+            {
+              event_index: 0,
+              source: 'decisions',
+              route: 'routine_result',
+              confidence: 0.99,
+              truncated: false,
+              evidence_hash: h.resultGuard.result_hash,
+            },
+          ],
+        };
+      },
+    });
+  const originalApi = h.context.vibeApi;
+  let sourceOffline = false;
+  let resultPosts = 0;
+  h.context.vibeApi = async (...args) => {
+    const [, method, endpoint] = args;
+    if (endpoint.includes('/autopilot-results/')) {
+      if (sourceOffline) throw new Error('synthetic transient outage');
+      if (method === 'POST') {
+        resultPosts++;
+        h.resultGuard.receipt = {
+          action: 'autopilot_result',
+          status: 'recorded',
+          execution_id: executionId,
+          result_hash: h.resultGuard.result_hash,
+        };
+        throw new Error('synthetic response lost');
+      }
+    }
+    return originalApi(...args);
+  };
+  await h.run(
+    r,
+    {
+      id: 'synthetic-result',
+      kind: 'process.completed',
+      executionId,
+      hostId: '10000000-0000-4000-8000-000000000002',
+    },
+    key
+  );
+  sourceOffline = true;
+  await h.retry({ force: true });
+  assert.equal(h.state.retryQueue[0].status, 'pending');
+  assert.equal(h.state.retryQueue[0].attempts, 2);
+  sourceOffline = false;
+  await h.retry({ force: true });
+  assert.equal(h.state.retryQueue.length, 0);
+  assert.equal(h.state.routineClaims[key].status, 'succeeded');
+  assert.equal(h.state.routineClaims[key].autopilotRouting.suppressed, true);
+  assert.equal(modelCalls, 1);
+  assert.equal(resultPosts, 1);
+  assert.equal(h.posts, 0);
+});
+
+test('receipt recovery respects its retry cap while other uncertain actions remain manual', async () => {
+  for (const retryable of [true, false]) {
+    const h = harness();
+    const r = routine();
+    h.state.routines.push(r);
+    h.context.executeRoutineAction = async () => {
+      throw Object.assign(
+        new Error('409 automation action is already running'),
+        {
+          indeterminate: true,
+          retryable,
+        }
+      );
+    };
+    await h.run(r, { id: 'synthetic-event' }, 'synthetic-retry-cap');
+    await h.retry({ force: true });
+    assert.equal(
+      h.state.retryQueue[0].status,
+      retryable ? 'pending' : 'exhausted'
+    );
+    for (let attempt = 0; attempt < 3; attempt++)
+      await h.retry({ force: true });
+    assert.equal(h.state.retryQueue[0].status, 'exhausted');
+    assert.equal(h.state.retryQueue[0].attempts, 5);
+  }
+});
+
 
 test('rollout cannot change a retained legacy admission into agentless handling', async () => {
   const h = harness({ active: true }); const r = routine();

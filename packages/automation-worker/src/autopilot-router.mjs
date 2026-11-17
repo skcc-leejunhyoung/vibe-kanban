@@ -8,12 +8,12 @@ const identity = (item) =>
       ? [item.id, item.kind, item.notificationId, item.notificationRevision]
       : [item.id, item.kind, item.hostId, item.executionId]
   );
-const uncertain = () =>
+const uncertain = (retryable = false) =>
   Object.assign(
     new Error(
       '409 automation action is already running: result receipt is indeterminate'
     ),
-    { indeterminate: true }
+    { indeterminate: true, retryable }
   );
 
 // Classification cannot authorize an action; only the host's fresh, durable receipt can.
@@ -133,7 +133,7 @@ export async function routeAutopilot({
       try {
         completed = await within(() => completeNotification(item, receipt));
       } catch {
-        throw uncertain();
+        throw uncertain(true);
       }
       if (!completed) {
         remaining.add(index);
@@ -163,7 +163,8 @@ export async function routeAutopilot({
           // Keep the fresh in-memory token on the request; persist only its lease identity.
           items[index] = item;
         } catch {
-          if (record.cloud_attempted?.includes(ids[index])) throw uncertain();
+          if (record.cloud_attempted?.includes(ids[index]))
+            throw uncertain(true);
           remaining.add(index);
           continue;
         }
@@ -204,12 +205,16 @@ export async function routeAutopilot({
         ) {
           eligible.push({ index, item, guard, host, path });
         } else {
-          if (record.attempted?.includes(ids[index])) throw uncertain();
+          if (record.attempted?.includes(ids[index])) throw uncertain(true);
           remaining.add(index);
         }
       } catch (error) {
-        if (error.indeterminate || record.attempted?.includes(ids[index]))
-          throw uncertain();
+        if (error.indeterminate) throw error;
+        if (
+          record.attempted?.includes(ids[index]) ||
+          record.cloud_attempted?.includes(ids[index])
+        )
+          throw uncertain(true);
         remaining.add(index);
       }
     }
@@ -275,21 +280,21 @@ export async function routeAutopilot({
             !(error.status >= 400 && error.status < 500) ||
             /already running/i.test(error.message)
           )
-            throw uncertain();
+            throw uncertain(true);
           remaining.add(index);
           continue;
         }
         if (
-          receipt.action !== 'autopilot_result' ||
+          receipt?.action !== 'autopilot_result' ||
           receipt.status !== 'recorded' ||
           receipt.execution_id !== item.executionId ||
           receipt.result_hash !== guard.result_hash
         )
-          throw uncertain();
+          throw uncertain(true);
         try {
           await accept(index, item, receipt, 'decisions');
-        } catch {
-          throw uncertain();
+        } catch (error) {
+          throw error.indeterminate ? error : uncertain(true);
         }
       }
     }

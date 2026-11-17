@@ -152,10 +152,54 @@ test('lost host response replays native proof after restart without another mode
 test('uncertain native mutation and unreachable evidence hold retry instead of dispatching an agent', async () => {
   const h = fixture();
   h.lost = true;
-  await assert.rejects(h.route(), { indeterminate: true });
+  await assert.rejects(h.route(), { indeterminate: true, retryable: true });
   h.offline = true;
-  await assert.rejects(h.route(), { indeterminate: true });
+  await assert.rejects(h.route(), { indeterminate: true, retryable: true });
   assert.equal(h.calls, 1);
+});
+
+test('an empty result reply recovers native proof without falling through to an agent', async () => {
+  const h = fixture();
+  const resolve = h.options.resolveHost;
+  h.options.resolveHost = async (...args) => {
+    const host = await resolve(...args);
+    const post = host.post;
+    host.post = async (...args) => {
+      await post(...args);
+      return null;
+    };
+    return host;
+  };
+  await assert.rejects(h.route(), { indeterminate: true, retryable: true });
+  assert.equal((await h.route()).remaining.length, 0);
+  assert.equal(h.calls, 1);
+  assert.equal(h.posts, 1);
+});
+
+test('cloud receipt recovery stays pending during a source outage without a new native action', async () => {
+  const h = fixture();
+  h.guard.receipt = h.receipt;
+  h.lostAck = true;
+  const event = {
+    id: 'synthetic-existing-cloud-result',
+    kind: 'cloud.notification',
+    notificationId: 'synthetic-notification',
+    notificationRevision: 1,
+    notificationClaim: { lease_id: 'synthetic-lease' },
+  };
+  await assert.rejects(h.route({ event }), {
+    indeterminate: true,
+    retryable: true,
+  });
+  h.offline = true;
+  await assert.rejects(h.route({ event }), {
+    indeterminate: true,
+    retryable: true,
+  });
+  h.offline = h.lostAck = false;
+  assert.equal((await h.route({ event })).remaining.length, 0);
+  assert.equal(h.calls, 0);
+  assert.equal(h.posts, 0);
 });
 
 test('disk failure prevents paid calls and prevents agent admission with an unfrozen disposition', async () => {

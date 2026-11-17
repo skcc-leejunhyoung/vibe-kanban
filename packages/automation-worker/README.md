@@ -140,6 +140,9 @@ snapshot keeps the existing agent route. Model intent and outcome are persisted
 before paid calls and before mutation. Unknown mutation outcomes hold the same
 retry key until native proof is recovered; retries do not buy a second decision
 or switch an already frozen agent disposition into completion.
+Transient receipt-recovery failures use the normal retry budget and backoff;
+they do not immediately exhaust the run. Empty mutation replies also recover
+through the native receipt. Exhausted recovery retains the manual recovery boundary.
 
 Claimed cloud completion notifications are first bound to the canonical
 `execution:<id>:Completed` source key, source host and workspace. The central
@@ -189,6 +192,10 @@ current heads and all decision reviews, plus every session's queue/execution and
 resume facts on each configured owned host. Host snapshots contain hashes and
 typed facts, never queue text. Autopilot/ephemeral workspaces and the adapter's
 periodic delegation workspaces are excluded from self-triggering comparisons.
+Resume identities, execution times and content hashes participate in comparisons.
+Due resumes always require an agent check until cleared, even after an official
+checkpoint acknowledges otherwise unchanged facts. Hosts that report pending
+resumes without this evidence retain agent delegation.
 
 Both periodic checks and completion events enter the same router. Unchanged
 facts are handled by code, with no Decisions request or agent admission. A new

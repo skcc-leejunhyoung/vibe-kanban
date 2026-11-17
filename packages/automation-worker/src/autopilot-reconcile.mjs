@@ -93,6 +93,7 @@ export async function collectReconciliation({
   discover,
   vibe,
   host,
+  now = Date.now,
 }) {
   validateReconciliationScope(scope, repositories);
   const prs = new Map(
@@ -214,6 +215,7 @@ export async function collectReconciliation({
     });
   }
   const hosts = [];
+  let requiresAgent = false;
   for (const machineId of [...new Set(scope.hosts)].sort()) {
     const snapshot = await host(machineId);
     if (
@@ -223,11 +225,33 @@ export async function collectReconciliation({
     )
       throw new Error('incomplete host snapshot');
     const ignored = new Set(scope.ignoreWorkspaces || []);
+    const workspaces = snapshot.workspaces.filter(
+      (row) => !ignored.has(row.id)
+    );
+    for (const workspace of workspaces) {
+      for (const session of workspace.sessions || []) {
+        if (!session.pending_resumes) continue;
+        if (
+          !Array.isArray(session.resumes) ||
+          session.resumes.length !== session.pending_resumes
+        )
+          throw new Error('incomplete resume snapshot');
+        for (const resume of session.resumes) {
+          const due = Date.parse(resume.due_at);
+          if (
+            !uuid.test(resume.id) ||
+            !['scheduled', 'rate_limit'].includes(resume.kind) ||
+            !/^[0-9a-f]{64}$/i.test(resume.content_hash) ||
+            !Number.isFinite(due)
+          )
+            throw new Error('invalid resume snapshot');
+          if (due <= now()) requiresAgent = true;
+        }
+      }
+    }
     hosts.push({
       machineId,
-      workspaces: sorted(
-        snapshot.workspaces.filter((row) => !ignored.has(row.id))
-      ),
+      workspaces: sorted(workspaces),
     });
   }
   const facts = {
@@ -239,6 +263,7 @@ export async function collectReconciliation({
   return {
     facts,
     fingerprint: sha(facts),
+    requiresAgent,
     counts: { issues: issues.length, prs: heads.length, hosts: hosts.length },
   };
 }
@@ -264,7 +289,9 @@ export async function reconcileAutopilot({
     now() - acknowledged < 2 * 60 * 60 * 1000
   )
     record.baseline = { fingerprint: snapshot.fingerprint, at: acknowledgedAt };
-  const changed = record.baseline?.fingerprint !== snapshot.fingerprint;
+  const changed =
+    snapshot.requiresAgent === true ||
+    record.baseline?.fingerprint !== snapshot.fingerprint;
   record.pending = {
     at,
     fingerprint: snapshot.fingerprint,

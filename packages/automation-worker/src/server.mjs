@@ -5116,7 +5116,12 @@ async function processRetryQueue({
       item.attempts += 1;
       item.lastError = errorMessage(error);
       item.updatedAt = Date.now();
-      if (routine && isIndeterminateActionError(item.lastError)) {
+      // Result receipts can be read/replayed safely under the same admission key.
+      if (
+        routine &&
+        isIndeterminateActionError(error) &&
+        error.retryable !== true
+      ) {
         item.attempts = item.maxAttempts;
         item.lastError = `${item.lastError}; outcome is indeterminate, review the target before running again`;
       }

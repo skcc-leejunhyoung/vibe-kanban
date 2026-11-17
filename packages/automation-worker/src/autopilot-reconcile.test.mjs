@@ -64,6 +64,7 @@ function fixture() {
         complete: true,
         workspaces: h.workspaces || [],
       }),
+      now: () => h.now ?? Date.now(),
     });
   return h;
 }
@@ -179,6 +180,72 @@ test('incomplete reads and out-of-scope PRs cannot advance the baseline', async 
       ['synthetic/widgets']
     )
   );
+});
+
+test('overdue resumes keep the agent route even after acknowledgement of unchanged facts', async () => {
+  const h = fixture();
+  const dueAt = Date.parse('2002-03-07T00:00:00Z');
+  h.now = dueAt - 1000;
+  const resumes = [
+    {
+      id: '40000000-0000-4000-8000-000000000001',
+      kind: 'scheduled',
+      due_at: new Date(dueAt).toISOString(),
+      content_hash: 'a'.repeat(64),
+    },
+  ];
+  h.workspaces = [
+    {
+      id: issueId,
+      sessions: [
+        {
+          id: '40000000-0000-4000-8000-000000000002',
+          pending_resumes: 1,
+          resumes,
+        },
+      ],
+    },
+  ];
+  const record = {};
+  const options = {
+    record,
+    collect: h.collect,
+    persist: async () => {},
+    now: () => h.now,
+  };
+  assert.equal((await reconcileAutopilot(options)).changed, true);
+  h.now += 500;
+  assert.equal(
+    (
+      await reconcileAutopilot({
+        ...options,
+        acknowledgedAt: new Date(h.now).toISOString(),
+      })
+    ).changed,
+    false
+  );
+  h.now = dueAt;
+  assert.equal((await reconcileAutopilot(options)).changed, true);
+  h.now += 7 * 86400000;
+  assert.equal(
+    (
+      await reconcileAutopilot({
+        ...options,
+        acknowledgedAt: new Date(h.now).toISOString(),
+      })
+    ).changed,
+    true
+  );
+});
+
+test('missing or malformed resume evidence cannot establish a quiet baseline', async () => {
+  for (const resumes of [undefined, [], [{ due_at: 'invalid' }]]) {
+    const h = fixture();
+    h.workspaces = [
+      { id: issueId, sessions: [{ pending_resumes: 1, resumes }] },
+    ];
+    await assert.rejects(h.collect(), /resume/);
+  }
 });
 
 test('future or stale acknowledgements cannot accept a changed baseline', async () => {
