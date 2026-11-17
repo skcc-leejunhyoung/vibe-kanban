@@ -1,4 +1,5 @@
 import { createNotificationRouting } from './notification-routing.mjs';
+import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
 import {
   githubReviewRepositories,
   githubReviewIssueId,
@@ -117,6 +118,10 @@ if (!ADMIN_TOKEN && !process.argv.includes('--self-test')) {
 }
 const HOST = process.env.HOST || '0.0.0.0';
 const RULE_TIMEOUT_MS = Number(process.env.RULE_TIMEOUT_MS || 10000);
+const AUTOPILOT_DECISIONS_SHADOW =
+  process.env.AUTOPILOT_DECISIONS_SHADOW === 'true' &&
+  !process.argv.includes('--self-test');
+const AUTOPILOT_DECISIONS_API_KEY = process.env.AUTOPILOT_DECISIONS_API_KEY || '';
 // A rule that throws (e.g. the Vibe issue create failed) drops its event into a
 // retry queue instead of being lost. Each poll re-attempts due items with
 // exponential backoff up to RETRY_MAX_ATTEMPTS; after that the item is marked
@@ -1337,6 +1342,66 @@ async function restoreInterruptedRoutineRuns() {
   }
 }
 
+function observeAutopilotShadow(routine, event) {
+  if (!AUTOPILOT_DECISIONS_SHADOW) return;
+  const claim = state.routineClaims[event.routineIdempotencyKey];
+  if (!claim || claim.autopilotShadow) return;
+  const startedAt = new Date().toISOString();
+  const run = state.routineRuns.find(
+    (item) => item.idempotencyKey === event.routineIdempotencyKey
+  );
+  claim.autopilotShadow = {
+    mode: 'shadow',
+    status: 'pending',
+    started_at: startedAt,
+  };
+  if (run) run.autopilotShadow = claim.autopilotShadow;
+  // Persist before a paid call; pending after a crash stays unknown and is not retried.
+  void (async () => {
+    let result;
+    try {
+      await persistState(true);
+      const connector = findConnector(
+        String(routine.action.connectorId || 'vibe-default')
+      );
+      result = await evaluateAutopilotShadow({
+        event,
+        apiKey: AUTOPILOT_DECISIONS_API_KEY,
+        readHost(item, apiPath, signal) {
+          const bridge = connector.config?.hostBridges?.[item.hostId];
+          if (!bridge?.baseUrl) throw new Error('unconfigured event host');
+          return vibeApi(
+            connector,
+            'GET',
+            apiPath,
+            undefined,
+            bridge.baseUrl,
+            undefined,
+            signal
+          );
+        },
+      });
+    } catch {
+      result = {
+        mode: 'shadow',
+        status: 'fallback',
+        reason: 'observation_unavailable',
+      };
+    }
+    claim.autopilotShadow = {
+      ...result,
+      started_at: startedAt,
+      finished_at: new Date().toISOString(),
+    };
+    if (run) run.autopilotShadow = claim.autopilotShadow;
+    try {
+      await persistState();
+    } catch {
+      // Shadow persistence must never change delivery or its retry state.
+    }
+  })();
+}
+
 async function executeRoutineAction(routine, event) {
   const action = routine.action || {};
   const connector = findConnector(String(action.connectorId || 'vibe-default'));
@@ -1507,6 +1572,7 @@ async function executeRoutineAction(routine, event) {
         return { skipped: 'previous routine prompt is still queued' };
       }
     }
+    if (!explicitSessionId) observeAutopilotShadow(routine, event);
     let queuedPrompt;
     const build = async (event) => {
       const message = renderPromptTemplate(prompt, event);
@@ -5041,7 +5107,8 @@ async function vibeApi(
   path,
   payload,
   baseUrlOverride,
-  routineMeta
+  routineMeta,
+  signal
 ) {
   const config = connector.config || {};
   const baseUrl = String(baseUrlOverride || config.baseUrl || '').replace(/\/+$/, '');
@@ -5064,6 +5131,7 @@ async function vibeApi(
     const response = await fetch(`${baseUrl}${path}`, {
       method,
       headers,
+      signal,
       body: payload === undefined ? undefined : JSON.stringify(payload),
     });
     const text = await response.text();

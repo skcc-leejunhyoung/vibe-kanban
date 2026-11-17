@@ -19,6 +19,7 @@ const functions = [
   'runDueRoutines',
   'runRoutine',
   'executeRoutineAction',
+  'observeAutopilotShadow',
   'removeRoutine',
   'completeRoutineRun',
   'processRetryQueue',
@@ -58,6 +59,8 @@ function routine(input = {}) {
 function harness({
   state: restored,
   store = { queue: [], receipts: new Map() },
+  shadow = false,
+  shadowEvaluate = async () => ({ mode: 'shadow', status: 'completed', delivery: 'unchanged', results: [] }),
 } = {}) {
   const state = restored || {
     connectors: [
@@ -88,7 +91,7 @@ function harness({
     routineBuffers: {},
     eventReceipts: {},
   };
-  const h = { state, store, logs: [], calls: [], posts: 0, releases: 0 };
+  const h = { state, store, logs: [], calls: [], posts: 0, releases: 0, shadowCalls: 0 };
   const api = async (_, method, endpoint, payload, baseUrl, meta) => {
     h.calls.push({ method, endpoint, baseUrl });
     if (h.fail) throw new Error('synthetic offline');
@@ -116,6 +119,10 @@ function harness({
           },
         });
       h.posts += 1;
+      if (h.failQueueOnce) {
+        h.failQueueOnce = false;
+        throw new Error('synthetic transient queue failure');
+      }
       if (store.receipts.has(meta.idempotencyKey))
         return store.receipts.get(meta.idempotencyKey).response;
       store.queue.push({ id: randomUUID(), data: structuredClone(payload) });
@@ -146,6 +153,12 @@ function harness({
     RETRY_MAX_ATTEMPTS: 5,
     MAX_LOGS: 500,
     RULE_TIMEOUT_MS: 1000,
+    AUTOPILOT_DECISIONS_SHADOW: shadow,
+    AUTOPILOT_DECISIONS_API_KEY: 'synthetic-key',
+    evaluateAutopilotShadow: async (input) => {
+      h.shadowCalls += 1;
+      return shadowEvaluate(input);
+    },
     routineInFlight: new Set(),
     routineHostInFlight: new Set(),
     retryInFlight: new Set(),
@@ -163,6 +176,10 @@ function harness({
     findConnector: (id) => state.connectors.find((item) => item.id === id),
     log: async (level, message, meta) => h.logs.push({ level, message, meta }),
     persistState: async (strict) => {
+      if (strict && h.failNextStrictWrite) {
+        h.failNextStrictWrite = false;
+        throw new Error('synthetic observation storage failure');
+      }
       if (strict && h.failStrictWrite)
         throw new Error('synthetic storage failure');
       h.persisted = structuredClone(state);
@@ -212,6 +229,124 @@ function harness({
     ruleContext: context.createRuleContext,
   });
 }
+
+test('shadow mode is off by default and preserves the original prompt', async () => {
+  const h = harness();
+  const r = routine();
+  h.state.routines.push(r);
+  await h.run(r, { count: 3 }, 'synthetic-shadow-off');
+  assert.equal(h.shadowCalls, 0);
+  assert.equal(h.store.queue[0].data.message, 'Synthetic check 3');
+  assert.equal(h.state.routineRuns[0].autopilotShadow, undefined);
+});
+
+test('a pending shadow classification cannot delay or suppress agent delivery', async () => {
+  let finish;
+  const h = harness({
+    shadow: true,
+    shadowEvaluate: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  });
+  const r = routine();
+  h.state.routines.push(r);
+  await h.run(r, { count: 4 }, 'synthetic-shadow-pending');
+  assert.equal(h.shadowCalls, 1);
+  assert.equal(h.posts, 1);
+  assert.equal(h.store.queue[0].data.message, 'Synthetic check 4');
+  assert.equal(h.state.routineRuns[0].status, 'succeeded');
+  assert.equal(h.state.routineRuns[0].autopilotShadow.status, 'pending');
+  finish({
+    mode: 'shadow',
+    status: 'completed',
+    results: [{ route: 'routine_result' }],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.state.routineRuns[0].autopilotShadow.status, 'completed');
+  assert.equal(h.posts, 1);
+});
+
+test('shadow failures and its strict persistence failure leave delivery successful', async () => {
+  for (const storageFailure of [false, true]) {
+    const h = harness({
+      shadow: true,
+      shadowEvaluate: async () => {
+        throw new Error('Synthetic private diagnostic');
+      },
+    });
+    h.failNextStrictWrite = storageFailure;
+    const r = routine();
+    h.state.routines.push(r);
+    await h.run(r, {}, 'synthetic-shadow-error');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.posts, 1);
+    assert.equal(h.shadowCalls, storageFailure ? 0 : 1);
+    assert.equal(h.state.routineRuns[0].status, 'succeeded');
+    assert.equal(
+      h.state.routineRuns[0].autopilotShadow.reason,
+      'observation_unavailable'
+    );
+    assert.ok(
+      !JSON.stringify(h.state).includes('Synthetic private diagnostic')
+    );
+  }
+});
+
+test('a retry after restart reuses the shadow record and never calls the model again', async () => {
+  const h = harness({ shadow: true });
+  const r = routine();
+  h.state.routines.push(r);
+  h.failQueueOnce = true;
+  await h.run(r, { count: 5 }, 'synthetic-shadow-retry');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.shadowCalls, 1);
+  assert.equal(h.store.queue.length, 0);
+  const restarted = harness({
+    state: structuredClone(h.persisted),
+    store: h.store,
+    shadow: true,
+  });
+  await restarted.retry({ force: true });
+  assert.equal(restarted.shadowCalls, 0);
+  assert.equal(restarted.store.queue.length, 1);
+  assert.equal(restarted.state.routineRuns[0].status, 'succeeded');
+});
+
+test('explicit sessions bypass Autopilot shadow classification', async () => {
+  const h = harness({ shadow: true });
+  const r = routine();
+  r.action.input.sessionId = 'synthetic-explicit-session';
+  h.state.routines.push(r);
+  await h.run(r, {}, 'synthetic-explicit-shadow');
+  assert.equal(h.shadowCalls, 0);
+  assert.equal(h.posts, 1);
+});
+
+test('an unknown pending observation survives restart without re-evaluation', async () => {
+  const h = harness({
+    shadow: true,
+    shadowEvaluate: () => new Promise(() => {}),
+  });
+  const r = routine();
+  h.state.routines.push(r);
+  h.failQueueOnce = true;
+  await h.run(r, {}, 'synthetic-shadow-unknown');
+  assert.equal(h.shadowCalls, 1);
+  assert.equal(h.persisted.routineRuns[0].autopilotShadow.status, 'pending');
+  const restarted = harness({
+    state: structuredClone(h.persisted),
+    store: h.store,
+    shadow: true,
+  });
+  await restarted.retry({ force: true });
+  assert.equal(restarted.shadowCalls, 0);
+  assert.equal(restarted.posts, 1);
+  assert.equal(
+    restarted.state.routineRuns[0].autopilotShadow.status,
+    'pending'
+  );
+});
 
 test('successful one-shots are removed durably without resurrecting their occurrence', async () => {
   const h = harness();

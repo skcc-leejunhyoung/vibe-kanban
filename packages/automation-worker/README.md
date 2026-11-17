@@ -37,6 +37,49 @@ settings page rather than calling the API directly.
 | `RETRY_MAX_ATTEMPTS` | `5` | Times a failed rule run (e.g. the Vibe issue create failed) is auto-retried before being marked `exhausted`. |
 | `RETRY_BASE_DELAY_MS` | `60000` | First retry backoff; doubles each attempt. |
 | `RETRY_MAX_DELAY_MS` | `3600000` | Cap on the retry backoff. |
+| `AUTOPILOT_DECISIONS_SHADOW` | `false` | Set exactly `true` to record advisory Decisions classifications alongside Autopilot delivery. |
+| `AUTOPILOT_DECISIONS_API_KEY` | _(unset)_ | Server-only OpenAI API key for shadow classification; separate API billing applies. |
+
+### Autopilot Decisions shadow mode
+
+Shadow mode observes the existing Autopilot `send_prompt` path, including
+retries. It runs in the background: the prompt, executor, queue, notification
+handoff, and delivery result remain unchanged. Explicit-session actions bypass
+it. This release has no mode that suppresses agent calls or executes decisions.
+It is disabled by default and always disabled by `--self-test`.
+
+When enabled, the observer checks each event's configured host identity and
+reads the completed execution's normalized log tail. Only the final assistant
+message, limited to 2,000 characters, can be sent to OpenAI's
+`POST /v1/decisions` with `gpt-6-luna`. It excludes event titles, user prompts,
+tool output, identifiers, and notification claim tokens. URLs, email addresses,
+UUIDs, and common absolute paths in the assistant message are redacted;
+credential-shaped messages are skipped. Redaction is best effort: the remaining
+completion text can still contain private work. Enable this only where sending
+that text to the configured provider is appropriate. Drawer comments, cloud
+notifications, approvals, and other event types stay on the rule-only path.
+
+Each observation has a three-second deadline, at most eight eligible events,
+one API request, a 24 KiB request limit, and a 64 KiB response limit. A refusal,
+missing evidence, malformed response, unavailable host, timeout, or HTTP failure
+records a fallback candidate without affecting agent delivery. Confidence is
+advisory, not an accuracy guarantee. Full context, completion text, API keys,
+and provider error bodies are never included in the observation record.
+
+Observations are stored as `autopilotShadow` on the existing Routine run and
+claim, available through the existing status API. They include the event index,
+candidate route, source, safe reason code, elapsed time, and input token count
+when returned. A completed observation does not mean the underlying work is
+complete. A pending observation is persisted before a paid call; retries and
+restarts do not re-evaluate that claim, even when its outcome remains unknown.
+After a restart, a stale pending observation is unmeasured, not a successful
+classification. Observation storage failure also preserves delivery.
+
+The Docker Compose automation service passes both environment variables through
+from its environment file. Configure the key locally on the server; do not put
+it in a Routine, prompt, source file, or browser. Activating shadow mode requires
+restarting the worker with those settings. Tests use synthetic data and mocked
+API responses, without provider calls.
 
 ## Retry Queue
 

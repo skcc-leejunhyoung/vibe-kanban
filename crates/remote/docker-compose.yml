@@ -180,6 +180,8 @@ services:
       # Required: the worker refuses to start without a token (rules run as
       # trusted code, so the token is the gate). Set ADMIN_TOKEN in .env.remote.
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      AUTOPILOT_DECISIONS_SHADOW: ${AUTOPILOT_DECISIONS_SHADOW:-false}
+      AUTOPILOT_DECISIONS_API_KEY: ${AUTOPILOT_DECISIONS_API_KEY:-}
     ports:
       - "${AUTOMATION_WORKER_PORTS:-127.0.0.1:8787:8787}"
     restart: unless-stopped
