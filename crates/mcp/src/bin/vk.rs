@@ -2530,6 +2530,47 @@ const COMMANDS: &[Cmd] = &[
     )),
     // ---- drawer -------------------------------------------------------------
     cmd(
+        &["drawer", "artifacts", "get"],
+        "Read a stored Drawer document and its current version",
+        "GET",
+        "/drawer-artifacts/{id}",
+        &[
+            pos("id", "Dashboard UUID", Where::Path),
+            keyed(
+                req("note", "Owning note UUID", Where::Query, Kind::Str),
+                "note_id",
+            ),
+        ],
+    ),
+    cmd(
+        &["drawer", "artifacts", "move"],
+        "Move a dashboard on the same host without changing its HTML, publishers or live data; interrupted moves resume automatically",
+        "POST",
+        "/drawer-artifacts/{id}/move",
+        &[
+            pos("id", "Dashboard UUID", Where::Path),
+            keyed(
+                req(
+                    "from-note",
+                    "Current owning note UUID",
+                    Where::Body,
+                    Kind::Str,
+                ),
+                "note_id",
+            ),
+            keyed(
+                req("to-note", "Destination note UUID", Where::Body, Kind::Str),
+                "target_note_id",
+            ),
+            req(
+                "version",
+                "Current document version from GET /api/drawer-artifacts/{id}?note_id=<from-note>",
+                Where::Body,
+                Kind::Str,
+            ),
+        ],
+    ),
+    cmd(
         &["drawer", "artifacts", "attach"],
         "Store a read-only automation dashboard independently of its source workspace",
         "POST",

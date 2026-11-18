@@ -50,6 +50,41 @@ pub fn router() -> Router<AppState> {
         .router()
         .merge(comment_mutation().router())
         .route("/drawer_notes/{id}/artifact-link", post(attach_artifact))
+        .route("/drawer_notes/{id}/artifact-move", post(move_artifact))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MoveArtifact {
+    host_id: Uuid,
+    target_note_id: Uuid,
+    source_body: String,
+    target_body: String,
+    source_body_after: String,
+    target_body_after: String,
+}
+
+async fn move_artifact(
+    State(pool): State<PgPool>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<MoveArtifact>,
+) -> Result<Json<MutationResponse<DrawerNote>>, ErrorResponse> {
+    if id == payload.target_note_id {
+        return Err(bad_request("Choose another Drawer note"));
+    }
+    check_note_fields(None, Some(&payload.source_body_after), None)?;
+    check_note_fields(None, Some(&payload.target_body_after), None)?;
+    check_host(&pool, &ctx, Some(payload.host_id)).await?;
+    DrawerRepository::move_artifact_links(
+        &pool, id, payload.target_note_id, ctx.user.id, payload.host_id,
+        [&payload.source_body, &payload.target_body],
+        [&payload.source_body_after, &payload.target_body_after],
+    ).await.map(Json).map_err(|error| match error {
+        sqlx::Error::RowNotFound => ErrorResponse::new(StatusCode::CONFLICT,
+            "Drawer notes changed, are archived or belong to another owner or host; move remains pending"),
+        error => write_error(error, "Drawer artifact links could not be moved"),
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -396,6 +431,136 @@ mod tests {
             body: body.to_string(),
             author: None,
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DRAWER_TEST_DATABASE_URL pointing to migrated disposable PostgreSQL"]
+    async fn artifact_move_is_atomic_owner_scoped_idempotent_and_preserves_comments() {
+        let pool = PgPool::connect(&std::env::var("DRAWER_TEST_DATABASE_URL").unwrap())
+            .await
+            .unwrap();
+        let ctx = user(&pool).await;
+        let stranger = user(&pool).await;
+        let host_id = host(&pool, ctx.user.id).await;
+        let other_host = host(&pool, stranger.user.id).await;
+        let source = DrawerRepository::create_note(&pool, ctx.user.id, note(Some(host_id)))
+            .await
+            .unwrap()
+            .data;
+        let target = DrawerRepository::create_note(&pool, ctx.user.id, note(Some(host_id)))
+            .await
+            .unwrap()
+            .data;
+        let saved_comment = DrawerRepository::create_comment(
+            &pool,
+            ctx.user.id,
+            comment(source.id, "Synthetic comment stays with source"),
+        )
+        .await
+        .unwrap()
+        .data;
+        let run = |owner, host, before: [String; 2], after: [String; 2]| {
+            let pool = pool.clone();
+            async move {
+                DrawerRepository::move_artifact_links(
+                    &pool,
+                    source.id,
+                    target.id,
+                    owner,
+                    host,
+                    [&before[0], &before[1]],
+                    [&after[0], &after[1]],
+                )
+                .await
+            }
+        };
+        let before = [source.body.clone(), target.body.clone()];
+        let after = [
+            "[Moved](/drawer?note=synthetic)".to_string(),
+            "Synthetic attachment".to_string(),
+        ];
+        for (owner, host) in [(stranger.user.id, host_id), (ctx.user.id, other_host)] {
+            assert!(
+                run(owner, host, before.clone(), after.clone())
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            run(
+                ctx.user.id,
+                host_id,
+                ["stale".into(), target.body.clone()],
+                after.clone()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            DrawerRepository::find_note(&pool, source.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .body,
+            source.body
+        );
+        assert_eq!(
+            DrawerRepository::find_note(&pool, target.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .body,
+            target.body
+        );
+        DrawerRepository::update_note(
+            &pool,
+            target.id,
+            UpdateDrawerNoteRequest {
+                archived: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            run(ctx.user.id, host_id, before.clone(), after.clone())
+                .await
+                .is_err()
+        );
+        DrawerRepository::update_note(
+            &pool,
+            target.id,
+            UpdateDrawerNoteRequest {
+                archived: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let moved = run(ctx.user.id, host_id, before.clone(), after.clone())
+            .await
+            .unwrap();
+        assert_eq!(moved.data.body, after[1]);
+        let retry = run(ctx.user.id, host_id, before, after.clone())
+            .await
+            .unwrap();
+        assert_eq!(retry.data.updated_at, moved.data.updated_at);
+        assert_eq!(
+            DrawerRepository::find_note(&pool, source.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .body,
+            after[0]
+        );
+        let preserved = DrawerRepository::find_comment(&pool, saved_comment.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(preserved.note_id, source.id);
+        assert_eq!(preserved.body, saved_comment.body);
+        assert_eq!(preserved.created_at, saved_comment.created_at);
+        assert_eq!(preserved.resolved_at, saved_comment.resolved_at);
     }
 
     #[tokio::test]

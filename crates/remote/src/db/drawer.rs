@@ -68,6 +68,58 @@ const NOTE_COLUMNS: &str = "id, owner_user_id, host_id, workspace_id, session_id
 pub struct DrawerRepository;
 
 impl DrawerRepository {
+    /// Compare and update both locked bodies atomically, without touching comments.
+    pub async fn move_artifact_links(
+        pool: &PgPool,
+        source: Uuid,
+        target: Uuid,
+        owner: Uuid,
+        host: Uuid,
+        before: [&str; 2],
+        after: [&str; 2],
+    ) -> Result<MutationResponse<DrawerNote>, sqlx::Error> {
+        let mut tx = super::begin_tx(pool).await?;
+        let notes = sqlx::query_as::<_, DrawerNote>(&format!(
+            "SELECT {NOTE_COLUMNS} FROM drawer_notes WHERE id IN ($1, $2)
+             AND owner_user_id = $3 AND host_id = $4 AND archived_at IS NULL
+             ORDER BY id FOR UPDATE"
+        ))
+        .bind(source)
+        .bind(target)
+        .bind(owner)
+        .bind(host)
+        .fetch_all(&mut *tx)
+        .await?;
+        let from = notes
+            .iter()
+            .find(|note| note.id == source)
+            .ok_or(sqlx::Error::RowNotFound)?;
+        let to = notes
+            .iter()
+            .find(|note| note.id == target)
+            .ok_or(sqlx::Error::RowNotFound)?;
+        if source == target
+            || after.iter().any(|body| body.len() > 64 * 1024)
+            || !((from.body == before[0] && to.body == before[1])
+                || (from.body == after[0] && to.body == after[1]))
+        {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        for (id, body) in [(source, after[0]), (target, after[1])] {
+            sqlx::query("UPDATE drawer_notes SET body = $2, updated_at = NOW() WHERE id = $1 AND body <> $2")
+                .bind(id).bind(body).execute(&mut *tx).await?;
+        }
+        let data = sqlx::query_as::<_, DrawerNote>(&format!(
+            "SELECT {NOTE_COLUMNS} FROM drawer_notes WHERE id = $1"
+        ))
+        .bind(target)
+        .fetch_one(&mut *tx)
+        .await?;
+        let txid = get_txid(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(MutationResponse { data, txid })
+    }
+
     /// Append against the locked current body, never an earlier client snapshot.
     pub async fn attach_artifact(
         pool: &PgPool,

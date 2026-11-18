@@ -241,6 +241,18 @@ impl RemoteClient {
         .await
     }
 
+    pub async fn move_drawer_artifact_links(
+        &self,
+        source: Uuid,
+        payload: &serde_json::Value,
+    ) -> Result<api_types::MutationResponse<api_types::DrawerNote>, RemoteClientError> {
+        self.post_authed(
+            &format!("/v1/drawer_notes/{source}/artifact-move"),
+            Some(payload),
+        )
+        .await
+    }
+
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
     const TOKEN_REFRESH_LEEWAY_SECS: i64 = 20;
 

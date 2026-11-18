@@ -4,7 +4,7 @@ use axum::{
     Extension, Json, Router,
     extract::{Path, Query, State},
     http::HeaderMap,
-    routing::get,
+    routing::{get, post},
 };
 use db::models::execution_process::ExecutionProcess;
 use deployment::Deployment;
@@ -21,7 +21,6 @@ use services::services::{
     },
     remote_client::RemoteClient,
 };
-use sha2::{Digest, Sha256};
 use utils::response::ApiResponse;
 use uuid::Uuid;
 
@@ -164,10 +163,7 @@ pub async fn register(
         return Err(bad("HTML must be UTF-8 and at most 2 MiB"));
     }
     let config = serde_json::to_string(&request.config).map_err(bad)?;
-    let version = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&(request.note_id, &snapshots, &config)).map_err(bad)?)
-    );
+    let version = stored::document_version(request.note_id, &snapshots, &config).map_err(bad)?;
     if let Ok(existing) = stored::load(&deployment.db().pool, request.id).await {
         if existing.owner_id != owner
             || existing.host_id != host
@@ -262,6 +258,111 @@ fn registration(record: &StoredArtifact) -> serde_json::Value {
         "channel_id":record.channel_id, "attachment":format!("[Dashboard]({} \"vibe-artifact\")", record.link())})
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MoveDrawerArtifact {
+    note_id: Uuid,
+    target_note_id: Uuid,
+    version: String,
+}
+
+async fn move_artifact(
+    State(deployment): State<DeploymentImpl>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<MoveDrawerArtifact>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
+    let (client, owner, host) = owner(&deployment).await?;
+    if headers.contains_key(crate::middleware::agent_access::AGENT_HEADER)
+        && !deployment.config().read().await.agent_access.write_issues
+    {
+        return Err(ApiError::Forbidden(
+            "Drawer moves also require agent_access.write_issues".into(),
+        ));
+    }
+    let _guard = stored::LOCK.lock().await;
+    let record = stored::load(&deployment.db().pool, id)
+        .await
+        .map_err(|_| ApiError::Forbidden("Drawer artifact is unavailable".into()))?;
+    if record.owner_id != owner || record.host_id != host {
+        return Err(ApiError::Forbidden(
+            "Wrong Drawer artifact owner or host".into(),
+        ));
+    }
+    if record.deleted || !record.attached {
+        return Err(ApiError::Conflict(
+            "Drawer artifact is no longer available".into(),
+        ));
+    }
+    if let Some(pending) = stored::pending_move(&deployment.db().pool, id)
+        .await
+        .map_err(bad)?
+    {
+        if pending.source != request.note_id
+            || pending.target != request.target_note_id
+            || pending.version != request.version
+        {
+            return Err(ApiError::Conflict(
+                "Another Drawer move is pending; retry the original request".into(),
+            ));
+        }
+    } else {
+        if let Some(completed) = stored::completed_move(&deployment.db().pool, id)
+            .await
+            .map_err(bad)?
+            && completed.source == request.note_id
+            && completed.target == request.target_note_id
+            && completed.version == request.version
+            && record.note_id == request.target_note_id
+        {
+            client.ensure_account().await?;
+            return Ok(Json(ApiResponse::success(registration(&record))));
+        }
+        if record.note_id != request.note_id || record.version != request.version {
+            return Err(ApiError::Conflict(
+                "Drawer document changed; reload before moving".into(),
+            ));
+        }
+        let source = client
+            .drawer_note(request.note_id)
+            .await?
+            .ok_or_else(|| bad("Source Drawer note is unavailable"))?;
+        let target = client
+            .drawer_note(request.target_note_id)
+            .await?
+            .ok_or_else(|| bad("Target Drawer note is unavailable"))?;
+        let binding: ArtifactAutomationBinding = super::automation::artifact_channel(
+            &record.channel_id,
+            "describe",
+            json!({"scope":record.scope(deployment.user_id())}),
+        )
+        .await?;
+        if binding.version != record.binding_version {
+            return Err(ApiError::Conflict(
+                "Artifact channel changed; reconcile its binding before moving".into(),
+            ));
+        }
+        client.ensure_account().await?;
+        stored::prepare_move(
+            &deployment.db().pool,
+            &record,
+            &source,
+            &target,
+            deployment.user_id(),
+        )
+        .await
+        .map_err(bad)?;
+    }
+    let record = stored::resume_move(&deployment.db().pool, &client, id).await
+        .map_err(|error| {
+            tracing::warn!(%error, "Drawer artifact move pending");
+            ApiError::Conflict("Drawer move is pending; recovery retries every 15 seconds. Retry the same request to inspect completion".into())
+        })?;
+    CHECKED.invalidate(&(id, owner)).await;
+    client.ensure_account().await?;
+    Ok(Json(ApiResponse::success(registration(&record))))
+}
+
 /// Dashboards poll every 2 s; a cloud check covers them for this long and the
 /// 15 s sync still reconciles, so open viewers add no cloud reads.
 static CHECKED: LazyLock<Cache<(Uuid, Uuid), ()>> = LazyLock::new(|| {
@@ -285,6 +386,13 @@ async fn recently_checked(
         return None;
     }
     let record = stored::load(&deployment.db().pool, id).await.ok()?;
+    if stored::pending_move(&deployment.db().pool, id)
+        .await
+        .ok()?
+        .is_some()
+    {
+        return None;
+    }
     (record.owner_id == owner && record.note_id == note_id && record.attached && !record.deleted)
         .then(|| (client.for_account(owner), record))
 }
@@ -306,6 +414,13 @@ async fn checked(
         return Err(ApiError::Forbidden(
             "Wrong Drawer artifact owner, note or host".into(),
         ));
+    }
+    if stored::pending_move(&deployment.db().pool, id)
+        .await
+        .map_err(bad)?
+        .is_some()
+    {
+        return Err(ApiError::Conflict("Drawer artifact move is pending".into()));
     }
     let note = client.drawer_note(record.note_id).await?;
     client.ensure_account().await?;
@@ -371,4 +486,5 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/drawer-artifacts/{id}", get(document))
         .route("/drawer-artifacts/{id}/snapshot", get(snapshot))
+        .route("/drawer-artifacts/{id}/move", post(move_artifact))
 }

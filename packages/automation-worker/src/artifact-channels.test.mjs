@@ -824,6 +824,71 @@ test("Drawer dashboards survive workspace cleanup, pause, resume and delete by o
   await assert.rejects(restored.configure(config), /scope ended/);
 });
 
+test("Drawer move preserves data and publishers, fences old bindings and retries after restart", async () => {
+  const t = await setup();
+  const drawer = { kind: "drawer", owner_id: scope.owner_id,
+    owner_host: scope.owner_host, note_id: randomUUID(), artifact_id: randomUUID() };
+  const config = { ...t.config, id: "moving-dashboard", scope: drawer, actions: {} };
+  await t.channels.configure(config);
+  await t.channels.publish("publisher", config.id, { count: 7 });
+  const binding = await t.channels.describe(config.id, drawer);
+  const original = structuredClone(t.state.artifactChannels[config.id]);
+  const move = { scope: drawer, target_note_id: randomUUID(),
+    operation_id: randomUUID(), version: binding.version };
+  for (const key of ["owner_id", "owner_host", "artifact_id", "note_id"]) {
+    await assert.rejects(t.channels.moveDrawer(config.id,
+      { ...move, scope: { ...drawer, [key]: randomUUID() } }), /scope/);
+  }
+  await assert.rejects(t.channels.moveDrawer(config.id,
+    { ...move, version: "stale" }), /changed/);
+  const moved = await t.channels.moveDrawer(config.id, move);
+  assert.notEqual(moved.version, binding.version);
+  const after = t.state.artifactChannels[config.id];
+  assert.deepEqual({ ...after, scope: original.scope, drawer_move: undefined },
+    { ...original, drawer_move: undefined });
+  assert.deepEqual(t.saved().artifactChannels[config.id], after);
+  const restarted = createArtifactChannels({ state: structuredClone(t.saved()),
+    persist: async () => {}, runRule: t.execute });
+  assert.deepEqual(await restarted.moveDrawer(config.id, move), moved);
+  assert.deepEqual(await restarted.moveDrawer(config.id, {
+    ...move, scope: Object.fromEntries(Object.entries(drawer).reverse()),
+  }), moved);
+  await assert.rejects(restarted.moveDrawer(config.id,
+    { ...move, target_note_id: randomUUID() }), /Conflicting/);
+  await assert.rejects(restarted.describe(config.id, drawer), /scope/);
+  const destination = { ...drawer, note_id: move.target_note_id };
+  await assert.rejects(restarted.snapshot(config.id, destination,
+    binding.version, drawer.artifact_id), /changed/);
+  await restarted.publish("publisher", config.id, { count: 8 });
+  const snapshot = await restarted.snapshot(config.id, destination,
+    moved.version, drawer.artifact_id);
+  assert.deepEqual(snapshot.data, { count: 8 });
+  assert.equal(snapshot.revision, original.revision + 1);
+  const returned = await restarted.moveDrawer(config.id, {
+    scope: destination, target_note_id: drawer.note_id,
+    operation_id: randomUUID(), version: moved.version,
+  });
+  assert.notEqual(returned.version, binding.version);
+  await assert.rejects(restarted.moveDrawer(config.id, move), /changed/);
+  assert.equal(t.calls(), 0);
+});
+
+test("Drawer move rolls back scope when persistence fails", async () => {
+  const t = await setup();
+  const drawer = { kind: "drawer", owner_id: scope.owner_id,
+    owner_host: scope.owner_host, note_id: randomUUID(), artifact_id: randomUUID() };
+  const config = { ...t.config, id: "moving-dashboard", scope: drawer, actions: {} };
+  await t.channels.configure(config);
+  const binding = await t.channels.describe(config.id, drawer);
+  const before = structuredClone(t.state.artifactChannels[config.id]);
+  t.fail();
+  await assert.rejects(t.channels.moveDrawer(config.id, { scope: drawer,
+    version: binding.version, target_note_id: randomUUID(), operation_id: randomUUID() }), /disk/);
+  assert.deepEqual({ ...t.state.artifactChannels[config.id], drawer_move: undefined },
+    { ...before, drawer_move: undefined });
+  assert.deepEqual(await t.channels.describe(config.id, drawer), binding);
+});
+
 test("Drawer lifecycle rejects malformed events, isolates hosts and rolls back failed persistence", async () => {
   const t = await setup();
   const artifact = randomUUID();

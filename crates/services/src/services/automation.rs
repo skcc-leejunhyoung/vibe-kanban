@@ -152,7 +152,7 @@ async fn drain_to(pool: &SqlitePool, url: &str, token: &str, host_id: &str) {
     }
 }
 
-fn endpoint() -> Option<(String, String)> {
+pub(super) fn endpoint() -> Option<(String, String)> {
     let url = std::env::var("AUTOMATION_WORKER_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
     let token = std::env::var("AUTOMATION_WORKER_TOKEN")

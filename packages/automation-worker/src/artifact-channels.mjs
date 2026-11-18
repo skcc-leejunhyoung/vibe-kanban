@@ -225,6 +225,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
         channel.publishers,
         channel.actions,
         Object.values(channel.actions).map((action) => ruleFor(action.rule_id)),
+        ...(channel.drawer_move ? [channel.drawer_move.operation_id] : []),
       ]),
       data_schema: channel.data_schema,
       actions,
@@ -258,6 +259,48 @@ export function createArtifactChannels({ state, persist, runRule }) {
         )
           fail("Artifact scope ended; configure a new channel", 409);
         return structuredClone(result.binding);
+      });
+    },
+    async moveDrawer(id, input) {
+      return locked(async () => {
+        if (
+          !name(id) || !own(state.artifactChannels, id) ||
+          input?.scope?.kind !== "drawer" ||
+          !uuid(input.target_note_id) || !uuid(input.operation_id) ||
+          typeof input.version !== "string"
+        ) fail("Invalid Drawer move");
+        const channel = state.artifactChannels[id];
+        const move = {
+          operation_id: input.operation_id,
+          scope: input.scope,
+          version: input.version,
+          target_note_id: input.target_note_id,
+        };
+        if (channel.drawer_move?.operation_id === input.operation_id) {
+          if (!sameScope(channel.drawer_move.scope, input.scope) ||
+              channel.drawer_move.version !== input.version ||
+              channel.drawer_move.target_note_id !== input.target_note_id)
+            fail("Conflicting Drawer move", 409);
+          return structuredClone(describe(channel));
+        }
+        if (channel.scope.kind !== "drawer" || !sameScope(channel.scope, input.scope))
+          fail("Wrong artifact channel scope", 403);
+        if (describe(channel).version !== input.version)
+          fail("Artifact channel changed; reload before moving", 409);
+        const ended = state.artifactScopeEpochs[lifecycleKey(
+          "drawer", channel.scope.owner_host, channel.scope.artifact_id,
+        )];
+        if (ended?.deleted) fail("Drawer artifact scope ended", 409);
+        const previous = { scope: channel.scope, drawer_move: channel.drawer_move };
+        channel.scope = { ...channel.scope, note_id: input.target_note_id };
+        channel.drawer_move = structuredClone(move);
+        try {
+          await persist();
+        } catch (error) {
+          Object.assign(channel, previous);
+          throw error;
+        }
+        return structuredClone(describe(channel));
       });
     },
     async cleanupScope(input) {

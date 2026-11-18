@@ -378,6 +378,23 @@ async fn proxy(
         url.push('?');
         url.push_str(q);
     }
+    // Only the Drawer route may move scopes, after checking both cloud notes.
+    let parsed = match reqwest::Url::parse(&url) {
+        Ok(url) => url,
+        Err(error) => return bad_gateway(error),
+    };
+    if parsed.path().starts_with("/api/artifact-channels/")
+        && parsed
+            .path()
+            .trim_end_matches('/')
+            .ends_with("/move-drawer")
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            "Use the checked Drawer artifact move endpoint",
+        )
+            .into_response();
+    }
 
     let mut request = client().request(method, &url);
     if let Some(token) = worker_token() {
@@ -417,4 +434,33 @@ fn bad_gateway(err: impl std::fmt::Display) -> Response {
         format!("automation worker unavailable: {err}"),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod drawer_move_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn generic_proxy_cannot_bypass_drawer_ownership_checks() {
+        for tail in [
+            "artifact-channels/synthetic/move-drawer",
+            "artifact-channels/synthetic/move-drawer/",
+            "artifact-channels//synthetic//move-drawer//",
+            "artifact-channels/synthetic/extra/../move-drawer",
+            "artifact-channels/synthetic/extra/%2e%2e/move-drawer",
+        ] {
+            assert_eq!(
+                proxy(
+                    Method::POST,
+                    Path(tail.into()),
+                    RawQuery(None),
+                    HeaderMap::new(),
+                    Bytes::new()
+                )
+                .await
+                .status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+    }
 }
