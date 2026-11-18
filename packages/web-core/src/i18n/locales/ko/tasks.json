@@ -1,4 +1,12 @@
 {
+  "prBase": {
+    "title": "{{repoName}}의 PR base",
+    "description": "PR head(올릴 소스): {{head}}. 이번 실행에서 받을 base를 선택하세요. 저장소 기본값은 변경하지 않습니다.",
+    "label": "PR base(받는 쪽)",
+    "action": "이 PR base 사용",
+    "missing": "최종 PR base가 미설정입니다. 리뷰·머지·push 전에 선택하세요.",
+    "sameBranch": "PR head와 base는 서로 달라야 합니다."
+  },
   "dropzone": {
     "dropImagesHere": "여기에 이미지를 드롭하세요",
     "supportedFormats": "PNG, JPG, GIF, WebP, SVG 지원"

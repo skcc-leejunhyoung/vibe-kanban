@@ -113,7 +113,10 @@ import { ConfirmDialog } from '@vibe/ui/components/ConfirmDialog';
 import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
 import type { TurnNavigationItem } from '@vibe/ui/components/TurnNavigationPopup';
 import { buildTurnNavigationItems } from '../model/turnNavigation';
-import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
+import {
+  runReviewAndCreatePr,
+  retryReviewAndCreatePr,
+} from '@/shared/lib/reviewAndCreatePr';
 import {
   useVibeRunStatus,
   vibeRunStatusKeys,
@@ -1809,7 +1812,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     } catch (error) {
       void ErrorDialog.show({
         title: t('conversation.review.failedTitle'),
-        message: t(reviewErrorKey(error)),
+        message:
+          error instanceof Error ? error.message : t(reviewErrorKey(error)),
       });
     } finally {
       setIsReviewing(false);
@@ -1831,7 +1835,13 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!vibeRunSessionId || isRetryingVibeRun) return;
     setIsRetryingVibeRun(true);
     try {
-      const status = await sessionsApi.vibeRetryMerge(vibeRunSessionId, hostId);
+      if (!workspaceId) return;
+      const status = await retryReviewAndCreatePr(
+        workspaceId,
+        vibeRunSessionId,
+        hostId
+      );
+      if (!status) return;
       queryClient.setQueryData(
         vibeRunStatusKeys.byWorkspace(workspaceId, hostId),
         status

@@ -1,4 +1,12 @@
 {
+  "prBase": {
+    "title": "Base del PR para {{repoName}}",
+    "description": "Head del PR (origen): {{head}}. Elige la base para esta ejecución. No cambia la configuración del repositorio.",
+    "label": "Base del PR (destino)",
+    "action": "Usar esta base",
+    "missing": "No hay una base final. Elige una antes de revisar, fusionar o publicar.",
+    "sameBranch": "Head y base deben ser diferentes."
+  },
   "dropzone": {
     "dropImagesHere": "Suelta las imágenes aquí",
     "supportedFormats": "PNG, JPG, GIF, WebP, SVG compatibles"

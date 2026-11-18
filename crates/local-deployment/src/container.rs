@@ -3051,6 +3051,17 @@ impl LocalContainerService {
         let pool = &self.db.pool;
         let workspace_id = workspace.id;
         let task_id = vibe_run.task_id;
+        if vibe_run.pr_requested
+            && let Err(reason) = services::services::vibe_pr_bases::validate(
+                pool, &self.git, workspace, vibe_run, false,
+            )
+            .await
+        {
+            VibeRun::record_merge_failure(pool, workspace_id, "blocked", &reason, None)
+                .await
+                .map_err(|e| ContainerError::Other(anyhow!(e)))?;
+            return Ok(());
+        }
         // Only a merge already in `merging` carries its wait on; an approve
         // from review or a re-approve after blocked starts a new one.
         let (wait_since, wait_attempts) = if vibe_run.phase == VibePhase::Merging.as_str() {
@@ -4707,8 +4718,20 @@ impl ContainerService for LocalContainerService {
         workspace: &Workspace,
         session: &Session,
         executor_config: Option<ExecutorConfig>,
-        create_pr: bool,
+        mut pr: Option<PrRequest>,
     ) -> Result<Session, ContainerError> {
+        if let Some(pr) = &pr {
+            services::services::vibe_pr_bases::resolve(
+                &self.db.pool,
+                &self.git,
+                workspace,
+                None,
+                Some(&pr.bases),
+                false,
+            )
+            .await
+            .map_err(|reason| ContainerError::Other(anyhow!(reason)))?;
+        }
         let Some(task_id) = workspace.task_id else {
             return Err(ContainerError::Other(anyhow!(
                 "vibe: cannot start review for a workspace with no linked issue"
@@ -4750,9 +4773,9 @@ impl ContainerService for LocalContainerService {
         // The phase moves now, not after the spawn: the caller reads it right
         // away and would otherwise see a previous run's `blocked` / `done`.
         // The PR, if asked for, is drafted by the agent the review runs with.
-        let pr = create_pr.then(|| PrRequest {
-            executor_config: Some(executor_config.clone()),
-        });
+        if let Some(pr) = pr.as_mut() {
+            pr.executor_config = Some(executor_config.clone());
+        }
         VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id, pr.as_ref())
             .await
             .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
@@ -6036,6 +6059,7 @@ done
         let repo_path = dir.path().join("repo");
         git(dir.path(), &["init", "-b", "main", "repo"]);
         git(&repo_path, &["commit", "--allow-empty", "-m", "init"]);
+        git(&repo_path, &["branch", "integration"]);
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -6082,14 +6106,35 @@ done
 
         let pr = PrRequest {
             executor_config: Some(ExecutorConfig::new(BaseCodingAgent::ClaudeCode)),
+            bases: vec![db::models::vibe_run::PrBase {
+                repo_id: repo.id,
+                base_branch: "integration".into(),
+                target_branch: "main".into(),
+            }],
         };
         VibeRun::begin_review(&pool, workspace.id, review.id, Some(&pr))
+            .await
+            .unwrap();
+        WorkspaceRepo::update_target_branch(&pool, workspace.id, repo.id, "integration")
             .await
             .unwrap();
         container
             .vibe_attempt_merge(None, &workspace, &review, &run().await, 0)
             .await
             .unwrap();
+        assert_eq!(run().await.phase, "blocked");
+        assert!(
+            run()
+                .await
+                .last_error
+                .unwrap()
+                .contains("merge target changed")
+        );
+        assert!(!merged_files().contains("a.txt"));
+        WorkspaceRepo::update_target_branch(&pool, workspace.id, repo.id, "main")
+            .await
+            .unwrap();
+        container.vibe_retry_merge(&workspace, true).await.unwrap();
 
         let merged = run().await;
         assert_eq!(merged_files(), "a.txt\n");

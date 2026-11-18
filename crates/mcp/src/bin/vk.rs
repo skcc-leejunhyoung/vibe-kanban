@@ -1004,6 +1004,15 @@ const COMMANDS: &[Cmd] = &[
                 ),
                 "create_pr",
             ),
+            keyed(
+                opt(
+                    "pr-bases",
+                    "Per-run PR bases JSON: [{\"repo_id\":\"...\",\"base_branch\":\"integration\"}]; required when the final PR base is unset",
+                    Where::Body,
+                    Kind::Json,
+                ),
+                "pr_bases",
+            ),
         ],
     ),
     cmd(
@@ -1018,7 +1027,18 @@ const COMMANDS: &[Cmd] = &[
         "Retry a blocked vibe run at the step that failed (merge, target push or PR)",
         "POST",
         "/sessions/{session}/vibe-review/retry-merge",
-        &[SESSION],
+        &[
+            SESSION,
+            keyed(
+                opt(
+                    "pr-bases",
+                    "Confirm or replace per-run PR bases JSON for every repository before resuming the failed step",
+                    Where::Body,
+                    Kind::Json,
+                ),
+                "pr_bases",
+            ),
+        ],
     ),
     cmd(
         &["session", "executions"],
@@ -5748,6 +5768,37 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vibe_pr_bases_are_json_body_inputs_on_start_and_retry() {
+        let bases = json!([{"repo_id": Uuid::nil(), "base_branch": "integration"}]);
+        let raw = bases.to_string();
+        for action in ["start", "retry-merge"] {
+            let matches = build_cli()
+                .try_get_matches_from([
+                    "vk",
+                    "session",
+                    "vibe-review",
+                    action,
+                    "example-session",
+                    "--pr-bases",
+                    &raw,
+                ])
+                .unwrap();
+            let (command, leaf) = resolve(&matches).unwrap();
+            let arg = command
+                .args
+                .iter()
+                .find(|arg| arg.name == "pr-bases")
+                .unwrap();
+            assert_eq!(arg.key, Some("pr_bases"));
+            assert!(matches!(arg.at, Where::Body));
+            assert_eq!(
+                typed_value(arg, &arg_str(leaf, "pr-bases").unwrap()).unwrap(),
+                bases
+            );
+        }
+    }
 
     #[test]
     fn cold_discovery_nested_patches_land_inside_options() {

@@ -3,7 +3,8 @@ import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { vibeRunStatusKeys } from '@/shared/hooks/useVibeRunStatus';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
-import type { ExecutorConfig, RepoBranchStatus, Session } from 'shared/types';
+import { choosePrBases, predictedPrHead } from '@/shared/lib/prBases';
+import type { ExecutorConfig, Session } from 'shared/types';
 
 export interface ReviewAndCreatePrOptions {
   workspaceId: string;
@@ -12,25 +13,6 @@ export interface ReviewAndCreatePrOptions {
   executorConfig?: ExecutorConfig | null;
   queryClient: QueryClient;
   onReviewSession?: (sessionId: string) => void;
-}
-
-/**
- * The head a repo's PR will have once the review has merged, as the server
- * picks it; `null` is the work branch itself. The work is merged into the
- * repo's target branch and the PR comes from there — unless the merge skips
- * the repo because it already has an open PR, which leaves the work branch.
- */
-export function predictedPrHead(
-  status: RepoBranchStatus | undefined,
-  targetBranch: string
-): string | null {
-  const merges = status?.merges ?? [];
-  const merged = merges.find((merge) => merge.type === 'direct');
-  if (merged?.type === 'direct') return merged.target_branch_name;
-  const hasOpenPr = merges.some(
-    (merge) => merge.type === 'pr' && merge.pr_info.status === 'open'
-  );
-  return hasOpenPr ? null : targetBranch;
 }
 
 /**
@@ -90,13 +72,16 @@ export async function runReviewAndCreatePr({
   queryClient,
   onReviewSession,
 }: ReviewAndCreatePrOptions): Promise<boolean> {
+  const bases = await choosePrBases(workspaceId, hostId);
+  if (!bases) return false;
   if (!(await confirmWorkBranchPushes(workspaceId, hostId))) return false;
 
   const reviewSession = await sessionsApi.vibeReview(
     sessionId,
     hostId,
     executorConfig,
-    true
+    true,
+    bases
   );
   // Switch at once; the list refetch catches up in the background.
   queryClient.setQueryData<Session[]>(
@@ -114,4 +99,19 @@ export async function runReviewAndCreatePr({
     queryKey: vibeRunStatusKeys.workspace(workspaceId),
   });
   return true;
+}
+
+/** Reconfirm blocked destinations without restarting the review or completed steps. */
+export async function retryReviewAndCreatePr(
+  workspaceId: string,
+  sessionId: string,
+  hostId?: string | null
+) {
+  const run = await sessionsApi.getVibeReviewStatus(sessionId, hostId);
+  if (!run.pr_requested) return sessionsApi.vibeRetryMerge(sessionId, hostId);
+  const bases = await choosePrBases(workspaceId, hostId, {
+    afterMerge: !!run.failed_phase,
+    saved: run.pr_bases,
+  });
+  return bases ? sessionsApi.vibeRetryMerge(sessionId, hostId, bases) : null;
 }

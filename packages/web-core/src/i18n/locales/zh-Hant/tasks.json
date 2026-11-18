@@ -1,4 +1,12 @@
 {
+  "prBase": {
+    "title": "{{repoName}} 的 PR base",
+    "description": "PR head（來源）：{{head}}。請選擇本次執行的接收分支。不會變更儲存庫預設值。",
+    "label": "PR base（目標）",
+    "action": "使用此 PR base",
+    "missing": "尚未設定最終 PR base。請在審查、合併或推送前選擇。",
+    "sameBranch": "PR head 與 base 必須不同。"
+  },
   "dropzone": {
     "dropImagesHere": "將圖片拖放到這裡",
     "supportedFormats": "支援 PNG、JPG、GIF、WebP、SVG 格式"

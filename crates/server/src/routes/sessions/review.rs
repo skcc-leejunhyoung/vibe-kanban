@@ -6,7 +6,7 @@ use db::models::{
     coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessRunReason},
     session::Session,
-    vibe_run::{VibeRun, VibeRunError},
+    vibe_run::{PrBase, PrBaseSelection, PrRequest, VibeRun, VibeRunError},
     workspace::{Workspace, WorkspaceError},
     workspace_repo::WorkspaceRepo,
 };
@@ -22,6 +22,7 @@ use executors::{
 use serde::{Deserialize, Serialize};
 use services::services::{
     config::AgentAccessConfig, container::ContainerService, vibe_orchestrator::PR_FOLLOW_UP,
+    vibe_pr_bases,
 };
 use ts_rs::TS;
 use utils::response::ApiResponse;
@@ -51,6 +52,16 @@ pub struct VibeReviewRequest {
     /// after this request depends on the caller staying connected.
     #[serde(default)]
     pub create_pr: bool,
+    #[serde(default)]
+    #[ts(optional)]
+    pub pr_bases: Option<Vec<PrBaseSelection>>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, TS)]
+pub struct VibeRetryRequest {
+    #[serde(default)]
+    #[ts(optional)]
+    pub pr_bases: Option<Vec<PrBaseSelection>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -79,6 +90,8 @@ pub struct VibeReviewStatus {
     /// `pushing` or `creating_pr` when that step blocked the run: a retry
     /// resumes there without reviewing or merging again.
     pub failed_phase: Option<String>,
+    #[ts(optional)]
+    pub pr_bases: Option<Vec<PrBase>>,
     /// When the run last changed (entered its phase).
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -92,6 +105,7 @@ impl From<Option<VibeRun>> for VibeReviewStatus {
                 merge_retry_at: None,
                 pr_requested: false,
                 failed_phase: None,
+                pr_bases: None,
                 updated_at: None,
             };
         };
@@ -101,6 +115,7 @@ impl From<Option<VibeRun>> for VibeReviewStatus {
             merge_retry_at: run.merge_retry_at,
             pr_requested: run.pr_requested,
             failed_phase: run.failed_phase,
+            pr_bases: run.pr_bases.map(|bases| bases.0),
             updated_at: Some(run.updated_at),
         }
     }
@@ -143,8 +158,51 @@ pub async fn vibe_retry_merge(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
     headers: axum::http::HeaderMap,
+    payload: Option<Json<VibeRetryRequest>>,
 ) -> Result<ResponseJson<ApiResponse<VibeReviewStatus, ReviewError>>, ApiError> {
     let pool = &deployment.db().pool;
+    let request = payload.map(|Json(request)| request).unwrap_or_default();
+    let run = VibeRun::find_by_workspace_id(pool, session.workspace_id)
+        .await
+        .map_err(vibe_run_error)?;
+    if let Some(run) = run
+        .as_ref()
+        .filter(|run| run.pr_requested && can_retry_merge(run))
+    {
+        if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(
+            pool,
+            session.workspace_id,
+        )
+        .await?
+        {
+            return Ok(ResponseJson(ApiResponse::error_with_data(
+                ReviewError::ProcessAlreadyRunning,
+            )));
+        }
+        let workspace = Workspace::find_by_id(pool, session.workspace_id)
+            .await?
+            .ok_or_else(|| ApiError::BadRequest("Workspace not found".into()))?;
+        let bases = vibe_pr_bases::resolve(
+            pool,
+            deployment.git(),
+            &workspace,
+            request.pr_bases.as_deref(),
+            if request.pr_bases.is_some() {
+                None
+            } else {
+                run.pr_bases.as_ref().map(|b| b.0.as_slice())
+            },
+            run.failed_phase.is_some(),
+        )
+        .await
+        .map_err(ApiError::BadRequest)?;
+        if is_agent_request(&headers) {
+            require_create_pr_access(&deployment).await?;
+        }
+        VibeRun::confirm_pr_bases(pool, workspace.id, &bases)
+            .await
+            .map_err(vibe_run_error)?;
+    }
     // Resuming the push / PR step has the server do what `create_pr` asks
     // for, so an agent needs the same access here as to ask for it — the
     // route's own toggle only covers the merge.
@@ -378,6 +436,27 @@ pub async fn vibe_review(
         )));
     }
 
+    let pr = if request.create_pr {
+        Some(PrRequest {
+            executor_config: request.executor_config.clone(),
+            bases: vibe_pr_bases::resolve(
+                pool,
+                deployment.git(),
+                &workspace,
+                request.pr_bases.as_deref(),
+                None,
+                false,
+            )
+            .await
+            .map_err(ApiError::BadRequest)?,
+        })
+    } else {
+        if request.pr_bases.is_some() {
+            return Err(ApiError::BadRequest("pr_bases requires create_pr".into()));
+        }
+        None
+    };
+
     deployment
         .container()
         .ensure_container_exists(&workspace)
@@ -385,12 +464,7 @@ pub async fn vibe_review(
 
     let review_session = deployment
         .container()
-        .vibe_manual_start_review(
-            &workspace,
-            &session,
-            request.executor_config,
-            request.create_pr,
-        )
+        .vibe_manual_start_review(&workspace, &session, request.executor_config, pr)
         .await?;
 
     Ok(ResponseJson(ApiResponse::success(review_session)))
@@ -419,6 +493,7 @@ mod tests {
             merge_retry_at: None,
             pr_requested: false,
             pr_executor_config: None,
+            pr_bases: None,
             failed_phase: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),

@@ -3,6 +3,7 @@ use executors::profile::ExecutorConfig;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool, types::Json};
 use thiserror::Error;
+use ts_rs::TS;
 use uuid::Uuid;
 
 #[derive(Debug, Error)]
@@ -47,6 +48,7 @@ pub struct VibeRun {
     /// an executor or a policy was renamed still loads: a row that failed to
     /// decode would take every read of the run down with it.
     pub pr_executor_config: Option<Json<serde_json::Value>>,
+    pub pr_bases: Option<Json<Vec<PrBase>>>,
     /// The follow-up phase (`pushing` / `creating_pr`) a blocked run stopped
     /// in, where a retry resumes. `None` for every other block.
     pub failed_phase: Option<String>,
@@ -60,6 +62,21 @@ pub struct VibeRun {
 #[derive(Debug, Clone, Default)]
 pub struct PrRequest {
     pub executor_config: Option<ExecutorConfig>,
+    pub bases: Vec<PrBase>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct PrBaseSelection {
+    pub repo_id: Uuid,
+    pub base_branch: String,
+}
+
+/// The final PR base and the independently confirmed local merge destination.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct PrBase {
+    pub repo_id: Uuid,
+    pub base_branch: String,
+    pub target_branch: String,
 }
 
 /// A merge waiting for its next try.
@@ -81,7 +98,7 @@ impl VibeRun {
 
     const COLUMNS: &'static str = "workspace_id, task_id, phase, review_session_id, \
          coding_turns, review_turns, merge_retries, last_result, last_error, merge_wait_since, \
-         merge_wait_attempts, merge_retry_at, pr_requested, pr_executor_config, failed_phase, \
+         merge_wait_attempts, merge_retry_at, pr_requested, pr_executor_config, pr_bases, failed_phase, \
          created_at, updated_at";
 
     /// Fetch-or-initialize the run row for a workspace. New rows start in the
@@ -190,7 +207,7 @@ impl VibeRun {
              SET phase = 'review', review_session_id = ?, review_turns = 0, \
                  last_result = NULL, last_error = NULL, merge_wait_since = NULL, \
                  merge_wait_attempts = 0, merge_retry_at = NULL, \
-                 pr_requested = ?, pr_executor_config = ?, failed_phase = NULL, \
+                 pr_requested = ?, pr_executor_config = ?, pr_bases = ?, failed_phase = NULL, \
                  updated_at = datetime('now','subsec') \
              WHERE workspace_id = ?",
         )
@@ -201,6 +218,7 @@ impl VibeRun {
                 .and_then(|config| serde_json::to_value(config).ok())
                 .map(Json),
         )
+        .bind(pr.map(|pr| Json(&pr.bases)))
         .bind(workspace_id)
         .execute(pool)
         .await?;
@@ -359,6 +377,23 @@ impl VibeRun {
         Ok(done.rows_affected() > 0)
     }
 
+    /// Only an explicit retry may replace a run's confirmed PR destinations.
+    pub async fn confirm_pr_bases(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        bases: &[PrBase],
+    ) -> Result<(), VibeRunError> {
+        sqlx::query(
+            "UPDATE vibe_runs SET pr_bases = ?, updated_at = datetime('now','subsec') \
+                     WHERE workspace_id = ? AND phase IN ('blocked', 'merging')",
+        )
+        .bind(Json(bases))
+        .bind(workspace_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
     /// Record (or clear, with `None`) the agent's latest sentinel token.
     pub async fn set_last_result(
         pool: &SqlitePool,
@@ -432,6 +467,7 @@ mod tests {
 
         let request = PrRequest {
             executor_config: Some(ExecutorConfig::new(BaseCodingAgent::ClaudeCode)),
+            bases: vec![],
         };
         let (pool, with_pr) = run_in_review(Some(&request)).await;
         VibeRun::finish_merge(&pool, with_pr).await.unwrap();

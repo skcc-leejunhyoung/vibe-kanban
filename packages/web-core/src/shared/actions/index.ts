@@ -145,7 +145,11 @@ import {
   openWorkspacesForActivePane,
   revealDestinationInPane,
 } from '@/shared/lib/openInSplitPane';
-import { runReviewAndCreatePr } from '@/shared/lib/reviewAndCreatePr';
+import {
+  runReviewAndCreatePr,
+  retryReviewAndCreatePr,
+} from '@/shared/lib/reviewAndCreatePr';
+import { choosePrBases } from '@/shared/lib/prBases';
 import { vibeRunStatusKeys } from '@/shared/hooks/useVibeRunStatus';
 import { getChatExecutorConfig } from '@/shared/lib/chatExecutorConfig';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
@@ -1075,10 +1079,12 @@ export const Actions = {
       }
       let status;
       try {
-        status = await sessionsApi.vibeRetryMerge(
+        status = await retryReviewAndCreatePr(
+          workspaceId,
           targetSessionId,
           targetHostId
         );
+        if (!status) return;
       } catch (error) {
         const data =
           error instanceof ApiError
@@ -2312,8 +2318,7 @@ export const Actions = {
 
   // Fire-and-forget variant of Create PR: generate the title/description with
   // the agent and open a draft PR against the workspace's configured target
-  // branch, all in the background. Progress shows on the git panel's repo card;
-  // completion/errors surface as popups. No dialog is opened.
+  // branch, all in the background after confirming the PR destination.
   GitCreatePRFromAI: {
     id: 'git-create-pr-from-ai',
     label: 'Create Pull Request from AI',
@@ -2322,20 +2327,23 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
-      const [workspace, repos, featureBranch] = await Promise.all([
+      const [workspace, featureBranch] = await Promise.all([
         getWorkspace(ctx.queryClient, workspaceId, ctx.currentHostId),
-        workspacesApi.getRepos(workspaceId, ctx.currentHostId),
         findMergedFeatureBranch(workspaceId, repoId, ctx.currentHostId),
       ]);
-      const repo = repos.find((r) => r.id === repoId);
 
       // Head (source): the feature branch the work branch was merged into
       // (three-branch flow) when present; otherwise null so the backend defaults
       // to the work branch.
       const headBranch = featureBranch ?? null;
 
-      // This flow opens a PR without a dialog, so warn here before it pushes a
-      // work branch that has never been pushed to origin.
+      const bases = await choosePrBases(workspaceId, ctx.currentHostId, {
+        afterMerge: true,
+        repoId,
+      });
+      if (!bases) return;
+
+      // Confirm publishing a work branch that has never been pushed.
       const proceed = await confirmUnpushedWorkBranchPush(
         workspaceId,
         repoId,
@@ -2345,11 +2353,8 @@ export const Actions = {
       );
       if (!proceed) return;
 
-      // Base (target): the workspace's configured target branch. For a feature
-      // head the target IS the head, so fall back to the repo's default base.
-      const targetBranch = featureBranch
-        ? (repo?.default_target_branch ?? repo?.target_branch ?? null)
-        : (repo?.target_branch ?? null);
+      // Use the confirmed receiving branch, independently of the PR head.
+      const targetBranch = bases[0].base_branch;
 
       usePrFromAiBackgroundStore
         .getState()

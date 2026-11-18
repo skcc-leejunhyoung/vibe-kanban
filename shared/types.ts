@@ -673,7 +673,13 @@ export type VibeReviewRequest = { executor_config: ExecutorConfig | null,
  * pushes the target branch and opens an AI-drafted draft PR. Nothing
  * after this request depends on the caller staying connected.
  */
-create_pr: boolean, };
+create_pr: boolean, pr_bases?: Array<PrBaseSelection>, };
+
+export type VibeRetryRequest = { pr_bases?: Array<PrBaseSelection>, };
+
+export type PrBaseSelection = { repo_id: string, base_branch: string, };
+
+export type PrBase = { repo_id: string, base_branch: string, target_branch: string, };
 
 export type ReviewError = { "type": "process_already_running" } | { "type": "no_linked_issue" } | { "type": "nothing_to_merge" };
 
@@ -700,7 +706,7 @@ pr_requested: boolean,
  * `pushing` or `creating_pr` when that step blocked the run: a retry
  * resumes there without reviewing or merging again.
  */
-failed_phase: string | null,
+failed_phase: string | null, pr_bases?: Array<PrBase>,
 /**
  * When the run last changed (entered its phase).
  */

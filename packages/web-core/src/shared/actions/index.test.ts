@@ -82,6 +82,14 @@ vi.mock('@/shared/lib/openInSplitPane', () => ({
 }));
 vi.mock('@/shared/lib/reviewAndCreatePr', () => ({
   runReviewAndCreatePr: vi.fn(),
+  retryReviewAndCreatePr: vi.fn(async (_workspace, session, host) =>
+    sessionsApi.vibeRetryMerge(session, host)
+  ),
+}));
+vi.mock('@/shared/lib/prBases', () => ({
+  choosePrBases: vi
+    .fn()
+    .mockResolvedValue([{ repo_id: 'repo1', base_branch: 'main' }]),
 }));
 vi.mock('@/shared/dialogs/tasks/PrDetailsDialog', () => ({
   PrDetailsDialog: { show: vi.fn() },

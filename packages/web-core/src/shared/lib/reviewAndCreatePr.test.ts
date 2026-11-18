@@ -3,7 +3,16 @@ import type { QueryClient } from '@tanstack/react-query';
 import { sessionsApi, workspacesApi } from '@/shared/lib/api';
 import { confirmUnpushedWorkBranchPush } from '@/shared/lib/unpushedWorkBranch';
 import type { ExecutorConfig, RepoBranchStatus } from 'shared/types';
-import { predictedPrHead, runReviewAndCreatePr } from './reviewAndCreatePr';
+import {
+  runReviewAndCreatePr,
+  retryReviewAndCreatePr,
+} from './reviewAndCreatePr';
+
+import { choosePrBases, predictedPrHead } from './prBases';
+vi.mock('./prBases', async (original) => ({
+  ...(await original<typeof import('./prBases')>()),
+  choosePrBases: vi.fn(),
+}));
 
 vi.mock('@/shared/lib/unpushedWorkBranch', () => ({
   confirmUnpushedWorkBranchPush: vi.fn(),
@@ -46,6 +55,9 @@ const openPr = (head: string | null) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(choosePrBases).mockResolvedValue([
+    { repo_id: 'repo-1', base_branch: 'integration' },
+  ]);
   vi.mocked(confirmUnpushedWorkBranchPush).mockResolvedValue(true);
   vi.mocked(sessionsApi.vibeReview).mockResolvedValue({
     id: 'review-session-1',
@@ -91,7 +103,8 @@ describe('runReviewAndCreatePr', () => {
       'session-1',
       'host-1',
       executorConfig,
-      true
+      true,
+      [{ repo_id: 'repo-1', base_branch: 'integration' }]
     );
     expect(onReviewSession).toHaveBeenCalledWith('review-session-1');
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
@@ -159,21 +172,30 @@ describe('runReviewAndCreatePr', () => {
     expect(asked).toBeLessThan(started);
   });
 
-  it('starts the review when the branch state cannot be read', async () => {
-    vi.mocked(workspacesApi.getBranchStatus).mockRejectedValue(
-      new Error('host unreachable')
-    );
-
+  it('refuses to start when PR destinations cannot be confirmed', async () => {
+    vi.mocked(choosePrBases).mockRejectedValue(new Error('host unreachable'));
     await expect(
       runReviewAndCreatePr({
         workspaceId: 'workspace-1',
         sessionId: 'session-1',
         queryClient,
       })
-    ).resolves.toBe(true);
-
+    ).rejects.toThrow('host unreachable');
     expect(confirmUnpushedWorkBranchPush).not.toHaveBeenCalled();
-    expect(sessionsApi.vibeReview).toHaveBeenCalled();
+    expect(sessionsApi.vibeReview).not.toHaveBeenCalled();
+  });
+
+  it('does not start anything when the base selection is cancelled', async () => {
+    vi.mocked(choosePrBases).mockResolvedValue(null);
+    expect(
+      await runReviewAndCreatePr({
+        workspaceId: 'workspace-1',
+        sessionId: 'session-1',
+        queryClient,
+      })
+    ).toBe(false);
+    expect(confirmUnpushedWorkBranchPush).not.toHaveBeenCalled();
+    expect(sessionsApi.vibeReview).not.toHaveBeenCalled();
   });
 
   it('rejects when the review cannot start, for the caller to report', async () => {
@@ -214,5 +236,43 @@ describe('predictedPrHead', () => {
   it('ignores a PR that is closed or merged', () => {
     const merged = { ...openPr('feature'), pr_info: { status: 'merged' } };
     expect(predictedPrHead(repoStatus([merged]), 'feature')).toBe('feature');
+  });
+});
+
+describe('retryReviewAndCreatePr', () => {
+  it('reconfirms a blocked PR and resumes only the server step', async () => {
+    const saved = [
+      {
+        repo_id: 'repo-1',
+        base_branch: 'integration',
+        target_branch: 'feature',
+      },
+    ];
+    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
+      pr_requested: true,
+      failed_phase: 'creating_pr',
+      pr_bases: saved,
+    } as never);
+    await retryReviewAndCreatePr('workspace-1', 'session-1', 'host-1');
+    expect(choosePrBases).toHaveBeenCalledWith('workspace-1', 'host-1', {
+      afterMerge: true,
+      saved,
+    });
+    expect(sessionsApi.vibeRetryMerge).toHaveBeenCalledWith(
+      'session-1',
+      'host-1',
+      [{ repo_id: 'repo-1', base_branch: 'integration' }]
+    );
+    expect(sessionsApi.vibeReview).not.toHaveBeenCalled();
+    expect(workspacesApi.pushTargetBranch).not.toHaveBeenCalled();
+  });
+  it('leaves a blocked run untouched when base selection is cancelled', async () => {
+    vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
+      pr_requested: true,
+      failed_phase: 'creating_pr',
+    } as never);
+    vi.mocked(choosePrBases).mockResolvedValue(null);
+    expect(await retryReviewAndCreatePr('workspace-1', 'session-1')).toBeNull();
+    expect(sessionsApi.vibeRetryMerge).not.toHaveBeenCalled();
   });
 });

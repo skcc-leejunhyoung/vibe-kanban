@@ -36,6 +36,7 @@ use services::services::{
     agent_journal,
     container::ContainerService,
     vibe_orchestrator::{PR_FOLLOW_UP, VibePhase},
+    vibe_pr_bases,
 };
 use sqlx::SqlitePool;
 use tokio::task::JoinHandle;
@@ -71,6 +72,7 @@ pub(crate) trait FollowUpSteps: Send + Sync + 'static {
     fn push_targets(
         &self,
         workspace: &Workspace,
+        run: &VibeRun,
     ) -> impl Future<Output = Result<(), String>> + Send;
 
     /// Open an AI-drafted draft PR for every repo whose head has none open yet;
@@ -210,7 +212,7 @@ async fn advance<S: FollowUpSteps>(
         agent_journal::observe_vibe_run(&run, false);
         let from = phase.as_str();
         let failure = match phase {
-            VibePhase::Pushing => match steps.push_targets(&workspace).await {
+            VibePhase::Pushing => match steps.push_targets(&workspace, &run).await {
                 Ok(()) => {
                     let next = VibePhase::CreatingPr.as_str();
                     if !VibeRun::advance_follow_up(pool, workspace_id, from, next).await? {
@@ -271,42 +273,16 @@ struct PrPlan {
     head_is_work_branch: bool,
 }
 
-/// Head and base as the "Create PR from AI" command picked them: from the
-/// branch the work was merged into (its latest direct merge) to the repo's
-/// default target branch, falling back to the workspace's target. A repo the
-/// merge skipped — it already has an open PR — has no direct merge: its PR
-/// would go from the work branch to the workspace's target.
-///
-/// Both are read here, when the PR is about to be opened, and not recorded
-/// when the review starts. Only the merge settles which branch the work landed
-/// in (a remote-only target gets a local name, the target can be changed while
-/// the review runs), and a retry after the repository's default target branch
-/// was fixed has to pick that fix up.
-fn pr_plan(
-    merges: &[Merge],
-    work_branch: &str,
-    target_branch: &str,
-    default_target_branch: Option<&str>,
-) -> PrPlan {
+/// The actual merge determines the head; only the run's confirmed base is used.
+fn pr_plan(merges: &[Merge], work_branch: &str, confirmed_base: &str) -> PrPlan {
     let merged_into = merges.iter().find_map(|merge| match merge {
         Merge::Direct(direct) => Some(direct.target_branch_name.as_str()),
         Merge::Pr(_) => None,
     });
-    match merged_into {
-        Some(feature) => PrPlan {
-            head: feature.to_string(),
-            base: default_target_branch
-                .map(str::trim)
-                .filter(|branch| !branch.is_empty())
-                .unwrap_or(target_branch)
-                .to_string(),
-            head_is_work_branch: false,
-        },
-        None => PrPlan {
-            head: work_branch.to_string(),
-            base: target_branch.to_string(),
-            head_is_work_branch: true,
-        },
+    PrPlan {
+        head: merged_into.unwrap_or(work_branch).to_string(),
+        base: confirmed_base.to_string(),
+        head_is_work_branch: merged_into.is_none(),
     }
 }
 
@@ -329,15 +305,14 @@ fn decide_pr(
     repo_name: &str,
     merges: &[Merge],
     work_branch: &str,
-    target_branch: &str,
-    default_target_branch: Option<&str>,
+    confirmed_base: &str,
     work_commits_ahead: impl FnOnce() -> Option<usize>,
 ) -> PrDecision {
-    let plan = pr_plan(merges, work_branch, target_branch, default_target_branch);
+    let plan = pr_plan(merges, work_branch, confirmed_base);
     if plan.head == plan.base {
         return PrDecision::Refuse(format!(
-            "{repo_name}: the pull request's base would be its own head branch '{}'. Set the \
-             repository's default target branch, then retry.",
+            "{repo_name}: the pull request's base would be its own head branch '{}'. Select a \
+             different PR base for this run, then retry.",
             plan.head
         ));
     }
@@ -540,9 +515,10 @@ impl Live {
 }
 
 impl FollowUpSteps for Live {
-    async fn push_targets(&self, workspace: &Workspace) -> Result<(), String> {
+    async fn push_targets(&self, workspace: &Workspace, run: &VibeRun) -> Result<(), String> {
         let deployment = &self.0;
         let pool = &deployment.db().pool;
+        vibe_pr_bases::validate(pool, deployment.git(), workspace, run, true).await?;
         let workspace_repos = WorkspaceRepo::find_by_workspace_id(pool, workspace.id)
             .await
             .map_err(db_error)?;
@@ -602,6 +578,7 @@ impl FollowUpSteps for Live {
     ) -> Result<Vec<PrOutcome>, String> {
         let deployment = &self.0;
         let pool = &deployment.db().pool;
+        let bases = vibe_pr_bases::validate(pool, deployment.git(), workspace, run, true).await?;
         let workspace_repos = WorkspaceRepo::find_by_workspace_id(pool, workspace.id)
             .await
             .map_err(db_error)?;
@@ -616,12 +593,20 @@ impl FollowUpSteps for Live {
             let merges = Merge::find_by_workspace_and_repo_id(pool, workspace.id, repo.id)
                 .await
                 .map_err(db_error)?;
+            let base = bases
+                .iter()
+                .find(|base| base.repo_id == repo.id)
+                .ok_or_else(|| {
+                    format!(
+                        "{}: PR base is not confirmed; confirm all repositories and retry",
+                        repo.name
+                    )
+                })?;
             let decision = decide_pr(
                 &repo.name,
                 &merges,
                 &workspace.branch,
-                &workspace_repo.target_branch,
-                repo.default_target_branch.as_deref(),
+                &base.base_branch,
                 || {
                     deployment
                         .git()
@@ -663,6 +648,8 @@ impl FollowUpSteps for Live {
             .await
             .map_err(|e| format!("{}: drafting the pull request failed: {e}", repo.name))?;
 
+            // Drafting can take minutes; a target changed meanwhile needs confirmation.
+            vibe_pr_bases::validate(pool, deployment.git(), workspace, run, true).await?;
             let title = generated.title.trim();
             let request = CreatePrApiRequest {
                 title: if title.is_empty() {
@@ -778,7 +765,7 @@ mod tests {
     }
 
     impl FollowUpSteps for Scripted {
-        async fn push_targets(&self, _: &Workspace) -> Result<(), String> {
+        async fn push_targets(&self, _: &Workspace, _: &VibeRun) -> Result<(), String> {
             self.note("push");
             if let Some((pool, workspace, session)) = &self.review_during_push {
                 VibeRun::begin_review(pool, *workspace, *session, None)
@@ -1151,12 +1138,10 @@ mod tests {
     }
 
     #[test]
-    fn the_pr_goes_from_the_branch_merged_into_to_the_default_target() {
-        let plan = |merges: &[Merge], default_target| {
-            pr_plan(merges, "vk/work", "feature", default_target)
-        };
+    fn the_pr_combines_the_actual_merge_head_with_the_confirmed_base() {
+        let plan = |merges: &[Merge], base| pr_plan(merges, "vk/work", base);
         assert_eq!(
-            plan(&[direct("feature")], Some("main")),
+            plan(&[direct("feature")], "main"),
             PrPlan {
                 head: "feature".into(),
                 base: "main".into(),
@@ -1165,21 +1150,15 @@ mod tests {
         );
         // The newest direct merge (they come newest first) names the head.
         assert_eq!(
-            plan(&[direct("feature-2"), direct("feature")], Some("main")).head,
+            plan(&[direct("feature-2"), direct("feature")], "main").head,
             "feature-2"
         );
-        // No default target: the base falls back to the workspace's target,
-        // which is the head itself — the caller stops on that.
-        for unset in [None, Some(""), Some("  ")] {
-            let fallback = plan(&[direct("feature")], unset);
-            assert_eq!(fallback.base, fallback.head);
-        }
         // The merge skipped the repo (it has an open PR): the work branch.
         assert_eq!(
-            plan(&[pr(Some("feature"), MergeStatus::Open)], Some("main")),
+            plan(&[pr(Some("feature"), MergeStatus::Open)], "main"),
             PrPlan {
                 head: "vk/work".into(),
-                base: "feature".into(),
+                base: "main".into(),
                 head_is_work_branch: true
             }
         );
@@ -1205,14 +1184,9 @@ mod tests {
     #[test]
     fn a_pr_already_open_for_the_head_is_not_opened_again() {
         let decide = |merges: &[Merge]| {
-            decide_pr(
-                "widgets",
-                merges,
-                "vk/work",
-                "feature",
-                Some("main"),
-                || panic!("only a work-branch head is counted"),
-            )
+            decide_pr("widgets", merges, "vk/work", "main", || {
+                panic!("only a work-branch head is counted")
+            })
         };
         // The usual run: merged into `feature`, a PR to the default target.
         assert_eq!(
@@ -1240,20 +1214,18 @@ mod tests {
 
     #[test]
     fn a_pr_that_cannot_be_opened_is_refused_with_what_to_change() {
-        // No default target branch: the base would be the head itself. This
-        // is checked first, as "Create PR from AI" does.
+        // Even after preflight, keep the final same-branch defense before drafting.
         let no_base = decide_pr(
             "widgets",
             &[direct("feature"), pr(Some("feature"), MergeStatus::Open)],
             "vk/work",
             "feature",
-            None,
             || None,
         );
         match no_base {
             PrDecision::Refuse(reason) => {
                 assert!(reason.starts_with("widgets: "), "{reason}");
-                assert!(reason.contains("default target branch"), "{reason}");
+                assert!(reason.contains("different PR base"), "{reason}");
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -1261,16 +1233,8 @@ mod tests {
         // The merge skipped the repo (its open PR has another head), so the
         // PR would come from the work branch: not when nothing is on it.
         let skipped = [pr(Some("other"), MergeStatus::Open)];
-        let from_work_branch = |ahead: Option<usize>| {
-            decide_pr(
-                "widgets",
-                &skipped,
-                "vk/work",
-                "feature",
-                Some("main"),
-                || ahead,
-            )
-        };
+        let from_work_branch =
+            |ahead: Option<usize>| decide_pr("widgets", &skipped, "vk/work", "main", || ahead);
         assert!(matches!(
             from_work_branch(Some(0)),
             PrDecision::Refuse(reason) if reason.contains("no commits")
@@ -1280,7 +1244,7 @@ mod tests {
                 from_work_branch(ahead),
                 PrDecision::Open(PrPlan {
                     head: "vk/work".into(),
-                    base: "feature".into(),
+                    base: "main".into(),
                     head_is_work_branch: true
                 })
             );

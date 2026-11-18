@@ -1,4 +1,12 @@
 {
+  "prBase": {
+    "title": "PR base for {{repoName}}",
+    "description": "PR head (source): {{head}}. Choose the receiving base for this run. Repository defaults are unchanged.",
+    "label": "PR base (destination)",
+    "action": "Use this PR base",
+    "missing": "No final PR base is configured. Choose one before review, merge or push.",
+    "sameBranch": "PR head and base must be different."
+  },
   "dropzone": {
     "dropImagesHere": "Drop images here",
     "supportedFormats": "PNG, JPG, GIF, WebP, SVG supported"

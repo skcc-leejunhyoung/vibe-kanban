@@ -35,4 +35,5 @@ pub mod session_message_indexer;
 pub mod status_note;
 pub mod subagent_transcript;
 pub mod vibe_orchestrator;
+pub mod vibe_pr_bases;
 pub mod vibe_tags;

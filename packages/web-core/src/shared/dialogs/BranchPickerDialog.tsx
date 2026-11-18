@@ -25,7 +25,8 @@ import { useHostIdPinnedWhile } from '@/shared/providers/HostIdProvider';
 export type BranchPickerMode =
   | 'select'
   | 'changeTarget'
-  | 'updateTargetFromBase';
+  | 'updateTargetFromBase'
+  | 'prBase';
 
 export interface BranchPickerDialogProps {
   repoId: string;
@@ -37,6 +38,7 @@ export interface BranchPickerDialogProps {
   /** Pre-selected branch when the dialog opens. */
   initialBranch?: string | null;
   excludeCurrentBranch?: boolean;
+  headBranch?: string;
 }
 
 /**
@@ -53,6 +55,7 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
     hostId: hostIdProp,
     initialBranch,
     excludeCurrentBranch = false,
+    headBranch,
   }) => {
     const modal = useModal();
     const openedHostId = useHostIdPinnedWhile(modal.visible);
@@ -98,30 +101,36 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
     };
 
     const title =
-      mode === 'changeTarget'
-        ? t('branches.changeTarget.dialog.title')
-        : mode === 'updateTargetFromBase'
-          ? t('branches.updateTargetFromBase.dialog.title')
-          : repoDisplayName
-            ? t('commandBar.selectBranchFor', {
-                repoName: repoDisplayName,
-                ns: 'common',
-              })
-            : t('commandBar.selectBranch', { ns: 'common' });
+      mode === 'prBase'
+        ? t('prBase.title', { repoName: repoDisplayName })
+        : mode === 'changeTarget'
+          ? t('branches.changeTarget.dialog.title')
+          : mode === 'updateTargetFromBase'
+            ? t('branches.updateTargetFromBase.dialog.title')
+            : repoDisplayName
+              ? t('commandBar.selectBranchFor', {
+                  repoName: repoDisplayName,
+                  ns: 'common',
+                })
+              : t('commandBar.selectBranch', { ns: 'common' });
 
     const description =
-      mode === 'changeTarget'
-        ? t('branches.changeTarget.dialog.description')
-        : mode === 'updateTargetFromBase'
-          ? t('branches.updateTargetFromBase.dialog.description')
-          : null;
+      mode === 'prBase'
+        ? t('prBase.description', { head: headBranch })
+        : mode === 'changeTarget'
+          ? t('branches.changeTarget.dialog.description')
+          : mode === 'updateTargetFromBase'
+            ? t('branches.updateTargetFromBase.dialog.description')
+            : null;
 
     const confirmLabel =
-      mode === 'changeTarget'
-        ? t('branches.changeTarget.dialog.action')
-        : mode === 'updateTargetFromBase'
-          ? t('branches.updateTargetFromBase.dialog.action')
-          : t('createMode.targetBranch.selectBranch', { ns: 'common' });
+      mode === 'prBase'
+        ? t('prBase.action')
+        : mode === 'changeTarget'
+          ? t('branches.changeTarget.dialog.action')
+          : mode === 'updateTargetFromBase'
+            ? t('branches.updateTargetFromBase.dialog.action')
+            : t('createMode.targetBranch.selectBranch', { ns: 'common' });
 
     return (
       <Dialog open={modal.visible} onOpenChange={handleOpenChange}>
@@ -140,7 +149,9 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
           ) : (
             <div className="space-y-2">
               <label htmlFor="branch-picker" className="text-sm font-medium">
-                {t('rebase.dialog.targetLabel')}
+                {mode === 'prBase'
+                  ? t('prBase.label')
+                  : t('rebase.dialog.targetLabel')}
               </label>
               <BranchSelector
                 branches={branches}
@@ -148,6 +159,14 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
                 onBranchSelect={setSelectedBranch}
                 excludeCurrentBranch={excludeCurrentBranch}
               />
+              {mode === 'prBase' && !initialBranch && (
+                <p className="text-sm text-low">{t('prBase.missing')}</p>
+              )}
+              {mode === 'prBase' && selectedBranch === headBranch && (
+                <p role="alert" className="text-sm text-error">
+                  {t('prBase.sameBranch')}
+                </p>
+              )}
               {isError && (
                 <p className="text-sm text-destructive">
                   {t('createMode.targetBranch.errors.loadFailed', {
@@ -169,7 +188,11 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
             <Button
               type="submit"
               onClick={() => resolveWith(selectedBranch)}
-              disabled={isLoading || !selectedBranch}
+              disabled={
+                isLoading ||
+                !selectedBranch ||
+                (mode === 'prBase' && selectedBranch === headBranch)
+              }
             >
               {confirmLabel}
             </Button>

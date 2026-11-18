@@ -23,6 +23,7 @@ use db::{
         repo::Repo,
         scratch::DraftFollowUpData,
         session::{CreateSession, Session, SessionError},
+        vibe_run::PrRequest,
         workspace::{Workspace, WorkspaceError},
         workspace_repo::WorkspaceRepo,
     },
@@ -1141,7 +1142,7 @@ pub trait ContainerService {
         workspace: &Workspace,
         session: &Session,
         executor_config: Option<ExecutorConfig>,
-        create_pr: bool,
+        pr: Option<PrRequest>,
     ) -> Result<Session, ContainerError>;
 
     /// Try the merge of a `vibe` run again: a waiting merge whose retry is due

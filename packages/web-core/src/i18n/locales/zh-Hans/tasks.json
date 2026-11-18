@@ -1,4 +1,12 @@
 {
+  "prBase": {
+    "title": "{{repoName}} 的 PR base",
+    "description": "PR head（来源）：{{head}}。请选择本次执行的接收分支。不会更改仓库默认值。",
+    "label": "PR base（目标）",
+    "action": "使用此 PR base",
+    "missing": "尚未设置最终 PR base。请在审查、合并或推送前选择。",
+    "sameBranch": "PR head 与 base 必须不同。"
+  },
   "dropzone": {
     "dropImagesHere": "将图片拖放到这里",
     "supportedFormats": "支持 PNG、JPG、GIF、WebP、SVG 格式"

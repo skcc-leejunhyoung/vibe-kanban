@@ -103,6 +103,7 @@ import {
   Workspace,
   StartReviewRequest,
   VibeReviewRequest,
+  PrBaseSelection,
   VibeReviewStatus,
   ReviewError,
   GitRemote,
@@ -588,7 +589,8 @@ export const sessionsApi = {
     sessionId: string,
     hostId?: string | null,
     executorConfig?: ExecutorConfig | null,
-    createPr = false
+    createPr = false,
+    prBases?: PrBaseSelection[]
   ): Promise<Session> => {
     const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/vibe-review`,
@@ -598,6 +600,7 @@ export const sessionsApi = {
         body: JSON.stringify({
           executor_config: executorConfig ?? null,
           create_pr: createPr,
+          pr_bases: prBases,
         } satisfies VibeReviewRequest),
       }
     );
@@ -620,12 +623,13 @@ export const sessionsApi = {
    * again. */
   vibeRetryMerge: async (
     sessionId: string,
-    hostId?: string | null
+    hostId?: string | null,
+    prBases?: PrBaseSelection[]
   ): Promise<VibeReviewStatus> => {
     const response = await makeHostAwareRequest(
       `/api/sessions/${sessionId}/vibe-review/retry-merge`,
       hostId,
-      { method: 'POST' }
+      { method: 'POST', body: JSON.stringify({ pr_bases: prBases }) }
     );
     return handleApiResponse<VibeReviewStatus, ReviewError>(response);
   },
