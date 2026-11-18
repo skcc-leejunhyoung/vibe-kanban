@@ -92,15 +92,19 @@ export async function searchGithubPrs({
         const options = {
           fetchImpl, apiBase, headers, repository, qualifier, perPage, onPr,
         };
-        const left = await searchGithubPrs({
-          ...options,
-          dateRange: { field, start, end: middle },
-        });
-        const right = await searchGithubPrs({
-          ...options,
-          dateRange: { field, start: middle + 1, end },
-        });
-        for (const pr of [...left, ...right]) prs.set(githubIssueLinkKey(pr), pr);
+        let failure;
+        for (const [from, to] of [[start, middle], [middle + 1, end]]) {
+          try {
+            const found = await searchGithubPrs({
+              ...options,
+              dateRange: { field, start: from, end: to },
+            });
+            for (const pr of found) prs.set(githubIssueLinkKey(pr), pr);
+          } catch (error) {
+            failure ??= error;
+          }
+        }
+        if (failure) throw failure;
         return [...prs.values()];
       }
       throw new Error(`Incomplete GitHub PR search for ${searchScope}`);

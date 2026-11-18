@@ -53,6 +53,29 @@ test('splits capped global searches into adjacent timestamp ranges', async () =>
   assert.ok(queries.every((q) => !q.includes('repo:')));
 });
 
+test('delivers the successful split range even if an earlier range fails', async () => {
+  const start = Date.parse('2026-01-01T00:00:00Z') / 1000;
+  const found = [];
+  const result = searchGithubPrs({
+    fetchImpl: async (input) => {
+      const q = new URL(input).searchParams.get('q');
+      if (q.endsWith('00:00:01.000Z')) return { ok: false, status: 503 };
+      if (q.includes('created:2026-01-01T00:00:02.000Z')) {
+        const item = { number: 7, repository_url: 'https://api.github.com/repos/example/app' };
+        return { ok: true, json: async () => ({ total_count: 1, items: [item] }) };
+      }
+      return { ok: true, json: async () => ({ total_count: 1001, items: [] }) };
+    },
+    apiBase: 'https://api.github.com',
+    qualifier: 'is:open involves:synthetic',
+    perPage: 100,
+    dateRange: { field: 'created', start, end: start + 3 },
+    onPr: (pr) => found.push(pr.number),
+  });
+  await assert.rejects(result, /503/);
+  assert.deepEqual(found, [7]);
+});
+
 const fixture = JSON.parse(
   await readFile(new URL('./fixtures/review-request.json', import.meta.url))
 );

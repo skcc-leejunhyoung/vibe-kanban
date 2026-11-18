@@ -40,6 +40,17 @@ function functionSource(name) {
   assert.ok(match, `Missing production function ${name}`);
   return source.slice(match.index, source.indexOf("\n}\n", match.index) + 2);
 }
+
+function connectorSettings(h) {
+  Object.assign(h.context, { githubLoginCache: new Map() });
+  vm.runInContext([
+    source.slice(source.indexOf('const RUNTIME_CONFIG_KEYS'), source.indexOf('// Deep copy of state')),
+    ...[
+      "applyConnectorPatch", "upsertConnector", "preserveGithubActivityConfig",
+      "preserveMissingRuntimeConfig", "preserveMaskedSecrets", "githubApiBase", "fetchGithubAccount",
+    ].map(functionSource),
+  ].join("\n"), h.context);
+}
 const names = [
   "processRetryQueue",
   "removeRetryItem",
@@ -1060,8 +1071,8 @@ test("automatic activities keep their cursor on incomplete global discovery", as
     return { ok: false, status: 403 };
   };
   const result = await h.context.pollGithubPrComments(h.github, fixture.login);
-  assert.equal(searchCalls, 1);
-  assert.equal(result.errors.length, 1);
+  assert.equal(searchCalls, 4);
+  assert.equal(result.errors.length, 4);
   assert.equal(result.errors[0].repository, "GitHub discovery");
   assert.equal(h.github.config.prActivityDiscovery.complete, false);
   assert.equal(h.github.config.prActivityDiscovery.cursorTs, h.github.config.prActivityDiscovery.startedAt);
@@ -1073,28 +1084,34 @@ test("retains PRs already found when a later activity search fails", async () =>
   Object.assign(h.context, await import("./github-pr-activity.mjs"));
   delete h.github.config.reviewRepositories;
   h.github.config.notifyPrComments = true;
-  let searches = 0;
-  h.context.fetch = async () => {
-    searches += 1;
-    if (searches === 2) return { ok: false, status: 503 };
-    const items = searches === 1 ? [fixture.searchItem] : [];
+  const extraPr = { ...fixture.searchItem, number: fixture.searchItem.number + 1 };
+  let firstPoll = true;
+  h.context.fetch = async (input) => {
+    const query = new URL(input).searchParams.get("q");
+    if (firstPoll && query.includes("is:closed involves:")) return { ok: false, status: 503 };
+    const items = !firstPoll || !query.includes("is:open") ? []
+      : query.includes("review-involves:") ? [extraPr] : [fixture.searchItem];
     return { ok: true, json: async () => ({ total_count: items.length, items }) };
   };
   let reads = 0;
-  h.context.githubPrComments = async () => {
-    if (++reads === 1) throw new Error("fixture comment 503");
+  h.context.githubPrComments = async (_, since, repository, number) => {
+    reads += 1;
+    if (firstPoll && number === fixture.searchItem.number) throw new Error("fixture comment 503");
     return [];
   };
   const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
   const first = await poll();
   assert.equal(first.errors.length, 2);
-  assert.equal(reads, 1);
+  assert.equal(reads, 2);
+  assert.equal(first.errors[0].state, "closed");
+  assert.equal(first.errors[0].qualifier, "involves");
   const saved = JSON.parse(JSON.stringify(h.persisted.connectors[0].config.prActivityDiscovery));
   assert.equal(saved.complete, false);
   assert.equal(saved.pendingPrs[0].number, fixture.searchItem.number);
   h.github.config.prActivityDiscovery = saved;
+  firstPoll = false;
   assert.equal((await poll()).errors.length, 0);
-  assert.equal(reads, 2);
+  assert.equal(reads, 3);
   assert.equal(h.github.config.prActivityDiscovery.complete, true);
   assert.equal(h.github.config.prActivityDiscovery.pendingPrs.length, 0);
 });
@@ -1182,9 +1199,7 @@ test("connector settings saved during a poll inherit the new receipt without rep
     subtest.after(releaseSave);
     let first = true;
     Object.assign(h.context, await import("./github-pr-activity.mjs"), {
-      pollInFlight: new Map(), connectorSaves: new Map(), githubLoginCache: new Map(),
-      SECRET_CONFIG_KEYS: ["token"], SECRET_MASK: "__stored__",
-      RUNTIME_CONFIG_KEYS: ["prActivityDiscovery", "prCommentErrors"],
+      pollInFlight: new Map(), connectorSaves: new Map(),
       fetch: async () => ({
         ok: true,
         json: async () => ({ total_count: 1, items: [fixture.searchItem] }),
@@ -1206,11 +1221,9 @@ test("connector settings saved during a poll inherit the new receipt without rep
     h.context.runPoll = async (id) => id === h.github.id
       ? h.context.pollGithubPrComments(h.context.findConnector(id), fixture.login)
       : { ok: true };
-    vm.runInContext([
-      "saveConnectorAfterPoll", "pollConnector", "withIssueSyncResult",
-      "applyConnectorPatch", "upsertConnector", "preserveGithubActivityConfig",
-      "preserveMissingRuntimeConfig", "preserveMaskedSecrets",
-    ].map(functionSource).join("\n"), h.context);
+    connectorSettings(h);
+    vm.runInContext(["saveConnectorAfterPoll", "pollConnector", "withIssueSyncResult"]
+      .map(functionSource).join("\n"), h.context);
     const id = h.github.id;
     const firstPoll = h.context.pollConnector(id, false);
     await writing;
@@ -1232,15 +1245,92 @@ test("connector settings saved during a poll inherit the new receipt without rep
     assert.equal(events.length, 1);
 
     const receipt = current.config.prActivityDiscovery;
-    h.context.applyConnectorPatch(current, { config: { ...current.config, prActivityDiscovery: null } });
+    await h.context.applyConnectorPatch(current, { config: { ...current.config, prActivityDiscovery: null } });
     assert.equal(current.config.prActivityDiscovery, null);
     h.context.githubLoginCache.set(id, fixture.login);
-    h.context.applyConnectorPatch(current, {
+    await h.context.applyConnectorPatch(current, {
       config: { ...current.config, token: "fixture-other-token", prActivityDiscovery: receipt },
     });
     assert.equal(current.config.prActivityDiscovery, undefined);
     assert.equal(h.context.githubLoginCache.has(id), false);
   });
+});
+
+test("saving stale settings preserves scoped GitHub cursors and avoids redelivery", async (t) => {
+  for (const method of ["POST", "PATCH"]) await t.test(method, async () => {
+    const h = harness();
+    connectorSettings(h);
+    const config = h.github.config;
+    config.notifyPrComments = true;
+    config.prCommentCursors = { [repository]: { cursorTs: new Date(Date.now() - 30_000).toISOString(), seenIds: [] } };
+    const stale = structuredClone(config);
+    const comment = { id: 31, url: "https://fixture.invalid/comment/31",
+      issue_url: `https://fixture.invalid/issues/${pr.number}`, user: { login: "fixture-author" } };
+    const emitted = [];
+    Object.assign(h.context, {
+      githubRelatedPrs: async () => [pr], githubPrComments: async () => [comment],
+      runRules: async (event) => emitted.push(event.raw.id),
+    });
+    const poll = () => h.context.pollGithubRepositoryPrComments(h.state.connectors[0], fixture.login, repository);
+    await poll();
+    const cursor = config.prCommentCursors[repository].cursorTs;
+    stale.intervalSeconds = 120;
+    if (method === "POST") await h.context.upsertConnector({ ...h.github, config: stale });
+    else await h.context.applyConnectorPatch(h.github, { config: stale });
+    assert.equal(h.state.connectors[0].config.intervalSeconds, 120);
+    assert.equal(h.state.connectors[0].config.prCommentCursors[repository].cursorTs, cursor);
+    await poll();
+    assert.deepEqual(emitted, [comment.id]);
+  });
+});
+
+test("token rotation keeps activity only for the verified GitHub account", async () => {
+  const h = harness();
+  connectorSettings(h);
+  const receipt = { pendingPrs: [pr], cursorTs: "2025-01-01T00:00:00Z" };
+  h.github.config.prActivityDiscovery = receipt;
+  h.github.config.prCommentCursorTs = receipt.cursorTs;
+  h.github.config.seenPrCommentIds = ["fixture"];
+  let oldTokenActive = true;
+  const tokens = [];
+  h.context.fetch = async (url, { headers }) => {
+    assert.equal(url, "https://api.github.com/user");
+    const token = headers.authorization.slice("Bearer ".length);
+    tokens.push(token);
+    if (token === "synthetic" && !oldTokenActive) return { ok: false, status: 401 };
+    const id = token === "fixture-other-account" ? 11 : 10;
+    return { ok: true, json: async () => ({ id, login: "fixture-login" }) };
+  };
+  const patchToken = (token) => h.context.applyConnectorPatch(h.github, {
+    name: "fixture settings", config: { ...h.github.config, token, githubActivityAccountId: 999 },
+  });
+  oldTokenActive = false;
+  await assert.rejects(patchToken("fixture-rotation"), /Cannot verify the previous GitHub account/);
+  assert.equal(h.github.config.token, "synthetic");
+  assert.equal(h.github.name, undefined);
+  oldTokenActive = true;
+  await patchToken("fixture-rotation");
+  assert.equal(h.github.config.prActivityDiscovery, receipt);
+  assert.equal(h.github.config.githubActivityAccountId, 10);
+  tokens.length = 0;
+  h.state.connectors.unshift({ id: "fixture-deleted" });
+  const save = h.context.upsertConnector({ ...h.github, config: { ...h.github.config, token: "fixture-next-rotation" } });
+  h.state.connectors.shift();
+  await save;
+  assert.deepEqual(tokens, ["fixture-next-rotation"]);
+  assert.deepEqual(h.state.connectors.map(({ id }) => id), [h.github.id, h.target.id]);
+  assert.equal(h.state.connectors[0].config.token, "fixture-next-rotation");
+  h.github = h.state.connectors[0];
+  assert.equal(h.github.config.prActivityDiscovery, receipt);
+  h.github.config.prActivityDiscovery = null;
+  await patchToken("fixture-scoped-rotation");
+  assert.equal(h.github.config.prActivityDiscovery, null);
+  assert.equal(h.github.config.prCommentCursorTs, receipt.cursorTs);
+  h.github.config.prActivityDiscovery = receipt;
+  await patchToken("fixture-other-account");
+  assert.equal(h.github.config.prActivityDiscovery, undefined);
+  assert.equal(h.github.config.prCommentCursorTs, undefined);
+  assert.equal(h.github.config.seenPrCommentIds, undefined);
 });
 
 test("activity searches bound historical PRs while request discovery remains cursor-independent", async () => {

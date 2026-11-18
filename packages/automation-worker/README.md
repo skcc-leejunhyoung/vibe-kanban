@@ -331,11 +331,14 @@ miss would never be re-tried.
   `prActivityDiscovery` status records the last poll, completeness and counts
   for each successfully read repository. A new connector starts at the first
   poll time. An existing connector carries forward its activity cursor, overlap
-  window and seen event IDs. A failed search still processes PRs found before
-  the error. PRs whose activity reads failed stay queued even when the next
+  window and seen event IDs. Independent queries and split windows continue
+  when one fails. PRs whose activity reads failed stay queued even when the next
   search omits them. The worker reports completion after saving the receipt.
-  Settings saves wait for the active poll and keep the latest receipt for the
-  same GitHub connection. Set `prActivityDiscovery` to `null` to reset it.
+  Settings saves wait for the active poll and keep the latest receipt and
+  repository cursors. Token rotation keeps activity when GitHub verifies the
+  same account. If a connector has saved activity but no verified account ID,
+  keep its previous token active for the first rotation. Set
+  `prActivityDiscovery` to `null` to reset automatic activity explicitly.
   An explicit repository list keeps the
   previous scoped notification behavior, including independent cursors and
   first-poll seeding per repository.

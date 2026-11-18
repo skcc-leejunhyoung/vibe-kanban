@@ -851,6 +851,13 @@ const RUNTIME_CONFIG_KEYS = [
 // that echoes the mask back is treated as "unchanged" (see preserveMaskedSecrets).
 const SECRET_CONFIG_KEYS = ['token', 'bearerToken', 'authHeaderValue'];
 const SECRET_MASK = '__stored__';
+const GITHUB_ACTIVITY_CONFIG_KEYS = [
+  'prActivityDiscovery',
+  'prCommentCursors',
+  'prCommentCursorTs',
+  'seenPrCommentIds',
+  'prCommentErrors',
+];
 
 function preserveMissingRuntimeConfig(prevConfig, nextConfig) {
   const prev = prevConfig || {};
@@ -889,6 +896,7 @@ function maskState(current) {
   for (const connector of copy.connectors || []) {
     const config = connector.config;
     if (!config) continue;
+    if (connector.type === 'github') delete config.githubActivityAccountId;
     for (const key of SECRET_CONFIG_KEYS) {
       if (config[key]) config[key] = SECRET_MASK;
     }
@@ -900,16 +908,16 @@ function sendState(res) {
   sendJson(res, 200, maskState(state));
 }
 
-function upsertConnector(connector) {
+async function upsertConnector(connector) {
   if (connector.type === 'github') githubReviewRepositories(connector.config);
-  const index = state.connectors.findIndex((item) => item.id === connector.id);
-  if (index >= 0) {
-    const previous = state.connectors[index];
+  const previous = state.connectors.find((item) => item.id === connector.id);
+  if (previous) {
     preserveMaskedSecrets(previous.config, connector.config);
-    preserveGithubActivityConfig(previous, connector);
-    state.connectors[index] = connector;
+    await preserveGithubActivityConfig(previous, connector);
+    state.connectors[state.connectors.indexOf(previous)] = connector;
   } else {
     preserveMaskedSecrets(undefined, connector.config);
+    if (connector.type === 'github') delete connector.config.githubActivityAccountId;
     state.connectors.push(connector);
   }
 }
@@ -934,10 +942,8 @@ function upsertRule(input) {
 
 // PATCH must not let clients rewrite identity/type fields: `id` and `type` key
 // the timers map and poll dispatch. Only mutable fields are accepted.
-function applyConnectorPatch(connector, patch) {
+async function applyConnectorPatch(connector, patch) {
   if (!patch || typeof patch !== 'object') throw new Error('invalid patch');
-  if ('name' in patch) connector.name = String(patch.name);
-  if ('enabled' in patch) connector.enabled = Boolean(patch.enabled);
   if ('config' in patch) {
     const next =
       patch.config && typeof patch.config === 'object' ? patch.config : {};
@@ -945,42 +951,63 @@ function applyConnectorPatch(connector, patch) {
     preserveMissingRuntimeConfig(prev, next);
     preserveMaskedSecrets(prev, next);
     if (connector.type === 'github') githubReviewRepositories(next);
-    preserveGithubActivityConfig(connector, { ...connector, config: next });
+    await preserveGithubActivityConfig(connector, { ...connector, config: next });
     connector.config = next;
   }
+  if ('name' in patch) connector.name = String(patch.name);
+  if ('enabled' in patch) connector.enabled = Boolean(patch.enabled);
 }
 
-function preserveGithubActivityConfig(previous, connector) {
+async function preserveGithubActivityConfig(previous, connector) {
   if (previous.type !== connector.type) githubLoginCache.delete(connector.id);
-  if (previous.type !== 'github' || connector.type !== 'github') return;
-  const prev = previous.config;
+  if (connector.type !== 'github') return;
   const next = connector.config;
+  delete next.githubActivityAccountId;
+  if (previous.type !== 'github') return;
+  const prev = previous.config;
+  const resetDiscovery = next.prActivityDiscovery === null;
   const source = (config) => [
-    config.token,
-    String(config.apiBase || 'https://api.github.com').replace(/\/+$/, ''),
+    githubApiBase(config),
     String(config.username || '').toLowerCase(),
     String(config.owner || '').toLowerCase(),
     String(config.repo || '').toLowerCase(),
   ];
   const nextSource = source(next);
-  if (source(prev).some((value, index) => value !== nextSource[index])) {
+  let sameSource = source(prev).every((value, index) => value === nextSource[index]);
+  let accountId = sameSource ? prev.githubActivityAccountId : undefined;
+  if (sameSource && prev.token !== next.token) {
+    const hasActivity = prev.prActivityDiscovery || prev.prCommentCursorTs ||
+      Object.keys(prev.prCommentCursors || {}).length || prev.seenPrCommentIds?.length;
+    sameSource = false;
+    accountId = undefined;
+    if (hasActivity && next.token && (prev.token || prev.githubActivityAccountId)) {
+      const account = await fetchGithubAccount(next);
+      let previousAccountId = prev.githubActivityAccountId;
+      if (!previousAccountId) {
+        try {
+          previousAccountId = (await fetchGithubAccount(prev)).id;
+        } catch (error) {
+          if (!resetDiscovery) {
+            throw new Error('Cannot verify the previous GitHub account. Keep its token active during rotation or explicitly reset PR activity.', { cause: error });
+          }
+        }
+      }
+      sameSource = account.id === previousAccountId;
+      accountId = account.id;
+    }
+  }
+  if (!sameSource || prev.token !== next.token) {
     githubLoginCache.delete(connector.id);
-    delete next.prActivityDiscovery;
-    delete next.prCommentErrors;
-    return;
   }
-  if (next.prActivityDiscovery === null) {
-    delete next.prCommentErrors;
-    return;
+  // Settings forms can hold a snapshot from before the latest poll.
+  for (const key of GITHUB_ACTIVITY_CONFIG_KEYS) {
+    if (sameSource && prev[key] !== undefined) next[key] = prev[key];
+    else delete next[key];
   }
-  const previousReceipt = prev.prActivityDiscovery;
-  const checkedAt = normalizeOptionalTimestamp(previousReceipt?.checkedAt);
-  const incomingAt = normalizeOptionalTimestamp(next.prActivityDiscovery?.checkedAt);
-  if (previousReceipt && (next.prActivityDiscovery === undefined || (
-    checkedAt && (!incomingAt || incomingAt <= checkedAt)
-  ))) {
-    next.prActivityDiscovery = previousReceipt;
-    next.prCommentErrors = prev.prCommentErrors;
+  if (accountId) next.githubActivityAccountId = accountId;
+  if (resetDiscovery) {
+    next.prActivityDiscovery = null;
+    delete next.prCommentErrors;
   }
 }
 
@@ -2202,16 +2229,16 @@ async function enqueueRoutineRetry(routine, event, idempotencyKey, error) {
   await enqueueRetry(syntheticRule, { ...redactEvent(event), routineId: routine.id, routineIdempotencyKey: idempotencyKey }, error);
 }
 
-function saveConnectorAfterPoll(id, change) {
+async function saveConnectorAfterPoll(id, change) {
   const queued = connectorSaves.get(id);
   if (!queued && !state.connectors.some((connector) => connector.id === id && connector.type === 'github')) {
-    change();
+    await change();
     return persistState();
   }
   // Keep the connector configuration stable until the poll has saved its receipt.
   const previous = queued || pollInFlight.get(id);
   const save = Promise.resolve(previous).catch(() => {}).then(async () => {
-    change();
+    await change();
     await persistState();
   }).finally(() => {
     if (connectorSaves.get(id) === save) connectorSaves.delete(id);
@@ -2405,23 +2432,30 @@ function githubHeaders(token) {
   };
 }
 
-async function githubLogin(connector) {
-  const config = connector.config || {};
-  if (config.username) return String(config.username);
-  const cached = githubLoginCache.get(connector.id);
-  if (cached) return cached;
-  const apiBase = String(config.apiBase || 'https://api.github.com').replace(
-    /\/+$/,
-    ''
-  );
-  const response = await fetch(`${apiBase}/user`, {
+function githubApiBase(config) {
+  return String(config.apiBase || 'https://api.github.com').replace(/\/+$/, '');
+}
+
+async function fetchGithubAccount(config) {
+  const response = await fetch(`${githubApiBase(config)}/user`, {
     headers: githubHeaders(config.token),
   });
   if (!response.ok) throw new Error(`GitHub /user failed: ${response.status}`);
   const body = await response.json();
-  if (!body.login) throw new Error('GitHub /user returned no login');
-  githubLoginCache.set(connector.id, body.login);
-  return body.login;
+  if (!body.login || !Number.isSafeInteger(body.id) || body.id <= 0)
+    throw new Error('GitHub /user returned no account identity');
+  return { id: body.id, login: body.login };
+}
+
+async function githubLogin(connector) {
+  const config = connector.config || {};
+  if (config.username) return String(config.username);
+  const cached = githubLoginCache.get(connector.id);
+  if (cached?.config === config) return cached.login;
+  const account = await fetchGithubAccount(config);
+  config.githubActivityAccountId = account.id;
+  githubLoginCache.set(connector.id, { config, login: account.login });
+  return account.login;
 }
 
 // REST issue payloads omit sub-issue links, so resolve parents via GraphQL.
@@ -2909,19 +2943,25 @@ async function pollGithubPrComments(connector, login) {
 }
 
 async function githubDiscoverActivityPrs(connector, login, since, pollStartedAt, onPr) {
+  const errors = [];
   const end = Math.floor(Date.parse(pollStartedAt) / 1000);
   const updated = Math.floor(Date.parse(since) / 1000);
-  for (const qualifier of [`involves:${login}`, `review-involves:${login}`]) {
+  for (const qualifier of ['involves', 'review-involves']) {
     for (const [state, field, start] of [
       ['open', 'created', 0],
       ['closed', 'updated', updated],
     ]) {
-      await githubSearchPrs(
-        connector, undefined, `is:${state} ${qualifier}`, undefined,
-        { field, start, end }, onPr
-      );
+      try {
+        await githubSearchPrs(
+          connector, undefined, `is:${state} ${qualifier}:${login}`, undefined,
+          { field, start, end }, onPr
+        );
+      } catch (error) {
+        errors.push({ repository: 'GitHub discovery', state, qualifier, error: errorMessage(error) });
+      }
     }
   }
+  return errors;
 }
 
 async function pollGithubAutomaticPrActivity(connector, login) {
@@ -2946,22 +2986,17 @@ async function pollGithubAutomaticPrActivity(connector, login) {
   const since = new Date(
     Math.max(Date.parse(runtime.startedAt), Date.parse(runtime.cursorTs) - overlapMs)
   ).toISOString();
-  const errors = [];
   const receipts = new Map();
   const retry = new Map(
     (runtime.pendingPrs || []).map((pr) => [githubIssueLinkKey(pr), pr])
   );
   let processed = 0;
-  try {
-    await githubDiscoverActivityPrs(
-      connector, login, since, pollStartedAt, ({ repository, number, html_url, title }) => {
-        const pr = { repository, number, html_url, title };
-        retry.set(githubIssueLinkKey(pr), pr);
-      }
-    );
-  } catch (error) {
-    errors.push({ repository: 'GitHub discovery', error: errorMessage(error) });
-  }
+  const errors = await githubDiscoverActivityPrs(
+    connector, login, since, pollStartedAt, ({ repository, number, html_url, title }) => {
+      const pr = { repository, number, html_url, title };
+      retry.set(githubIssueLinkKey(pr), pr);
+    }
+  );
   try {
     const batches = await mapWithConcurrency([...retry.values()], 4, async (pr) => {
       try {
