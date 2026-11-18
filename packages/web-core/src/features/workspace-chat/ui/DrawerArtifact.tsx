@@ -101,7 +101,12 @@ export function DrawerArtifact({
             hostId,
             signal
           ),
-    enabled: isLoaded && isSignedIn && !!document.data && !archived,
+    enabled:
+      isLoaded &&
+      isSignedIn &&
+      !!document.data &&
+      !document.isError &&
+      !archived,
     retry: false,
     gcTime: 0,
     refetchOnReconnect: false,
@@ -112,8 +117,8 @@ export function DrawerArtifact({
   });
   const refreshDocument = document.refetch;
   useEffect(() => {
-    if ((snapshot.error as ApiError | null)?.statusCode === 409)
-      void refreshDocument();
+    const status = (snapshot.error as ApiError | null)?.statusCode;
+    if (status === 403 || status === 409) void refreshDocument();
   }, [snapshot.error, refreshDocument]);
   useEffect(() => {
     if (archived)
