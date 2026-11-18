@@ -2875,23 +2875,37 @@ async function pollGithubAutomaticPrActivity(connector, login) {
   const previousCursor = normalizeOptionalTimestamp(
     cursors[primary]?.cursorTs || config.prCommentCursorTs
   );
-  const startedAt = previousCursor || pollStartedAt.replace(/\.\d+Z$/, '.000Z');
+  const overlapMs = 5 * 60 * 1000;
+  const startedAt = previousCursor
+    ? new Date(Date.parse(previousCursor) - overlapMs).toISOString()
+    : pollStartedAt.replace(/\.\d+Z$/, '.000Z');
   const runtime = (config.prActivityDiscovery ||= {
-    cursorTs: startedAt,
+    cursorTs: previousCursor || startedAt,
     startedAt,
     seen: {},
   });
   const since = new Date(
-    Math.max(Date.parse(runtime.startedAt), Date.parse(runtime.cursorTs) - 300_000)
+    Math.max(Date.parse(runtime.startedAt), Date.parse(runtime.cursorTs) - overlapMs)
   ).toISOString();
   const errors = [];
   const receipts = new Map();
+  const retry = new Map(
+    (runtime.pendingPrs || []).map((pr) => [githubIssueLinkKey(pr), pr])
+  );
   let processed = 0;
   try {
     const prs = await githubDiscoverActivityPrs(
       connector, login, since, pollStartedAt
     );
-    const batches = await mapWithConcurrency(prs, 4, async (pr) => {
+    for (const { repository, number, html_url, title } of prs) {
+      const pr = { repository, number, html_url, title };
+      retry.set(githubIssueLinkKey(pr), pr);
+    }
+  } catch (error) {
+    errors.push({ repository: 'GitHub discovery', error: errorMessage(error) });
+  }
+  try {
+    const batches = await mapWithConcurrency([...retry.values()], 4, async (pr) => {
       try {
         const [comments, reviews] = await Promise.all([
           githubPrComments(connector, since, pr.repository, pr.number),
@@ -2934,11 +2948,18 @@ async function pollGithubAutomaticPrActivity(connector, login) {
         const key = `${kind}:${comment.id}`;
         if (!legacy.has(key)) pending.push({ pr, comment, key, at });
       }
+      retry.delete(githubIssueLinkKey(pr));
     }
     pending.sort((a, b) => a.at.localeCompare(b.at));
     for (const { pr, comment, key, at } of pending) {
       if (runtime.seen[key]) continue;
-      await emitGithubPrActivity(connector, pr, comment);
+      try {
+        await emitGithubPrActivity(connector, pr, comment);
+      } catch (error) {
+        errors.push({ repository: pr.repository, number: pr.number, error: errorMessage(error) });
+        retry.set(githubIssueLinkKey(pr), pr);
+        continue;
+      }
       runtime.seen[key] = at;
       receipts.get(pr.repository).events += 1;
       processed += 1;
@@ -2946,9 +2967,10 @@ async function pollGithubAutomaticPrActivity(connector, login) {
   } catch (error) {
     errors.push({ repository: 'GitHub discovery', error: errorMessage(error) });
   }
+  runtime.pendingPrs = [...retry.values()];
   if (!errors.length) {
     runtime.cursorTs = pollStartedAt;
-    const overlap = new Date(Date.parse(pollStartedAt) - 5 * 60 * 1000).toISOString();
+    const overlap = new Date(Date.parse(pollStartedAt) - overlapMs).toISOString();
     runtime.seen = Object.fromEntries(
       Object.entries(runtime.seen).filter(([, at]) => at >= overlap)
     );

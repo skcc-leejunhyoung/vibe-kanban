@@ -965,6 +965,7 @@ test("automatic activity discovers current repositories, retries partial reads a
   h.github.config.notifyPrComments = true;
   const cursor = new Date(Date.now() - 30_000).toISOString();
   const stamp = new Date(Date.now() - 10_000).toISOString();
+  const lateIndexed = new Date(Date.parse(cursor) - 30_000).toISOString();
   h.github.config.prCommentCursors = {
     "example/app": { cursorTs: cursor, seenIds: [
       "https://github.com/example/app/pull/42#pullrequestreview-4:4",
@@ -984,6 +985,7 @@ test("automatic activity discovers current repositories, retries partial reads a
   });
   let unavailable = true;
   let newReview = false;
+  let retryReads = 0;
   const events = [];
   h.context.runRules = async (event) => events.push(event);
   h.context.fetch = async (input) => {
@@ -992,19 +994,22 @@ test("automatic activity discovers current repositories, retries partial reads a
       const q = url.searchParams.get("q");
       assert.ok(!q.includes("repo:"), q);
       assert.match(q, /^is:pr is:(open|closed) (review-)?involves:/);
-      const items = q.includes("is:closed") ? [] : q.includes("review-involves:")
+      const items = q.includes("is:closed") ? [] : q.includes("review-involves:") && unavailable
         ? [item(app), item(another)] : [item(app)];
       return json({ total_count: items.length, incomplete_results: false, items });
     }
     assert.match(url.pathname, /^\/repos\/(moved\/product|another\/service)\/(issues|pulls)\/42\/(comments|reviews)$/);
     if (url.pathname.includes(another)) {
+      retryReads += 1;
       if (unavailable) return { ok: false, status: 503, text: async () => "fixture" };
-      return json([]);
+      if (!url.pathname.endsWith("/reviews")) return json([]);
+      return json([{ id: 7, user: { login: "synthetic-reviewer" },
+        state: "APPROVED", submitted_at: stamp, commit_id: headA }]);
     }
     const reviewer = { login: "synthetic-reviewer" };
     if (url.pathname.endsWith("/reviews"))
       return json([4, 5, ...(newReview ? [6] : [])].map((id) => ({
-        id, user: reviewer, state: "CHANGES_REQUESTED", submitted_at: stamp,
+        id, user: reviewer, state: "CHANGES_REQUESTED", submitted_at: id === 6 ? stamp : lateIndexed,
         commit_id: headA, html_url: `${item(app).html_url}#pullrequestreview-${id}`,
       })));
     if (url.pathname.includes("/issues/"))
@@ -1021,21 +1026,29 @@ test("automatic activity discovers current repositories, retries partial reads a
   assert.equal(runtime.repositories[0].repository, app);
   assert.equal(h.github.config.prCommentErrors[0].repository, another);
   assert.deepEqual(events.map((event) => [event.repo, event.reviewState, event.raw.id]), [
-    [app, null, 5], [app, "changes_requested", 5],
+    [app, "changes_requested", 5], [app, null, 5],
   ]);
+  assert.equal(runtime.pendingPrs.length, 1);
+  assert.equal(runtime.pendingPrs[0].repository, another);
+  h.github.config.prActivityDiscovery = JSON.parse(JSON.stringify(runtime));
   unavailable = false;
   newReview = true;
-  assert.equal((await poll()).processed, 1);
-  assert.equal(events.at(-1).raw.id, 6);
-  assert.equal(runtime.complete, true);
-  assert.ok(runtime.cursorTs > cursor);
-  assert.equal(runtime.repositories.length, 2);
+  assert.equal((await poll()).processed, 2);
+  assert.deepEqual(events.slice(2).map((event) => event.raw.id).sort(), [6, 7]);
+  const recovered = h.github.config.prActivityDiscovery;
+  assert.equal(recovered.complete, true);
+  assert.ok(recovered.cursorTs > cursor);
+  assert.equal(recovered.repositories.length, 2);
+  assert.equal(recovered.pendingPrs.length, 0);
+  const readsAfterRecovery = retryReads;
   assert.equal((await poll()).processed, 0);
+  assert.equal(retryReads, readsAfterRecovery);
   assert.equal(h.store.issues.size, 0);
 });
 
 test("automatic activities keep their cursor on incomplete global discovery", async () => {
   const h = harness();
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
   delete h.github.config.reviewRepositories;
   h.github.config.notifyPrComments = true;
   let searchCalls = 0;
@@ -1048,6 +1061,7 @@ test("automatic activities keep their cursor on incomplete global discovery", as
   const result = await h.context.pollGithubPrComments(h.github, fixture.login);
   assert.equal(searchCalls, 1);
   assert.equal(result.errors.length, 1);
+  assert.equal(result.errors[0].repository, "GitHub discovery");
   assert.equal(h.github.config.prActivityDiscovery.complete, false);
   assert.equal(h.github.config.prActivityDiscovery.cursorTs, h.github.config.prActivityDiscovery.startedAt);
   assert.equal(h.github.config.prActivityDiscovery.repositories.length, 0);

@@ -330,9 +330,11 @@ miss would never be re-tried.
   searches and activity read failures retain the cursor. The
   `prActivityDiscovery` status records the last poll, completeness and counts
   for each successfully read repository. A new connector starts at the first
-  poll time. An existing connector carries forward its activity cursor and seen
-  event IDs. An explicit repository list keeps the previous scoped notification
-  behavior, including independent cursors and first-poll seeding per repository.
+  poll time. An existing connector carries forward its activity cursor, overlap
+  window and seen event IDs. PRs whose activity reads failed stay queued even
+  when the next search omits them. An explicit repository list keeps the
+  previous scoped notification behavior, including independent cursors and
+  first-poll seeding per repository.
 - `vibe_kanban`: creates Vibe Kanban issues through HTTP.
 
 The `vibe_kanban` connector posts to `{baseUrl}/v1/issues` on the **remote** API.
