@@ -43,7 +43,11 @@ const storage = { getItem: vi.fn(), setItem: vi.fn(), removeItem: vi.fn() };
 vi.stubGlobal('localStorage', storage);
 
 function repoStatus(merges: unknown[]): RepoBranchStatus {
-  return { repo_id: 'repo-1', merges } as unknown as RepoBranchStatus;
+  return {
+    repo_id: 'repo-1',
+    merges,
+    commits_ahead: 0,
+  } as unknown as RepoBranchStatus;
 }
 
 const directMerge = { type: 'direct', target_branch_name: 'feature' };
@@ -227,6 +231,15 @@ describe('predictedPrHead', () => {
     expect(
       predictedPrHead(repoStatus([openPr('feature'), directMerge]), 'renamed')
     ).toBe('feature');
+  });
+
+  it('predicts the new target when an old merge has additional work to merge', () => {
+    expect(
+      predictedPrHead(
+        { ...repoStatus([directMerge]), commits_ahead: 1 },
+        'new-feature'
+      )
+    ).toBe('new-feature');
   });
 
   it('is the work branch when an open PR makes the merge skip the repo', () => {

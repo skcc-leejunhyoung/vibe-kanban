@@ -5,7 +5,8 @@
     "label": "Base del PR (destino)",
     "action": "Usar esta base",
     "missing": "No hay una base final. Elige una antes de revisar, fusionar o publicar.",
-    "sameBranch": "Head y base deben ser diferentes."
+    "sameBranch": "Head y base deben ser diferentes.",
+    "headChanged": "El head del PR ha cambiado. Vuelve a abrir la selección de base del PR antes de continuar."
   },
   "dropzone": {
     "dropImagesHere": "Suelta las imágenes aquí",

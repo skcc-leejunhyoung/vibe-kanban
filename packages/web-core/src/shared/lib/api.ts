@@ -9,6 +9,8 @@ import {
   ResetProcessRequest,
   EditorType,
   CreatePrApiRequest,
+  PrBranchPlanRequest,
+  PrBranchPlan,
   GeneratePrDescriptionRequest,
   GeneratePrDescriptionResponse,
   PrDescriptionGenerationStatus,
@@ -1050,6 +1052,19 @@ export const workspacesApi = {
       `/api/workspaces/${workspaceId}/integration/editor/path`
     );
     return handleApiResponse<{ workspace_path: string }>(response);
+  },
+
+  getPrBranchPlan: async (
+    workspaceId: string,
+    data: PrBranchPlanRequest,
+    hostId?: string | null
+  ): Promise<PrBranchPlan> => {
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/pull-requests/plan`,
+      hostId,
+      { method: 'POST', body: JSON.stringify(data) }
+    );
+    return handleApiResponse<PrBranchPlan>(response);
   },
 
   getBranchStatus: async (

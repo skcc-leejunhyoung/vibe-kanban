@@ -802,6 +802,17 @@ impl GitCli {
         remote_url: &str,
         branch_name: &str,
     ) -> Result<bool, GitCliError> {
+        Ok(self
+            .remote_branch_oid(repo_path, remote_url, branch_name)?
+            .is_some())
+    }
+
+    pub fn remote_branch_oid(
+        &self,
+        repo_path: &Path,
+        remote_url: &str,
+        branch_name: &str,
+    ) -> Result<Option<String>, GitCliError> {
         ensure_safe_remote_url(remote_url)?;
         let envs = vec![(OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0"))];
 
@@ -813,7 +824,7 @@ impl GitCli {
         ];
 
         match self.git_with_env(repo_path, args, &envs) {
-            Ok(output) => Ok(!output.trim().is_empty()),
+            Ok(output) => Ok(output.split_whitespace().next().map(str::to_string)),
             Err(GitCliError::CommandFailed(msg)) => Err(self.classify_cli_error(msg)),
             Err(err) => Err(err),
         }

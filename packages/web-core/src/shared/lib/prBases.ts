@@ -1,3 +1,4 @@
+import i18n from '@/i18n/config';
 import { workspacesApi } from '@/shared/lib/api';
 import { BranchPickerDialog } from '@/shared/dialogs/BranchPickerDialog';
 import type { PrBase, PrBaseSelection, RepoBranchStatus } from 'shared/types';
@@ -8,27 +9,24 @@ export async function choosePrBases(
   hostId?: string | null,
   options: { afterMerge?: boolean; repoId?: string; saved?: PrBase[] } = {}
 ): Promise<PrBaseSelection[] | null> {
-  const [workspace, repos, statuses] = await Promise.all([
-    workspacesApi.get(workspaceId, hostId),
-    workspacesApi.getRepos(workspaceId, hostId),
-    workspacesApi.getBranchStatus(workspaceId, hostId),
-  ]);
+  const repos = await workspacesApi.getRepos(workspaceId, hostId);
   const bases: PrBaseSelection[] = [];
   for (const repo of repos.filter(
     (r) => !options.repoId || r.id === options.repoId
   )) {
-    const status = statuses.find((s) => s.repo_id === repo.id);
-    const merged = status?.merges.find((m) => m.type === 'direct');
-    const head = options.afterMerge
-      ? merged?.type === 'direct'
-        ? merged.target_branch_name
-        : workspace.branch
-      : (predictedPrHead(status, repo.target_branch) ?? workspace.branch);
+    const plan = await workspacesApi.getPrBranchPlan(
+      workspaceId,
+      {
+        repo_id: repo.id,
+        after_merge: !!options.afterMerge,
+        base_branch: null,
+      },
+      hostId
+    );
+    const head = plan.head_branch;
     const initial =
       options.saved?.find((b) => b.repo_id === repo.id)?.base_branch ??
-      (head === workspace.branch
-        ? repo.target_branch
-        : repo.default_target_branch);
+      plan.base_branch;
     const base = await BranchPickerDialog.show({
       repoId: repo.id,
       hostId,
@@ -38,10 +36,18 @@ export async function choosePrBases(
       initialBranch: initial,
     });
     if (!base) return null;
-    if (base === head)
-      throw new Error(
-        'PR head and base must be different. Choose another PR base.'
-      );
+    const confirmed = await workspacesApi.getPrBranchPlan(
+      workspaceId,
+      {
+        repo_id: repo.id,
+        after_merge: !!options.afterMerge,
+        base_branch: base,
+      },
+      hostId
+    );
+    if (confirmed.head_branch !== head) {
+      throw new Error(i18n.t('tasks:prBase.headChanged'));
+    }
     bases.push({ repo_id: repo.id, base_branch: base });
   }
   if (!bases.length)
@@ -60,10 +66,11 @@ export function predictedPrHead(
   targetBranch: string
 ): string | null {
   const merges = status?.merges ?? [];
-  const merged = merges.find((merge) => merge.type === 'direct');
-  if (merged?.type === 'direct') return merged.target_branch_name;
   const hasOpenPr = merges.some(
     (merge) => merge.type === 'pr' && merge.pr_info.status === 'open'
   );
+  const merged = merges.find((merge) => merge.type === 'direct');
+  if (merged?.type === 'direct' && (hasOpenPr || status?.commits_ahead === 0))
+    return merged.target_branch_name;
   return hasOpenPr ? null : targetBranch;
 }

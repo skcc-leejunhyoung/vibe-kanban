@@ -168,8 +168,14 @@ async fn block_orphaned_runs(
                 "The server made no progress in this step for {STALE_AFTER_MINUTES} minutes \
                  (it may have restarted). Retry to resume."
             );
-            if let Err(e) =
-                VibeRun::block_follow_up(pool, run.workspace_id, &run.phase, &reason).await
+            if let Err(e) = VibeRun::block_follow_up(
+                pool,
+                run.workspace_id,
+                &run.phase,
+                run.generation,
+                &reason,
+            )
+            .await
             {
                 tracing::error!(
                     "vibe: blocking stalled follow-up failed for {}: {}",
@@ -520,7 +526,18 @@ mod tests {
         assert_eq!(run(at_work).await.phase, "creating_pr");
 
         // The retry puts it back in its step; the merge is not redone.
-        assert!(VibeRun::retry_follow_up(&pool, stalled).await.unwrap());
+        assert!(
+            VibeRun::retry(
+                &pool,
+                &VibeRun::find_by_workspace_id(&pool, stalled)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                None
+            )
+            .await
+            .unwrap()
+        );
         assert_eq!(run(stalled).await.phase, "creating_pr");
     }
 

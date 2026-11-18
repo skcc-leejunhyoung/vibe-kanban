@@ -215,7 +215,9 @@ async fn advance<S: FollowUpSteps>(
             VibePhase::Pushing => match steps.push_targets(&workspace, &run).await {
                 Ok(()) => {
                     let next = VibePhase::CreatingPr.as_str();
-                    if !VibeRun::advance_follow_up(pool, workspace_id, from, next).await? {
+                    if !VibeRun::advance_follow_up(pool, workspace_id, from, run.generation, next)
+                        .await?
+                    {
                         return Ok(());
                     }
                     tracing::info!("vibe: workspace {} pushed → creating PR", workspace_id);
@@ -226,7 +228,9 @@ async fn advance<S: FollowUpSteps>(
             VibePhase::CreatingPr => match steps.create_prs(&workspace, &run).await {
                 Ok(prs) => {
                     let next = VibePhase::Done.as_str();
-                    if VibeRun::advance_follow_up(pool, workspace_id, from, next).await? {
+                    if VibeRun::advance_follow_up(pool, workspace_id, from, run.generation, next)
+                        .await?
+                    {
                         tracing::info!(
                             "vibe: workspace {} follow-up done: {:?}",
                             workspace_id,
@@ -241,7 +245,7 @@ async fn advance<S: FollowUpSteps>(
             _ => return Ok(()),
         };
         let failure = cap(&failure);
-        if VibeRun::block_follow_up(pool, workspace_id, from, &failure).await? {
+        if VibeRun::block_follow_up(pool, workspace_id, from, run.generation, &failure).await? {
             tracing::warn!(
                 "vibe: workspace {} blocked in {}: {}",
                 workspace_id,
@@ -899,7 +903,11 @@ mod tests {
         pass(&pool, &steps).await;
         assert!(steps.take_log().is_empty());
 
-        assert!(VibeRun::retry_follow_up(&pool, workspace).await.unwrap());
+        assert!(
+            VibeRun::retry(&pool, &run(&pool, workspace).await, None)
+                .await
+                .unwrap()
+        );
         let retried = run(&pool, workspace).await;
         assert_eq!(retried.phase, "pushing");
         assert!(retried.last_error.is_none() && retried.failed_phase.is_none());
@@ -913,7 +921,11 @@ mod tests {
             (Some(review_session), 2)
         );
         // Nothing is left to retry.
-        assert!(!VibeRun::retry_follow_up(&pool, workspace).await.unwrap());
+        assert!(
+            !VibeRun::retry(&pool, &run(&pool, workspace).await, None)
+                .await
+                .unwrap()
+        );
     }
 
     /// The push went through and the PR did not: the retry opens the PR and
@@ -937,7 +949,11 @@ mod tests {
         let told = format!("blocked in creating_pr: {reason}");
         assert_eq!(steps.take_log(), ["push", "pr", told.as_str()]);
 
-        assert!(VibeRun::retry_follow_up(&pool, workspace).await.unwrap());
+        assert!(
+            VibeRun::retry(&pool, &run(&pool, workspace).await, None)
+                .await
+                .unwrap()
+        );
         assert_eq!(run(&pool, workspace).await.phase, "creating_pr");
         pass(&pool, &steps).await;
 

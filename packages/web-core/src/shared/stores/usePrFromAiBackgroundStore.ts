@@ -134,18 +134,31 @@ export const usePrFromAiBackgroundStore = create<PrFromAiBackgroundState>()((
 
       try {
         const effectiveHead = opts.headBranch?.trim() || opts.workBranch;
-        // GitHub rejects head == base. For a feature head with no repo default
-        // target the callers resolve the base to the workspace target, which is
-        // the head itself; stop before spending a model response on it.
-        if (opts.targetBranch?.trim() === effectiveHead) {
-          clearStatus(workspaceId, repoId);
-          showErrorDialog(
-            i18n.t('tasks:git.prFromAi.sameHeadAndBase', {
-              branch: effectiveHead,
-            })
+        let plan = await workspacesApi.getPrBranchPlan(
+          workspaceId,
+          {
+            repo_id: repoId,
+            after_merge: true,
+            base_branch: opts.targetBranch,
+          },
+          opts.hostId
+        );
+        if (!plan.base_branch) throw new Error(i18n.t('tasks:prBase.missing'));
+        if (!opts.targetBranch) {
+          plan = await workspacesApi.getPrBranchPlan(
+            workspaceId,
+            {
+              repo_id: repoId,
+              after_merge: true,
+              base_branch: plan.base_branch,
+            },
+            opts.hostId
           );
-          return false;
         }
+        if (plan.head_branch !== effectiveHead) {
+          throw new Error(i18n.t('tasks:prBase.headChanged'));
+        }
+        const targetBranch = plan.base_branch;
 
         // A PR for this exact head is a normal business condition, not an
         // AI-generation failure. Check it before starting the detached agent so
@@ -189,7 +202,7 @@ export const usePrFromAiBackgroundStore = create<PrFromAiBackgroundState>()((
           workspaceId,
           {
             repo_id: repoId,
-            target_branch: opts.targetBranch,
+            target_branch: targetBranch,
             head_branch: opts.headBranch,
             // Null reuses the workspace's most recently used agent config.
             executor_config: null,
@@ -208,7 +221,7 @@ export const usePrFromAiBackgroundStore = create<PrFromAiBackgroundState>()((
           {
             title,
             body: generated.description || null,
-            target_branch: opts.targetBranch,
+            target_branch: targetBranch,
             head_branch: opts.headBranch,
             draft: true,
             repo_id: repoId,

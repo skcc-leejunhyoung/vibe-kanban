@@ -2597,6 +2597,26 @@ impl GitService {
         Ok(())
     }
 
+    /// PR retries need no push when the authoritative remote already has this tip.
+    pub fn push_branch_to_named_remote_if_needed(
+        &self,
+        repo_path: &Path,
+        branch_name: &str,
+        remote_name: &str,
+        no_verify: bool,
+    ) -> Result<(), GitServiceError> {
+        let remote_url = self.get_remote_url(repo_path, remote_name)?;
+        let local_oid = self.get_branch_oid(repo_path, branch_name)?;
+        if GitCli::new()
+            .remote_branch_oid(repo_path, &remote_url, branch_name)?
+            .as_deref()
+            == Some(local_oid.as_str())
+        {
+            return Ok(());
+        }
+        self.push_branch_to_named_remote(repo_path, branch_name, remote_name, false, no_verify)
+    }
+
     /// Push a local branch to a specific named remote (e.g. the repo's primary
     /// remote). Unlike [`push_to_remote`], this does not require a clean
     /// worktree: it pushes the committed branch tip regardless of uncommitted

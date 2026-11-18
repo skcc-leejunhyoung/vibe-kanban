@@ -196,7 +196,8 @@ fn toggle_for(
 ) -> Option<Toggle> {
     let parts = segments(path);
     Some(match parts.as_slice() {
-        ["workspaces", "summaries"]
+        ["workspaces", _, "pull-requests", "plan"]
+        | ["workspaces", "summaries"]
         | ["repos", "batch"]
         | ["remote", "issues", "search"]
         | ["execution-processes", _, "subagent", "transcript"] => return None,
@@ -478,6 +479,10 @@ mod tests {
     #[test]
     fn reads_are_allowed_and_writes_are_gated_by_group() {
         assert_eq!(gated(Method::GET, "/api/workspaces"), Decision::Allow);
+        assert_eq!(
+            gated(Method::POST, "/api/workspaces/example/pull-requests/plan"),
+            Decision::Allow
+        );
         assert_eq!(
             gated(Method::DELETE, "/api/workspaces/abc"),
             Decision::Gated(Toggle::DeleteWorkspaces)

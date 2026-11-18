@@ -16,22 +16,76 @@ pub fn pr_head<'a>(
     work: &'a str,
     target: &'a str,
     after_merge: bool,
+    pending_merge: bool,
 ) -> &'a str {
+    let has_open_pr = merges
+        .iter()
+        .any(|merge| matches!(merge, Merge::Pr(pr) if pr.pr_info.status == MergeStatus::Open));
+    if !after_merge && !has_open_pr && pending_merge {
+        return target;
+    }
     if let Some(feature) = merges.iter().find_map(|merge| match merge {
         Merge::Direct(direct) => Some(direct.target_branch_name.as_str()),
         _ => None,
     }) {
         return feature;
     }
-    if after_merge
-        || merges
-            .iter()
-            .any(|merge| matches!(merge, Merge::Pr(pr) if pr.pr_info.status == MergeStatus::Open))
-    {
+    if after_merge || has_open_pr {
         work
     } else {
         target
     }
+}
+
+/// Use the same skip condition as the local merge, rather than a historical head.
+pub fn expected_head(
+    git: &GitService,
+    path: &std::path::Path,
+    merges: &[Merge],
+    work: &str,
+    target: &str,
+    after_merge: bool,
+) -> Result<String, String> {
+    let has_open_pr = merges
+        .iter()
+        .any(|m| matches!(m, Merge::Pr(pr) if pr.pr_info.status == MergeStatus::Open));
+    let pending =
+        if !after_merge && !has_open_pr && merges.iter().any(|m| matches!(m, Merge::Direct(_))) {
+            git.get_branch_status(path, work, target)
+                .map_err(|e| e.to_string())?
+                .0
+                > 0
+        } else {
+            true
+        };
+    let target = git
+        .local_target_branch_name(path, target)
+        .map_err(|e| e.to_string())?;
+    Ok(pr_head(merges, work, &target, after_merge, pending).to_string())
+}
+
+/// Preserve the remote-qualified selection; only normalize for comparison.
+pub fn validate_base(
+    git: &GitService,
+    path: &std::path::Path,
+    head: &str,
+    base: &str,
+) -> Result<(), String> {
+    let canonical = git.local_target_branch_name(path, base).map_err(|e| {
+        format!("PR base '{base}' is unavailable: {e}. Select an existing PR base, then retry.")
+    })?;
+    let push_remote = git
+        .resolve_remote_for_branch(path, head)
+        .map_err(|e| e.to_string())?;
+    let base_remote = git
+        .get_remote_from_branch_name(path, base)
+        .unwrap_or_else(|_| push_remote.clone());
+    if head == canonical && push_remote.url == base_remote.url {
+        return Err(format!(
+            "PR head and base are both '{head}'. Select a different PR base (pr_bases) or fix the repository default target branch, then retry."
+        ));
+    }
+    Ok(())
 }
 
 /// An explicit selection is scoped to this run. A saved base wins over later
@@ -70,7 +124,24 @@ pub async fn resolve(
         let merges = Merge::find_by_workspace_and_repo_id(pool, workspace.id, repo.repo.id)
             .await
             .map_err(|e| e.to_string())?;
-        let head = pr_head(&merges, &workspace.branch, &target, after_merge);
+        let head = expected_head(
+            git,
+            &repo.repo.path,
+            &merges,
+            &workspace.branch,
+            &repo.target_branch,
+            after_merge,
+        )?;
+        // The follow-up pushes the merge target, so it must still name the actual head.
+        if let Some(Merge::Direct(merged)) = merges.iter().find(|m| matches!(m, Merge::Direct(_)))
+            && head == merged.target_branch_name
+            && merged.target_branch_name != target
+        {
+            return Err(format!(
+                "{}: the merge target changed after the merge. Restore the workspace target to '{}' and retry the failed step; completed review and merge steps will not repeat.",
+                repo.repo.name, merged.target_branch_name
+            ));
+        }
         let explicit = selections.and_then(|s| s.iter().find(|s| s.repo_id == repo.repo.id));
         let previous = saved.and_then(|s| s.iter().find(|s| s.repo_id == repo.repo.id));
         if selections.is_some() && explicit.is_none() {
@@ -93,14 +164,8 @@ pub async fn resolve(
             .or_else(|| if head == workspace.branch { Some(repo.target_branch.as_str()) } else { repo.repo.default_target_branch.as_deref() })
             .map(str::trim).filter(|s| !s.is_empty())
             .ok_or_else(|| format!("{}: final PR base is not configured (head: '{head}'). Set the repository default target branch or select a PR base for this run (pr_bases) before starting review.", repo.repo.name))?;
-        let canonical_base = git.local_target_branch_name(&repo.repo.path, base)
-            .map_err(|e| format!("{}: PR base '{base}' is unavailable: {e}. Select an existing PR base, then retry.", repo.repo.name))?;
-        if head == canonical_base {
-            return Err(format!(
-                "{}: PR head and base are both '{head}'. Select a different PR base (pr_bases) or fix the repository default target branch, then retry.",
-                repo.repo.name
-            ));
-        }
+        validate_base(git, &repo.repo.path, &head, base)
+            .map_err(|e| format!("{}: {e}", repo.repo.name))?;
         bases.push(PrBase {
             repo_id: repo.repo.id,
             base_branch: base.to_string(),
@@ -119,17 +184,13 @@ pub async fn validate(
 ) -> Result<Vec<PrBase>, String> {
     let saved = run.pr_bases.as_ref().ok_or_else(||
         "This run has no confirmed PR bases. Confirm a PR base for every repository, then retry the failed step (pr_bases); review and completed steps will not repeat.".to_string())?;
-    let mut bases = resolve(pool, git, workspace, None, Some(&saved.0), after_merge).await?;
-    for base in &mut bases {
-        let repo = db::models::repo::Repo::find_by_id(pool, base.repo_id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("Repository no longer exists")?;
-        base.base_branch = git
-            .local_target_branch_name(&repo.path, &base.base_branch)
-            .map_err(|e| e.to_string())?;
+    let current = VibeRun::find_by_workspace_id(pool, workspace.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if current.is_none_or(|current| current.generation != run.generation) {
+        return Err("This run was superseded. Refresh its status before retrying.".into());
     }
-    Ok(bases)
+    resolve(pool, git, workspace, None, Some(&saved.0), after_merge).await
 }
 
 #[cfg(test)]
@@ -214,6 +275,7 @@ mod tests {
             for branch in ["feature/example", "other", "vk/work"] {
                 git(&path, &["branch", branch]);
             }
+            git(&path, &["remote", "add", "origin", "."]);
             let repo = Repo::find_or_create(pool, &path, name).await.unwrap();
             WorkspaceRepo::create_many(
                 pool,
@@ -343,7 +405,7 @@ mod tests {
                 .await
                 .unwrap()[0]
                 .base_branch,
-            "integration"
+            "upstream/integration"
         );
         assert!(
             !f.git
@@ -381,7 +443,7 @@ mod tests {
         )
         .await
         .unwrap();
-        VibeRun::finish_merge(&f.pool, f.workspace.id)
+        VibeRun::finish_merge(&f.pool, f.workspace.id, run.generation)
             .await
             .unwrap();
         f.pool.close().await;
@@ -407,7 +469,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            pr_head(&merges, "vk/work", "other", true),
+            pr_head(&merges, "vk/work", "other", true, true),
             "feature/example"
         );
     }
@@ -430,16 +492,30 @@ mod tests {
                 .unwrap_err()
                 .contains("merge target changed")
         );
-        VibeRun::record_merge_failure(&f.pool, f.workspace.id, "blocked", "target changed", None)
-            .await
-            .unwrap();
+        VibeRun::record_merge_failure(
+            &f.pool,
+            f.workspace.id,
+            run.generation,
+            "blocked",
+            "target changed",
+            None,
+        )
+        .await
+        .unwrap();
         let confirmed = f
             .resolve(Some(&f.selection("integration")), None, false)
             .await
             .unwrap();
-        VibeRun::confirm_pr_bases(&f.pool, f.workspace.id, &confirmed)
-            .await
-            .unwrap();
+        VibeRun::retry(
+            &f.pool,
+            &VibeRun::find_by_workspace_id(&f.pool, f.workspace.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            Some(&confirmed),
+        )
+        .await
+        .unwrap();
         let restored = VibeRun::find_by_workspace_id(&f.pool, f.workspace.id)
             .await
             .unwrap()
@@ -451,6 +527,195 @@ mod tests {
         );
         assert!(
             validate(&f.pool, &f.git, &f.workspace, &restored, false)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prior_merge_does_not_hide_the_next_merge_destination() {
+        let f = Fixture::new().await;
+        Merge::create_direct(
+            &f.pool,
+            f.workspace.id,
+            f.repo.id,
+            "feature/example",
+            "synthetic-prior-tip",
+        )
+        .await
+        .unwrap();
+        git(&f.repo.path, &["checkout", "vk/work"]);
+        std::fs::write(f.repo.path.join("new-work.txt"), "synthetic new work").unwrap();
+        git(&f.repo.path, &["add", "new-work.txt"]);
+        git(&f.repo.path, &["commit", "-m", "More synthetic work"]);
+        WorkspaceRepo::update_target_branch(&f.pool, f.workspace.id, f.repo.id, "other")
+            .await
+            .unwrap();
+        assert!(
+            f.resolve(Some(&f.selection("other")), None, false)
+                .await
+                .unwrap_err()
+                .contains("head and base")
+        );
+        let bases = f
+            .resolve(Some(&f.selection("integration")), None, false)
+            .await
+            .unwrap();
+        assert_eq!(bases[0].target_branch, "other");
+        // The standalone route still uses the actual historical result.
+        let merges = Merge::find_by_workspace_and_repo_id(&f.pool, f.workspace.id, f.repo.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            expected_head(
+                &f.git,
+                &f.repo.path,
+                &merges,
+                &f.workspace.branch,
+                "other",
+                true
+            )
+            .unwrap(),
+            "feature/example"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_retry_cannot_publish_a_target_changed_after_the_merge() {
+        let f = Fixture::new().await;
+        let bases = f
+            .resolve(Some(&f.selection("integration")), None, false)
+            .await
+            .unwrap();
+        let run = f.start(bases).await;
+        Merge::create_direct(
+            &f.pool,
+            f.workspace.id,
+            f.repo.id,
+            "feature/example",
+            "synthetic-merge",
+        )
+        .await
+        .unwrap();
+        VibeRun::finish_merge(&f.pool, f.workspace.id, run.generation)
+            .await
+            .unwrap();
+        VibeRun::block_follow_up(
+            &f.pool,
+            f.workspace.id,
+            "pushing",
+            run.generation,
+            "synthetic failure",
+        )
+        .await
+        .unwrap();
+        let blocked = VibeRun::find_by_workspace_id(&f.pool, f.workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        WorkspaceRepo::update_target_branch(&f.pool, f.workspace.id, f.repo.id, "other")
+            .await
+            .unwrap();
+        assert!(
+            f.resolve(Some(&f.selection("integration")), None, false)
+                .await
+                .unwrap_err()
+                .contains("Restore the workspace target")
+        );
+        let error = f
+            .resolve(Some(&f.selection("integration")), None, true)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("Restore the workspace target to 'feature/example'"),
+            "{error}"
+        );
+        assert_eq!(
+            VibeRun::find_by_workspace_id(&f.pool, f.workspace.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .phase,
+            "blocked"
+        );
+        WorkspaceRepo::update_target_branch(&f.pool, f.workspace.id, f.repo.id, "feature/example")
+            .await
+            .unwrap();
+        let bases = f
+            .resolve(Some(&f.selection("integration")), None, true)
+            .await
+            .unwrap();
+        assert!(
+            VibeRun::retry(&f.pool, &blocked, Some(&bases))
+                .await
+                .unwrap()
+        );
+        let restored = VibeRun::find_by_workspace_id(&f.pool, f.workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.phase, "pushing");
+        assert_eq!(restored.review_session_id, run.review_session_id);
+        assert_eq!(
+            Merge::find_by_workspace_id(&f.pool, f.workspace.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_remote_qualified_base_retains_its_receiving_repository() {
+        let f = Fixture::new().await;
+        git(
+            &f.repo.path,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://example.invalid/fork/widgets.git",
+            ],
+        );
+        git(
+            &f.repo.path,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "https://example.invalid/central/widgets.git",
+            ],
+        );
+        git(
+            &f.repo.path,
+            &["update-ref", "refs/remotes/upstream/integration", "HEAD"],
+        );
+        let bases = f
+            .resolve(Some(&f.selection("upstream/integration")), None, false)
+            .await
+            .unwrap();
+        let run = f.start(bases.clone()).await;
+        let validated = validate(&f.pool, &f.git, &f.workspace, &run, false)
+            .await
+            .unwrap();
+        assert_eq!(validated, bases);
+        let remote = f
+            .git
+            .get_remote_from_branch_name(&f.repo.path, &validated[0].base_branch)
+            .unwrap();
+        assert_eq!(remote.name, "upstream");
+        assert_eq!(remote.url, "https://example.invalid/central/widgets.git");
+        // Equal names on different receiving repositories remain valid.
+        git(
+            &f.repo.path,
+            &[
+                "update-ref",
+                "refs/remotes/upstream/feature/example",
+                "HEAD",
+            ],
+        );
+        assert!(
+            f.resolve(Some(&f.selection("upstream/feature/example")), None, false)
                 .await
                 .is_ok()
         );
@@ -526,6 +791,7 @@ mod tests {
             &f.pool,
             f.workspace.id,
             "creating_pr",
+            run.generation,
             "legacy base missing",
         )
         .await
@@ -545,11 +811,8 @@ mod tests {
             .await
             .unwrap();
         let bases = f.resolve(None, None, true).await.unwrap();
-        VibeRun::confirm_pr_bases(&f.pool, f.workspace.id, &bases)
-            .await
-            .unwrap();
         assert!(
-            VibeRun::retry_follow_up(&f.pool, f.workspace.id)
+            VibeRun::retry(&f.pool, &blocked, Some(&bases))
                 .await
                 .unwrap()
         );

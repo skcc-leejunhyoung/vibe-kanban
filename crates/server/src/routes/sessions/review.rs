@@ -142,11 +142,8 @@ pub async fn vibe_review_status(
 /// one blocked by a failed merge. A run its review blocked was never approved.
 fn can_retry_merge(run: &VibeRun) -> bool {
     run.review_session_id.is_some()
-        && match run.phase.as_str() {
-            "merging" => true,
-            "blocked" => run.last_error.is_some(),
-            _ => false,
-        }
+        && matches!(run.phase.as_str(), "merging" | "blocked")
+        && run.last_error.is_some()
 }
 
 /// Try a `vibe` run's failed step again. A run blocked by the push or the PR
@@ -162,78 +159,15 @@ pub async fn vibe_retry_merge(
 ) -> Result<ResponseJson<ApiResponse<VibeReviewStatus, ReviewError>>, ApiError> {
     let pool = &deployment.db().pool;
     let request = payload.map(|Json(request)| request).unwrap_or_default();
-    let run = VibeRun::find_by_workspace_id(pool, session.workspace_id)
-        .await
-        .map_err(vibe_run_error)?;
-    if let Some(run) = run
-        .as_ref()
-        .filter(|run| run.pr_requested && can_retry_merge(run))
-    {
-        if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(
-            pool,
-            session.workspace_id,
-        )
-        .await?
-        {
-            return Ok(ResponseJson(ApiResponse::error_with_data(
-                ReviewError::ProcessAlreadyRunning,
-            )));
-        }
-        let workspace = Workspace::find_by_id(pool, session.workspace_id)
-            .await?
-            .ok_or_else(|| ApiError::BadRequest("Workspace not found".into()))?;
-        let bases = vibe_pr_bases::resolve(
-            pool,
-            deployment.git(),
-            &workspace,
-            request.pr_bases.as_deref(),
-            if request.pr_bases.is_some() {
-                None
-            } else {
-                run.pr_bases.as_ref().map(|b| b.0.as_slice())
-            },
-            run.failed_phase.is_some(),
-        )
-        .await
-        .map_err(ApiError::BadRequest)?;
-        if is_agent_request(&headers) {
-            require_create_pr_access(&deployment).await?;
-        }
-        VibeRun::confirm_pr_bases(pool, workspace.id, &bases)
-            .await
-            .map_err(vibe_run_error)?;
-    }
-    // Resuming the push / PR step has the server do what `create_pr` asks
-    // for, so an agent needs the same access here as to ask for it — the
-    // route's own toggle only covers the merge.
-    if is_agent_request(&headers)
-        && VibeRun::find_by_workspace_id(pool, session.workspace_id)
-            .await
-            .map_err(vibe_run_error)?
-            .is_some_and(|run| run.failed_phase.is_some())
-    {
-        require_create_pr_access(&deployment).await?;
-    }
-    // The server's follow-up takes it from here; the answer is the phase it
-    // resumes in.
-    if VibeRun::retry_follow_up(pool, session.workspace_id)
+    let Some(run) = VibeRun::find_by_workspace_id(pool, session.workspace_id)
         .await
         .map_err(vibe_run_error)?
-    {
-        PR_FOLLOW_UP.notify_one();
-        let run = VibeRun::find_by_workspace_id(pool, session.workspace_id)
-            .await
-            .map_err(vibe_run_error)?;
-        return Ok(ResponseJson(ApiResponse::success(run.into())));
-    }
-    let run = VibeRun::find_by_workspace_id(pool, session.workspace_id)
-        .await
-        .map_err(vibe_run_error)?;
-    if !run.as_ref().is_some_and(can_retry_merge) {
+        .filter(can_retry_merge)
+    else {
         return Ok(ResponseJson(ApiResponse::error_with_data(
             ReviewError::NothingToMerge,
         )));
-    }
+    };
     if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(
         pool,
         session.workspace_id,
@@ -246,14 +180,51 @@ pub async fn vibe_retry_merge(
     }
     let workspace = Workspace::find_by_id(pool, session.workspace_id)
         .await?
-        .ok_or(ApiError::Workspace(WorkspaceError::ValidationError(
-            "Workspace not found".to_string(),
-        )))?;
-
-    deployment
-        .container()
-        .vibe_retry_merge(&workspace, true)
-        .await?;
+        .ok_or_else(|| ApiError::BadRequest("Workspace not found".into()))?;
+    if is_agent_request(&headers) && (run.pr_requested || run.failed_phase.is_some()) {
+        require_create_pr_access(&deployment).await?;
+    }
+    let bases = if run.pr_requested {
+        Some(
+            vibe_pr_bases::resolve(
+                pool,
+                deployment.git(),
+                &workspace,
+                request.pr_bases.as_deref(),
+                if request.pr_bases.is_some() {
+                    None
+                } else {
+                    run.pr_bases.as_ref().map(|b| b.0.as_slice())
+                },
+                run.failed_phase.is_some(),
+            )
+            .await
+            .map_err(ApiError::BadRequest)?,
+        )
+    } else {
+        if request.pr_bases.is_some() {
+            return Err(ApiError::BadRequest(
+                "PR bases require a review-and-create-PR run".into(),
+            ));
+        }
+        None
+    };
+    if !VibeRun::retry(pool, &run, bases.as_deref())
+        .await
+        .map_err(vibe_run_error)?
+    {
+        return Ok(ResponseJson(ApiResponse::error_with_data(
+            ReviewError::NothingToMerge,
+        )));
+    }
+    if run.failed_phase.is_some() {
+        PR_FOLLOW_UP.notify_one();
+    } else {
+        deployment
+            .container()
+            .vibe_retry_merge(&workspace, true)
+            .await?;
+    }
 
     let run = VibeRun::find_by_workspace_id(pool, session.workspace_id)
         .await
@@ -482,6 +453,7 @@ mod tests {
             workspace_id: Uuid::nil(),
             task_id: Uuid::nil(),
             phase: phase.to_string(),
+            generation: 0,
             review_session_id: Some(Uuid::nil()),
             coding_turns: 0,
             review_turns: 0,
@@ -498,7 +470,8 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        assert!(can_retry_merge(&run("merging", None)));
+        assert!(!can_retry_merge(&run("merging", None)));
+        assert!(can_retry_merge(&run("merging", Some("checkout busy"))));
         assert!(can_retry_merge(&run(
             "blocked",
             Some("repo: merge conflict")

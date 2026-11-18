@@ -3,8 +3,14 @@ import { workspacesApi } from '@/shared/lib/api';
 import { BranchPickerDialog } from '@/shared/dialogs/BranchPickerDialog';
 import { choosePrBases } from './prBases';
 
+vi.mock('@/i18n/config', () => ({ default: { t: (key: string) => key } }));
 vi.mock('@/shared/lib/api', () => ({
-  workspacesApi: { get: vi.fn(), getRepos: vi.fn(), getBranchStatus: vi.fn() },
+  workspacesApi: {
+    get: vi.fn(),
+    getRepos: vi.fn(),
+    getBranchStatus: vi.fn(),
+    getPrBranchPlan: vi.fn(),
+  },
 }));
 vi.mock('@/shared/dialogs/BranchPickerDialog', () => ({
   BranchPickerDialog: { show: vi.fn() },
@@ -24,6 +30,22 @@ beforeEach(() => {
   vi.mocked(workspacesApi.getRepos).mockResolvedValue([repo] as never);
   vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([]);
   vi.mocked(BranchPickerDialog.show).mockResolvedValue('integration');
+  vi.mocked(workspacesApi.getPrBranchPlan).mockImplementation(
+    async (_id, request) => {
+      const head = request.after_merge ? 'vk/work' : 'feature/example';
+      if (
+        request.base_branch === head ||
+        request.base_branch === `origin/${head}`
+      )
+        throw new Error('PR head and base must be different');
+      return {
+        head_branch: head,
+        base_branch:
+          request.base_branch ??
+          (request.after_merge ? 'feature/example' : null),
+      };
+    }
+  );
 });
 
 describe('choosePrBases', () => {
@@ -66,6 +88,10 @@ describe('choosePrBases', () => {
         merges: [{ type: 'direct', target_branch_name: 'feature/example' }],
       },
     ] as never);
+    vi.mocked(workspacesApi.getPrBranchPlan).mockResolvedValue({
+      head_branch: 'feature/example',
+      base_branch: 'another-default',
+    });
     await choosePrBases('example-workspace', null, {
       afterMerge: true,
       saved: [
@@ -104,12 +130,44 @@ describe('choosePrBases', () => {
   });
 
   it('fails closed if the branch state cannot be read', async () => {
-    vi.mocked(workspacesApi.getBranchStatus).mockRejectedValue(
+    vi.mocked(workspacesApi.getPrBranchPlan).mockRejectedValue(
       new Error('host unavailable')
     );
     await expect(choosePrBases('example-workspace')).rejects.toThrow(
       'host unavailable'
     );
     expect(BranchPickerDialog.show).not.toHaveBeenCalled();
+  });
+  it('rejects a remote alias before any caller starts AI or review', async () => {
+    vi.mocked(BranchPickerDialog.show).mockResolvedValue(
+      'origin/feature/example'
+    );
+    await expect(choosePrBases('example-workspace')).rejects.toThrow(
+      'head and base'
+    );
+    expect(workspacesApi.getPrBranchPlan).toHaveBeenLastCalledWith(
+      'example-workspace',
+      {
+        repo_id: repo.id,
+        after_merge: false,
+        base_branch: 'origin/feature/example',
+      },
+      undefined
+    );
+  });
+
+  it('requires a fresh selection if the head changes while the picker is open', async () => {
+    vi.mocked(workspacesApi.getPrBranchPlan)
+      .mockResolvedValueOnce({
+        head_branch: 'feature/example',
+        base_branch: null,
+      })
+      .mockResolvedValueOnce({
+        head_branch: 'other',
+        base_branch: 'integration',
+      });
+    await expect(choosePrBases('example-workspace')).rejects.toThrow(
+      'tasks:prBase.headChanged'
+    );
   });
 });

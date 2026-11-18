@@ -3057,9 +3057,16 @@ impl LocalContainerService {
             )
             .await
         {
-            VibeRun::record_merge_failure(pool, workspace_id, "blocked", &reason, None)
-                .await
-                .map_err(|e| ContainerError::Other(anyhow!(e)))?;
+            VibeRun::record_merge_failure(
+                pool,
+                workspace_id,
+                vibe_run.generation,
+                "blocked",
+                &reason,
+                None,
+            )
+            .await
+            .map_err(|e| ContainerError::Other(anyhow!(e)))?;
             return Ok(());
         }
         // Only a merge already in `merging` carries its wait on; an approve
@@ -3072,11 +3079,11 @@ impl LocalContainerService {
         } else {
             (None, 0)
         };
-        let _ = VibeRun::set_phase(pool, workspace_id, VibePhase::Merging.as_str()).await;
-        // A fresh attempt (approve, manual retry) restarts the budget; the
-        // scheduled retries of its wait read it back from the row.
-        if i64::from(retry) != vibe_run.merge_retries {
-            let _ = VibeRun::set_merge_retries(pool, workspace_id, retry.into()).await;
+        if !VibeRun::begin_merge(pool, vibe_run, retry.into())
+            .await
+            .map_err(|e| ContainerError::Other(anyhow!(e)))?
+        {
+            return Ok(());
         }
         if let Some(client) = client {
             self.vibe_tag(client, task_id, vibe_orchestrator::TAG_APPROVE)
@@ -3087,6 +3094,16 @@ impl LocalContainerService {
         // another checkout's WIP: wait for its owner, then hand the reason to
         // the review session.
         let (outcome, detail, base_busy) = self.vibe_perform_merge(workspace).await;
+        if VibeRun::find_by_workspace_id(pool, workspace_id)
+            .await
+            .map_err(|e| ContainerError::Other(anyhow!(e)))?
+            .is_none_or(|current| {
+                current.generation != vibe_run.generation
+                    || current.phase != VibePhase::Merging.as_str()
+            })
+        {
+            return Ok(());
+        }
         let detail = cap_merge_error(&detail);
         let now = Utc::now();
         let state = MergeRetryState {
@@ -3098,6 +3115,12 @@ impl LocalContainerService {
         let merging = VibePhase::Merging.as_str();
         match decide_after_merge(outcome, &state, &VibeBounds::default()) {
             PostMergeAction::MarkInReview => {
+                if !VibeRun::finish_merge(pool, workspace_id, vibe_run.generation)
+                    .await
+                    .map_err(|e| ContainerError::Other(anyhow!(e)))?
+                {
+                    return Ok(());
+                }
                 if let Some(client) = client {
                     if let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await {
                         tracing::warn!("vibe: mark_for_review failed for {}: {}", workspace_id, e);
@@ -3107,7 +3130,6 @@ impl LocalContainerService {
                     // (workspaces/git.rs). Best-effort: handles auth/404 itself.
                     remote_sync::sync_local_workspace_merge_to_remote(client, workspace_id).await;
                 }
-                let _ = VibeRun::finish_merge(pool, workspace_id).await;
                 tracing::info!("vibe: workspace {} merged → In review", workspace_id);
                 // "Review and create PR": the run is now `pushing`, and the
                 // server goes on to the push and the draft PR by itself.
@@ -3124,9 +3146,26 @@ impl LocalContainerService {
                 .await;
             }
             PostMergeAction::ResolveConflict { retry } => {
-                let _ = VibeRun::set_merge_retries(pool, workspace_id, retry as i64).await;
-                let _ =
-                    VibeRun::record_merge_failure(pool, workspace_id, merging, &detail, None).await;
+                let _ = VibeRun::set_merge_retries(
+                    pool,
+                    workspace_id,
+                    vibe_run.generation,
+                    retry as i64,
+                )
+                .await;
+                if !VibeRun::record_merge_failure(
+                    pool,
+                    workspace_id,
+                    vibe_run.generation,
+                    merging,
+                    &detail,
+                    None,
+                )
+                .await
+                .map_err(|e| ContainerError::Other(anyhow!(e)))?
+                {
+                    return Ok(());
+                }
                 let prompt =
                     vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_CONFLICT);
                 self.vibe_send_followup(workspace, review_session, &prompt)
@@ -3141,6 +3180,7 @@ impl LocalContainerService {
                 let _ = VibeRun::record_merge_failure(
                     pool,
                     workspace_id,
+                    vibe_run.generation,
                     merging,
                     &detail,
                     Some(&wait),
@@ -3155,9 +3195,26 @@ impl LocalContainerService {
                 );
             }
             PostMergeAction::HandToAgent { retry } => {
-                let _ = VibeRun::set_merge_retries(pool, workspace_id, retry as i64).await;
-                let _ =
-                    VibeRun::record_merge_failure(pool, workspace_id, merging, &detail, None).await;
+                let _ = VibeRun::set_merge_retries(
+                    pool,
+                    workspace_id,
+                    vibe_run.generation,
+                    retry as i64,
+                )
+                .await;
+                if !VibeRun::record_merge_failure(
+                    pool,
+                    workspace_id,
+                    vibe_run.generation,
+                    merging,
+                    &detail,
+                    None,
+                )
+                .await
+                .map_err(|e| ContainerError::Other(anyhow!(e)))?
+                {
+                    return Ok(());
+                }
                 let waited_minutes = state.waited.unwrap_or_default().as_secs() / 60;
                 let prompt = vibe_orchestrator::with_review_preamble(
                     &vibe_orchestrator::merge_handoff_prompt(&detail, waited_minutes),
@@ -3172,19 +3229,24 @@ impl LocalContainerService {
                     .await?;
             }
             PostMergeAction::Escalate => {
+                if !VibeRun::record_merge_failure(
+                    pool,
+                    workspace_id,
+                    vibe_run.generation,
+                    VibePhase::Blocked.as_str(),
+                    &detail,
+                    None,
+                )
+                .await
+                .map_err(|e| ContainerError::Other(anyhow!(e)))?
+                {
+                    return Ok(());
+                }
                 if let Some(client) = client
                     && let Err(e) = client.mark_workspace_issue_for_review(workspace_id).await
                 {
                     tracing::warn!("vibe: mark_for_review failed for {}: {}", workspace_id, e);
                 }
-                let _ = VibeRun::record_merge_failure(
-                    pool,
-                    workspace_id,
-                    VibePhase::Blocked.as_str(),
-                    &detail,
-                    None,
-                )
-                .await;
                 if let Some(client) = client {
                     self.vibe_tag(client, task_id, vibe_orchestrator::TAG_BLOCK)
                         .await;
@@ -4695,7 +4757,17 @@ impl ContainerService for LocalContainerService {
             if run.phase != VibePhase::Merging.as_str() || run.merge_retry_at.is_none() {
                 return Ok(());
             }
+            if !VibeRun::retry(pool, &run, None)
+                .await
+                .map_err(|e| ContainerError::Other(anyhow!("vibe: claim retry failed: {e}")))?
+            {
+                return Ok(());
+            }
             let retry = run.merge_retries as u32;
+            let run = VibeRun {
+                generation: run.generation + 1,
+                ..run
+            };
             (run, retry)
         };
         self.vibe_attempt_merge(
@@ -6011,12 +6083,13 @@ done
         VibeRun::begin_review(&pool, workspace.id, review.id, None)
             .await
             .unwrap();
-        VibeRun::set_merge_retries(&pool, workspace.id, 3)
+        VibeRun::set_merge_retries(&pool, workspace.id, 1, 3)
             .await
             .unwrap();
         VibeRun::record_merge_failure(
             &pool,
             workspace.id,
+            1,
             "blocked",
             "repo: 'main' checkout has uncommitted changes: a.txt",
             None,
@@ -6060,6 +6133,7 @@ done
         git(dir.path(), &["init", "-b", "main", "repo"]);
         git(&repo_path, &["commit", "--allow-empty", "-m", "init"]);
         git(&repo_path, &["branch", "integration"]);
+        git(&repo_path, &["remote", "add", "origin", "."]);
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")

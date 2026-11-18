@@ -201,6 +201,8 @@ fn generate_types_content() -> String {
         db::models::requests::CreateWorkspaceApiRequest::decl(),
         db::models::requests::LinkedIssueInfo::decl(),
         server::routes::workspaces::pr::CreatePrApiRequest::decl(),
+        server::routes::workspaces::pr::PrBranchPlanRequest::decl(),
+        server::routes::workspaces::pr::PrBranchPlan::decl(),
         server::routes::workspaces::pr::PrDraft::decl(),
         server::routes::workspaces::pr::GeneratePrDescriptionRequest::decl(),
         server::routes::workspaces::pr::GeneratePrDescriptionResponse::decl(),

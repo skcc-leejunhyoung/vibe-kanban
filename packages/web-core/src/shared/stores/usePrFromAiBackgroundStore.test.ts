@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('@/shared/lib/api', () => ({
   workspacesApi: {
     getBranchStatus: vi.fn(),
+    getPrBranchPlan: vi.fn(),
     generatePrDescription: vi.fn(),
     createPR: vi.fn(),
   },
@@ -65,6 +66,10 @@ describe('usePrFromAiBackgroundStore', () => {
     usePrFromAiBackgroundStore.setState({ byWorkspace: {} });
     confirmShow.mockResolvedValue('canceled');
     getBranchStatus.mockResolvedValue([]);
+    vi.mocked(workspacesApi.getPrBranchPlan).mockResolvedValue({
+      head_branch: opts.workBranch,
+      base_branch: 'main',
+    });
   });
 
   afterEach(() => {
@@ -168,6 +173,10 @@ describe('usePrFromAiBackgroundStore', () => {
     generatePrDescription.mockResolvedValue({ title: 'T', description: 'D' });
     createPR.mockResolvedValue({ success: true, data: 'https://pr' });
 
+    vi.mocked(workspacesApi.getPrBranchPlan).mockResolvedValue({
+      head_branch: 'feature-b',
+      base_branch: 'main',
+    });
     const result = await usePrFromAiBackgroundStore
       .getState()
       .startCreateFromAi('ws-other-pr', 'repo1', {
@@ -199,8 +208,9 @@ describe('usePrFromAiBackgroundStore', () => {
   });
 
   it('stops before the agent when the base resolves to the head branch', async () => {
-    // Feature head with no repo default target: callers pass the workspace
-    // target, which is the feature branch itself.
+    vi.mocked(workspacesApi.getPrBranchPlan).mockRejectedValue(
+      new Error('PR head and base are both feature-a')
+    );
     const result = await usePrFromAiBackgroundStore
       .getState()
       .startCreateFromAi('ws-same-base', 'repo1', {
@@ -215,15 +225,16 @@ describe('usePrFromAiBackgroundStore', () => {
     expect(createPR).not.toHaveBeenCalled();
     expect(errorDialogShow).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: 'tasks:git.prFromAi.sameHeadAndBase',
+        message: 'PR head and base are both feature-a',
       })
     );
-    expect(
-      usePrFromAiBackgroundStore.getState().byWorkspace['ws-same-base']
-    ).toBeUndefined();
   });
 
   it('explains a backend head == base rejection instead of a generic error', async () => {
+    vi.mocked(workspacesApi.getPrBranchPlan).mockResolvedValue({
+      head_branch: 'feature-a',
+      base_branch: 'main',
+    });
     generatePrDescription.mockResolvedValue({ title: 'T', description: 'D' });
     createPR.mockResolvedValue({
       success: false,
@@ -244,6 +255,67 @@ describe('usePrFromAiBackgroundStore', () => {
         message: 'tasks:git.prFromAi.sameHeadAndBase',
       })
     );
+  });
+
+  it('rejects a remote alias on the server before spending AI work', async () => {
+    vi.mocked(workspacesApi.getPrBranchPlan).mockRejectedValue(
+      new Error('PR head and base are both feature/example')
+    );
+    expect(
+      await usePrFromAiBackgroundStore
+        .getState()
+        .startCreateFromAi('example-workspace', 'example-repo', {
+          ...opts,
+          headBranch: 'feature/example',
+          targetBranch: 'origin/feature/example',
+          hostId: 'example-host',
+        })
+    ).toBe(false);
+    expect(workspacesApi.getPrBranchPlan).toHaveBeenCalledWith(
+      'example-workspace',
+      {
+        repo_id: 'example-repo',
+        after_merge: true,
+        base_branch: 'origin/feature/example',
+      },
+      'example-host'
+    );
+    expect(generatePrDescription).not.toHaveBeenCalled();
+    expect(createPR).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unresolved fallback base before AI generation', async () => {
+    vi.mocked(workspacesApi.getPrBranchPlan).mockResolvedValue({
+      head_branch: 'feature/example',
+      base_branch: null,
+    });
+    expect(
+      await usePrFromAiBackgroundStore
+        .getState()
+        .startCreateFromAi('example-workspace', 'example-repo', {
+          ...opts,
+          targetBranch: null,
+          headBranch: 'feature/example',
+        })
+    ).toBe(false);
+    expect(generatePrDescription).not.toHaveBeenCalled();
+    expect(errorDialogShow).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'tasks:prBase.missing' })
+    );
+  });
+
+  it('rejects a changed head before generating a description', async () => {
+    vi.mocked(workspacesApi.getPrBranchPlan).mockResolvedValue({
+      head_branch: 'new-feature',
+      base_branch: 'main',
+    });
+    expect(
+      await usePrFromAiBackgroundStore
+        .getState()
+        .startCreateFromAi('example-workspace', 'example-repo', opts)
+    ).toBe(false);
+    expect(generatePrDescription).not.toHaveBeenCalled();
+    expect(createPR).not.toHaveBeenCalled();
   });
 
   it('surfaces a generation failure as an error state with a dialog', async () => {

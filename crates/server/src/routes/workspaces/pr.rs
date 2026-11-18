@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use services::services::{
     config::DEFAULT_PR_DESCRIPTION_PROMPT,
     container::{ContainerService, assistant_message_in_store},
-    remote_sync,
+    remote_sync, vibe_pr_bases,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -75,6 +75,60 @@ pub struct CreatePrApiRequest {
     pub head_branch: Option<String>,
     pub draft: Option<bool>,
     pub repo_id: Uuid,
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+pub struct PrBranchPlanRequest {
+    pub repo_id: Uuid,
+    pub after_merge: bool,
+    pub base_branch: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+pub struct PrBranchPlan {
+    pub head_branch: String,
+    pub base_branch: Option<String>,
+}
+
+/// A read-only preview, or validation of an explicit selection, before AI work.
+pub async fn pr_branch_plan(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<PrBranchPlanRequest>,
+) -> Result<ResponseJson<ApiResponse<PrBranchPlan>>, ApiError> {
+    let pool = &deployment.db().pool;
+    let workspace_repo =
+        WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
+            .await?
+            .ok_or(RepoError::NotFound)?;
+    let repo = Repo::find_by_id(pool, request.repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+    let git = deployment.git();
+    let merges = Merge::find_by_workspace_and_repo_id(pool, workspace.id, repo.id).await?;
+    let head = vibe_pr_bases::expected_head(
+        git,
+        &repo.path,
+        &merges,
+        &workspace.branch,
+        &workspace_repo.target_branch,
+        request.after_merge,
+    )
+    .map_err(ApiError::BadRequest)?;
+    let base = match request.base_branch {
+        Some(base) => {
+            let base = base.trim().to_string();
+            vibe_pr_bases::validate_base(git, &repo.path, &head, &base)
+                .map_err(ApiError::BadRequest)?;
+            Some(base)
+        }
+        None if head == workspace.branch => Some(workspace_repo.target_branch),
+        None => repo.default_target_branch,
+    };
+    Ok(ResponseJson(ApiResponse::success(PrBranchPlan {
+        head_branch: head,
+        base_branch: base,
+    })))
 }
 
 /// Request to generate a PR title + description by running a coding agent once,
@@ -1147,11 +1201,10 @@ pub async fn create_pr(
         ));
     }
     // A new PR publishes its requested head, even when the work branch reviews another PR.
-    if let Err(e) = git.push_branch_to_named_remote(
+    if let Err(e) = git.push_branch_to_named_remote_if_needed(
         &worktree_path,
         &head_branch,
         &push_remote.name,
-        false,
         no_verify,
     ) {
         tracing::error!("Failed to push branch to remote: {}", e);
@@ -2239,6 +2292,7 @@ pub async fn create_workspace_from_pr(
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/", post(create_pr))
+        .route("/plan", post(pr_branch_plan))
         .route("/generate", post(generate_pr_description))
         .route("/generate/start", post(start_pr_description_generation))
         .route(

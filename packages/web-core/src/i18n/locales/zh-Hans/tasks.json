@@ -5,7 +5,8 @@
     "label": "PR base（目标）",
     "action": "使用此 PR base",
     "missing": "尚未设置最终 PR base。请在审查、合并或推送前选择。",
-    "sameBranch": "PR head 与 base 必须不同。"
+    "sameBranch": "PR head 与 base 必须不同。",
+    "headChanged": "PR head 已更改。请重新打开 PR base 选择并确认后继续。"
   },
   "dropzone": {
     "dropImagesHere": "将图片拖放到这里",

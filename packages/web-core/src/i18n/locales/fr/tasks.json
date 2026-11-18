@@ -5,7 +5,8 @@
     "label": "Base de la PR (destination)",
     "action": "Utiliser cette base",
     "missing": "Aucune base finale configurée. Choisissez-en une avant la revue, la fusion ou le push.",
-    "sameBranch": "Head et base doivent être différents."
+    "sameBranch": "Head et base doivent être différents.",
+    "headChanged": "Le head de la PR a changé. Rouvrez la sélection de base de la PR avant de continuer."
   },
   "dropzone": {
     "dropImagesHere": "Déposez les images ici",

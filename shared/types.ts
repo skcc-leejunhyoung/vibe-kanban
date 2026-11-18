@@ -750,6 +750,10 @@ export type CreatePrApiRequest = { title: string, body: string | null, target_br
  */
 head_branch: string | null, draft: boolean | null, repo_id: string, };
 
+export type PrBranchPlanRequest = { repo_id: string, after_merge: boolean, base_branch: string | null, };
+
+export type PrBranchPlan = { head_branch: string, base_branch: string | null, };
+
 export type PrDraft = { repo_id: string, title: string, body: string, };
 
 export type GeneratePrDescriptionRequest = { repo_id: string,

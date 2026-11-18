@@ -168,3 +168,43 @@ fn push_to_named_remote_clears_ahead() {
     assert!(exists);
     assert_eq!((ahead, behind), (0, 0));
 }
+
+#[cfg(unix)]
+#[test]
+fn pr_retries_skip_push_hooks_when_the_remote_tip_is_already_published() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new().unwrap();
+    let local_path = setup_remote_and_local(&temp);
+    let local = Repository::open(&local_path).unwrap();
+    let service = GitService::new();
+    let hook = local.path().join("hooks/pre-push");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    // An already-published head succeeds even with a hook that rejects every push.
+    service
+        .push_branch_to_named_remote_if_needed(&local_path, "main", "origin", false)
+        .unwrap();
+    write_file(&local_path, "new.txt", "synthetic new commit");
+    commit_all(&local, "New synthetic work");
+    assert!(
+        service
+            .push_branch_to_named_remote_if_needed(&local_path, "main", "origin", false)
+            .is_err()
+    );
+    fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
+    service
+        .push_branch_to_named_remote_if_needed(&local_path, "main", "origin", false)
+        .unwrap();
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    service
+        .push_branch_to_named_remote_if_needed(&local_path, "main", "origin", false)
+        .unwrap();
+    // A never-published head must still be pushed, regardless of tracking refs.
+    let head = local.head().unwrap().peel_to_commit().unwrap();
+    local.branch("feature/example", &head, false).unwrap();
+    assert!(
+        service
+            .push_branch_to_named_remote_if_needed(&local_path, "feature/example", "origin", false)
+            .is_err()
+    );
+}

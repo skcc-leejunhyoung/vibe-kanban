@@ -5,7 +5,8 @@
     "label": "PR base（受信先）",
     "action": "この PR base を使用",
     "missing": "最終 PR base が未設定です。レビュー・マージ・push の前に選択してください。",
-    "sameBranch": "PR head と base は異なる必要があります。"
+    "sameBranch": "PR head と base は異なる必要があります。",
+    "headChanged": "PR head が変更されました。続行するには PR base の選択を開き直して確認してください。"
   },
   "dropzone": {
     "dropImagesHere": "画像をここにドロップ",

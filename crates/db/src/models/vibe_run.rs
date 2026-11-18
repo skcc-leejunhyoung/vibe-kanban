@@ -22,6 +22,8 @@ pub struct VibeRun {
     pub workspace_id: Uuid,
     pub task_id: Uuid,
     pub phase: String,
+    /// A new review or claimed retry invalidates older workers and requests.
+    pub generation: i64,
     pub review_session_id: Option<Uuid>,
     pub coding_turns: i64,
     pub review_turns: i64,
@@ -96,7 +98,7 @@ impl VibeRun {
         serde_json::from_value(config.0.clone()).ok()
     }
 
-    const COLUMNS: &'static str = "workspace_id, task_id, phase, review_session_id, \
+    const COLUMNS: &'static str = "workspace_id, task_id, phase, generation, review_session_id, \
          coding_turns, review_turns, merge_retries, last_result, last_error, merge_wait_since, \
          merge_wait_attempts, merge_retry_at, pr_requested, pr_executor_config, pr_bases, failed_phase, \
          created_at, updated_at";
@@ -204,7 +206,7 @@ impl VibeRun {
     ) -> Result<(), VibeRunError> {
         sqlx::query(
             "UPDATE vibe_runs \
-             SET phase = 'review', review_session_id = ?, review_turns = 0, \
+             SET phase = 'review', generation = generation + 1, review_session_id = ?, review_turns = 0, \
                  last_result = NULL, last_error = NULL, merge_wait_since = NULL, \
                  merge_wait_attempts = 0, merge_retry_at = NULL, \
                  pr_requested = ?, pr_executor_config = ?, pr_bases = ?, failed_phase = NULL, \
@@ -257,17 +259,39 @@ impl VibeRun {
         Ok(())
     }
 
+    /// Start only the attempt that still owns this review/retry generation.
+    pub async fn begin_merge(
+        pool: &SqlitePool,
+        run: &Self,
+        retries: i64,
+    ) -> Result<bool, VibeRunError> {
+        let done = sqlx::query(
+            "UPDATE vibe_runs SET phase = 'merging', failed_phase = NULL, merge_retries = ?, \
+                 updated_at = datetime('now','subsec') \
+             WHERE workspace_id = ? AND generation = ? AND phase = ?",
+        )
+        .bind(retries)
+        .bind(run.workspace_id)
+        .bind(run.generation)
+        .bind(&run.phase)
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     pub async fn set_merge_retries(
         pool: &SqlitePool,
         workspace_id: Uuid,
+        generation: i64,
         merge_retries: i64,
     ) -> Result<(), VibeRunError> {
         sqlx::query(
             "UPDATE vibe_runs SET merge_retries = ?, updated_at = datetime('now','subsec') \
-             WHERE workspace_id = ?",
+             WHERE workspace_id = ? AND generation = ?",
         )
         .bind(merge_retries)
         .bind(workspace_id)
+        .bind(generation)
         .execute(pool)
         .await?;
         Ok(())
@@ -278,15 +302,16 @@ impl VibeRun {
     pub async fn record_merge_failure(
         pool: &SqlitePool,
         workspace_id: Uuid,
+        generation: i64,
         phase: &str,
         last_error: &str,
         wait: Option<&MergeWait>,
-    ) -> Result<(), VibeRunError> {
-        sqlx::query(
+    ) -> Result<bool, VibeRunError> {
+        let done = sqlx::query(
             "UPDATE vibe_runs SET phase = ?, last_error = ?, merge_wait_since = ?, \
                  merge_wait_attempts = ?, merge_retry_at = ?, failed_phase = NULL, \
                  updated_at = datetime('now','subsec') \
-             WHERE workspace_id = ?",
+             WHERE workspace_id = ? AND generation = ?",
         )
         .bind(phase)
         .bind(last_error)
@@ -294,26 +319,32 @@ impl VibeRun {
         .bind(wait.map_or(0, |w| w.attempts))
         .bind(wait.map(|w| w.retry_at))
         .bind(workspace_id)
+        .bind(generation)
         .execute(pool)
         .await?;
-        Ok(())
+        Ok(done.rows_affected() > 0)
     }
 
     /// The merge landed, with the failure and any wait cleared: done, or on to
     /// `pushing` when the run was asked for a PR.
-    pub async fn finish_merge(pool: &SqlitePool, workspace_id: Uuid) -> Result<(), VibeRunError> {
-        sqlx::query(
+    pub async fn finish_merge(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        generation: i64,
+    ) -> Result<bool, VibeRunError> {
+        let done = sqlx::query(
             "UPDATE vibe_runs \
              SET phase = CASE WHEN pr_requested THEN 'pushing' ELSE 'done' END, \
                  last_error = NULL, merge_wait_since = NULL, \
                  merge_wait_attempts = 0, merge_retry_at = NULL, failed_phase = NULL, \
                  updated_at = datetime('now','subsec') \
-             WHERE workspace_id = ?",
+             WHERE workspace_id = ? AND generation = ?",
         )
         .bind(workspace_id)
+        .bind(generation)
         .execute(pool)
         .await?;
-        Ok(())
+        Ok(done.rows_affected() > 0)
     }
 
     /// A follow-up step finished: move from `from` to `to`. `false` when the
@@ -323,16 +354,18 @@ impl VibeRun {
         pool: &SqlitePool,
         workspace_id: Uuid,
         from: &str,
+        generation: i64,
         to: &str,
     ) -> Result<bool, VibeRunError> {
         let done = sqlx::query(
             "UPDATE vibe_runs SET phase = ?, last_error = NULL, failed_phase = NULL, \
                  updated_at = datetime('now','subsec') \
-             WHERE workspace_id = ? AND phase = ?",
+             WHERE workspace_id = ? AND phase = ? AND generation = ?",
         )
         .bind(to)
         .bind(workspace_id)
         .bind(from)
+        .bind(generation)
         .execute(pool)
         .await?;
         Ok(done.rows_affected() > 0)
@@ -344,54 +377,48 @@ impl VibeRun {
         pool: &SqlitePool,
         workspace_id: Uuid,
         from: &str,
+        generation: i64,
         last_error: &str,
     ) -> Result<bool, VibeRunError> {
         let done = sqlx::query(
             "UPDATE vibe_runs SET phase = 'blocked', last_error = ?, failed_phase = ?, \
                  updated_at = datetime('now','subsec') \
-             WHERE workspace_id = ? AND phase = ?",
+             WHERE workspace_id = ? AND phase = ? AND generation = ?",
         )
         .bind(last_error)
         .bind(from)
         .bind(workspace_id)
         .bind(from)
+        .bind(generation)
         .execute(pool)
         .await?;
         Ok(done.rows_affected() > 0)
     }
 
-    /// Put a run a follow-up step blocked back into that step, without
-    /// reviewing or merging again. `false` when it is not blocked there.
-    pub async fn retry_follow_up(
+    /// Claim one retry and its destinations together. A competing request must
+    /// neither replace the winner's bases nor resume an already claimed step.
+    pub async fn retry(
         pool: &SqlitePool,
-        workspace_id: Uuid,
+        expected: &Self,
+        bases: Option<&[PrBase]>,
     ) -> Result<bool, VibeRunError> {
         let done = sqlx::query(
-            "UPDATE vibe_runs SET phase = failed_phase, last_error = NULL, failed_phase = NULL, \
-                 updated_at = datetime('now','subsec') \
-             WHERE workspace_id = ? AND phase = 'blocked' AND failed_phase IS NOT NULL",
+            "UPDATE vibe_runs SET phase = COALESCE(failed_phase, 'merging'), \
+                 pr_bases = CASE WHEN ? THEN ? ELSE pr_bases END, \
+                 generation = generation + 1, last_error = NULL, failed_phase = NULL, \
+                 merge_retry_at = NULL, updated_at = datetime('now','subsec') \
+             WHERE workspace_id = ? AND generation = ? AND phase = ? \
+                 AND phase IN ('blocked', 'merging') AND last_error IS NOT NULL \
+                 AND review_session_id IS NOT NULL",
         )
-        .bind(workspace_id)
+        .bind(bases.is_some())
+        .bind(bases.map(Json))
+        .bind(expected.workspace_id)
+        .bind(expected.generation)
+        .bind(&expected.phase)
         .execute(pool)
         .await?;
         Ok(done.rows_affected() > 0)
-    }
-
-    /// Only an explicit retry may replace a run's confirmed PR destinations.
-    pub async fn confirm_pr_bases(
-        pool: &SqlitePool,
-        workspace_id: Uuid,
-        bases: &[PrBase],
-    ) -> Result<(), VibeRunError> {
-        sqlx::query(
-            "UPDATE vibe_runs SET pr_bases = ?, updated_at = datetime('now','subsec') \
-                     WHERE workspace_id = ? AND phase IN ('blocked', 'merging')",
-        )
-        .bind(Json(bases))
-        .bind(workspace_id)
-        .execute(pool)
-        .await?;
-        Ok(())
     }
 
     /// Record (or clear, with `None`) the agent's latest sentinel token.
@@ -460,7 +487,9 @@ mod tests {
     #[tokio::test]
     async fn a_merge_ends_the_run_unless_a_pr_was_asked_for() {
         let (pool, plain) = run_in_review(None).await;
-        VibeRun::finish_merge(&pool, plain).await.unwrap();
+        VibeRun::finish_merge(&pool, plain, run(&pool, plain).await.generation)
+            .await
+            .unwrap();
         let done = run(&pool, plain).await;
         assert_eq!(done.phase, "done");
         assert!(!done.pr_requested && done.pr_executor_config.is_none());
@@ -470,7 +499,9 @@ mod tests {
             bases: vec![],
         };
         let (pool, with_pr) = run_in_review(Some(&request)).await;
-        VibeRun::finish_merge(&pool, with_pr).await.unwrap();
+        VibeRun::finish_merge(&pool, with_pr, run(&pool, with_pr).await.generation)
+            .await
+            .unwrap();
         let pushing = run(&pool, with_pr).await;
         assert_eq!(pushing.phase, "pushing");
         assert!(pushing.pr_requested);
@@ -489,7 +520,9 @@ mod tests {
         VibeRun::begin_review(&pool, with_pr, session, None)
             .await
             .unwrap();
-        VibeRun::finish_merge(&pool, with_pr).await.unwrap();
+        VibeRun::finish_merge(&pool, with_pr, run(&pool, with_pr).await.generation)
+            .await
+            .unwrap();
         let done = run(&pool, with_pr).await;
         assert_eq!(done.phase, "done");
         assert!(!done.pr_requested && done.pr_executor_config.is_none());
@@ -526,23 +559,47 @@ mod tests {
         let (pool, id) = run_in_review(Some(&PrRequest::default())).await;
         // Not in the follow-up yet: its transitions leave the run alone.
         assert!(
-            !VibeRun::advance_follow_up(&pool, id, "pushing", "creating_pr")
-                .await
-                .unwrap()
+            !VibeRun::advance_follow_up(
+                &pool,
+                id,
+                "pushing",
+                run(&pool, id).await.generation,
+                "creating_pr"
+            )
+            .await
+            .unwrap()
         );
         assert!(
-            !VibeRun::block_follow_up(&pool, id, "pushing", "nope")
+            !VibeRun::block_follow_up(
+                &pool,
+                id,
+                "pushing",
+                run(&pool, id).await.generation,
+                "nope"
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !VibeRun::retry(&pool, &run(&pool, id).await, None)
                 .await
                 .unwrap()
         );
-        assert!(!VibeRun::retry_follow_up(&pool, id).await.unwrap());
         assert_eq!(run(&pool, id).await.phase, "review");
 
-        VibeRun::finish_merge(&pool, id).await.unwrap();
+        VibeRun::finish_merge(&pool, id, run(&pool, id).await.generation)
+            .await
+            .unwrap();
         assert!(
-            VibeRun::block_follow_up(&pool, id, "pushing", "diverged")
-                .await
-                .unwrap()
+            VibeRun::block_follow_up(
+                &pool,
+                id,
+                "pushing",
+                run(&pool, id).await.generation,
+                "diverged"
+            )
+            .await
+            .unwrap()
         );
         let blocked = run(&pool, id).await;
         assert_eq!(
@@ -553,29 +610,127 @@ mod tests {
             ),
             ("blocked", Some("diverged"), Some("pushing"))
         );
-        assert!(VibeRun::retry_follow_up(&pool, id).await.unwrap());
-        assert_eq!(run(&pool, id).await.phase, "pushing");
         assert!(
-            VibeRun::advance_follow_up(&pool, id, "pushing", "creating_pr")
+            VibeRun::retry(&pool, &run(&pool, id).await, None)
                 .await
                 .unwrap()
+        );
+        assert_eq!(run(&pool, id).await.phase, "pushing");
+        assert!(
+            VibeRun::advance_follow_up(
+                &pool,
+                id,
+                "pushing",
+                run(&pool, id).await.generation,
+                "creating_pr"
+            )
+            .await
+            .unwrap()
         );
 
         // Blocked at the PR, then re-approved: the merge runs again and fails.
         // The retry must merge, not skip to the PR.
         assert!(
-            VibeRun::block_follow_up(&pool, id, "creating_pr", "gh: not logged in")
-                .await
-                .unwrap()
+            VibeRun::block_follow_up(
+                &pool,
+                id,
+                "creating_pr",
+                run(&pool, id).await.generation,
+                "gh: not logged in"
+            )
+            .await
+            .unwrap()
         );
         VibeRun::set_phase(&pool, id, "merging").await.unwrap();
         assert!(run(&pool, id).await.failed_phase.is_none());
-        VibeRun::record_merge_failure(&pool, id, "blocked", "merge conflict", None)
+        VibeRun::record_merge_failure(
+            &pool,
+            id,
+            run(&pool, id).await.generation,
+            "blocked",
+            "merge conflict",
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            VibeRun::retry(&pool, &run(&pool, id).await, None)
+                .await
+                .unwrap()
+        );
+        let merge_blocked = run(&pool, id).await;
+        assert_eq!(merge_blocked.phase, "merging");
+        assert_eq!(merge_blocked.last_error, None);
+    }
+    #[tokio::test]
+    async fn concurrent_retries_cannot_replace_the_winners_bases_or_claim_a_later_failure() {
+        let (pool, id) = run_in_review(Some(&PrRequest::default())).await;
+        VibeRun::finish_merge(&pool, id, run(&pool, id).await.generation)
             .await
             .unwrap();
-        assert!(!VibeRun::retry_follow_up(&pool, id).await.unwrap());
-        let merge_blocked = run(&pool, id).await;
-        assert_eq!(merge_blocked.phase, "blocked");
-        assert_eq!(merge_blocked.last_error.as_deref(), Some("merge conflict"));
+        let pushing = run(&pool, id).await;
+        VibeRun::block_follow_up(
+            &pool,
+            id,
+            "pushing",
+            pushing.generation,
+            "synthetic failure",
+        )
+        .await
+        .unwrap();
+        let expected = run(&pool, id).await;
+        let base = |branch: &str| {
+            vec![PrBase {
+                repo_id: Uuid::nil(),
+                base_branch: branch.into(),
+                target_branch: "feature/example".into(),
+            }]
+        };
+        let first = base("integration");
+        let second = base("release/example");
+        let (a, b) = tokio::join!(
+            VibeRun::retry(&pool, &expected, Some(&first)),
+            VibeRun::retry(&pool, &expected, Some(&second))
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_ne!(a, b);
+        let winner = run(&pool, id).await;
+        assert!(!VibeRun::begin_merge(&pool, &expected, 0).await.unwrap());
+        assert!(
+            !VibeRun::finish_merge(&pool, id, expected.generation)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !VibeRun::record_merge_failure(
+                &pool,
+                id,
+                expected.generation,
+                "blocked",
+                "stale validation",
+                None
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(winner.phase, "pushing");
+        assert_eq!(
+            winner.pr_bases.as_ref().unwrap().0,
+            if a { first } else { second }
+        );
+        assert!(
+            !VibeRun::block_follow_up(&pool, id, "pushing", expected.generation, "stale worker")
+                .await
+                .unwrap()
+        );
+        VibeRun::block_follow_up(&pool, id, "pushing", winner.generation, "synthetic failure")
+            .await
+            .unwrap();
+        assert!(
+            !VibeRun::retry(&pool, &expected, Some(&base("stale")))
+                .await
+                .unwrap()
+        );
+        assert_eq!(run(&pool, id).await.pr_bases, winner.pr_bases);
     }
 }

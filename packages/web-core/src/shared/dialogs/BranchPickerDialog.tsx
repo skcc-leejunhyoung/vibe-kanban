@@ -159,7 +159,7 @@ const BranchPickerDialogImpl = create<BranchPickerDialogProps>(
                 onBranchSelect={setSelectedBranch}
                 excludeCurrentBranch={excludeCurrentBranch}
               />
-              {mode === 'prBase' && !initialBranch && (
+              {mode === 'prBase' && !selectedBranch && (
                 <p className="text-sm text-low">{t('prBase.missing')}</p>
               )}
               {mode === 'prBase' && selectedBranch === headBranch && (

@@ -5,7 +5,8 @@
     "label": "PR base (destination)",
     "action": "Use this PR base",
     "missing": "No final PR base is configured. Choose one before review, merge or push.",
-    "sameBranch": "PR head and base must be different."
+    "sameBranch": "PR head and base must be different.",
+    "headChanged": "The PR head changed. Reopen the PR base selection before continuing."
   },
   "dropzone": {
     "dropImagesHere": "Drop images here",
