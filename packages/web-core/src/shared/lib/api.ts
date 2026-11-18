@@ -3033,36 +3033,6 @@ function artifactOwnerParams(owner: import('shared/types').ArtifactOwner) {
 }
 
 export const ownedArtifactsApi = {
-  transferStatus: async (
-    id: string,
-    hostId: string | null,
-    signal?: AbortSignal
-  ) =>
-    handleApiResponse<{
-      status: 'pending' | 'ready';
-      source: import('shared/types').ArtifactOwner;
-    }>(
-      await makeHostAwareRequest(
-        `/api/artifacts/${encodeURIComponent(id)}/transfer`,
-        hostId,
-        { signal }
-      )
-    ),
-  list: async (
-    workspaceId: string,
-    sessionId: string,
-    hostId: string | null,
-    signal?: AbortSignal
-  ) => {
-    const params = artifactOwnerParams({
-      kind: 'workspace',
-      workspace_id: workspaceId,
-      session_id: sessionId,
-    });
-    return handleApiResponse<import('shared/types').ArtifactSummary[]>(
-      await makeHostAwareRequest(`/api/artifacts?${params}`, hostId, { signal })
-    );
-  },
   document: async (
     id: string,
     owner: import('shared/types').ArtifactOwner,

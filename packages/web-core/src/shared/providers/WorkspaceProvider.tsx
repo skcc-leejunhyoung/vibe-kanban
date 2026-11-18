@@ -23,7 +23,6 @@ import {
 } from '@/shared/hooks/useWorkspaceRepo';
 import { workspaceSessionKeys } from '@/shared/hooks/workspaceSessionKeys';
 import { useWorkspaceSessions } from '@/shared/hooks/useWorkspaceSessions';
-import { useWorkspaceArtifactLink } from '@/shared/hooks/useWorkspaceArtifactLink';
 import { useGitHubComments } from '@/shared/hooks/useGitHubComments';
 import { branchStatusKeys } from '@/shared/hooks/useBranchStatus';
 import {
@@ -105,7 +104,6 @@ function WorkspaceProviderContent({
     currentDestination && 'workspaceId' in currentDestination
       ? currentDestination.workspaceId
       : undefined;
-  useWorkspaceArtifactLink(workspaceId);
   // One diff store per provider instance so coexisting panes don't clobber
   // each other's diff data.
   const [diffStore] = useState(createWorkspaceDiffStore);

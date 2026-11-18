@@ -7,6 +7,14 @@ import {
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DrawerArtifact } from './DrawerArtifact';
 
+vi.mock('@/shared/hooks/auth/useAuth', () => ({
+  useAuth: () => ({
+    isLoaded: true,
+    isSignedIn: true,
+    userId: 'synthetic-account',
+  }),
+}));
+
 const state = vi.hoisted(() => {
   vi.stubGlobal('window', new EventTarget());
   return {

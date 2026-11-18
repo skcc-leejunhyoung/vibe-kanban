@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import { drawerArtifactsApi, ownedArtifactsApi } from '@/shared/lib/api';
 import type { ApiError } from '@/shared/lib/api';
+import { useAuth } from '@/shared/hooks/auth/useAuth';
 import type {
   ArtifactInputBridge,
   ArtifactViewState,
@@ -26,6 +27,7 @@ export function DrawerArtifact({
   | { noteId?: never; workspaceId: string; sessionId: string }
 )) {
   const { t } = useTranslation('common');
+  const { isLoaded, isSignedIn, userId } = useAuth();
   const locationKey = noteId ?? `${workspaceId}:${sessionId}`;
   const client = useQueryClient();
   const frame = useRef<HTMLIFrameElement>(null);
@@ -41,7 +43,7 @@ export function DrawerArtifact({
     [id, locationKey, hostId]
   );
   const document = useQuery({
-    queryKey: ['drawer-artifact-document', hostId, locationKey, id],
+    queryKey: ['drawer-artifact-document', userId, hostId, locationKey, id],
     queryFn: ({ signal }) =>
       noteId !== undefined
         ? drawerArtifactsApi.document(id, noteId, hostId, signal)
@@ -55,6 +57,7 @@ export function DrawerArtifact({
             hostId,
             signal
           ),
+    enabled: isLoaded && isSignedIn,
     staleTime: Infinity,
     gcTime: 0,
     retry: false,
@@ -72,6 +75,7 @@ export function DrawerArtifact({
   const snapshot = useQuery({
     queryKey: [
       'drawer-artifact-data',
+      userId,
       hostId,
       locationKey,
       id,
@@ -97,7 +101,7 @@ export function DrawerArtifact({
             hostId,
             signal
           ),
-    enabled: !!document.data && !archived,
+    enabled: isLoaded && isSignedIn && !!document.data && !archived,
     retry: false,
     gcTime: 0,
     refetchOnReconnect: false,
@@ -114,10 +118,10 @@ export function DrawerArtifact({
   useEffect(() => {
     if (archived)
       void client.cancelQueries({
-        queryKey: ['drawer-artifact-data', hostId, locationKey, id],
+        queryKey: ['drawer-artifact-data', userId, hostId, locationKey, id],
         exact: false,
       });
-  }, [archived, client, hostId, locationKey, id]);
+  }, [archived, client, userId, hostId, locationKey, id]);
   const preview = useMemo(() => {
     if (!document.data) return null;
     const value = document.data;
@@ -237,6 +241,7 @@ export function DrawerArtifact({
     window.addEventListener('message', listener);
     return () => window.removeEventListener('message', listener);
   }, [bridge.channel, postState]);
+  if (!isLoaded || !isSignedIn) return null;
   const failure =
     document.error?.message ??
     (preview && 'error' in preview

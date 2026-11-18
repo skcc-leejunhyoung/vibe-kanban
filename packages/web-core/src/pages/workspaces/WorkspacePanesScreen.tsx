@@ -2,10 +2,8 @@ import { useEffect, useRef } from 'react';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { usePageTitle } from '@/shared/hooks/usePageTitle';
-import { useSelfCloudHostId } from '@/shared/hooks/useSelfCloudHostId';
 import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { navigateDocumentTo } from '@/shared/lib/routes/paneNavigation';
-import { foldSelfHostDestination } from '@/shared/lib/routes/appNavigation';
 import {
   destinationNeedsWorkspaceStreams,
   isPaneRenderableDestination,
@@ -34,7 +32,6 @@ import {
 export function WorkspacePanesScreen() {
   const appNavigation = useAppNavigation();
   const documentDestination = useCurrentAppDestination();
-  const { hostId: selfHostId } = useSelfCloudHostId();
   const isLeftSidebarVisible = useUiPreferencesStore(
     (s) => s.isLeftSidebarVisible
   );
@@ -81,10 +78,7 @@ export function WorkspacePanesScreen() {
   // Store → URL: mirror the active pane into the address bar (replace-only).
   useEffect(() => {
     if (shouldAdoptDocument) return;
-    const urlDestination = foldSelfHostDestination(
-      appNavigation.resolveFromPath(window.location.href),
-      selfHostId
-    );
+    const urlDestination = appNavigation.resolveFromPath(window.location.href);
     if (!activeDestination) {
       // Empty active pane: park the URL on the bare grid route so a stale
       // renderable URL doesn't get re-adopted and snap the active pane back.
@@ -100,7 +94,7 @@ export function WorkspacePanesScreen() {
       return;
     }
     navigateDocumentTo(activeDestination, appNavigation, { replace: true });
-  }, [activeDestination, appNavigation, shouldAdoptDocument, selfHostId]);
+  }, [activeDestination, appNavigation, shouldAdoptDocument]);
 
   useEffect(() => {
     previousActiveDestinationRef.current = activeDestination;

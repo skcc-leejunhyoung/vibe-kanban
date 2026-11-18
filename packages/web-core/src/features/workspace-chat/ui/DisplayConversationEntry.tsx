@@ -44,6 +44,8 @@ import { ExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesC
 import { isPendingProcessId } from '@/shared/providers/executionProcessScope';
 import { ImagePreviewDialog } from '@/shared/dialogs/wysiwyg/ImagePreviewDialog';
 import { ArtifactCards, useExecutionArtifacts } from './ArtifactCards';
+import { DrawerArtifact } from './DrawerArtifact';
+import { drawerArtifactId } from '@/shared/lib/drawer';
 import {
   type ArtifactSegment,
   findSegmentArtifact,
@@ -475,6 +477,7 @@ function DisplayConversationEntry(props: Props) {
           workspaceId={workspaceWithSession?.id}
           sessionId={sessionId}
           executionProcessId={executionProcessId}
+          archived={workspaceWithSession.archived}
         />
       );
 
@@ -1121,6 +1124,7 @@ function AssistantMessageEntry({
   workspaceId,
   sessionId,
   executionProcessId,
+  archived,
 }: {
   entryKey: string;
   /** When the message was written, if the executor reports it. */
@@ -1130,7 +1134,9 @@ function AssistantMessageEntry({
   workspaceId: string | undefined;
   sessionId: string | undefined;
   executionProcessId: string;
+  archived: boolean;
 }) {
+  const hostId = useHostId();
   // A block left open by a killed or finished process, or by a message the
   // agent moved on from, is not being written. The chip is dated by its
   // message when the executor reports a time, else by the turn.
@@ -1142,8 +1148,19 @@ function AssistantMessageEntry({
     (writingKey === undefined || writingKey === entryKey);
   const chipTime =
     timestamp ?? process?.completed_at ?? process?.started_at ?? null;
-  const parts: (string | ArtifactReference | StatusBlockSegment)[] = [];
+  const parts: (
+    | string
+    | ArtifactReference
+    | StatusBlockSegment
+    | { kind: 'managed'; id: string }
+  )[] = [];
   for (const { segment, artifact } of segments) {
+    const managed =
+      segment.kind === 'file' ? drawerArtifactId(segment.path) : null;
+    if (managed && workspaceId && sessionId) {
+      parts.push({ kind: 'managed', id: managed });
+      continue;
+    }
     if (artifact && workspaceId && sessionId) {
       parts.push(artifact);
       continue;
@@ -1173,6 +1190,15 @@ function AssistantMessageEntry({
               className={undefined}
               maxWidth={undefined}
               renderMermaidArtifacts
+            />
+          ) : 'kind' in part && part.kind === 'managed' ? (
+            <DrawerArtifact
+              key={index}
+              id={part.id}
+              workspaceId={workspaceId!}
+              sessionId={sessionId!}
+              hostId={hostId}
+              archived={archived}
             />
           ) : 'kind' in part ? (
             // An empty block (a fence just opened) says nothing yet.

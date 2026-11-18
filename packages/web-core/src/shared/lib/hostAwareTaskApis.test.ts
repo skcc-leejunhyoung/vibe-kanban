@@ -32,27 +32,6 @@ function apiResponse<T>(data: T): Response {
 }
 
 describe('host-aware task APIs', () => {
-  it('resolves transfer ownership through the selected host and forwards cancellation', async () => {
-    const request = vi.fn(async () => apiResponse({ status: 'ready' }));
-    setLocalApiTransport({ request, openWebSocket: vi.fn() });
-    const signal = new AbortController().signal;
-    await ownedArtifactsApi.transferStatus(
-      'synthetic/artifact',
-      'host-a',
-      signal
-    );
-    await ownedArtifactsApi.transferStatus('synthetic-artifact', null, signal);
-    expect(request).toHaveBeenNthCalledWith(
-      1,
-      '/api/host/host-a/artifacts/synthetic%2Fartifact/transfer',
-      expect.objectContaining({ signal })
-    );
-    expect(request).toHaveBeenNthCalledWith(
-      2,
-      '/api/artifacts/synthetic-artifact/transfer',
-      expect.objectContaining({ signal })
-    );
-  });
   it('routes transferred documents and snapshots by their exact host, workspace and session', async () => {
     const request = vi.fn<(path: string) => Promise<Response>>(async () =>
       apiResponse({})
@@ -69,11 +48,6 @@ describe('host-aware task APIs', () => {
       owner,
       'synthetic-version',
       'host-b'
-    );
-    await ownedArtifactsApi.list(
-      owner.workspace_id,
-      owner.session_id,
-      'host-a'
     );
     for (const [path] of request.mock.calls) {
       const url = new URL(path, 'https://example.test');

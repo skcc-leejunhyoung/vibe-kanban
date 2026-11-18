@@ -581,6 +581,9 @@ pub fn transcript_references<'a>(
         for candidate in entry_candidates(entry) {
             let id = match candidate {
                 ArtifactCandidate::File(path) => {
+                    if super::drawer_artifacts::is_link(&path) {
+                        continue;
+                    }
                     let Ok(path) = resolve_reference(&root, &working, &path) else {
                         continue;
                     };
@@ -1156,6 +1159,9 @@ impl ArtifactObserver {
                     self.dirty = true;
                 }
                 ArtifactCandidate::File(path) => {
+                    if super::drawer_artifacts::is_link(&path) {
+                        continue;
+                    }
                     if let Ok(path) = resolve_reference(&self.root, &self.working_dir, &path) {
                         self.add_file(
                             path,
@@ -1842,6 +1848,51 @@ mod tests {
             assert!(resolve_path(&root, &root, "escape.html").is_err());
             assert!(resolve_reference(&root, &root, "escape.html").is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn managed_attachment_links_are_not_execution_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let files = FileService::new(pool).unwrap();
+        let session = Uuid::new_v4();
+        let execution = Uuid::new_v4();
+        let existing = format!("drawer-artifacts/{}", Uuid::new_v4());
+        std::fs::create_dir(root.join("drawer-artifacts")).unwrap();
+        std::fs::write(root.join(&existing), "synthetic unrelated disk file").unwrap();
+        let text = format!(
+            "[Existing]({existing} \"vibe-artifact\")\n[Missing](drawer-artifacts/{} \"vibe-artifact\")",
+            Uuid::new_v4()
+        );
+        let mut observer = ArtifactObserver::start(
+            root.clone(),
+            root.clone(),
+            Uuid::new_v4(),
+            session,
+            execution,
+            files,
+        )
+        .await
+        .unwrap();
+        let registration = observer.register_text(&text);
+        assert!(registration.files.is_empty() && registration.missing.is_empty());
+        let entry = NormalizedEntry {
+            timestamp: None,
+            metadata: None,
+            content: text,
+            entry_type: NormalizedEntryType::AssistantMessage,
+        };
+        observer.observe_entry(0, &entry).await;
+        observer.tick(true).await.unwrap();
+        let manifest = load(session, execution).await.unwrap().unwrap();
+        assert!(manifest.list.artifacts.is_empty());
+        assert!(manifest.list.warnings.is_empty());
+        assert!(
+            transcript_references(&manifest, &root, &root, "synthetic-child", [(0, &entry)])
+                .is_empty()
+        );
     }
 
     #[tokio::test]

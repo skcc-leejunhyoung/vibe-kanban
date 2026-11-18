@@ -5,6 +5,13 @@ import type { DrawerArtifactDocument } from 'shared/types';
 import { DrawerArtifact } from './DrawerArtifact';
 import { buildArtifactPreview } from './artifact-preview';
 
+const auth = vi.hoisted(() => ({
+  isLoaded: true,
+  isSignedIn: true,
+  userId: 'synthetic-account',
+}));
+vi.mock('@/shared/hooks/auth/useAuth', () => ({ useAuth: () => auth }));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: { time?: string }) =>
@@ -47,6 +54,7 @@ function render(archived = false, documentNoteId = document.note_id!) {
   client.setQueryData(
     [
       'drawer-artifact-document',
+      'synthetic-account',
       'synthetic-host',
       document.note_id!,
       document.id,
@@ -56,6 +64,7 @@ function render(archived = false, documentNoteId = document.note_id!) {
   client.setQueryData(
     [
       'drawer-artifact-data',
+      'synthetic-account',
       'synthetic-host',
       document.note_id!,
       document.id,
@@ -82,8 +91,21 @@ function render(archived = false, documentNoteId = document.note_id!) {
 afterEach(() => {
   clients.splice(0).forEach((client) => client.clear());
   vi.clearAllMocks();
+  Object.assign(auth, {
+    isLoaded: true,
+    isSignedIn: true,
+    userId: 'synthetic-account',
+  });
 });
 describe('Drawer read-only dashboard', () => {
+  it('hides cached content on logout and isolates the next account', () => {
+    expect(render()).toContain('<iframe');
+    auth.isSignedIn = false;
+    expect(render()).not.toContain('<iframe');
+    auth.isSignedIn = true;
+    auth.userId = 'synthetic-account-b';
+    expect(render()).not.toContain('<iframe');
+  });
   it('uses the isolated content-height frame with no submission capability or path header', () => {
     const html = render();
     expect(html).toContain('sandbox="allow-scripts"');
@@ -130,7 +152,13 @@ describe('Drawer read-only dashboard', () => {
       session_id: session,
     };
     client.setQueryData(
-      ['drawer-artifact-document', 'synthetic-host', key, document.id],
+      [
+        'drawer-artifact-document',
+        'synthetic-account',
+        'synthetic-host',
+        key,
+        document.id,
+      ],
       moved
     );
     const renderWorkspace = () =>
@@ -153,7 +181,13 @@ describe('Drawer read-only dashboard', () => {
       { note_id: document.note_id },
     ]) {
       client.setQueryData(
-        ['drawer-artifact-document', 'synthetic-host', key, document.id],
+        [
+          'drawer-artifact-document',
+          'synthetic-account',
+          'synthetic-host',
+          key,
+          document.id,
+        ],
         { ...moved, ...mismatch }
       );
       expect(renderWorkspace()).not.toContain('<iframe');
