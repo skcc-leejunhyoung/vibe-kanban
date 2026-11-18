@@ -229,6 +229,19 @@ impl WorkspaceRepo {
         Ok(())
     }
 
+    /// A completed merge may materialize its target, without undoing a newer user choice.
+    pub async fn update_target_branch_if_unchanged(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        repo_id: Uuid,
+        expected: &str,
+        target: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workspace_repos SET target_branch = ?, updated_at = datetime('now') WHERE workspace_id = ? AND repo_id = ? AND target_branch = ?")
+            .bind(target).bind(workspace_id).bind(repo_id).bind(expected).execute(pool).await?;
+        Ok(())
+    }
+
     pub async fn update_target_branch_for_children_of_workspace(
         pool: &SqlitePool,
         parent_workspace_id: Uuid,

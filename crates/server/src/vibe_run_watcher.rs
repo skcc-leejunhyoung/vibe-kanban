@@ -102,7 +102,7 @@ async fn retry_due_merges(deployment: &DeploymentImpl, now: DateTime<Utc>) -> an
         }
         if let Err(e) = deployment
             .container()
-            .vibe_retry_merge(&workspace, false)
+            .vibe_retry_merge(&workspace, run.generation, false)
             .await
         {
             tracing::warn!("vibe: merge retry for {} failed: {}", run.workspace_id, e);

@@ -119,6 +119,7 @@ pub async fn pr_branch_plan(
         Some(base) => {
             let base = base.trim().to_string();
             vibe_pr_bases::validate_base(git, &repo.path, &head, &base)
+                .await
                 .map_err(ApiError::BadRequest)?;
             Some(base)
         }
@@ -1153,18 +1154,7 @@ pub async fn create_pr(
     let git = deployment.git();
     let push_remote = git.resolve_remote_for_branch(&repo_path, &head_branch)?;
 
-    // Try to get the remote from the branch name (works for remote-tracking branches like "upstream/main").
-    // Fall back to push_remote if the branch doesn't exist locally or isn't a remote-tracking branch.
-    let (target_remote, base_branch) =
-        match git.get_remote_from_branch_name(&repo_path, &target_branch) {
-            Ok(remote) => {
-                let branch = target_branch
-                    .strip_prefix(&format!("{}/", remote.name))
-                    .unwrap_or(&target_branch);
-                (remote, branch.to_string())
-            }
-            Err(_) => (push_remote.clone(), target_branch.clone()),
-        };
+    let (target_remote, base_branch) = git.pr_base_remote(&repo_path, &target_branch, &push_remote);
 
     if let Some(err) =
         same_head_and_base_error(&head_branch, &push_remote, &base_branch, &target_remote)

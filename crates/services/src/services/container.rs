@@ -1151,6 +1151,7 @@ pub trait ContainerService {
     async fn vibe_retry_merge(
         &self,
         workspace: &Workspace,
+        expected_generation: i64,
         fresh: bool,
     ) -> Result<(), ContainerError>;
 

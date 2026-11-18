@@ -5,7 +5,7 @@ use db::models::{
     merge::{Merge, MergeStatus},
     vibe_run::{PrBase, PrBaseSelection, VibeRun},
     workspace::Workspace,
-    workspace_repo::WorkspaceRepo,
+    workspace_repo::{RepoWithTargetBranch, WorkspaceRepo},
 };
 use git::GitService;
 use sqlx::SqlitePool;
@@ -65,24 +65,37 @@ pub fn expected_head(
 }
 
 /// Preserve the remote-qualified selection; only normalize for comparison.
-pub fn validate_base(
+pub async fn validate_base(
     git: &GitService,
     path: &std::path::Path,
     head: &str,
     base: &str,
 ) -> Result<(), String> {
-    let canonical = git.local_target_branch_name(path, base).map_err(|e| {
+    git.local_target_branch_name(path, base).map_err(|e| {
         format!("PR base '{base}' is unavailable: {e}. Select an existing PR base, then retry.")
     })?;
     let push_remote = git
         .resolve_remote_for_branch(path, head)
         .map_err(|e| e.to_string())?;
-    let base_remote = git
-        .get_remote_from_branch_name(path, base)
-        .unwrap_or_else(|_| push_remote.clone());
-    if head == canonical && push_remote.url == base_remote.url {
+    let (base_remote, remote_branch) = git.pr_base_remote(path, base, &push_remote);
+    if head == remote_branch && push_remote.url == base_remote.url {
         return Err(format!(
             "PR head and base are both '{head}'. Select a different PR base (pr_bases) or fix the repository default target branch, then retry."
+        ));
+    }
+    let (git, path, remote_url) = (git.clone(), path.to_path_buf(), base_remote.url.clone());
+    let exists = tokio::task::spawn_blocking(move || {
+        git.check_remote_branch_exists(&path, &remote_url, &remote_branch)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| {
+        format!("Could not verify PR base '{base}': {e}. Check remote access and retry.")
+    })?;
+    if !exists {
+        return Err(format!(
+            "PR base '{base}' does not exist on remote '{}'. Fetch and select a PR base that exists on this remote, then retry.",
+            base_remote.name
         ));
     }
     Ok(())
@@ -165,6 +178,7 @@ pub async fn resolve(
             .map(str::trim).filter(|s| !s.is_empty())
             .ok_or_else(|| format!("{}: final PR base is not configured (head: '{head}'). Set the repository default target branch or select a PR base for this run (pr_bases) before starting review.", repo.repo.name))?;
         validate_base(git, &repo.repo.path, &head, base)
+            .await
             .map_err(|e| format!("{}: {e}", repo.repo.name))?;
         bases.push(PrBase {
             repo_id: repo.repo.id,
@@ -191,6 +205,39 @@ pub async fn validate(
         return Err("This run was superseded. Refresh its status before retrying.".into());
     }
     resolve(pool, git, workspace, None, Some(&saved.0), after_merge).await
+}
+
+/// Freeze the raw merge targets checked against the run, including remote refs.
+pub async fn confirmed_merge_repos(
+    pool: &SqlitePool,
+    git: &GitService,
+    workspace: &Workspace,
+    bases: &[PrBase],
+) -> Result<Vec<RepoWithTargetBranch>, String> {
+    let repos = WorkspaceRepo::find_repos_with_target_branch_for_workspace(pool, workspace.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if repos.len() != bases.len() {
+        return Err(
+            "Workspace repositories changed. Confirm PR bases for every repository, then retry."
+                .into(),
+        );
+    }
+    for repo in &repos {
+        let target = git
+            .local_target_branch_name(&repo.repo.path, &repo.target_branch)
+            .map_err(|e| e.to_string())?;
+        if !bases
+            .iter()
+            .any(|base| base.repo_id == repo.repo.id && base.target_branch == target)
+        {
+            return Err(format!(
+                "{}: the merge target changed. Confirm the PR base and target before retrying.",
+                repo.repo.name
+            ));
+        }
+    }
+    Ok(repos)
 }
 
 #[cfg(test)]
@@ -391,7 +438,20 @@ mod tests {
     #[tokio::test]
     async fn a_remote_only_base_remains_resolvable_without_creating_a_local_branch() {
         let f = Fixture::new().await;
-        git(&f.repo.path, &["remote", "add", "upstream", "."]);
+        let upstream = f.dir.path().join("upstream.git");
+        git(
+            f.dir.path(),
+            &[
+                "clone",
+                "--bare",
+                f.repo.path.to_str().unwrap(),
+                upstream.to_str().unwrap(),
+            ],
+        );
+        git(
+            &f.repo.path,
+            &["remote", "add", "upstream", upstream.to_str().unwrap()],
+        );
         git(&f.repo.path, &["fetch", "upstream"]);
         git(&f.repo.path, &["branch", "-m", "integration", "renamed"]);
         let bases = f
@@ -668,27 +728,32 @@ mod tests {
     #[tokio::test]
     async fn a_remote_qualified_base_retains_its_receiving_repository() {
         let f = Fixture::new().await;
+        let fork = f.dir.path().join("fork.git");
+        let central = f.dir.path().join("central.git");
+        for remote in [&fork, &central] {
+            git(
+                f.dir.path(),
+                &[
+                    "clone",
+                    "--bare",
+                    f.repo.path.to_str().unwrap(),
+                    remote.to_str().unwrap(),
+                ],
+            );
+        }
         git(
             &f.repo.path,
-            &[
-                "remote",
-                "set-url",
-                "origin",
-                "https://example.invalid/fork/widgets.git",
-            ],
+            &["remote", "set-url", "origin", fork.to_str().unwrap()],
         );
         git(
             &f.repo.path,
-            &[
-                "remote",
-                "add",
-                "upstream",
-                "https://example.invalid/central/widgets.git",
-            ],
+            &["remote", "add", "upstream", central.to_str().unwrap()],
         );
+        git(&f.repo.path, &["fetch", "upstream"]);
+        // The receiving remote's default is not the explicitly chosen base.
         git(
-            &f.repo.path,
-            &["update-ref", "refs/remotes/upstream/integration", "HEAD"],
+            &central,
+            &["symbolic-ref", "HEAD", "refs/heads/feature/example"],
         );
         let bases = f
             .resolve(Some(&f.selection("upstream/integration")), None, false)
@@ -704,20 +769,147 @@ mod tests {
             .get_remote_from_branch_name(&f.repo.path, &validated[0].base_branch)
             .unwrap();
         assert_eq!(remote.name, "upstream");
-        assert_eq!(remote.url, "https://example.invalid/central/widgets.git");
-        // Equal names on different receiving repositories remain valid.
-        git(
-            &f.repo.path,
-            &[
-                "update-ref",
-                "refs/remotes/upstream/feature/example",
-                "HEAD",
-            ],
-        );
+        assert_eq!(remote.url, central.to_str().unwrap());
+        let push_remote = f
+            .git
+            .resolve_remote_for_branch(&f.repo.path, "feature/example")
+            .unwrap();
+        let (_, branch) =
+            f.git
+                .pr_base_remote(&f.repo.path, &validated[0].base_branch, &push_remote);
+        assert_eq!(branch, "integration");
         assert!(
             f.resolve(Some(&f.selection("upstream/feature/example")), None, false)
                 .await
                 .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_local_only_base_is_refused_before_any_run_or_merge_is_created() {
+        let f = Fixture::new().await;
+        let origin = f.dir.path().join("origin.git");
+        git(
+            f.dir.path(),
+            &[
+                "clone",
+                "--bare",
+                "--single-branch",
+                "--branch",
+                "feature/example",
+                f.repo.path.to_str().unwrap(),
+                origin.to_str().unwrap(),
+            ],
+        );
+        git(
+            &f.repo.path,
+            &["remote", "set-url", "origin", origin.to_str().unwrap()],
+        );
+        assert!(
+            f.git
+                .check_local_branch_exists(&f.repo.path, "integration")
+                .unwrap()
+        );
+        let error = f
+            .resolve(Some(&f.selection("integration")), None, false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("does not exist on remote"), "{error}");
+        assert!(
+            VibeRun::find_non_terminal(&f.pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            Merge::find_by_workspace_id(&f.pool, f.workspace.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            Repo::find_by_id(&f.pool, f.repo.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .default_target_branch
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stale_tracking_ref_cannot_hide_a_deleted_remote_base() {
+        let f = Fixture::new().await;
+        let origin = f.dir.path().join("origin.git");
+        git(
+            f.dir.path(),
+            &[
+                "clone",
+                "--bare",
+                f.repo.path.to_str().unwrap(),
+                origin.to_str().unwrap(),
+            ],
+        );
+        git(
+            &f.repo.path,
+            &["remote", "set-url", "origin", origin.to_str().unwrap()],
+        );
+        git(&f.repo.path, &["fetch", "origin"]);
+        git(&origin, &["update-ref", "-d", "refs/heads/integration"]);
+        assert!(
+            f.git
+                .check_branch_exists(&f.repo.path, "origin/integration")
+                .unwrap()
+        );
+        let error = f
+            .resolve(Some(&f.selection("origin/integration")), None, false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("does not exist on remote"), "{error}");
+        assert!(
+            VibeRun::find_non_terminal(&f.pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmed_targets_are_frozen_and_every_repo_is_checked_before_execution() {
+        let f = Fixture::new().await;
+        let second = Fixture::add_repo(&f.pool, &f.workspace, f.dir.path(), "gadgets").await;
+        let mut selections = f.selection("integration");
+        selections.push(PrBaseSelection {
+            repo_id: second.id,
+            base_branch: "integration".into(),
+        });
+        let bases = f.resolve(Some(&selections), None, false).await.unwrap();
+        let repos = confirmed_merge_repos(&f.pool, &f.git, &f.workspace, &bases)
+            .await
+            .unwrap();
+        WorkspaceRepo::update_target_branch(&f.pool, f.workspace.id, second.id, "other")
+            .await
+            .unwrap();
+        assert!(
+            repos
+                .iter()
+                .all(|repo| repo.target_branch == "feature/example")
+        );
+        let error = confirmed_merge_repos(&f.pool, &f.git, &f.workspace, &bases)
+            .await
+            .unwrap_err();
+        assert!(error.contains("merge target changed"), "{error}");
+        assert!(
+            VibeRun::find_non_terminal(&f.pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            Merge::find_by_workspace_id(&f.pool, f.workspace.id)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

@@ -26,7 +26,7 @@ use db::{
         session_message_index::SessionMessageIndex,
         vibe_run::{MergeWait, PrRequest, VibeRun},
         workspace::Workspace,
-        workspace_repo::WorkspaceRepo,
+        workspace_repo::{RepoWithTargetBranch, WorkspaceRepo},
     },
 };
 use deployment::DeploymentError;
@@ -3051,24 +3051,37 @@ impl LocalContainerService {
         let pool = &self.db.pool;
         let workspace_id = workspace.id;
         let task_id = vibe_run.task_id;
-        if vibe_run.pr_requested
-            && let Err(reason) = services::services::vibe_pr_bases::validate(
-                pool, &self.git, workspace, vibe_run, false,
-            )
-            .await
-        {
-            VibeRun::record_merge_failure(
-                pool,
-                workspace_id,
-                vibe_run.generation,
-                "blocked",
-                &reason,
-                None,
-            )
-            .await
-            .map_err(|e| ContainerError::Other(anyhow!(e)))?;
-            return Ok(());
-        }
+        let repos = if vibe_run.pr_requested {
+            let confirmed = async {
+                let bases = services::services::vibe_pr_bases::validate(
+                    pool, &self.git, workspace, vibe_run, false,
+                )
+                .await?;
+                services::services::vibe_pr_bases::confirmed_merge_repos(
+                    pool, &self.git, workspace, &bases,
+                )
+                .await
+            }
+            .await;
+            match confirmed {
+                Ok(repos) => repos,
+                Err(reason) => {
+                    VibeRun::record_merge_failure(
+                        pool,
+                        workspace_id,
+                        vibe_run.generation,
+                        "blocked",
+                        &reason,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| ContainerError::Other(anyhow!(e)))?;
+                    return Ok(());
+                }
+            }
+        } else {
+            WorkspaceRepo::find_repos_with_target_branch_for_workspace(pool, workspace_id).await?
+        };
         // Only a merge already in `merging` carries its wait on; an approve
         // from review or a re-approve after blocked starts a new one.
         let (wait_since, wait_attempts) = if vibe_run.phase == VibePhase::Merging.as_str() {
@@ -3093,7 +3106,7 @@ impl LocalContainerService {
         // Git refuses blocking local edits. Never ask an agent to settle
         // another checkout's WIP: wait for its owner, then hand the reason to
         // the review session.
-        let (outcome, detail, base_busy) = self.vibe_perform_merge(workspace).await;
+        let (outcome, detail, base_busy) = self.vibe_perform_merge(workspace, &repos).await;
         if VibeRun::find_by_workspace_id(pool, workspace_id)
             .await
             .map_err(|e| ContainerError::Other(anyhow!(e)))?
@@ -3539,7 +3552,11 @@ impl LocalContainerService {
     /// (empty on success) for the run's `last_error`, the issue comment and
     /// the notification — the outcome alone hid *why* an auto-merge gave up —
     /// and whether a session is running in a checkout whose edits block it.
-    async fn vibe_perform_merge(&self, workspace: &Workspace) -> (MergeOutcome, String, bool) {
+    async fn vibe_perform_merge(
+        &self,
+        workspace: &Workspace,
+        workspace_repos: &[RepoWithTargetBranch],
+    ) -> (MergeOutcome, String, bool) {
         let workspace_id = workspace.id;
         let failed = |message: String| {
             let outcome = if vibe_orchestrator::is_transient_git_error(&message) {
@@ -3550,15 +3567,9 @@ impl LocalContainerService {
             (outcome, message, false)
         };
 
-        let workspace_repos =
-            match WorkspaceRepo::find_by_workspace_id(&self.db.pool, workspace_id).await {
-                Ok(v) if !v.is_empty() => v,
-                Ok(_) => return failed("workspace has no repos to merge".to_string()),
-                Err(e) => {
-                    tracing::error!("vibe merge: load workspace_repos failed: {}", e);
-                    return failed(format!("load workspace repos failed: {e}"));
-                }
-            };
+        if workspace_repos.is_empty() {
+            return failed("workspace has no repos to merge".to_string());
+        }
 
         let container_ref = match self.ensure_container_exists(workspace).await {
             Ok(r) => r,
@@ -3579,20 +3590,8 @@ impl LocalContainerService {
         // review / Done even though nothing actually merged.
         let mut any_review_ready = false;
 
-        for workspace_repo in &workspace_repos {
-            let repo = match Repo::find_by_id(&self.db.pool, workspace_repo.repo_id).await {
-                Ok(Some(r)) => r,
-                Ok(None) => {
-                    tracing::warn!("vibe merge: repo {} not found", workspace_repo.repo_id);
-                    failures.other(format!("repo {} not found", workspace_repo.repo_id));
-                    continue;
-                }
-                Err(e) => {
-                    tracing::error!("vibe merge: load repo failed: {}", e);
-                    failures.other(format!("load repo failed: {e}"));
-                    continue;
-                }
-            };
+        for workspace_repo in workspace_repos {
+            let repo = &workspace_repo.repo;
             // Held through rebase, merge and its record: a concurrent approve
             // into the same checkout waits here, then rebases onto our merge.
             let _checkout = lock_repo_checkout(&repo.path).await;
@@ -3744,10 +3743,11 @@ impl LocalContainerService {
             match merge_result {
                 Ok(merge_commit_id) => {
                     if is_target_remote
-                        && let Err(e) = WorkspaceRepo::update_target_branch(
+                        && let Err(e) = WorkspaceRepo::update_target_branch_if_unchanged(
                             &self.db.pool,
                             workspace_id,
                             repo.id,
+                            &workspace_repo.target_branch,
                             &target_branch,
                         )
                         .await
@@ -4732,6 +4732,7 @@ impl ContainerService for LocalContainerService {
     async fn vibe_retry_merge(
         &self,
         workspace: &Workspace,
+        expected_generation: i64,
         fresh: bool,
     ) -> Result<(), ContainerError> {
         let pool = &self.db.pool;
@@ -4739,6 +4740,12 @@ impl ContainerService for LocalContainerService {
             .await
             .map_err(|e| ContainerError::Other(anyhow!("vibe: load run failed: {e}")))?
             .ok_or_else(|| ContainerError::Other(anyhow!("vibe: workspace has no vibe run")))?;
+        if run.generation != expected_generation
+            || run.phase != VibePhase::Merging.as_str()
+            || (fresh && run.last_error.is_some())
+        {
+            return Ok(());
+        }
         let review_session = match run.review_session_id {
             Some(id) => Session::find_by_id(pool, id).await?,
             None => None,
@@ -5763,6 +5770,27 @@ done
         assert!(out.status.success(), "git {args:?}: {out:?}");
     }
 
+    async fn retry_merge(container: &LocalContainerService, workspace: &Workspace, fresh: bool) {
+        let run = VibeRun::find_by_workspace_id(&container.db.pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let generation = if fresh {
+            assert!(
+                VibeRun::retry(&container.db.pool, &run, None)
+                    .await
+                    .unwrap()
+            );
+            run.generation + 1
+        } else {
+            run.generation
+        };
+        container
+            .vibe_retry_merge(workspace, generation, fresh)
+            .await
+            .unwrap();
+    }
+
     /// A workspace whose branch adds `<name>.txt` on top of `main`.
     async fn task_workspace(
         container: &LocalContainerService,
@@ -5825,7 +5853,15 @@ done
         let container = Arc::new(container_on(pool));
         let merge = |workspace: Workspace| {
             let container = container.clone();
-            tokio::spawn(async move { container.vibe_perform_merge(&workspace).await })
+            tokio::spawn(async move {
+                let repos = WorkspaceRepo::find_repos_with_target_branch_for_workspace(
+                    &container.db.pool,
+                    workspace.id,
+                )
+                .await
+                .unwrap();
+                container.vibe_perform_merge(&workspace, &repos).await
+            })
         };
 
         let a = task_workspace(&container, &repo, dir.path(), "a").await;
@@ -6001,7 +6037,7 @@ done
             .execute(&pool)
             .await
             .unwrap();
-        container.vibe_retry_merge(&workspace, false).await.unwrap();
+        retry_merge(&container, &workspace, false).await;
         let still = run().await;
         assert_eq!(still.phase, "merging");
         assert_eq!(still.merge_wait_attempts, 2);
@@ -6034,7 +6070,7 @@ done
 
         // The owner commits: the retry rebases onto it and fast-forwards.
         git(&repo_path, &["commit", "-am", "wip"]);
-        container.vibe_retry_merge(&workspace, false).await.unwrap();
+        retry_merge(&container, &workspace, false).await;
         let done = run().await;
         assert_eq!(done.phase, "done");
         assert!(done.last_error.is_none() && done.merge_retry_at.is_none());
@@ -6108,10 +6144,10 @@ done
         };
 
         // A scheduled retry only continues a waiting merge.
-        container.vibe_retry_merge(&workspace, false).await.unwrap();
+        retry_merge(&container, &workspace, false).await;
         assert_eq!(phase().await, "blocked");
 
-        container.vibe_retry_merge(&workspace, true).await.unwrap();
+        retry_merge(&container, &workspace, true).await;
 
         let run = VibeRun::find_by_workspace_id(&pool, workspace.id)
             .await
@@ -6208,7 +6244,7 @@ done
         WorkspaceRepo::update_target_branch(&pool, workspace.id, repo.id, "main")
             .await
             .unwrap();
-        container.vibe_retry_merge(&workspace, true).await.unwrap();
+        retry_merge(&container, &workspace, true).await;
 
         let merged = run().await;
         assert_eq!(merged_files(), "a.txt\n");
@@ -6232,6 +6268,209 @@ done
         assert_eq!(merged_files(), "a.txt\nb.txt\n");
         assert_eq!(done.phase, "done");
         assert!(!done.pr_requested);
+    }
+
+    #[tokio::test]
+    async fn vibe_stale_manual_retry_leaves_a_new_unapproved_review_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("repo");
+        git(dir.path(), &["init", "-b", "main", "repo"]);
+        git(
+            &repo_path,
+            &["commit", "--allow-empty", "-m", "Synthetic initial work"],
+        );
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let repo = Repo::find_or_create(&pool, &repo_path, "repo")
+            .await
+            .unwrap();
+        let container = container_on(pool.clone());
+        let workspace = task_workspace(&container, &repo, dir.path(), "example").await;
+        let mut reviews = Vec::new();
+        for _ in 0..2 {
+            reviews.push(
+                Session::create(
+                    &pool,
+                    &CreateSession {
+                        executor: None,
+                        variant: None,
+                        name: None,
+                    },
+                    Uuid::new_v4(),
+                    workspace.id,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        VibeRun::get_or_create(&pool, workspace.id, Uuid::new_v4())
+            .await
+            .unwrap();
+        VibeRun::begin_review(&pool, workspace.id, reviews[0].id, None)
+            .await
+            .unwrap();
+        let approved = VibeRun::find_by_workspace_id(&pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        VibeRun::record_merge_failure(
+            &pool,
+            workspace.id,
+            approved.generation,
+            "blocked",
+            "synthetic merge failure",
+            None,
+        )
+        .await
+        .unwrap();
+        let blocked = VibeRun::find_by_workspace_id(&pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(VibeRun::retry(&pool, &blocked, None).await.unwrap());
+        let claimed_generation = blocked.generation + 1;
+        VibeRun::begin_review(&pool, workspace.id, reviews[1].id, None)
+            .await
+            .unwrap();
+        container
+            .vibe_retry_merge(&workspace, claimed_generation, true)
+            .await
+            .unwrap();
+        let current = VibeRun::find_by_workspace_id(&pool, workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.phase, "review");
+        assert_eq!(current.review_session_id, Some(reviews[1].id));
+        assert_eq!(current.generation, claimed_generation + 1);
+        assert!(current.last_error.is_none());
+        assert!(
+            Merge::find_by_workspace_id(&pool, workspace.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let files = std::process::Command::new("git")
+            .args(["ls-tree", "--name-only", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        assert!(files.stdout.is_empty());
+    }
+
+    #[tokio::test]
+    async fn vibe_merge_uses_its_confirmed_target_after_the_workspace_target_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("repo");
+        git(dir.path(), &["init", "-b", "main", "repo"]);
+        git(
+            &repo_path,
+            &["commit", "--allow-empty", "-m", "Synthetic initial work"],
+        );
+        for branch in ["integration", "other"] {
+            git(&repo_path, &["branch", branch]);
+        }
+        git(&repo_path, &["remote", "add", "origin", "."]);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let repo = Repo::find_or_create(&pool, &repo_path, "repo")
+            .await
+            .unwrap();
+        let container = container_on(pool.clone());
+        let workspace = task_workspace(&container, &repo, dir.path(), "example").await;
+        let bases = services::services::vibe_pr_bases::resolve(
+            &pool,
+            &container.git,
+            &workspace,
+            Some(&[db::models::vibe_run::PrBaseSelection {
+                repo_id: repo.id,
+                base_branch: "integration".into(),
+            }]),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let repos = services::services::vibe_pr_bases::confirmed_merge_repos(
+            &pool,
+            &container.git,
+            &workspace,
+            &bases,
+        )
+        .await
+        .unwrap();
+        WorkspaceRepo::update_target_branch(&pool, workspace.id, repo.id, "other")
+            .await
+            .unwrap();
+        assert_eq!(
+            container.vibe_perform_merge(&workspace, &repos).await.0,
+            MergeOutcome::Success
+        );
+        let files = |branch| {
+            std::process::Command::new("git")
+                .args(["ls-tree", "--name-only", branch])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout
+        };
+        assert_eq!(files("main"), b"example.txt\n");
+        assert!(files("other").is_empty());
+        let current = WorkspaceRepo::find_by_workspace_and_repo_id(&pool, workspace.id, repo.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.target_branch, "other");
+        let merges = Merge::find_by_workspace_and_repo_id(&pool, workspace.id, repo.id)
+            .await
+            .unwrap();
+        assert!(matches!(&merges[0], Merge::Direct(merged) if merged.target_branch_name == "main"));
+        // Materialization also must not undo a concurrent user target change.
+        WorkspaceRepo::update_target_branch_if_unchanged(
+            &pool,
+            workspace.id,
+            repo.id,
+            "origin/main",
+            "main",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            WorkspaceRepo::find_by_workspace_and_repo_id(&pool, workspace.id, repo.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .target_branch,
+            "other"
+        );
+        WorkspaceRepo::update_target_branch(&pool, workspace.id, repo.id, "origin/main")
+            .await
+            .unwrap();
+        WorkspaceRepo::update_target_branch_if_unchanged(
+            &pool,
+            workspace.id,
+            repo.id,
+            "origin/main",
+            "main",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            WorkspaceRepo::find_by_workspace_and_repo_id(&pool, workspace.id, repo.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .target_branch,
+            "main"
+        );
     }
 
     /// A follow-up for `agent`; anything but Claude Code fails to start in the

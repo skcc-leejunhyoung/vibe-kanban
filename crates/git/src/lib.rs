@@ -2390,6 +2390,25 @@ impl GitService {
         Ok(GitRemote { name, url })
     }
 
+    /// Resolve a PR's receiving remote and its unqualified branch without changing refs.
+    pub fn pr_base_remote(
+        &self,
+        repo_path: &Path,
+        base: &str,
+        push_remote: &GitRemote,
+    ) -> (GitRemote, String) {
+        match self.get_remote_from_branch_name(repo_path, base) {
+            Ok(remote) => {
+                let branch = base
+                    .strip_prefix(&format!("{}/", remote.name))
+                    .unwrap_or(base)
+                    .to_string();
+                (remote, branch)
+            }
+            Err(_) => (push_remote.clone(), base.to_string()),
+        }
+    }
+
     pub fn get_remote_url(
         &self,
         repo_path: &Path,

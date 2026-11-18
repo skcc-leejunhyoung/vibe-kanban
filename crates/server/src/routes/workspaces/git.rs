@@ -1424,13 +1424,12 @@ fn compute_pr_head_ahead_behind(
 /// the ahead/behind fields are left zeroed and the corresponding flags tell the
 /// UI to disable the fetch/push buttons.
 fn compute_target_branch_remote_status(
-    deployment: &DeploymentImpl,
+    git: &git::GitService,
     repo: &Repo,
     target_branch: &str,
 ) -> Result<TargetBranchRemoteStatus, GitServiceError> {
-    let git = deployment.git();
     let is_target_remote = git.is_remote_branch(&repo.path, target_branch)?;
-    let remote = resolve_primary_remote(deployment, repo);
+    let remote = resolve_primary_remote_with(git, repo);
 
     if let (Some(remote_name), false) = (&remote, is_target_remote) {
         let (remote_branch_exists, ahead, behind) =
@@ -1484,8 +1483,11 @@ pub async fn get_target_branch_remote_status(
 ) -> Result<ResponseJson<ApiResponse<TargetBranchRemoteStatus>>, ApiError> {
     let (repo, workspace_repo) =
         load_workspace_repo(&deployment, workspace.id, query.repo_id).await?;
-    let status =
-        compute_target_branch_remote_status(&deployment, &repo, &workspace_repo.target_branch)?;
+    let status = compute_target_branch_remote_status(
+        deployment.git(),
+        &repo,
+        &workspace_repo.target_branch,
+    )?;
     Ok(ResponseJson(ApiResponse::success(status)))
 }
 
@@ -1515,8 +1517,11 @@ pub async fn fetch_target_branch(
         return Ok(ResponseJson(ApiResponse::error(&e.to_string())));
     }
 
-    let status =
-        compute_target_branch_remote_status(&deployment, &repo, &workspace_repo.target_branch)?;
+    let status = compute_target_branch_remote_status(
+        deployment.git(),
+        &repo,
+        &workspace_repo.target_branch,
+    )?;
     Ok(ResponseJson(ApiResponse::success(status)))
 }
 
@@ -1538,34 +1543,50 @@ pub async fn push_target_branch(
     }
     let (repo, workspace_repo) =
         load_workspace_repo(&deployment, workspace.id, request.repo_id).await?;
-    let git = deployment.git();
+    let no_verify = deployment.config().read().await.git_push_no_verify;
+    push_target_branch_to(
+        deployment.git(),
+        &repo,
+        &workspace_repo.target_branch,
+        request.force,
+        no_verify,
+    )
+}
 
-    if git.is_remote_branch(&repo.path, &workspace_repo.target_branch)? {
+/// Shared by direct pushes and the orchestrator, which supplies its confirmed target.
+#[allow(clippy::result_large_err)] // Route helpers share the existing ApiError enum.
+pub(crate) fn push_target_branch_to(
+    git: &git::GitService,
+    repo: &Repo,
+    target_branch: &str,
+    force: bool,
+    no_verify: bool,
+) -> Result<ResponseJson<ApiResponse<TargetBranchRemoteStatus, PushError>>, ApiError> {
+    if git.is_remote_branch(&repo.path, target_branch)? {
         return Err(ApiError::BadRequest(
             "The target branch is a remote branch; there is nothing to push.".to_string(),
         ));
     }
 
-    let Some(remote) = resolve_primary_remote(&deployment, &repo) else {
+    let Some(remote) = resolve_primary_remote_with(git, repo) else {
         return Ok(ResponseJson(ApiResponse::error(
             "No remote configured for this repository",
         )));
     };
 
-    let no_verify = deployment.config().read().await.git_push_no_verify;
-    match git.push_branch_to_named_remote(
-        &repo.path,
-        &workspace_repo.target_branch,
-        &remote,
-        request.force,
-        no_verify,
-    ) {
+    let pushed = if force {
+        git.push_branch_to_named_remote(&repo.path, target_branch, &remote, true, no_verify)
+    } else {
+        git.push_branch_to_named_remote_if_needed(&repo.path, target_branch, &remote, no_verify)
+    };
+    match pushed {
         Ok(()) => {
-            let status = compute_target_branch_remote_status(
-                &deployment,
-                &repo,
-                &workspace_repo.target_branch,
-            )?;
+            let mut status = compute_target_branch_remote_status(git, repo, target_branch)?;
+            // A skipped push can leave an old tracking ref after an external push.
+            if !force && (!status.remote_branch_exists || status.ahead > 0 || status.behind > 0) {
+                git.fetch_remote(&repo.path, &remote)?;
+                status = compute_target_branch_remote_status(git, repo, target_branch)?;
+            }
             Ok(ResponseJson(ApiResponse::success(status)))
         }
         Err(GitServiceError::PushDiverged { ahead, behind }) => Ok(ResponseJson(
@@ -1577,7 +1598,7 @@ pub async fn push_target_branch(
         Err(e) => {
             tracing::error!(
                 "Push of target branch '{}' to '{remote}' for repo {} failed: {e}",
-                workspace_repo.target_branch,
+                target_branch,
                 repo.id
             );
             Err(ApiError::GitService(e))

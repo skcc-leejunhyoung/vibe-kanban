@@ -19,7 +19,6 @@ use axum::{
     Extension, Json,
     body::to_bytes,
     extract::State,
-    http::HeaderMap,
     response::{IntoResponse, Json as ResponseJson},
 };
 use db::models::{
@@ -50,8 +49,7 @@ use crate::{
     DeploymentImpl,
     error::ApiError,
     routes::workspaces::{
-        git::{self, PushTargetBranchRequest},
-        git_events,
+        git, git_events,
         pr::{self, CreatePrApiRequest, GeneratePrDescriptionRequest},
     },
 };
@@ -522,55 +520,38 @@ impl FollowUpSteps for Live {
     async fn push_targets(&self, workspace: &Workspace, run: &VibeRun) -> Result<(), String> {
         let deployment = &self.0;
         let pool = &deployment.db().pool;
-        vibe_pr_bases::validate(pool, deployment.git(), workspace, run, true).await?;
-        let workspace_repos = WorkspaceRepo::find_by_workspace_id(pool, workspace.id)
-            .await
-            .map_err(db_error)?;
-        for workspace_repo in workspace_repos {
-            let Some(repo) = Repo::find_by_id(pool, workspace_repo.repo_id)
-                .await
-                .map_err(db_error)?
-            else {
-                continue;
-            };
-            let target = &workspace_repo.target_branch;
-            // A remote-only target (`origin/main`) has nothing local to push.
+        let bases = vibe_pr_bases::validate(pool, deployment.git(), workspace, run, true).await?;
+        let repos =
+            vibe_pr_bases::confirmed_merge_repos(pool, deployment.git(), workspace, &bases).await?;
+        let no_verify = deployment.config().read().await.git_push_no_verify;
+        for workspace_repo in repos {
+            let repo = workspace_repo.repo;
+            let target = workspace_repo.target_branch;
             if deployment
                 .git()
-                .is_remote_branch(&repo.path, target)
+                .is_remote_branch(&repo.path, &target)
                 .map_err(|e| format!("{}: {e}", repo.name))?
             {
                 continue;
             }
-            let answer = run_git_step(
-                GIT_STEP_WARN_AFTER,
-                "the push",
-                git::push_target_branch(
-                    Extension(workspace.clone()),
-                    State(deployment.clone()),
-                    HeaderMap::new(),
-                    Json(PushTargetBranchRequest {
-                        repo_id: repo.id,
-                        force: false,
-                    }),
-                ),
-            )
+            let repo_id = repo.id;
+            let name = repo.name.clone();
+            let what = format!("{name}: pushing target branch '{target}'");
+            let git = deployment.git().clone();
+            let answer = run_git_step(GIT_STEP_WARN_AFTER, "the push", async move {
+                git::push_target_branch_to(&git, &repo, &target, false, no_verify)
+            })
             .await
-            .map_err(|e| format!("{}: pushing target branch '{target}': {e}", repo.name))?;
+            .map_err(|e| format!("{what}: {e}"))?;
             settle(
                 pool,
                 workspace,
                 "target_push",
-                &json!({ "repo_id": repo.id }),
+                &json!({ "repo_id": repo_id }),
                 answer,
             )
             .await
-            .map_err(|e| {
-                format!(
-                    "{}: pushing target branch '{target}' failed: {e}",
-                    repo.name
-                )
-            })?;
+            .map_err(|e| format!("{what} failed: {e}"))?;
         }
         Ok(())
     }
@@ -745,6 +726,168 @@ mod tests {
             assert_eq!(task.await.unwrap().unwrap(), outcome);
             assert!(Claim::take(workspace_id).is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_push_uses_the_confirmed_target_after_a_concurrent_change() {
+        use ::git::{GitCli, GitService};
+        use db::models::{
+            vibe_run::{PrBaseSelection, PrRequest},
+            workspace_repo::CreateWorkspaceRepo,
+        };
+
+        fn git(path: &std::path::Path, args: &[&str]) -> String {
+            GitCli::new().git(path, args).unwrap()
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("widgets");
+        let origin = dir.path().join("origin.git");
+        git(dir.path(), &["init", "-b", "integration", "widgets"]);
+        git(&local, &["config", "user.name", "Example"]);
+        git(&local, &["config", "user.email", "example@example.invalid"]);
+        git(
+            &local,
+            &["commit", "--allow-empty", "-m", "Synthetic initial work"],
+        );
+        for branch in ["feature/example", "other"] {
+            git(&local, &["branch", branch]);
+        }
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "--bare",
+                local.to_str().unwrap(),
+                origin.to_str().unwrap(),
+            ],
+        );
+        git(
+            &local,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&local, &["fetch", "origin"]);
+        git(&local, &["checkout", "feature/example"]);
+        std::fs::write(local.join("head.txt"), "synthetic reviewed work").unwrap();
+        git(&local, &["add", "head.txt"]);
+        git(&local, &["commit", "-m", "Synthetic reviewed change"]);
+        let service = GitService::new();
+        let expected = service.get_branch_oid(&local, "feature/example").unwrap();
+        let untouched = service.get_branch_oid(&local, "other").unwrap();
+        let pool = pool().await;
+        let (workspace_id, review_session) = seed(&pool, "pushing").await;
+        let workspace = Workspace::find_by_id(&pool, workspace_id)
+            .await
+            .unwrap()
+            .unwrap();
+        git(&local, &["branch", &workspace.branch]);
+        let repo = Repo::find_or_create(&pool, &local, "widgets")
+            .await
+            .unwrap();
+        WorkspaceRepo::create_many(
+            &pool,
+            workspace.id,
+            &[CreateWorkspaceRepo {
+                repo_id: repo.id,
+                target_branch: "feature/example".into(),
+            }],
+        )
+        .await
+        .unwrap();
+        Merge::create_direct(&pool, workspace.id, repo.id, "feature/example", &expected)
+            .await
+            .unwrap();
+        let bases = vibe_pr_bases::resolve(
+            &pool,
+            &service,
+            &workspace,
+            Some(&[PrBaseSelection {
+                repo_id: repo.id,
+                base_branch: "integration".into(),
+            }]),
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        VibeRun::begin_review(
+            &pool,
+            workspace.id,
+            review_session,
+            Some(&PrRequest {
+                bases,
+                executor_config: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let run = run(&pool, workspace.id).await;
+        VibeRun::finish_merge(&pool, workspace.id, run.generation)
+            .await
+            .unwrap();
+        let bases = vibe_pr_bases::validate(&pool, &service, &workspace, &run, true)
+            .await
+            .unwrap();
+        let repos = vibe_pr_bases::confirmed_merge_repos(&pool, &service, &workspace, &bases)
+            .await
+            .unwrap();
+        WorkspaceRepo::update_target_branch(&pool, workspace.id, repo.id, "other")
+            .await
+            .unwrap();
+        let pushed = git::push_target_branch_to(
+            &service,
+            &repos[0].repo,
+            &repos[0].target_branch,
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            pushed.0.into_data().unwrap().target_branch,
+            "feature/example"
+        );
+        assert_eq!(
+            git(&origin, &["rev-parse", "refs/heads/feature/example"]).trim(),
+            expected
+        );
+        assert_eq!(
+            git(&origin, &["rev-parse", "refs/heads/other"]).trim(),
+            untouched
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let hooks = local.join(".git/hooks");
+            std::fs::create_dir_all(&hooks).unwrap();
+            git(
+                &local,
+                &["config", "core.hooksPath", hooks.to_str().unwrap()],
+            );
+            let hook = hooks.join("pre-push");
+            std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            git(
+                &local,
+                &["update-ref", "-d", "refs/remotes/origin/feature/example"],
+            );
+            let repeated = git::push_target_branch_to(
+                &service,
+                &repos[0].repo,
+                &repos[0].target_branch,
+                false,
+                false,
+            )
+            .unwrap();
+            let status = repeated.0.into_data().unwrap();
+            assert!(status.remote_branch_exists);
+            assert_eq!((status.ahead, status.behind), (0, 0));
+        }
+
+        assert!(
+            vibe_pr_bases::validate(&pool, &service, &workspace, &run, true)
+                .await
+                .unwrap_err()
+                .contains("Restore the workspace target")
+        );
     }
 
     /// Steps that answer from a script (success once it runs out) and log what

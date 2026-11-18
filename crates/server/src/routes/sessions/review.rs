@@ -222,7 +222,7 @@ pub async fn vibe_retry_merge(
     } else {
         deployment
             .container()
-            .vibe_retry_merge(&workspace, true)
+            .vibe_retry_merge(&workspace, run.generation + 1, true)
             .await?;
     }
 
