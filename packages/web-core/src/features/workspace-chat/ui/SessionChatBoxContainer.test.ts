@@ -9,6 +9,7 @@ import {
 } from '@/shared/lib/composerSlashCommands';
 import { buildAgentPrompt } from '@/shared/lib/promptMessage';
 import { formatDateShortWithTime } from '@/shared/lib/date';
+import { ApiError } from '@/shared/lib/api';
 
 // Exercise the real action callbacks without mounting unrelated workspace providers.
 const source = ts.createSourceFile(
@@ -47,6 +48,72 @@ function callback(name: string, provided: Record<string, unknown>) {
     ...Object.values(bindings)
   );
 }
+
+describe('review start errors', () => {
+  const declaration = source.statements.find(
+    (node) =>
+      ts.isFunctionDeclaration(node) && node.name?.text === 'reviewErrorMessage'
+  );
+  const js = ts.transpileModule(declaration!.getText(source), {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.None,
+    },
+  }).outputText;
+  const reviewErrorMessage = new Function(
+    'ApiError',
+    `${js}; return reviewErrorMessage;`
+  )(ApiError);
+
+  for (const action of ['handleVibeReview', 'handleVibeReviewAndCreatePr']) {
+    for (const [error, expected] of [
+      [
+        new ApiError('API request failed', 200, undefined, {
+          type: 'process_already_running',
+        }),
+        'conversation.review.alreadyRunning',
+      ],
+      [
+        new ApiError('API request failed', 200, undefined, {
+          type: 'no_linked_issue',
+        }),
+        'conversation.review.noLinkedIssue',
+      ],
+      [
+        new ApiError('Select an existing PR base, then retry.', 400),
+        'Select an existing PR base, then retry.',
+      ],
+      [null, 'conversation.review.failedDescription'],
+    ] as const) {
+      it(`${action} reports ${expected}`, async () => {
+        const reject = vi.fn().mockRejectedValue(error);
+        const show = vi.fn();
+        const setIsReviewing = vi.fn();
+        const run = callback(action, {
+          sessionId: 'synthetic-session',
+          workspaceId: 'synthetic-workspace',
+          isReviewing: false,
+          setIsReviewing,
+          hostId: 'synthetic-host',
+          executorConfig: null,
+          queryClient: {},
+          onSelectSession: vi.fn(),
+          sessionsApi: { vibeReview: reject },
+          runReviewAndCreatePr: reject,
+          ErrorDialog: { show },
+          reviewErrorMessage,
+          t: (key: string) => key,
+        });
+        await run();
+        expect(show).toHaveBeenCalledExactlyOnceWith({
+          title: 'conversation.review.failedTitle',
+          message: expected,
+        });
+        expect(setIsReviewing).toHaveBeenLastCalledWith(false);
+      });
+    }
+  }
+});
 
 describe('composer settings through every send action', () => {
   for (const action of ['handleSend', 'handleQueueMessage', 'handleSteer']) {

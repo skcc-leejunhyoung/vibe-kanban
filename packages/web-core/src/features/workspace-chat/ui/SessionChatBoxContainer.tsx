@@ -280,19 +280,21 @@ type SessionChatBoxContainerProps =
   | NewSessionProps
   | PlaceholderProps;
 
-/** Map a vibe-review API failure to a localized message key. */
-function reviewErrorKey(error: unknown): string {
+/** Keep known review errors localized and preserve actionable server details. */
+function reviewErrorMessage(error: unknown, t: TFunction<'tasks'>): string {
   const data =
     error instanceof ApiError
       ? (error.error_data as ReviewError | undefined)
       : undefined;
   switch (data?.type) {
     case 'process_already_running':
-      return 'conversation.review.alreadyRunning';
+      return t('conversation.review.alreadyRunning');
     case 'no_linked_issue':
-      return 'conversation.review.noLinkedIssue';
+      return t('conversation.review.noLinkedIssue');
     default:
-      return 'conversation.review.failedDescription';
+      return error instanceof Error
+        ? error.message
+        : t('conversation.review.failedDescription');
   }
 }
 
@@ -1778,7 +1780,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     } catch (error) {
       void ErrorDialog.show({
         title: t('conversation.review.failedTitle'),
-        message: t(reviewErrorKey(error)),
+        message: reviewErrorMessage(error, t),
       });
     } finally {
       setIsReviewing(false);
@@ -1812,8 +1814,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     } catch (error) {
       void ErrorDialog.show({
         title: t('conversation.review.failedTitle'),
-        message:
-          error instanceof Error ? error.message : t(reviewErrorKey(error)),
+        message: reviewErrorMessage(error, t),
       });
     } finally {
       setIsReviewing(false);

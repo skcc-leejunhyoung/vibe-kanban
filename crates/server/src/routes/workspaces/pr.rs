@@ -50,7 +50,11 @@ use services::services::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
-use utils::{log_msg::LogMsg, repo_url::pr_in_remote, response::ApiResponse};
+use utils::{
+    log_msg::LogMsg,
+    repo_url::{normalized_repo_key, pr_in_remote},
+    response::ApiResponse,
+};
 use uuid::Uuid;
 use workspace_manager::WorkspaceManager;
 
@@ -363,10 +367,10 @@ fn same_head_and_base_error(
     base_branch: &str,
     base_remote: &GitRemote,
 ) -> Option<PrError> {
-    (head_branch == base_branch && head_remote.url == base_remote.url).then(|| {
-        PrError::SameHeadAndBaseBranch {
-            branch: head_branch.to_string(),
-        }
+    (head_branch == base_branch
+        && normalized_repo_key(&head_remote.url) == normalized_repo_key(&base_remote.url))
+    .then(|| PrError::SameHeadAndBaseBranch {
+        branch: head_branch.to_string(),
     })
 }
 
@@ -2342,6 +2346,61 @@ mod tests {
         assert!(same_head_and_base_error("2803-fix", &origin, "dev", &origin).is_none());
         // Cross-fork PR from the fork's `main` into upstream `main` is valid.
         assert!(same_head_and_base_error("main", &fork, "main", &origin).is_none());
+    }
+
+    #[test]
+    fn same_branch_url_aliases_are_rejected_without_rejecting_forks() {
+        let remote = |url: &str| git::GitRemote {
+            name: "example".into(),
+            url: url.into(),
+        };
+        for (head, base) in [
+            (
+                "https://github.com/example/widgets.git",
+                "git@github.com:example/widgets.git",
+            ),
+            (
+                "https://github.com/example/widgets",
+                "ssh://git@github.com/example/widgets.git",
+            ),
+            (
+                "https://dev.azure.com/example/project/_git/widgets",
+                "git@ssh.dev.azure.com:v3/example/project/widgets",
+            ),
+        ] {
+            assert!(
+                same_head_and_base_error(
+                    "feature/example",
+                    &remote(head),
+                    "feature/example",
+                    &remote(base)
+                )
+                .is_some()
+            );
+            assert!(
+                same_head_and_base_error(
+                    "feature/example",
+                    &remote(head),
+                    "integration",
+                    &remote(base)
+                )
+                .is_none()
+            );
+        }
+        for other in [
+            "git@github.com:another/widgets.git",
+            "git@code.example.invalid:example/widgets.git",
+        ] {
+            assert!(
+                same_head_and_base_error(
+                    "feature/example",
+                    &remote("https://github.com/example/widgets.git"),
+                    "feature/example",
+                    &remote(other)
+                )
+                .is_none()
+            );
+        }
     }
 
     #[test]

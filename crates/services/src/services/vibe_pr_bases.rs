@@ -9,6 +9,7 @@ use db::models::{
 };
 use git::GitService;
 use sqlx::SqlitePool;
+use utils::repo_url::normalized_repo_key;
 
 /// Head remains a prediction until the merge completes; never persist it.
 pub fn pr_head<'a>(
@@ -78,7 +79,9 @@ pub async fn validate_base(
         .resolve_remote_for_branch(path, head)
         .map_err(|e| e.to_string())?;
     let (base_remote, remote_branch) = git.pr_base_remote(path, base, &push_remote);
-    if head == remote_branch && push_remote.url == base_remote.url {
+    if head == remote_branch
+        && normalized_repo_key(&push_remote.url) == normalized_repo_key(&base_remote.url)
+    {
         return Err(format!(
             "PR head and base are both '{head}'. Select a different PR base (pr_bases) or fix the repository default target branch, then retry."
         ));
@@ -432,6 +435,54 @@ mod tests {
                 .await
                 .unwrap_err()
                 .contains("head and base")
+        );
+    }
+
+    #[tokio::test]
+    async fn same_repository_url_aliases_are_refused_before_remote_access_or_review() {
+        let f = Fixture::new().await;
+        git(
+            &f.repo.path,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://git.example.invalid/example/widgets.git",
+            ],
+        );
+        git(
+            &f.repo.path,
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "git@git.example.invalid:example/widgets.git",
+            ],
+        );
+        git(
+            &f.repo.path,
+            &[
+                "update-ref",
+                "refs/remotes/upstream/feature/example",
+                "refs/heads/feature/example",
+            ],
+        );
+        let error = f
+            .resolve(Some(&f.selection("upstream/feature/example")), None, false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("head and base"), "{error}");
+        assert!(
+            VibeRun::find_non_terminal(&f.pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            Merge::find_by_workspace_id(&f.pool, f.workspace.id)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 
