@@ -73,6 +73,31 @@ test('duplicate human labels cannot inflate measured quality', () => {
   assert.throws(() => evaluateAutopilotRecords({ labels: [label, label] }));
 });
 
+test('shadow predictions are separate from observed suppression and legacy records remain unmeasured', () => {
+  const evaluation = evaluateAutopilotRecords({
+    observations: {
+      legacy: { results: [{ route: 'routine_result', confidence: 0.99 }] },
+      qualified: {
+        routing_preview: { eligible_events: 1, would_suppress: true },
+      },
+      mixed: { routing_preview: { eligible_events: 1, would_suppress: false } },
+      protected: {
+        routing_preview: { eligible_events: 0, would_suppress: false },
+      },
+      elapsed: { status: 'fallback', request_outcome_unknown: true },
+    },
+    prices: { inputPerMillion: 1, cachedInputPerMillion: 1, agentCallCost: 5 },
+  });
+  assert.deepEqual(evaluation.shadowRouting, {
+    evaluatedBatches: 3,
+    withoutPreview: 2,
+    batchesWithEligibleEvents: 2,
+    wouldSuppressBatches: 1,
+  });
+  assert.equal(evaluation.estimates.avoidedAgentCost, 0);
+  assert.equal(evaluation.estimates.decisionsCost, null);
+});
+
 test('cache writes are billed separately and missing write usage is not counted as a saving', () => {
   const sample = {
     request_started: true,

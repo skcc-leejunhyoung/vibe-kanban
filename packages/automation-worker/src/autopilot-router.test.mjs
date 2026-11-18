@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { routeAutopilot } from './autopilot-router.mjs';
+import { previewAutopilot, routeAutopilot } from './autopilot-router.mjs';
 
 const executionId = '10000000-0000-4000-8000-000000000001';
 const hostId = '10000000-0000-4000-8000-000000000002';
@@ -136,6 +136,52 @@ test('protected batches never call Decisions or host mutation', async () => {
     assert.equal(h.calls, 0);
     assert.equal(h.posts, 0);
   }
+});
+
+test('shadow distinguishes a fully qualified batch from partial and protected batches', async () => {
+  const h = fixture();
+  const preview = (events) =>
+    previewAutopilot({ ...h.options, event: { events } });
+  const full = await preview([completion]);
+  assert.equal(full.routing_preview.would_suppress, true);
+  assert.equal(full.delivery, 'unchanged');
+  const partial = await preview([
+    { ...completion, id: 'synthetic-no-identity', executionId: null },
+    completion,
+  ]);
+  assert.equal(partial.routing_preview.would_suppress, false);
+  assert.equal(partial.routing_preview.remaining_events, 1);
+  assert.equal(partial.results[0].event_index, 1);
+  const protectedBatch = await preview([
+    completion,
+    { kind: 'approval.pending' },
+  ]);
+  assert.equal(protectedBatch.routing_preview.eligible_events, 0);
+  assert.equal(protectedBatch.routing_preview.would_suppress, false);
+  assert.equal(h.calls, 2);
+  assert.equal(h.posts, 0);
+  assert.equal(h.writes, 0);
+});
+
+test('shadow keeps claimed cloud completions on the agent path until acknowledgement can be proved', async () => {
+  const h = fixture();
+  const result = await previewAutopilot({
+    ...h.options,
+    event: {
+      ...completion,
+      kind: 'cloud.notification',
+      notificationClaim: {
+        lease_id: 'synthetic-lease',
+        claim_token: 'synthetic-token',
+      },
+    },
+  });
+  assert.equal(result.results[0].route, 'routine_result');
+  assert.equal(result.routing_preview.eligible_events, 1);
+  assert.equal(result.routing_preview.would_suppress, false);
+  assert.equal(h.posts, 0);
+  assert.equal(h.acks, undefined);
+  assert.ok(!JSON.stringify(result).includes('synthetic-token'));
 });
 
 test('lost host response replays native proof after restart without another model request', async () => {

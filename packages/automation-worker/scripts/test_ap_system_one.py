@@ -102,8 +102,26 @@ console.log(JSON.stringify(flags));
         gate, calls, _ = self.fixture()
         _, result = gate(['periodic due'])
         self.assertEqual(result['status'], 'handled')
-        self.assertEqual([name for name, _ in calls], ['gate', 'request', 'checkpoint'])
+        self.assertEqual([name for name, _ in calls], ['gate', 'request', 'gate', 'checkpoint'])
         self.assertTrue(os.path.isfile(result['evidence']))
+
+    def test_stale_quiet_result_does_not_checkpoint(self):
+        for change in ('hold', 'registry'):
+            gate, calls, values = self.fixture()
+            request = self.ap['api']
+
+            def reconcile(*args, **kwargs):
+                result = request(*args, **kwargs)
+                if change == 'hold':
+                    self.ap['decision'] = 'cancelled'
+                else:
+                    values['board']['rows']['17'] = {'status': 'cancelled', 'repo': 'synthetic/widgets'}
+                return result
+
+            self.ap['api'] = reconcile
+            _, result = gate(['periodic due'])
+            self.assertEqual(result['status'], 'legacy')
+            self.assertFalse(any(name == 'checkpoint' for name, _ in calls))
 
     def test_cancellation_inflight_and_backoff_preserve_original_gate(self):
         for decision in ('cancelled', 'in_flight', 'backoff', 'existing_delegation'):

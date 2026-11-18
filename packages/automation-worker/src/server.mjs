@@ -1,6 +1,5 @@
 import { createNotificationRouting } from './notification-routing.mjs';
-import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
-import { routeAutopilot } from './autopilot-router.mjs';
+import { previewAutopilot, routeAutopilot } from './autopilot-router.mjs';
 import { collectReconciliation, validateReconciliationScope } from './autopilot-reconcile.mjs';
 import {
   githubReviewRepositories,
@@ -129,6 +128,10 @@ const AUTOPILOT_DECISIONS_SHADOW =
   !process.argv.includes('--self-test');
 const AUTOPILOT_DECISIONS_ACTIVE =
   process.env.AUTOPILOT_DECISIONS_ACTIVE === 'true' &&
+  !process.argv.includes('--self-test');
+const AUTOPILOT_PERIODIC_RECONCILE =
+  (process.env.AUTOPILOT_PERIODIC_RECONCILE ||
+    String(AUTOPILOT_DECISIONS_ACTIVE)) === 'true' &&
   !process.argv.includes('--self-test');
 const AUTOPILOT_DECISIONS_API_KEY = process.env.AUTOPILOT_DECISIONS_API_KEY || '';
 // A rule that throws (e.g. the Vibe issue create failed) drops its event into a
@@ -546,8 +549,8 @@ async function route(req, res) {
   }
 
   if (url.pathname === '/api/autopilot/reconcile' && req.method === 'POST') {
-    if (!AUTOPILOT_DECISIONS_ACTIVE || !state.enabled)
-      return sendJson(res, 409, { error: 'active routing is disabled' });
+    if (!AUTOPILOT_PERIODIC_RECONCILE || !state.enabled)
+      return sendJson(res, 409, { error: 'periodic reconciliation is disabled' });
     const input = await readBodyJson(req);
     try {
       sendJson(res, 200, await reconcileRoutineAutopilot(input));
@@ -1494,43 +1497,13 @@ function observeAutopilotShadow(routine, event) {
       const connector = findConnector(
         String(routine.action.connectorId || 'vibe-default')
       );
-      let hosts;
-      result = await evaluateAutopilotShadow({
+      result = await previewAutopilot({
         event,
+        minConfidence: routine.action.input.routing?.minConfidence ?? 0.98,
         apiKey: AUTOPILOT_DECISIONS_API_KEY,
-        async resolveMachineId(hostId, signal) {
-          hosts ||= vibeApi(
-            connector,
-            'GET',
-            '/v1/hosts',
-            undefined,
-            undefined,
-            undefined,
-            signal
-          );
-          const host = (await hosts).hosts?.find(
-            (item) => item.id === hostId && item.access_role === 'owner'
-          );
-          if (
-            !host?.machine_id ||
-            !connector.config?.hostBridges?.[host.machine_id]?.baseUrl
-          )
-            throw new Error('unconfigured event host');
-          return host.machine_id;
-        },
-        readHost(item, apiPath, signal) {
-          const bridge = connector.config?.hostBridges?.[item.machineId];
-          if (!bridge?.baseUrl) throw new Error('unconfigured event host');
-          return vibeApi(
-            connector,
-            'GET',
-            apiPath,
-            undefined,
-            bridge.baseUrl,
-            undefined,
-            signal
-          );
-        },
+        hydrateEvent: (item, signal) =>
+          completionNotification(connector, item, signal),
+        resolveHost: autopilotHostResolver(connector),
       });
     } catch {
       result = {
@@ -1679,6 +1652,49 @@ async function completionNotification(connector, item, signal) {
   };
 }
 
+function autopilotHostResolver(connector) {
+  let catalog;
+  return async (hostId, signal) => {
+    catalog ||= vibeApi(
+      connector,
+      'GET',
+      '/v1/hosts',
+      undefined,
+      undefined,
+      undefined,
+      signal
+    );
+    const host = (await catalog).hosts?.find(
+      (item) => item.id === hostId && item.access_role === 'owner'
+    );
+    const bridge = connector.config?.hostBridges?.[host?.machine_id];
+    if (!bridge?.baseUrl) throw new Error('unconfigured owned host');
+    return {
+      machineId: host.machine_id,
+      get: (path, signal) =>
+        vibeApi(
+          connector,
+          'GET',
+          path,
+          undefined,
+          bridge.baseUrl,
+          undefined,
+          signal
+        ),
+      post: (path, body, signal) =>
+        vibeApi(
+          connector,
+          'POST',
+          path,
+          body,
+          bridge.baseUrl,
+          undefined,
+          signal
+        ),
+    };
+  };
+}
+
 async function routeRoutineAutopilot(routine, event, connector) {
   const key = event.routineIdempotencyKey;
   const claim = state.routineClaims[key];
@@ -1686,7 +1702,6 @@ async function routeRoutineAutopilot(routine, event, connector) {
   if (!record) throw new Error('active routing admission is missing');
   const run = state.routineRuns.find((item) => item.idempotencyKey === key);
   if (run) run.autopilotRouting = record;
-  let catalog;
   const result = await routeAutopilot({
     event,
     record,
@@ -1698,45 +1713,7 @@ async function routeRoutineAutopilot(routine, event, connector) {
     allowNewActions:
       AUTOPILOT_DECISIONS_ACTIVE &&
       routine.action.input.routing?.mode === 'active',
-    async resolveHost(hostId, signal) {
-      catalog ||= vibeApi(
-        connector,
-        'GET',
-        '/v1/hosts',
-        undefined,
-        undefined,
-        undefined,
-        signal
-      );
-      const host = (await catalog).hosts?.find(
-        (item) => item.id === hostId && item.access_role === 'owner'
-      );
-      const bridge = connector.config?.hostBridges?.[host?.machine_id];
-      if (!bridge?.baseUrl) throw new Error('unconfigured owned host');
-      return {
-        machineId: host.machine_id,
-        get: (path, signal) =>
-          vibeApi(
-            connector,
-            'GET',
-            path,
-            undefined,
-            bridge.baseUrl,
-            undefined,
-            signal
-          ),
-        post: (path, body, signal) =>
-          vibeApi(
-            connector,
-            'POST',
-            path,
-            body,
-            bridge.baseUrl,
-            undefined,
-            signal
-          ),
-      };
-    },
+    resolveHost: autopilotHostResolver(connector),
     completeNotification: (item, receipt) =>
       notificationRouting.completeResult(routine, item, receipt),
   });

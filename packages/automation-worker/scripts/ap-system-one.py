@@ -75,38 +75,52 @@ def registry(ap, config):
 def install(ap, config):
     original = ap['periodic_gate']
 
-    def periodic(due, dry=False):
-        rest, decision = original(due, dry=True)
-        if dry or not decision or decision.get('status') != 'would_delegate':
-            return original(due, dry=dry)
+    def manual_delegation_open():
         tasks = rows(ap['load'](ap['DELEG'], {}).get('tasks', {}))
         inbox = ap['load'](ap['INBOX'], {}).get('items', {})
         # A manual periodic delegation retains the same admission guard as ap.
-        if any(task.get('kind') != 'periodic' and '30분' in task.get('title', '') and
-               not task.get('archived') and inbox.get('delegate:' + task['id'], {}).get('status') in ('wait', 'open') for task in tasks):
-            return original(due, dry=False)
-        try:
-            scope = registry(ap, config)
-            report = ap['api']('/api/automation/autopilot/reconcile', scope, timeout=110)
-            counts = report.get('counts', {}) if isinstance(report, dict) else {}
-            if (not isinstance(report, dict) or report.get('status') != 'ok' or report.get('changed') is not False or report.get('errors') != [] or
-                not re.fullmatch(r'[0-9a-f]{64}', report.get('fingerprint', '')) or
-                any(type(counts.get(key)) is not int or counts[key] < 0 for key in ('issues', 'prs', 'hosts')) or
-                counts.get('hosts') != len(set(scope['hosts']))):
-                return original(due, dry=False)
-            folder = config.get('evidenceDirectory') or os.path.join(ap['AP'], 'system-one-evidence')
-            os.makedirs(folder, mode=0o700, exist_ok=True)
-            handle, path = tempfile.mkstemp(prefix='reconcile-', suffix='.json', dir=folder)
-            with os.fdopen(handle, 'w') as stream:
-                json.dump(report, stream)
-            with contextlib.redirect_stdout(io.StringIO()):
-                result = ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
-            if result != 0:
-                return original(due, dry=False)
-            return rest, {'status': 'handled', 'source': 'code', 'evidence': path, 'counts': report['counts']}
-        except Exception:
-            # No transcript or credential is included in the fallback result.
-            return original(due, dry=False)
+        return any(task.get('kind') != 'periodic' and '30분' in task.get('title', '') and
+                   not task.get('archived') and inbox.get('delegate:' + task['id'], {}).get('status') in ('wait', 'open') for task in tasks)
+
+    def quiet_checkpoint(due):
+        if manual_delegation_open():
+            return None
+        scope = registry(ap, config)
+        report = ap['api']('/api/automation/autopilot/reconcile', scope, timeout=110)
+        counts = report.get('counts', {}) if isinstance(report, dict) else {}
+        if (not isinstance(report, dict) or report.get('status') != 'ok' or report.get('changed') is not False or report.get('errors') != [] or
+            not re.fullmatch(r'[0-9a-f]{64}', report.get('fingerprint', '')) or
+            any(type(counts.get(key)) is not int or counts[key] < 0 for key in ('issues', 'prs', 'hosts')) or
+            counts.get('hosts') != len(set(scope['hosts']))):
+            return None
+        # A slow collection can outlive a new hold, delegation, or registry edit.
+        rest, decision = original(due, dry=True)
+        if (not decision or decision.get('status') != 'would_delegate' or
+            manual_delegation_open() or registry(ap, config) != scope):
+            return None
+        folder = config.get('evidenceDirectory') or os.path.join(ap['AP'], 'system-one-evidence')
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        handle, path = tempfile.mkstemp(prefix='reconcile-', suffix='.json', dir=folder)
+        with os.fdopen(handle, 'w') as stream:
+            json.dump(report, stream)
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
+        if result != 0:
+            return None
+        return rest, {'status': 'handled', 'source': 'code', 'evidence': path, 'counts': counts}
+
+    def periodic(due, dry=False):
+        rest, decision = original(due, dry=True)
+        if dry:
+            return rest, decision
+        if decision and decision.get('status') == 'would_delegate':
+            try:
+                handled = quiet_checkpoint(due)
+            except Exception:
+                handled = None
+            if handled is not None:
+                return handled
+        return original(due, dry=False)
 
     original.__globals__['periodic_gate'] = periodic
 

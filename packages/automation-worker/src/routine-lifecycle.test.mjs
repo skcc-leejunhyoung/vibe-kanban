@@ -13,8 +13,8 @@ import {
 } from './routines.mjs';
 import { carriesRetryExhausted, renderPromptTemplate } from './vibe-events.mjs';
 import { createNotificationRouting } from './notification-routing.mjs';
+import { previewAutopilot, routeAutopilot } from './autopilot-router.mjs';
 import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
-import { routeAutopilot } from './autopilot-router.mjs';
 
 const source = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
 function productionFunction(name) {
@@ -27,6 +27,7 @@ const functions = [
   'runRoutine',
   'executeRoutineAction',
   'observeAutopilotShadow',
+  'autopilotHostResolver',
   'routeRoutineAutopilot',
   'completionNotification',
   'removeRoutine',
@@ -195,7 +196,7 @@ function harness({
         throw new Error('synthetic observation storage failure');
       h.persistedObservations = structuredClone(context.autopilotObservations);
     },
-    evaluateAutopilotShadow: async (input) => {
+    previewAutopilot: async (input) => {
       h.shadowCalls += 1;
       return shadowEvaluate(input);
     },
@@ -396,11 +397,20 @@ test('journal host IDs resolve through owned machine IDs and one catalog serves 
     'unconfigured',
     'mismatch',
     'unavailable',
+    'ineligible',
   ]) {
     const remoteId = '00000000-0000-4000-8000-000000000021';
     const machineId = 'synthetic-event-machine';
     const executionId = '00000000-0000-4000-8000-000000000022';
     const h = harness({ shadow: true });
+    const resultText = 'Synthetic routine complete.';
+    h.resultGuard = {
+      hostId: machineId,
+      execution_id: executionId,
+      eligible: scenario !== 'ineligible',
+      version: 'a'.repeat(64),
+      result_hash: createHash('sha256').update(resultText).digest('hex'),
+    };
     const r = routine();
     h.state.routines.push(r);
     if (scenario !== 'unconfigured')
@@ -430,6 +440,7 @@ test('journal host IDs resolve through owned machine IDs and one catalog serves 
         };
       }
       if (baseUrl === 'https://source.invalid') {
+        assert.equal(method, 'GET');
         reads += 1;
         if (endpoint === '/v1/hosts')
           return {
@@ -461,7 +472,7 @@ test('journal host IDs resolve through owned machine IDs and one catalog serves 
             entries: [
               {
                 entry_type: { type: 'assistant_message' },
-                content: 'Synthetic routine complete.',
+                content: resultText,
               },
             ],
           },
@@ -469,36 +480,46 @@ test('journal host IDs resolve through owned machine IDs and one catalog serves 
       }
       return api(...args);
     };
-    h.context.evaluateAutopilotShadow = (input) =>
-      evaluateAutopilotShadow({
+    h.context.previewAutopilot = (input) =>
+      previewAutopilot({
         ...input,
-        fetchImpl: async (_, options) => {
-          models += 1;
-          const body = JSON.parse(options.body);
-          return Response.json({
-            model: 'gpt-6-luna',
-            answers: body.questions.map(({ name }) => ({
-              name,
-              type: 'choice',
-              choice: 'routine_result',
-              confidence: 0.9,
-            })),
-          });
-        },
+        evaluate: (options) =>
+          evaluateAutopilotShadow({
+            ...options,
+            fetchImpl: async (_, options) => {
+              models += 1;
+              const body = JSON.parse(options.body);
+              return Response.json({
+                model: 'gpt-6-luna',
+                answers: body.questions.map(({ name }) => ({
+                  name,
+                  type: 'choice',
+                  choice: 'routine_result',
+                  confidence: 0.99,
+                })),
+              });
+            },
+          }),
       });
     const item = {
+      id: 'synthetic-first-completion',
       kind: 'process.completed',
       hostId: remoteId,
       executionId,
       machineId: 'untrusted-machine',
     };
-    await h.run(r, { events: [item, item] }, 'synthetic-host-resolution');
+    await h.run(
+      r,
+      { events: [item, { ...item, id: 'synthetic-second-completion' }] },
+      'synthetic-host-resolution'
+    );
     await new Promise((resolve) => setImmediate(resolve));
     const result = h.state.routineRuns[0].autopilotShadow;
     assert.equal(h.posts, 1);
     assert.equal(catalogs, 1);
     assert.equal(models, scenario === 'owned' ? 1 : 0);
     assert.equal(result.status, scenario === 'owned' ? 'completed' : 'skipped');
+    assert.equal(result.routing_preview.would_suppress, scenario === 'owned');
     if (['foreign', 'unconfigured', 'unavailable'].includes(scenario))
       assert.equal(reads, 0);
   }

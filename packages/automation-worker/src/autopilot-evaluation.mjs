@@ -131,6 +131,7 @@ export function evaluateAutopilotRecords({
   const calls = candidates.filter(
     (row) =>
       row.request_started === true ||
+      row.request_outcome_unknown === true ||
       row.status === 'pending' ||
       Number.isSafeInteger(row.input_tokens)
   );
@@ -161,6 +162,10 @@ export function evaluateAutopilotRecords({
     .filter((n) => Number.isFinite(n) && n >= 0);
   const active = [...records.values()].filter((row) => row.active);
   const completed = active.filter((row) => row.claimStatus === 'succeeded');
+  const shadowRuns = [...records.values()]
+    .map((row) => row.shadow)
+    .filter(Boolean);
+  const previews = shadowRuns.map((row) => row.routing_preview).filter(Boolean);
   const periodic = periodicSummary(periodicLog);
   const suppressed =
     completed.filter((row) => row.active.suppressed === true).length +
@@ -188,6 +193,16 @@ export function evaluateAutopilotRecords({
   return {
     runs: records.size + periodic.runs,
     periodic,
+    shadowRouting: {
+      evaluatedBatches: previews.length,
+      withoutPreview: shadowRuns.length - previews.length,
+      batchesWithEligibleEvents: previews.filter(
+        (row) => row.eligible_events > 0
+      ).length,
+      wouldSuppressBatches: previews.filter(
+        (row) => row.would_suppress === true
+      ).length,
+    },
     classification: {
       samples: candidates.length,
       eventResults: results.length,

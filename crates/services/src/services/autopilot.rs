@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 use sqlx::{Row, SqliteConnection, SqlitePool};
 use uuid::Uuid;
 
+use super::vibe_orchestrator::{VibeResult, parse_vibe_result};
+
 pub fn result_key(execution: Uuid) -> String {
     format!("autopilot-result:{execution}")
 }
@@ -95,6 +97,9 @@ async fn snapshot(conn: &mut SqliteConnection, execution: Uuid) -> Result<Value,
         && terminal
         && !review
         && hash.is_some()
+        && text
+            .as_deref()
+            .is_some_and(|text| parse_vibe_result(text) == VibeResult::None)
         && row.get::<bool, _>("completed")
         && row.get::<bool, _>("open_workspace")
         && row.get::<bool, _>("indexed")
@@ -297,6 +302,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(previous, reconciliation_snapshot(&pool).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn workflow_result_stays_on_agent_path_without_a_review_record() {
+        let (pool, _, _, execution) = fixture().await;
+        let before = guard(&pool, execution).await.unwrap();
+        assert_eq!(before["eligible"], true);
+        for result in ["approve", "continue", "blocked", "done"] {
+            sqlx::query("UPDATE session_message_index SET content=? WHERE execution_id=?")
+                .bind(format!("Synthetic result.\n**VIBE_RESULT: {result}**"))
+                .bind(execution)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let proof = guard(&pool, execution).await.unwrap();
+            assert_eq!(proof["eligible"], false);
+            assert!(
+                record(
+                    &pool,
+                    execution,
+                    proof["version"].as_str().unwrap(),
+                    proof["result_hash"].as_str().unwrap(),
+                )
+                .await
+                .is_err()
+            );
+            assert!(guard(&pool, execution).await.unwrap()["receipt"].is_null());
+        }
     }
 
     #[tokio::test]

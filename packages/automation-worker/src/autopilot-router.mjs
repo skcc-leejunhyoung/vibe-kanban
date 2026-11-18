@@ -1,6 +1,8 @@
 import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
 import { reconcileAutopilot } from './autopilot-reconcile.mjs';
 
+const ROUTING_TIMEOUT_MS = 3000;
+const MAX_COMPLETIONS = 8;
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const identity = (item) =>
   JSON.stringify(
@@ -16,6 +18,39 @@ const uncertain = (retryable = false) =>
     { indeterminate: true, retryable }
   );
 
+export async function previewAutopilot({ event, minConfidence, ...options }) {
+  const record = {};
+  const { remaining, eligibleIndexes = [] } = await routeAutopilot({
+    ...options,
+    event,
+    minConfidence,
+    record,
+    persist: async () => {},
+    preview: true,
+  });
+  const candidate = record.candidate;
+  const incomplete = candidate?.status === 'pending';
+  const eventCount = (event.events || [event]).length;
+  return {
+    ...candidate,
+    mode: 'shadow',
+    delivery: 'unchanged',
+    status: incomplete ? 'fallback' : candidate?.status || 'skipped',
+    ...(incomplete && { reason: 'timeout', request_outcome_unknown: true }),
+    results: (candidate?.results || []).map((result) => ({
+      ...result,
+      event_index: eligibleIndexes[result.event_index],
+    })),
+    routing_preview: {
+      min_confidence: minConfidence,
+      event_count: eventCount,
+      eligible_events: eligibleIndexes.length,
+      remaining_events: remaining.length,
+      would_suppress: eventCount > 0 && remaining.length === 0,
+    },
+  };
+}
+
 // Classification cannot authorize an action; only the host's fresh, durable receipt can.
 export async function routeAutopilot({
   event,
@@ -27,6 +62,7 @@ export async function routeAutopilot({
   apiKey,
   minConfidence,
   allowNewActions = true,
+  preview = false,
   reconciliation,
   evaluate = evaluateAutopilotShadow,
 }) {
@@ -92,7 +128,7 @@ export async function routeAutopilot({
   const started = Date.now();
   const controller = new AbortController();
   const deadline = () => {
-    if (Date.now() - started >= 3000) controller.abort();
+    if (Date.now() - started >= ROUTING_TIMEOUT_MS) controller.abort();
     controller.signal.throwIfAborted();
   };
   const within = async (call) => {
@@ -107,7 +143,7 @@ export async function routeAutopilot({
               controller.abort();
               reject(new Error('routing timeout'));
             },
-            Math.max(1, 3000 - (Date.now() - started))
+            Math.max(1, ROUTING_TIMEOUT_MS - (Date.now() - started))
           );
         }),
       ]);
@@ -125,6 +161,11 @@ export async function routeAutopilot({
   };
   const accept = async (index, item, receipt, source) => {
     if (item.notificationClaim) {
+      // A dry run cannot prove the central service will accept the claim.
+      if (preview) {
+        remaining.add(index);
+        return;
+      }
       record.cloud_attempted = [
         ...new Set([...(record.cloud_attempted || []), ids[index]]),
       ];
@@ -146,7 +187,7 @@ export async function routeAutopilot({
     for (let index = 0; index < items.length; index++) {
       let item = items[index];
       if (
-        index < 8 &&
+        index < MAX_COMPLETIONS &&
         item.kind === 'cloud.notification' &&
         item.notificationClaim &&
         hydrateEvent
@@ -170,7 +211,7 @@ export async function routeAutopilot({
         }
       }
       if (
-        index >= 8 ||
+        index >= MAX_COMPLETIONS ||
         !UUID.test(item.executionId) ||
         !UUID.test(item.hostId)
       ) {
@@ -232,7 +273,7 @@ export async function routeAutopilot({
               })),
             },
             apiKey,
-            timeoutMs: Math.max(1, 3000 - (Date.now() - started)),
+            timeoutMs: Math.max(1, ROUTING_TIMEOUT_MS - (Date.now() - started)),
             resolveMachineId: async (id) =>
               (await hostFor({ hostId: id })).machineId,
             readHost: async (item, path, signal) =>
@@ -260,6 +301,10 @@ export async function routeAutopilot({
         ) {
           if (record.attempted?.includes(ids[index])) throw uncertain();
           remaining.add(index);
+          continue;
+        }
+        if (preview) {
+          await accept(index, item, undefined, 'decisions');
           continue;
         }
         record.attempted = [
@@ -308,6 +353,11 @@ export async function routeAutopilot({
   } finally {
     controller.abort();
   }
+  if (preview)
+    return {
+      remaining: [...remaining].map((index) => items[index]),
+      eligibleIndexes: eligible.map(({ index }) => index),
+    };
   record.event_ids = ids;
   record.outcome = {
     remaining: [...remaining].sort((a, b) => a - b),

@@ -38,7 +38,8 @@ settings page rather than calling the API directly.
 | `RETRY_BASE_DELAY_MS`         | `60000`      | First retry backoff; doubles each attempt.                                                                   |
 | `RETRY_MAX_DELAY_MS`          | `3600000`    | Cap on the retry backoff.                                                                                    |
 | `AUTOPILOT_DECISIONS_SHADOW`  | `false`      | Set exactly `true` to record advisory Decisions classifications alongside Autopilot delivery.                |
-| `AUTOPILOT_DECISIONS_ACTIVE`  | `false`      | Enable opt-in active Routine routing and the periodic reconciliation API.                                    |
+| `AUTOPILOT_DECISIONS_ACTIVE`  | `false`      | Enable opt-in active Routine routing.                                                                        |
+| `AUTOPILOT_PERIODIC_RECONCILE` | _(unset)_    | Override the periodic reconciliation API switch. Defaults to the active flag for existing deployments.        |
 | `AUTOPILOT_DECISIONS_API_KEY` | _(unset)_    | Server-only OpenAI API key for Decisions classification; separate API billing applies.                       |
 
 ### Autopilot Decisions shadow mode
@@ -49,11 +50,11 @@ handoff, and delivery result remain unchanged. Explicit-session actions bypass
 it. Active routing is a separate opt-in described below.
 Shadow mode is disabled by default and always disabled by `--self-test`.
 
-When enabled, the observer resolves each event's remote host ID through the
-owned host catalog to its configured machine ID, then verifies the bridge's
-native host identity before reading the completed execution's normalized log
-tail. One catalog lookup serves the entire batch; unowned, unconfigured, or
-mismatched hosts are skipped. Only the final assistant message, limited to
+Shadow uses the active router to check the owned host, execution identity and
+result guard before reading completion text. Ineligible executions bypass the
+model. A batch with an approval, user instruction or other protected event
+takes the agent path without a Decisions request. For eligible executions, only
+the final assistant message, limited to
 2,000 characters, can be sent to OpenAI's
 `POST /v1/decisions` with `gpt-6-luna`. It excludes event titles, user prompts,
 tool output, identifiers, and notification claim tokens. URLs, email addresses,
@@ -68,8 +69,9 @@ Redaction runs before
 truncation so long URLs and paths cannot expose an unredacted suffix.
 Redaction is best effort: the remaining completion text can still contain
 private work. Enable this only where sending
-that text to the configured provider is appropriate. Drawer comments, cloud
-notifications, approvals, and other event types stay on the rule-only path.
+that text to the configured provider is appropriate. A claimed cloud completion
+can be classified after its source is verified, but it stays in the predicted
+agent batch because shadow cannot confirm the central acknowledgement.
 
 Each observation has a three-second deadline, at most eight eligible events,
 one API request, a 24 KiB request limit, and a 64 KiB response limit. Elapsed time
@@ -87,7 +89,10 @@ latest observation across restarts. Its atomic writes use a separate queue
 from delivery state and logs: even a stalled observation write cannot delay
 prompt delivery. Each observation includes the event index, candidate route,
 source, safe reason code, elapsed time, and input token count
-when returned. A completed observation does not mean the underlying work is
+when returned. The routing preview also records the eligibility and remaining
+event counts, the threshold (the configured value or 0.98 for comparison),
+and whether the full batch would avoid an agent call based on the available
+evidence. A completed observation does not mean the underlying work is
 complete. A pending observation is persisted before a paid call; retries and
 restarts do not re-evaluate that claim, even when its outcome remains unknown.
 After a restart, a stale pending observation is unmeasured, not a successful
@@ -126,8 +131,9 @@ work/review status directly.
 
 Only successful, indexed, automation-origin execution results in non-review
 workspaces can qualify. Manual work, chained actions, Autopilot sessions,
-archived/ephemeral workspaces, tracked PRs and Vibe review runs, interactive
-artifacts, newer execution, queued messages, pending starts/resumes and missing
+archived/ephemeral workspaces, tracked PRs and Vibe review runs, `VIBE_RESULT`
+workflow verdicts, interactive artifacts, newer execution, queued messages,
+pending starts/resumes and missing
 evidence stay on the agent path. All other event kinds, including user comments
 and approvals, retain agent delivery. The host independently checks these facts,
 binds the final result hash and fresh version, and writes a stable
@@ -178,7 +184,9 @@ The private JSON configuration needs `enabled`, `connectorId`,
 `githubConnectorId`, `projectId`, `reviewTagId`, `hosts` (configured native machine
 IDs), `defaultRepository` and optional `tracked` entries containing `repository`
 and `number`. Keep it in ignored/private runtime storage. The default is disabled
-unless `enabled` is exactly `true`; the worker active flag must also be enabled.
+unless `enabled` is exactly `true`. Set `AUTOPILOT_PERIODIC_RECONCILE=true` on
+the worker to enable this path independently of active Routine routing. If the
+variable is unset, the API follows `AUTOPILOT_DECISIONS_ACTIVE` as before.
 The adapter expects the existing `ap` registry/checkpoint interface and falls
 back to its original gate on an unsupported registry or failed source read.
 No live `ap`, launchd job or runtime ledger is changed by this implementation.
@@ -203,6 +211,8 @@ baseline, changed head, same-head new/dismissed review, changed queue or registr
 or incomplete source read retains the original agent delegation. The adapter
 preserves all pending/cancelled/held ledger states; it never marks them complete.
 Only a fresh official successful checkpoint can acknowledge a changed baseline.
+Before recording a quiet checkpoint, the adapter rechecks the local gate and
+registry so a hold, delegation or scope change during collection is respected.
 Collection failure cannot advance it. No successful partial discovery is recorded.
 The registry hash excludes the periodic job's own dispatches, model-selection
 metadata, render metadata and observation timestamps. PR dispatch state, board
@@ -236,7 +246,9 @@ Prices are explicit `inputPerMillion`, `cachedInputPerMillion`, `cacheWritePerMi
 values, using the same currency. No changing price or agent cost is hardcoded.
 The JSON report includes confusion counts, false routine labels, unmatched
 labels, coverage/fallbacks/timeouts, p50/p90 latency, tokens, completed suppressed
-runs and actual agent admissions. Pending or unknown request/cache-write usage makes cost
+runs and actual agent admissions. `shadowRouting` separately counts whole-batch
+predictions and older records that lack a routing preview. Its predictions never
+contribute to actual suppression or avoided cost. Pending or unknown request/cache-write usage makes cost
 unknown; missing cached usage makes the known-token estimate an upper bound.
 Cache writes are counted separately within the input total; they are not charged a second time as uncached input. See the [official Decisions guide](https://developers.openai.com/api/docs/guides/decisions). Fixed subscription cash savings remain unknown. Avoided agent cost and net
 savings are hypothetical estimates from the supplied baseline, not a bill.
