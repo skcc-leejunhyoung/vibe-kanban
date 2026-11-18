@@ -842,6 +842,7 @@ const RUNTIME_CONFIG_KEYS = [
   'reviewPrReconciliation',
   'prCommentCursors',
   'prCommentErrors',
+  'prActivityDiscovery',
   'tagMap',
   'githubIssueLinkBackfillSkipped',
 ];
@@ -2425,7 +2426,9 @@ function orderByParent(issues) {
   return result;
 }
 
-async function githubSearchPrs(connector, repository, qualifier, reviewLogin) {
+async function githubSearchPrs(
+  connector, repository, qualifier, reviewLogin, dateRange
+) {
   const config = connector.config;
   return searchGithubPrs({
     fetchImpl: fetch,
@@ -2436,8 +2439,9 @@ async function githubSearchPrs(connector, repository, qualifier, reviewLogin) {
     headers: githubHeaders(config.token),
     repository,
     qualifier,
-    perPage: githubPerPage(config),
+    perPage: repository ? githubPerPage(config) : 100,
     reviewLogin,
+    dateRange,
   });
 }
 
@@ -2718,7 +2722,7 @@ async function githubRelatedPrs(connector, login, repository, since) {
   return [...prs.values()];
 }
 
-async function githubPrComments(connector, since, repository) {
+async function githubPrComments(connector, since, repository, number) {
   const config = connector.config || {};
   const apiBase = String(config.apiBase || 'https://api.github.com').replace(
     /\/+$/,
@@ -2753,8 +2757,8 @@ async function githubPrComments(connector, since, repository) {
     return comments;
   };
   const [issueComments, reviewComments] = await Promise.all([
-    fetchComments(`${base}/issues/comments`),
-    fetchComments(`${base}/pulls/comments`),
+    fetchComments(`${base}/issues${number ? `/${number}` : ''}/comments`),
+    fetchComments(`${base}/pulls${number ? `/${number}` : ''}/comments`),
   ]);
   return [...issueComments, ...reviewComments];
 }
@@ -2808,6 +2812,12 @@ function githubCommentPrNumber(comment) {
 
 async function pollGithubPrComments(connector, login) {
   const config = connector.config;
+  if (config.notifyPrComments === false) {
+    config.prCommentErrors = [];
+    return { processed: 0, seeded: 0 };
+  }
+  if (!config.reviewRepositories?.length)
+    return pollGithubAutomaticPrActivity(connector, login);
   const primary = `${config.owner}/${config.repo}`.toLowerCase();
   const repositories = [
     ...new Set([
@@ -2836,6 +2846,129 @@ async function pollGithubPrComments(connector, login) {
   }
   config.prCommentErrors = total.errors;
   return total;
+}
+
+async function githubDiscoverActivityPrs(connector, login, since, pollStartedAt) {
+  const end = Math.floor(Date.parse(pollStartedAt) / 1000);
+  const updated = Math.floor(Date.parse(since) / 1000);
+  const prs = new Map();
+  for (const qualifier of [`involves:${login}`, `review-involves:${login}`]) {
+    for (const [state, field, start] of [
+      ['open', 'created', 0],
+      ['closed', 'updated', updated],
+    ]) {
+      const rows = await githubSearchPrs(
+        connector, undefined, `is:${state} ${qualifier}`, undefined,
+        { field, start, end }
+      );
+      for (const pr of rows) prs.set(githubIssueLinkKey(pr), pr);
+    }
+  }
+  return [...prs.values()];
+}
+
+async function pollGithubAutomaticPrActivity(connector, login) {
+  const config = connector.config;
+  const pollStartedAt = new Date().toISOString();
+  const primary = `${config.owner}/${config.repo}`.toLowerCase();
+  const cursors = config.prCommentCursors || {};
+  const previousCursor = normalizeOptionalTimestamp(
+    cursors[primary]?.cursorTs || config.prCommentCursorTs
+  );
+  const startedAt = previousCursor || pollStartedAt.replace(/\.\d+Z$/, '.000Z');
+  const runtime = (config.prActivityDiscovery ||= {
+    cursorTs: startedAt,
+    startedAt,
+    seen: {},
+  });
+  const since = new Date(
+    Math.max(Date.parse(runtime.startedAt), Date.parse(runtime.cursorTs) - 300_000)
+  ).toISOString();
+  const errors = [];
+  const receipts = new Map();
+  let processed = 0;
+  try {
+    const prs = await githubDiscoverActivityPrs(
+      connector, login, since, pollStartedAt
+    );
+    const batches = await mapWithConcurrency(prs, 4, async (pr) => {
+      try {
+        const [comments, reviews] = await Promise.all([
+          githubPrComments(connector, since, pr.repository, pr.number),
+          githubPrReviews(connector, [pr], login, since, pr.repository),
+        ]);
+        return {
+          pr,
+          comments: [...comments, ...reviews.map(({ activity }) => activity)],
+        };
+      } catch (error) {
+        return { pr, error: errorMessage(error) };
+      }
+    });
+    const legacy = new Set(
+      [
+        ...(config.seenPrCommentIds || []),
+        ...Object.values(cursors).flatMap((cursor) => cursor.seenIds || []),
+      ].map(githubLegacyPrActivityKey).filter(Boolean)
+    );
+    const pending = [];
+    for (const { pr, comments, error } of batches) {
+      if (error) {
+        errors.push({ repository: pr.repository, number: pr.number, error });
+        continue;
+      }
+      const receipt = receipts.get(pr.repository) || {
+        repository: pr.repository, pullRequests: 0, events: 0,
+      };
+      receipts.set(pr.repository, receipt);
+      receipt.pullRequests += 1;
+      for (const comment of comments) {
+        const at = normalizeOptionalTimestamp(comment.created_at);
+        if (
+          !at || at < since ||
+          comment.user?.login?.toLowerCase() === login.toLowerCase()
+        ) continue;
+        const kind = comment.review_state
+          ? 'review'
+          : comment.pull_request_url ? 'inline' : 'issue';
+        const key = `${kind}:${comment.id}`;
+        if (!legacy.has(key)) pending.push({ pr, comment, key, at });
+      }
+    }
+    pending.sort((a, b) => a.at.localeCompare(b.at));
+    for (const { pr, comment, key, at } of pending) {
+      if (runtime.seen[key]) continue;
+      await emitGithubPrActivity(connector, pr, comment);
+      runtime.seen[key] = at;
+      receipts.get(pr.repository).events += 1;
+      processed += 1;
+    }
+  } catch (error) {
+    errors.push({ repository: 'GitHub discovery', error: errorMessage(error) });
+  }
+  if (!errors.length) {
+    runtime.cursorTs = pollStartedAt;
+    const overlap = new Date(Date.parse(pollStartedAt) - 5 * 60 * 1000).toISOString();
+    runtime.seen = Object.fromEntries(
+      Object.entries(runtime.seen).filter(([, at]) => at >= overlap)
+    );
+  }
+  runtime.checkedAt = pollStartedAt;
+  runtime.complete = errors.length === 0;
+  const failedRepos = new Set(errors.map((item) => item.repository));
+  runtime.repositories = [...receipts.values()].filter(
+    ({ repository }) => !failedRepos.has(repository)
+  );
+  config.prCommentErrors = errors;
+  await persistState();
+  return { processed, seeded: 0, errors };
+}
+
+function githubLegacyPrActivityKey(key) {
+  const match =
+    /(?:\/pulls\/\d+\/reviews\/|#pullrequestreview-|(\/pulls\/comments\/|#discussion_r)|(\/issues\/comments\/|#issuecomment-))\d+:(\d+)$/.exec(key);
+  if (!match) return null;
+  return `${match[1] ? 'inline' : match[2] ? 'issue' : 'review'}:${match[3]}`;
 }
 
 async function pollGithubRepositoryPrComments(connector, login, repository) {
@@ -2902,26 +3035,30 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
     )
   );
   for (const { pr, comment } of pending) {
-    await runRules({
-      source: 'github',
-      type: 'pr_comment',
-      connectorId: connector.id,
-      repo: pr.repository,
-      number: pr.number,
-      title: pr.title,
-      pullRequestUrl: pr.html_url,
-      url: comment.html_url,
-      user: comment.user ? comment.user.login : null,
-      body: comment.body || '',
-      createdAt: comment.created_at,
-      reviewState: comment.review_state || null,
-      raw: comment,
-    });
+    await emitGithubPrActivity(connector, pr, comment);
   }
 
   runtime.cursorTs = pollStartedAt;
   runtime.seenIds = Array.from(seen).slice(-2000);
   return { processed: pending.length, seeded: 0 };
+}
+
+function emitGithubPrActivity(connector, pr, comment) {
+  return runRules({
+    source: 'github',
+    type: 'pr_comment',
+    connectorId: connector.id,
+    repo: pr.repository,
+    number: pr.number,
+    title: pr.title,
+    pullRequestUrl: pr.html_url,
+    url: comment.html_url,
+    user: comment.user ? comment.user.login : null,
+    body: comment.body || '',
+    createdAt: comment.created_at,
+    reviewState: comment.review_state || null,
+    raw: comment,
+  });
 }
 
 async function pollGithub(connector, manual) {

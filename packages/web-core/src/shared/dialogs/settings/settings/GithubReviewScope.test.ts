@@ -110,13 +110,14 @@ test('renders unreadable heads, target repair failures and isolated activity err
   expect(html).not.toContain('<script>');
 });
 
-test('uses the primary repository for legacy config and translates the scope in Korean', async () => {
+test('keeps primary review imports and shows automatic activity for an empty scope', async () => {
   await i18n.changeLanguage('ko');
   const html = render({
     ...connector,
     config: { owner: 'example', repo: 'app', reviewPrs: true },
   });
   expect(html).toContain('리뷰 요청 감시 저장소: example/app');
+  expect(html).toContain('연결된 GitHub 계정의 관련 PR을 자동으로 찾습니다.');
   expect(html).toContain('목록 밖 저장소의 리뷰 요청은 감시하지 않습니다.');
   expect(html).toContain('감시 저장소 편집');
 });

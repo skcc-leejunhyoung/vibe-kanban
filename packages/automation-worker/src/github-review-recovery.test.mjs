@@ -63,6 +63,10 @@ const names = [
   "startGithubIssueSync",
   "pollGithubPrComments",
   "pollGithubRepositoryPrComments",
+  "githubDiscoverActivityPrs",
+  "pollGithubAutomaticPrActivity",
+  "githubLegacyPrActivityKey",
+  "emitGithubPrActivity",
   "githubCommentPrNumber",
   "orderByParent",
 ];
@@ -948,6 +952,105 @@ test("a deleted cached review tag is refreshed after a failed attachment instead
   assert.equal(h.store.issues.size, 1);
   assert.equal(h.store.tags.size, 1);
   assert.equal(result.missing.length, 0);
+});
+
+test("automatic activity discovers current repositories, retries partial reads and delivers new reviews once", async () => {
+  const h = harness();
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  vm.runInContext(
+    ["githubPrComments", "githubPrReviews"].map(functionSource).join("\n"),
+    h.context,
+  );
+  delete h.github.config.reviewRepositories;
+  h.github.config.notifyPrComments = true;
+  const cursor = new Date(Date.now() - 30_000).toISOString();
+  const stamp = new Date(Date.now() - 10_000).toISOString();
+  h.github.config.prCommentCursors = {
+    "example/app": { cursorTs: cursor, seenIds: [
+      "https://github.com/example/app/pull/42#pullrequestreview-4:4",
+    ] },
+  };
+  const app = "moved/product";
+  const another = "another/service";
+  const item = (repo) => ({
+    ...fixture.searchItem,
+    repository_url: `https://api.github.com/repos/${repo}`,
+    html_url: `https://github.com/${repo}/pull/42`,
+  });
+  const json = (data) => ({
+    ok: true,
+    json: async () => data,
+    text: async () => JSON.stringify(data),
+  });
+  let unavailable = true;
+  let newReview = false;
+  const events = [];
+  h.context.runRules = async (event) => events.push(event);
+  h.context.fetch = async (input) => {
+    const url = new URL(input);
+    if (url.pathname === "/search/issues") {
+      const q = url.searchParams.get("q");
+      assert.ok(!q.includes("repo:"), q);
+      assert.match(q, /^is:pr is:(open|closed) (review-)?involves:/);
+      const items = q.includes("is:closed") ? [] : q.includes("review-involves:")
+        ? [item(app), item(another)] : [item(app)];
+      return json({ total_count: items.length, incomplete_results: false, items });
+    }
+    assert.match(url.pathname, /^\/repos\/(moved\/product|another\/service)\/(issues|pulls)\/42\/(comments|reviews)$/);
+    if (url.pathname.includes(another)) {
+      if (unavailable) return { ok: false, status: 503, text: async () => "fixture" };
+      return json([]);
+    }
+    const reviewer = { login: "synthetic-reviewer" };
+    if (url.pathname.endsWith("/reviews"))
+      return json([4, 5, ...(newReview ? [6] : [])].map((id) => ({
+        id, user: reviewer, state: "CHANGES_REQUESTED", submitted_at: stamp,
+        commit_id: headA, html_url: `${item(app).html_url}#pullrequestreview-${id}`,
+      })));
+    if (url.pathname.includes("/issues/"))
+      return json([{ id: 5, user: reviewer, created_at: stamp,
+        html_url: `${item(app).html_url}#issuecomment-5`, body: "fixture comment" }]);
+    return json([]);
+  };
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.equal((await poll()).processed, 2);
+  const runtime = h.github.config.prActivityDiscovery;
+  assert.equal(runtime.cursorTs, cursor);
+  assert.equal(runtime.complete, false);
+  assert.equal(runtime.repositories.length, 1);
+  assert.equal(runtime.repositories[0].repository, app);
+  assert.equal(h.github.config.prCommentErrors[0].repository, another);
+  assert.deepEqual(events.map((event) => [event.repo, event.reviewState, event.raw.id]), [
+    [app, null, 5], [app, "changes_requested", 5],
+  ]);
+  unavailable = false;
+  newReview = true;
+  assert.equal((await poll()).processed, 1);
+  assert.equal(events.at(-1).raw.id, 6);
+  assert.equal(runtime.complete, true);
+  assert.ok(runtime.cursorTs > cursor);
+  assert.equal(runtime.repositories.length, 2);
+  assert.equal((await poll()).processed, 0);
+  assert.equal(h.store.issues.size, 0);
+});
+
+test("automatic activities keep their cursor on incomplete global discovery", async () => {
+  const h = harness();
+  delete h.github.config.reviewRepositories;
+  h.github.config.notifyPrComments = true;
+  let searchCalls = 0;
+  h.context.fetch = async (input) => {
+    const url = new URL(input);
+    searchCalls += 1;
+    assert.equal(url.pathname, "/search/issues");
+    return { ok: false, status: 403 };
+  };
+  const result = await h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.equal(searchCalls, 1);
+  assert.equal(result.errors.length, 1);
+  assert.equal(h.github.config.prActivityDiscovery.complete, false);
+  assert.equal(h.github.config.prActivityDiscovery.cursorTs, h.github.config.prActivityDiscovery.startedAt);
+  assert.equal(h.github.config.prActivityDiscovery.repositories.length, 0);
 });
 
 test("activity searches bound historical PRs while request discovery remains cursor-independent", async () => {

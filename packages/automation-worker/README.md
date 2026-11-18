@@ -290,11 +290,10 @@ miss would never be re-tried.
   Set `reviewPrs: true` to also import open, non-draft PRs where review is
   requested from the user (Search API). Set `reviewRepositories` to an explicit
   allowlist such as `["example/app", "example/search"]`; an absent or empty
-  list uses the primary `owner/repo`. This list affects review PRs and their
-  comment/review notifications only. Ordinary assigned/created/mentioned issues
-  still use the primary repository and its existing filter. Other repositories
-  are **not monitored**; no organization-wide discovery or credential expansion
-  occurs. Edit the list in Settings → Automation → Edit monitored repositories.
+  list uses the primary `owner/repo` for review request imports. Ordinary
+  assigned/created/mentioned issues also use the primary repository and its
+  existing filter. Edit the list in Settings → Automation → Edit monitored
+  repositories.
   Imported PRs are tagged `review` in Vibe (the tag is created in the project if
   missing). Branch metadata is fetched via `GET /repos/.../pulls/{n}`.
   Open review requests are reconciled every poll, including the first poll and
@@ -314,11 +313,7 @@ miss would never be re-tried.
   `reviewPrRuleReceipts` so repair polls do not repeat arbitrary script actions.
   Missing review tags and structural links are repaired on the existing issue,
   including a restart between issue creation and link creation. A failed repair
-  remains visible as missing; it is not reported as tracked. Comment/review
-  failures are isolated per repository and never block primary issue polling;
-  unsuccessful activity reads do not advance their repository cursor. Related
-  activity searches use the overlap day's update filter so a large historical
-  authored/reviewed set cannot permanently block current comment collection.
+  remains visible as missing; it is not reported as tracked.
   Review-request discovery remains independent of issue/update cursors.
   The settings page shows the last reconciliation time, open PRs/heads, missing
   or pending links, pending/exhausted retries, and per-repository errors. Search
@@ -326,16 +321,18 @@ miss would never be re-tried.
   ceiling, it falls back to all pages of that same repository's open PRs and
   filters direct requested reviewers. Failed reads remain visible and are never
   published as a successful partial reconciliation.
-  PR details, comments and submitted reviews always use the original repository;
-  comment cursors are independent per repository and newly added repositories
-  seed old comments without notifications. Credentials must already allow access
-  to each selected repository; access failures remain visible.
-  With `notifyPrComments` enabled (the default), it also watches PRs authored by,
-  assigned to, awaiting review from, or previously reviewed by the authenticated
-  user. New issue comments and inline review comments from other users create
-  Vibe notifications. This includes issue comments, inline review comments, and
-  non-empty submitted review bodies (for example APPROVED or CHANGES_REQUESTED
-  reviews). The first poll seeds existing comments without notifying.
+  With `notifyPrComments` enabled (the default) and an empty repository list,
+  `involves` and `review-involves` discover open and recently updated closed
+  PRs visible to the connected account. The worker reads each discovered PR's
+  issue comments, inline comments and submitted reviews from its search result
+  repository. New approvals and change requests can notify even with an empty
+  review body. Search windows that exceed 1,000 results are split. Incomplete
+  searches and activity read failures retain the cursor. The
+  `prActivityDiscovery` status records the last poll, completeness and counts
+  for each successfully read repository. A new connector starts at the first
+  poll time. An existing connector carries forward its activity cursor and seen
+  event IDs. An explicit repository list keeps the previous scoped notification
+  behavior, including independent cursors and first-poll seeding per repository.
 - `vibe_kanban`: creates Vibe Kanban issues through HTTP.
 
 The `vibe_kanban` connector posts to `{baseUrl}/v1/issues` on the **remote** API.

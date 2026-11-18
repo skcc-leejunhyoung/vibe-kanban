@@ -7,6 +7,35 @@ import {
   reconcileGithubReviewPrs,
 } from './github-review-prs.mjs';
 
+test('splits capped global searches into adjacent timestamp ranges', async () => {
+  const start = Date.parse('2026-01-01T00:00:00Z') / 1000;
+  const queries = [];
+  const prs = await searchGithubPrs({
+    fetchImpl: async (input) => {
+      const q = new URL(input).searchParams.get('q');
+      queries.push(q);
+      const number = queries.length - 1;
+      return {
+        ok: true,
+        json: async () => number === 0
+          ? { total_count: 1001, items: [] }
+          : { total_count: 1, items: [{
+            number,
+            repository_url: 'https://api.github.com/repos/example/app',
+          }] },
+      };
+    },
+    apiBase: 'https://api.github.com',
+    qualifier: 'is:open involves:synthetic',
+    perPage: 100,
+    dateRange: { field: 'created', start, end: start + 3 },
+  });
+  assert.deepEqual(prs.map(({ number }) => number), [1, 2]);
+  assert.match(queries[1], /00:00:00(?:\.000)?Z\.\..*00:00:01(?:\.000)?Z$/);
+  assert.match(queries[2], /00:00:02(?:\.000)?Z\.\..*00:00:03(?:\.000)?Z$/);
+  assert.ok(queries.every((q) => !q.includes('repo:')));
+});
+
 const fixture = JSON.parse(
   await readFile(new URL('./fixtures/review-request.json', import.meta.url))
 );
