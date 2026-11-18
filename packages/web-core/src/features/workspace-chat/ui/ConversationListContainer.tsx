@@ -75,6 +75,10 @@ import { ChatEmptyState } from '@vibe/ui/components/ChatEmptyState';
 import { ChatScriptPlaceholder } from '@vibe/ui/components/ChatScriptPlaceholder';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
 import { useHostId } from '@/shared/providers/HostIdProvider';
+import {
+  useWorkspaceArtifacts,
+  WorkspaceArtifacts,
+} from './WorkspaceArtifacts';
 
 interface ConversationListProps {
   attempt: WorkspaceWithSession;
@@ -668,6 +672,10 @@ export const ConversationList = forwardRef<
   const repos = reposProp;
   const resetAction = useResetProcess(attempt.id, attempt.session?.id);
   const hostId = useHostId();
+  const transferredArtifacts = useWorkspaceArtifacts(
+    attempt.id,
+    attempt.session?.id
+  );
   const collapseCompletedTurnSteps = useCollapseCompletedTurnSteps();
   const collapseStepsRef = useRef(collapseCompletedTurnSteps);
   collapseStepsRef.current = collapseCompletedTurnSteps;
@@ -1592,7 +1600,7 @@ export const ConversationList = forwardRef<
               container's definite height. The wrapper is intentionally
               content-sized (auto height) so its ResizeObserver can detect
               tail-row growth, which would otherwise break that centering. */}
-          {showEmptyState && (
+          {showEmptyState && !transferredArtifacts.data?.length && (
             <div className="flex min-h-full items-center justify-center px-double py-12">
               <ChatEmptyState
                 title={t('conversation.emptyTitle', {
@@ -1607,6 +1615,16 @@ export const ConversationList = forwardRef<
           )}
 
           <div ref={conversationContentRef}>
+            {attempt.session && (
+              <WorkspaceArtifacts
+                items={transferredArtifacts.data ?? []}
+                workspaceId={attempt.id}
+                sessionId={attempt.session.id}
+                archived={attempt.archived}
+                failed={transferredArtifacts.isError}
+              />
+            )}
+
             <div className="pt-2">
               {showSetupPlaceholder && (
                 <div className="my-base px-double">

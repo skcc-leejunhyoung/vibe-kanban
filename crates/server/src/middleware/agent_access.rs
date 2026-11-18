@@ -233,8 +233,8 @@ fn toggle_for(
         }
         ["repos", ..] => Toggle::UpdateConfig,
         ["automation", ..] | ["automation-actions", ..] | ["agent-memory-sync", ..]
-        | ["execution-processes", _, "artifacts", "automation-channels" | "drawer"]
-        | ["drawer-artifacts", _, "move"] => {
+        | ["execution-processes", _, "artifacts", "automation-channels" | "drawer" | "transfer"]
+        | ["drawer-artifacts", _, "move"] | ["artifacts", _, "transfer"] => {
             Toggle::AutomationWrite
         }
         ["remote", ..] | ["tags", ..] | ["organizations", ..] => Toggle::WriteIssues,
@@ -523,6 +523,17 @@ mod tests {
         let own = Uuid::new_v4();
         assert_eq!(
             gated(Method::POST, "/api/drawer-artifacts/synthetic/move"),
+            Decision::Gated(Toggle::AutomationWrite)
+        );
+        assert_eq!(
+            gated(Method::POST, "/api/artifacts/synthetic/transfer"),
+            Decision::Gated(Toggle::AutomationWrite)
+        );
+        assert_eq!(
+            gated(
+                Method::POST,
+                "/api/execution-processes/synthetic/artifacts/transfer"
+            ),
             Decision::Gated(Toggle::AutomationWrite)
         );
         assert_eq!(

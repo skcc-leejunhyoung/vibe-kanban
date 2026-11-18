@@ -150,6 +150,18 @@ pub async fn register(
         .ok_or_else(|| {
             ApiError::BadRequest("Attach the artifact before registering input".into())
         })?;
+    if services::services::drawer_artifacts::source_transferred(
+        &deployment.db().pool,
+        process.id,
+        &request.artifact_id,
+    )
+    .await
+    .map_err(bad)?
+    {
+        return Err(ApiError::Conflict(
+            "Artifact ownership was transferred".into(),
+        ));
+    }
     let bundle = manifest
         .bundles
         .get(&request.artifact_id)
@@ -292,6 +304,18 @@ async fn refresh(
         )
         .map_err(bad)?;
     let old = receipt.interaction.state;
+    if services::services::drawer_artifacts::source_transferred(
+        &deployment.db().pool,
+        process.id,
+        &receipt.interaction.artifact_id,
+    )
+    .await
+    .map_err(bad)?
+    {
+        receipt.interaction.state = Status::Cancelled;
+        inputs::save(receipt).await.map_err(bad)?;
+        return Ok(());
+    }
     inputs::refresh_lifecycle(&deployment.db().pool, receipt)
         .await
         .map_err(bad)?;

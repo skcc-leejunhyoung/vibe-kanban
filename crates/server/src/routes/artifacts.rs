@@ -275,11 +275,19 @@ pub async fn list(
     Query(query): Query<ArtifactQuery>,
 ) -> Result<Json<ApiResponse<ArtifactList>>, ApiError> {
     let manifest = scoped_manifest(&deployment, &process, &query).await?;
-    let list = manifest.map(|m| m.list).unwrap_or(ArtifactList {
+    let mut list = manifest.map(|m| m.list).unwrap_or(ArtifactList {
         artifacts: Vec::new(),
         complete: !matches!(process.status, ExecutionProcessStatus::Running),
         warnings: Vec::new(),
     });
+    let moved: Vec<String> = sqlx::query_scalar(
+        "SELECT source_artifact_id FROM artifact_transfer_sources WHERE execution_id = ?",
+    )
+    .bind(process.id)
+    .fetch_all(&deployment.db().pool)
+    .await?;
+    list.artifacts
+        .retain(|artifact| !moved.contains(&artifact.id));
     Ok(Json(ApiResponse::success(list)))
 }
 
@@ -295,6 +303,18 @@ pub async fn bundle(
         .id
         .as_deref()
         .ok_or_else(|| ApiError::BadRequest("Artifact snapshot not available".into()))?;
+    if services::services::drawer_artifacts::source_transferred(
+        &deployment.db().pool,
+        process.id,
+        id,
+    )
+    .await
+    .map_err(|error| ApiError::BadRequest(error.to_string()))?
+    {
+        return Err(ApiError::Conflict(
+            "Artifact ownership was transferred".into(),
+        ));
+    }
     let bundle = manifest
         .bundles
         .get(id)
@@ -333,6 +353,19 @@ pub async fn content(
     let manifest = scoped_manifest(&deployment, &process, &query)
         .await?
         .ok_or_else(|| ApiError::BadRequest("Artifact snapshot not available".into()))?;
+    if let Some(id) = query.id.as_ref()
+        && services::services::drawer_artifacts::source_transferred(
+            &deployment.db().pool,
+            process.id,
+            id,
+        )
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?
+    {
+        return Err(ApiError::Conflict(
+            "Artifact ownership was transferred".into(),
+        ));
+    }
     let artifact = query
         .id
         .as_ref()

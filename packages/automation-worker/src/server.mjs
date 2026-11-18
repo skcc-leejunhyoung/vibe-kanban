@@ -573,6 +573,10 @@ async function route(req, res) {
       else if (parts.length === 2) result = await artifactChannels.configure(input);
       else if (parts.length === 4 && parts[3] === 'describe')
         result = await artifactChannels.describe(parts[2], input.scope, input.workspace_epoch);
+      else if (parts.length === 4 && parts[3] === 'transfer')
+        result = await artifactChannels.transfer(parts[2], input);
+      else if (parts.length === 4 && parts[3] === 'inspect')
+        result = await artifactChannels.inspect(parts[2], input.scope);
       else if (parts.length === 4 && parts[3] === 'move-drawer')
         result = await artifactChannels.moveDrawer(parts[2], input);
       else if (parts.length === 4 && parts[3] === 'snapshot')

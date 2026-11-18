@@ -603,6 +603,15 @@ pub async fn automation_guard(
     let lifecycle = LIFECYCLE_LOCK.lock().await;
     let _guard = LOCK.lock().await;
     let mut receipt = load(reference).await?;
+    ensure!(
+        !super::drawer_artifacts::source_transferred(
+            pool,
+            reference.execution_id,
+            &receipt.interaction.artifact_id
+        )
+        .await?,
+        "Artifact ownership was transferred"
+    );
     let ended = refresh_lifecycle(pool, &mut receipt).await?;
     ensure!(
         !ended

@@ -361,7 +361,11 @@ export type ArtifactInputSchema = { "type": "object", properties: { [key in stri
 
 export type DrawerArtifactFile = { path: string, mime: string, bytes: Array<number>, };
 
-export type DrawerArtifactDocument = { id: string, note_id: string, name: string, path: string, version: string, files: Array<DrawerArtifactFile>, };
+export type DrawerArtifactDocument = { id: string, note_id: string | null, workspace_id?: string, session_id?: string, name: string, path: string, version: string, files: Array<DrawerArtifactFile>, };
+
+export type ArtifactOwner = { "kind": "drawer", note_id: string, } | { "kind": "workspace", workspace_id: string, session_id: string, };
+
+export type ArtifactSummary = { id: string, name: string, version: string, owner: ArtifactOwner, };
 
 export type ArtifactDelivery = "follow_up" | "wait" | "service" | "automation";
 

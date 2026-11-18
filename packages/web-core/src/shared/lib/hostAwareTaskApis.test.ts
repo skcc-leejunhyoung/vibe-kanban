@@ -4,6 +4,7 @@ import {
   approvalsApi,
   artifactsApi,
   drawerArtifactsApi,
+  ownedArtifactsApi,
   attachmentsApi,
   executionProcessesApi,
   issuePrsApi,
@@ -31,6 +32,41 @@ function apiResponse<T>(data: T): Response {
 }
 
 describe('host-aware task APIs', () => {
+  it('routes transferred documents and snapshots by their exact host, workspace and session', async () => {
+    const request = vi.fn<(path: string) => Promise<Response>>(async () =>
+      apiResponse({})
+    );
+    setLocalApiTransport({ request, openWebSocket: vi.fn() });
+    const owner = {
+      kind: 'workspace' as const,
+      workspace_id: 'synthetic-workspace',
+      session_id: 'synthetic-session',
+    };
+    await ownedArtifactsApi.document('synthetic-artifact', owner, 'host-a');
+    await ownedArtifactsApi.snapshot(
+      'synthetic-artifact',
+      owner,
+      'synthetic-version',
+      'host-b'
+    );
+    await ownedArtifactsApi.list(
+      owner.workspace_id,
+      owner.session_id,
+      'host-a'
+    );
+    for (const [path] of request.mock.calls) {
+      const url = new URL(path, 'https://example.test');
+      expect(url.searchParams.get('workspace_id')).toBe(owner.workspace_id);
+      expect(url.searchParams.get('session_id')).toBe(owner.session_id);
+      expect(url.searchParams.has('note_id')).toBe(false);
+    }
+    expect(request.mock.calls[0][0]).toContain(
+      '/api/host/host-a/artifacts/synthetic-artifact'
+    );
+    expect(request.mock.calls[1][0]).toContain(
+      '/api/host/host-b/artifacts/synthetic-artifact/snapshot'
+    );
+  });
   it('routes independent Drawer content and data by owning host and note without workspace identifiers', async () => {
     const request = vi.fn<(path: string) => Promise<Response>>(async () =>
       apiResponse({})

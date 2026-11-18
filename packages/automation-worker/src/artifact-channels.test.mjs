@@ -889,6 +889,275 @@ test("Drawer move rolls back scope when persistence fails", async () => {
   assert.deepEqual(await t.channels.describe(config.id, drawer), binding);
 });
 
+test("legacy Drawer move receipts remain retryable after upgrading the transfer format", async () => {
+  const t = await setup();
+  const drawer = {
+    kind: "drawer", owner_id: scope.owner_id, owner_host: scope.owner_host,
+    note_id: randomUUID(), artifact_id: randomUUID(),
+  };
+  const config = { ...t.config, id: "legacy-transfer", scope: drawer, actions: {} };
+  await t.channels.configure(config);
+  await t.channels.publish("publisher", config.id, { count: 8 });
+  const binding = await t.channels.describe(config.id, drawer);
+  const move = { scope: drawer, target_note_id: randomUUID(),
+    operation_id: randomUUID(), version: binding.version };
+  const moved = await t.channels.moveDrawer(config.id, move);
+  t.state.artifactChannels[config.id].drawer_move = structuredClone(move);
+  const restarted = createArtifactChannels({ state: t.state, persist: t.persist, runRule: t.execute });
+  assert.deepEqual(await restarted.moveDrawer(config.id, move), moved);
+  assert.equal((await restarted.snapshot(config.id,
+    { ...drawer, note_id: move.target_note_id }, moved.version)).data.count, 8);
+  assert.equal(t.calls(), 0);
+});
+
+test("all ownership directions preserve channel history, publishers and the five-minute schedule after source cleanup", async () => {
+  const t = await setup();
+  const config = { ...t.config, id: "portable-dashboard", actions: {} };
+  await t.channels.configure(config);
+  t.state.routines = [
+    {
+      id: "synthetic-periodic",
+      enabled: true,
+      trigger: { type: "schedule", cron: "*/5 * * * *", timezone: "UTC" },
+      action: {
+        type: "run_rule",
+        connectorId: "synthetic-connector",
+        targetHostId: scope.owner_host,
+        input: { ruleId: "publisher" },
+      },
+    },
+  ];
+  const routines = structuredClone(t.state.routines);
+  const rules = structuredClone(t.state.rules);
+  const artifact = randomUUID();
+  let current = scope;
+  let binding = await t.channels.describe(config.id, current);
+  const generation = t.state.artifactChannels[config.id].generation;
+  const historyId = randomUUID();
+  t.state.artifactRequests[historyId] = {
+    request_id: historyId,
+    channel_id: config.id,
+    binding_id: randomUUID(),
+    status: "completed",
+    scope,
+    generation,
+    workspace_epoch: 0,
+  };
+  await t.channels.publish("publisher", config.id, { count: 5 });
+  const destinations = [
+    {
+      kind: "drawer",
+      owner_id: scope.owner_id,
+      owner_host: scope.owner_host,
+      artifact_id: artifact,
+      note_id: randomUUID(),
+    },
+    {
+      kind: "workspace_artifact",
+      owner_id: scope.owner_id,
+      owner_host: scope.owner_host,
+      artifact_id: artifact,
+      workspace_id: randomUUID(),
+      session_id: randomUUID(),
+    },
+    {
+      kind: "workspace_artifact",
+      owner_id: scope.owner_id,
+      owner_host: scope.owner_host,
+      artifact_id: artifact,
+      workspace_id: randomUUID(),
+      session_id: randomUUID(),
+    },
+    {
+      kind: "drawer",
+      owner_id: scope.owner_id,
+      owner_host: scope.owner_host,
+      artifact_id: artifact,
+      note_id: randomUUID(),
+    },
+    {
+      kind: "drawer",
+      owner_id: scope.owner_id,
+      owner_host: scope.owner_host,
+      artifact_id: artifact,
+      note_id: randomUUID(),
+    },
+  ];
+  let lifecycleRevision = 0;
+  for (const target of destinations) {
+    const input = {
+      scope: current,
+      target_scope: target,
+      version: binding.version,
+      operation_id: randomUUID(),
+    };
+    const snapshot = await t.channels.snapshot(
+      config.id,
+      current,
+      binding.version,
+      artifact,
+    );
+    const next = await t.channels.transfer(config.id, input);
+    assert.deepEqual(await t.channels.transfer(config.id, input), next);
+    assert.deepEqual(
+      await t.channels.snapshot(config.id, target, next.version, artifact),
+      snapshot,
+    );
+    await assert.rejects(t.channels.describe(config.id, current), /scope/);
+    await t.channels.cleanupScope({
+      hostId: scope.owner_host,
+      workspaceId: current.workspace_id ?? "synthetic-old-workspace",
+      epoch: 10,
+      deleted: true,
+    });
+    assert.ok(t.state.artifactRequests[historyId]);
+    if (target.kind === "workspace_artifact") {
+      await t.channels.cleanupScope({
+        type: "drawer_artifact_lifecycle",
+        hostId: scope.owner_host,
+        artifactId: artifact,
+        revision: ++lifecycleRevision,
+        paused: true,
+        deleted: false,
+      });
+      await t.channels.publish("publisher", config.id, { count: 999 });
+      await assert.rejects(
+        t.channels.snapshot(config.id, target, next.version, artifact),
+        /archived/,
+      );
+      await t.channels.cleanupScope({
+        type: "drawer_artifact_lifecycle",
+        hostId: scope.owner_host,
+        artifactId: artifact,
+        revision: ++lifecycleRevision,
+        paused: false,
+        deleted: false,
+      });
+      assert.deepEqual(
+        (await t.channels.snapshot(config.id, target, next.version, artifact))
+          .data,
+        snapshot.data,
+      );
+    }
+    await t.channels.publish("publisher", config.id, {
+      count: snapshot.data.count + 1,
+    });
+    assert.equal(t.state.artifactChannels[config.id].generation, generation);
+    assert.deepEqual(
+      t.state.artifactChannels[config.id].publishers,
+      config.publishers,
+    );
+    assert.deepEqual(t.state.routines, routines);
+    assert.deepEqual(t.state.rules, rules);
+    current = target;
+    binding = next;
+  }
+  assert.deepEqual(
+    (await t.channels.snapshot(config.id, current, binding.version, artifact))
+      .data,
+    { count: 10 },
+  );
+});
+
+test("transfers reject foreign owners, interactive channels and unresolved actions before changing state", async () => {
+  const t = await setup();
+  const target = {
+    kind: "drawer",
+    owner_id: scope.owner_id,
+    owner_host: scope.owner_host,
+    artifact_id: randomUUID(),
+    note_id: randomUUID(),
+  };
+  const input = {
+    scope,
+    target_scope: target,
+    version: t.binding.version,
+    operation_id: randomUUID(),
+  };
+  for (const key of ["owner_id", "owner_host"])
+    await assert.rejects(
+      t.channels.transfer(t.config.id, {
+        ...input,
+        target_scope: { ...target, [key]: "foreign" },
+      }),
+      /scope/,
+    );
+  await assert.rejects(t.channels.transfer(t.config.id, input), /read-only/);
+  await t.channels.configure({ ...t.config, actions: {} });
+  const binding = await t.channels.describe(t.config.id, scope);
+  t.state.artifactRequests.synthetic = {
+    channel_id: t.config.id,
+    status: "unknown",
+  };
+  assert.equal(
+    (await t.channels.inspect(t.config.id, scope)).transferable,
+    false,
+  );
+  await assert.rejects(
+    t.channels.transfer(t.config.id, { ...input, version: binding.version }),
+    /unfinished/,
+  );
+  assert.deepEqual(t.state.artifactChannels[t.config.id].scope, scope);
+});
+
+test("a pending transfer survives old workspace cleanup while unrelated channels are revoked", async () => {
+  const t = await setup();
+  const config = { ...t.config, id: "retained-dashboard", actions: {} };
+  await t.channels.configure(config);
+  await t.channels.publish("publisher", config.id, { count: 12 });
+  const binding = await t.channels.describe(config.id, scope);
+  await t.channels.cleanupScope({
+    hostId: scope.owner_host,
+    workspaceId: scope.workspace_id,
+    epoch: 1,
+    deleted: true,
+    preserve_channels: [config.id],
+  });
+  await assert.rejects(t.channels.describe(t.config.id, scope), /Unknown/);
+  const target = {
+    kind: "drawer",
+    owner_id: scope.owner_id,
+    owner_host: scope.owner_host,
+    artifact_id: randomUUID(),
+    note_id: randomUUID(),
+  };
+  const moved = await t.channels.transfer(config.id, {
+    scope,
+    version: binding.version,
+    target_scope: target,
+    operation_id: randomUUID(),
+  });
+  await t.channels.cleanupScope({
+    hostId: scope.owner_host,
+    workspaceId: scope.workspace_id,
+    sessionId: scope.session_id,
+    deleted: true,
+  });
+  assert.deepEqual(
+    (
+      await t.channels.snapshot(
+        config.id,
+        target,
+        moved.version,
+        target.artifact_id,
+      )
+    ).data,
+    { count: 12 },
+  );
+  await t.channels.publish("publisher", config.id, { count: 13 });
+  assert.deepEqual(
+    (
+      await t.channels.snapshot(
+        config.id,
+        target,
+        moved.version,
+        target.artifact_id,
+      )
+    ).data,
+    { count: 13 },
+  );
+});
+
 test("Drawer lifecycle rejects malformed events, isolates hosts and rolls back failed persistence", async () => {
   const t = await setup();
   const artifact = randomUUID();

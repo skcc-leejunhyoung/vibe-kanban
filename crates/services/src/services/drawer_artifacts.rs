@@ -12,6 +12,52 @@ use super::remote_client::RemoteClient;
 pub static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ArtifactOwner {
+    Drawer {
+        note_id: Uuid,
+    },
+    Workspace {
+        workspace_id: Uuid,
+        session_id: Uuid,
+    },
+}
+
+impl ArtifactOwner {
+    pub fn scope(&self, id: Uuid, owner: Uuid, host: &str) -> Value {
+        match self {
+            Self::Drawer { note_id } => json!({"kind":"drawer", "owner_id":owner,
+                "owner_host":host, "artifact_id":id, "note_id":note_id}),
+            Self::Workspace {
+                workspace_id,
+                session_id,
+            } => json!({"kind":"workspace_artifact",
+                "owner_id":owner, "owner_host":host, "artifact_id":id,
+                "workspace_id":workspace_id, "session_id":session_id}),
+        }
+    }
+
+    fn columns(&self) -> (Option<Uuid>, Option<Uuid>, Option<Uuid>) {
+        match self {
+            Self::Drawer { note_id } => (Some(*note_id), None, None),
+            Self::Workspace {
+                workspace_id,
+                session_id,
+            } => (None, Some(*workspace_id), Some(*session_id)),
+        }
+    }
+
+    fn href(&self, host: Uuid) -> String {
+        match self {
+            Self::Drawer { note_id } => format!("/drawer?note={note_id}"),
+            Self::Workspace { workspace_id, .. } => {
+                format!("/hosts/{host}/workspaces/{workspace_id}")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct DrawerArtifactFile {
     pub path: String,
@@ -22,7 +68,13 @@ pub struct DrawerArtifactFile {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct DrawerArtifactDocument {
     pub id: Uuid,
-    pub note_id: Uuid,
+    pub note_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub session_id: Option<Uuid>,
     pub name: String,
     pub path: String,
     pub version: String,
@@ -32,7 +84,9 @@ pub struct DrawerArtifactDocument {
 #[derive(Debug, Clone, FromRow)]
 pub struct StoredArtifact {
     pub id: Uuid,
-    pub note_id: Uuid,
+    pub note_id: Option<Uuid>,
+    pub workspace_id: Option<Uuid>,
+    pub session_id: Option<Uuid>,
     pub owner_id: Uuid,
     pub host_id: Uuid,
     pub channel_id: String,
@@ -47,9 +101,21 @@ pub struct StoredArtifact {
 }
 
 impl StoredArtifact {
+    pub fn artifact_owner(&self) -> Result<ArtifactOwner> {
+        match (self.note_id, self.workspace_id, self.session_id) {
+            (Some(note_id), None, None) => Ok(ArtifactOwner::Drawer { note_id }),
+            (None, Some(workspace_id), Some(session_id)) => Ok(ArtifactOwner::Workspace {
+                workspace_id,
+                session_id,
+            }),
+            _ => bail!("Invalid artifact ownership"),
+        }
+    }
+
     pub fn scope(&self, host: &str) -> Value {
-        json!({"kind":"drawer", "owner_id":self.owner_id, "owner_host":host,
-            "note_id":self.note_id, "artifact_id":self.id})
+        self.artifact_owner()
+            .expect("validated artifact owner")
+            .scope(self.id, self.owner_id, host)
     }
 
     pub fn link(&self) -> String {
@@ -76,19 +142,26 @@ pub async fn load(pool: &SqlitePool, id: Uuid) -> Result<StoredArtifact> {
 }
 
 pub async fn insert(pool: &SqlitePool, record: &StoredArtifact) -> Result<()> {
+    let mut connection = pool.acquire().await?;
+    insert_on(&mut connection, record).await
+}
+
+async fn insert_on(connection: &mut sqlx::SqliteConnection, record: &StoredArtifact) -> Result<()> {
     if record.document.len() > MAX_DOCUMENT_BYTES {
         bail!("Drawer artifact exceeds 8 MiB snapshot limit");
     }
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM drawer_artifacts WHERE deleted = 0")
-        .fetch_one(pool)
+        .fetch_one(&mut *connection)
         .await?;
     if count >= 128 {
         bail!("Too many Drawer artifacts");
     }
-    sqlx::query("INSERT INTO drawer_artifacts (id, note_id, owner_id, host_id, channel_id, document, channel_config, version, binding_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(record.id).bind(record.note_id).bind(record.owner_id).bind(record.host_id)
+    record.artifact_owner()?;
+    sqlx::query("INSERT INTO drawer_artifacts (id, note_id, workspace_id, session_id, owner_id, host_id, channel_id, document, channel_config, version, binding_version, attached) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(record.id).bind(record.note_id).bind(record.workspace_id).bind(record.session_id).bind(record.owner_id).bind(record.host_id)
         .bind(&record.channel_id).bind(&record.document).bind(&record.channel_config).bind(&record.version).bind(&record.binding_version)
-        .execute(pool).await?;
+        .bind(record.attached)
+        .execute(&mut *connection).await?;
     Ok(())
 }
 
@@ -102,10 +175,12 @@ pub fn document_version(note: Uuid, files: &[DrawerArtifactFile], config: &str) 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PendingMove {
     operation_id: Uuid,
-    pub source: Uuid,
-    pub target: Uuid,
+    pub source: ArtifactOwner,
+    pub target: ArtifactOwner,
     pub version: String,
     owner_host: String,
+    #[serde(default)]
+    source_scope: Option<Value>,
 }
 
 pub async fn pending_move(pool: &SqlitePool, id: Uuid) -> Result<Option<PendingMove>> {
@@ -152,7 +227,7 @@ fn active_note(record: &StoredArtifact, note: &DrawerNote) -> Result<()> {
 }
 
 /// Replace only real standalone attachment lines, retaining quoted examples.
-fn move_links(body: &str, id: Uuid, target: Uuid) -> Result<(String, String)> {
+fn move_links_to(body: &str, id: Uuid, href: &str) -> Result<(String, String)> {
     let mut result = String::new();
     let mut attachment = None;
     let mut offset = 0;
@@ -163,7 +238,7 @@ fn move_links(body: &str, id: Uuid, target: Uuid) -> Result<(String, String)> {
                 > executors::logs::artifacts::markdown_candidates(&body[..offset]).len()
         {
             attachment.get_or_insert_with(|| line.trim().to_string());
-            result.push_str(&format!("[Dashboard](/drawer?note={target})"));
+            result.push_str(&format!("[Dashboard]({href})"));
             if line.ends_with('\n') {
                 result.push('\n');
             }
@@ -177,6 +252,10 @@ fn move_links(body: &str, id: Uuid, target: Uuid) -> Result<(String, String)> {
         attachment
             .ok_or_else(|| anyhow::anyhow!("Source note has no standalone dashboard link"))?,
     ))
+}
+
+fn move_links(body: &str, id: Uuid, target: Uuid) -> Result<(String, String)> {
+    move_links_to(body, id, &format!("/drawer?note={target}"))
 }
 
 fn link_changes(
@@ -201,15 +280,20 @@ fn link_changes(
         "source_body_after":source_body,"target_body_after":target_body}))
 }
 
-fn moved_document(record: &StoredArtifact, target: Uuid) -> Result<DrawerArtifactDocument> {
+fn moved_document(
+    record: &StoredArtifact,
+    target: &ArtifactOwner,
+) -> Result<DrawerArtifactDocument> {
     let mut document: DrawerArtifactDocument = serde_json::from_str(&record.document)?;
     if document.id != record.id
         || document.note_id != record.note_id
+        || document.workspace_id != record.workspace_id
+        || document.session_id != record.session_id
         || document.version != record.version
     {
         bail!("Drawer document metadata does not match its binding");
     }
-    document.note_id = target;
+    (document.note_id, document.workspace_id, document.session_id) = target.columns();
     // Include the previous version so moving back cannot revive a stale request.
     document.version = format!(
         "{:x}",
@@ -233,7 +317,7 @@ pub async fn prepare_move(
 ) -> Result<()> {
     active_note(record, source)?;
     active_note(record, target)?;
-    if source.id != record.note_id
+    if Some(source.id) != record.note_id
         || source.id == target.id
         || record.deleted
         || !record.attached
@@ -241,20 +325,141 @@ pub async fn prepare_move(
     {
         bail!("Only an attached, active dashboard can move to another note");
     }
-    moved_document(record, target.id)?;
+    let target_owner = ArtifactOwner::Drawer { note_id: target.id };
+    moved_document(record, &target_owner)?;
     link_changes(record, source, target)?;
     let pending = PendingMove {
         operation_id: Uuid::new_v4(),
-        source: source.id,
-        target: target.id,
+        source: record.artifact_owner()?,
+        target: target_owner,
         version: record.version.clone(),
         owner_host: owner_host.into(),
+        source_scope: None,
     };
     let inserted = sqlx::query("INSERT INTO drawer_artifact_moves (artifact_id, payload) VALUES (?, ?) ON CONFLICT(artifact_id) DO UPDATE SET payload = excluded.payload, completed = 0 WHERE completed = 1")
         .bind(record.id).bind(serde_json::to_string(&pending)?).execute(pool).await?;
     if inserted.rows_affected() != 1 {
         bail!("Another Drawer move is already pending");
     }
+    Ok(())
+}
+
+pub async fn validate_owner(
+    pool: &SqlitePool,
+    client: &RemoteClient,
+    record: &StoredArtifact,
+    owner: &ArtifactOwner,
+) -> Result<Option<DrawerNote>> {
+    match owner {
+        ArtifactOwner::Drawer { note_id } => {
+            let note = client
+                .drawer_note(*note_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Drawer note is unavailable"))?;
+            active_note(record, &note)?;
+            Ok(Some(note))
+        }
+        ArtifactOwner::Workspace {
+            workspace_id,
+            session_id,
+        } => {
+            let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspaces w JOIN sessions s ON s.workspace_id = w.id WHERE w.id = ? AND s.id = ? AND w.archived = 0)")
+                .bind(workspace_id).bind(session_id).fetch_one(pool).await?;
+            if !active {
+                bail!("An active workspace session on this host is required");
+            }
+            client.ensure_account().await?;
+            Ok(None)
+        }
+    }
+}
+
+pub async fn prepare_transfer(
+    pool: &SqlitePool,
+    client: &RemoteClient,
+    record: &StoredArtifact,
+    target: ArtifactOwner,
+    host: &str,
+    source_scope: Option<Value>,
+) -> Result<()> {
+    let source = record.artifact_owner()?;
+    if source == target || record.deleted || !record.attached || record.archived {
+        bail!("Only an attached active artifact can transfer to another owner");
+    }
+    let source_note = validate_owner(pool, client, record, &source).await?;
+    let target_note = validate_owner(pool, client, record, &target).await?;
+    if let Some(note) = source_note {
+        move_links_to(&note.body, record.id, &target.href(record.host_id))?;
+    }
+    if let Some(note) = target_note {
+        let body = if linked(&note.body, record.id) {
+            note.body
+        } else {
+            format!(
+                "{}\n\n[Dashboard]({} \"vibe-artifact\")",
+                note.body,
+                record.link()
+            )
+        };
+        if body.len() > 64 * 1024 || !linked(&body, record.id) {
+            bail!("Target note cannot accept the artifact");
+        }
+    }
+    moved_document(record, &target)?;
+    let pending = PendingMove {
+        operation_id: Uuid::new_v4(),
+        source,
+        target,
+        version: record.version.clone(),
+        owner_host: host.into(),
+        source_scope,
+    };
+    client.ensure_account().await?;
+    let saved = sqlx::query("INSERT INTO drawer_artifact_moves (artifact_id, payload) VALUES (?, ?) ON CONFLICT(artifact_id) DO UPDATE SET payload = excluded.payload, completed = 0 WHERE completed = 1")
+        .bind(record.id).bind(serde_json::to_string(&pending)?).execute(pool).await?;
+    if saved.rows_affected() != 1 {
+        bail!("Another artifact transfer is pending");
+    }
+    Ok(())
+}
+
+pub async fn source_transferred(
+    pool: &SqlitePool,
+    execution: Uuid,
+    artifact: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM artifact_transfer_sources WHERE execution_id = ? AND source_artifact_id = ?)")
+        .bind(execution).bind(artifact).fetch_one(pool).await?)
+}
+
+pub async fn import_source(
+    pool: &SqlitePool,
+    record: &StoredArtifact,
+    execution: Uuid,
+    artifact: &str,
+    target: ArtifactOwner,
+    source_scope: Value,
+    host: &str,
+) -> Result<()> {
+    moved_document(record, &target)?;
+    let pending = PendingMove {
+        operation_id: Uuid::new_v4(),
+        source: record.artifact_owner()?,
+        target,
+        version: record.version.clone(),
+        owner_host: host.into(),
+        source_scope: Some(source_scope),
+    };
+    let mut tx = pool.begin().await?;
+    insert_on(&mut tx, record).await?;
+    sqlx::query("INSERT INTO artifact_transfer_sources (execution_id, source_artifact_id, artifact_id) VALUES (?, ?, ?)")
+        .bind(execution).bind(artifact).bind(record.id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO drawer_artifact_moves (artifact_id, payload) VALUES (?, ?)")
+        .bind(record.id)
+        .bind(serde_json::to_string(&pending)?)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -277,82 +482,102 @@ async fn resume_move_to(
 ) -> Result<StoredArtifact> {
     let pending = pending_move(pool, id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("No pending Drawer move"))?;
+        .ok_or_else(|| anyhow::anyhow!("No pending artifact transfer"))?;
     let record = load(pool, id).await?;
-    if record.note_id != pending.source || record.version != pending.version || record.deleted {
-        bail!("Drawer move conflicts with the stored document");
+    if record.artifact_owner()? != pending.source
+        || record.version != pending.version
+        || record.deleted
+    {
+        bail!("Artifact transfer conflicts with the stored document");
     }
-    // Validate the document before changing either external store.
-    let document = moved_document(&record, pending.target)?;
-    let source = client
-        .drawer_note(pending.source)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Source note is unavailable; move remains pending"))?;
-    let target = client
-        .drawer_note(pending.target)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Target note is unavailable; move remains pending"))?;
-    active_note(&record, &source)?;
-    active_note(&record, &target)?;
+    let document = moved_document(&record, &pending.target)?;
+    // The journal authorized the source before cleanup; recovery only needs
+    // the saved snapshot and a still-authorized destination.
+    let source = if let ArtifactOwner::Drawer { note_id } = pending.source {
+        client.drawer_note(note_id).await?.filter(|note| {
+            note.owner_user_id == record.owner_id
+                && note.host_id == Some(record.host_id)
+                && note.archived_at.is_none()
+        })
+    } else {
+        None
+    };
+    let target = validate_owner(pool, client, &record, &pending.target).await?;
     client.ensure_account().await?;
-    // A lost cloud response is recoverable even if unrelated prose was edited later.
-    if linked(&source.body, id) || !linked(&target.body, id) {
-        // Retry against current prose; the cloud CAS still fences concurrent edits.
-        let links = link_changes(&record, &source, &target)?;
-        client
-            .move_drawer_artifact_links(pending.source, &links)
-            .await?;
+    match (source, target) {
+        (Some(source), Some(target)) => {
+            if linked(&source.body, id) || !linked(&target.body, id) {
+                client
+                    .move_drawer_artifact_links(
+                        source.id,
+                        &link_changes(&record, &source, &target)?,
+                    )
+                    .await?;
+            }
+        }
+        (Some(source), None) if linked(&source.body, id) => {
+            let (after, _) = move_links_to(&source.body, id, &pending.target.href(record.host_id))?;
+            client
+                .compare_drawer_artifact_body(source.id, record.host_id, &source.body, &after)
+                .await?;
+        }
+        (None, Some(target)) if !linked(&target.body, id) => {
+            let after = format!(
+                "{}\n\n[Dashboard]({} \"vibe-artifact\")",
+                target.body,
+                record.link()
+            );
+            if after.len() > 64 * 1024 || !linked(&after, id) {
+                bail!("Target note cannot accept the artifact");
+            }
+            client
+                .compare_drawer_artifact_body(target.id, record.host_id, &target.body, &after)
+                .await?;
+        }
+        _ => {}
     }
     client.ensure_account().await?;
+    let source_scope = pending
+        .source_scope
+        .clone()
+        .unwrap_or_else(|| record.scope(&pending.owner_host));
     let mut response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/artifact-channels/{}/move-drawer",
-            url.trim_end_matches('/'),
-            record.channel_id
-        ))
-        .timeout(std::time::Duration::from_secs(20))
-        .bearer_auth(token)
-        .json(
-            &json!({"operation_id":pending.operation_id,"scope":record.scope(&pending.owner_host),
-            "version":record.binding_version,"target_note_id":pending.target}),
-        )
-        .send()
-        .await?;
+        .post(format!("{}/api/artifact-channels/{}/transfer", url.trim_end_matches('/'), record.channel_id))
+        .timeout(std::time::Duration::from_secs(20)).bearer_auth(token)
+        .json(&json!({"operation_id":pending.operation_id,"scope":source_scope,
+            "version":record.binding_version,"target_scope":pending.target.scope(id, record.owner_id, &pending.owner_host)}))
+        .send().await?;
     if !response.status().is_success() {
         bail!(
-            "Automation move returned {}; move remains pending for retry",
+            "Automation transfer returned {}; transfer remains pending",
             response.status()
         );
     }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         if body.len() + chunk.len() > 128 * 1024 {
-            bail!("Moved automation binding is too large");
+            bail!("Transferred binding is too large");
         }
         body.extend_from_slice(&chunk);
     }
     let binding: super::artifact_interactions::ArtifactAutomationBinding =
         serde_json::from_slice(&body)?;
     if binding.channel_id != record.channel_id || binding.version.is_empty() {
-        bail!("Invalid moved automation binding");
+        bail!("Invalid transferred binding");
     }
-    client.ensure_account().await?;
-    let target = client
-        .drawer_note(pending.target)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Target note is unavailable; move remains pending"))?;
-    active_note(&record, &target)?;
-    if !linked(&target.body, id) {
-        bail!("Target dashboard link changed; move remains pending");
+    if let Some(target) = validate_owner(pool, client, &record, &pending.target).await?
+        && !linked(&target.body, id)
+    {
+        bail!("Target artifact link changed; transfer remains pending");
     }
     client.ensure_account().await?;
     let mut tx = pool.begin().await?;
-    let updated = sqlx::query("UPDATE drawer_artifacts SET note_id = ?, document = ?, version = ?, binding_version = ?, revision = revision + 1, archived = 0 WHERE id = ? AND note_id = ? AND version = ? AND deleted = 0")
-        .bind(pending.target).bind(serde_json::to_string(&document)?).bind(&document.version)
-        .bind(binding.version).bind(id).bind(pending.source).bind(&pending.version)
-        .execute(&mut *tx).await?;
+    let (note, workspace, session) = pending.target.columns();
+    let updated = sqlx::query("UPDATE drawer_artifacts SET note_id = ?, workspace_id = ?, session_id = ?, document = ?, version = ?, binding_version = ?, revision = revision + 1, archived = 0 WHERE id = ? AND version = ? AND deleted = 0")
+        .bind(note).bind(workspace).bind(session).bind(serde_json::to_string(&document)?).bind(&document.version)
+        .bind(binding.version).bind(id).bind(&pending.version).execute(&mut *tx).await?;
     if updated.rows_affected() != 1 {
-        bail!("Drawer document changed during move");
+        bail!("Artifact changed during transfer");
     }
     let revision = record.revision + 1;
     sqlx::query("INSERT INTO automation_event_outbox (id, payload) VALUES (?, ?)")
@@ -381,19 +606,38 @@ pub async fn reconcile(
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
-    let linked = note.is_some_and(|note| {
+    let workspace_state: Option<bool> = if let (Some(workspace), Some(session)) =
+        (record.workspace_id, record.session_id)
+    {
+        sqlx::query_scalar("SELECT w.archived FROM workspaces w JOIN sessions s ON s.workspace_id = w.id WHERE w.id = ? AND s.id = ?")
+            .bind(workspace).bind(session).fetch_optional(&mut *tx).await?
+    } else {
+        None
+    };
+    let linked = if record.workspace_id.is_some() {
+        workspace_state.is_some()
+    } else {
+        note.is_some_and(|note| {
+        Some(note.id) == record.note_id &&
         note.host_id == Some(record.host_id)
             && executors::logs::artifacts::markdown_candidates(&note.body).iter().any(|candidate|
                 matches!(candidate, executors::logs::artifacts::ArtifactCandidate::File(path) if path.eq_ignore_ascii_case(&record.link())))
-    });
+    })
+    };
     // Only a gone note or owner change revokes an attached dashboard. A body
     // edit that drops the link, or an update from another host, pauses it so
     // restoring the line brings it back.
     let deleted = record.deleted
         || record.binding_version.is_empty()
-        || note.is_none_or(|note| note.owner_user_id != record.owner_id)
+        || if record.workspace_id.is_some() {
+            workspace_state.is_none()
+        } else {
+            note.is_none_or(|note| note.owner_user_id != record.owner_id)
+        }
         || (!record.attached && !linked);
-    let archived = !linked || note.is_some_and(|note| note.archived_at.is_some());
+    let archived = !linked
+        || workspace_state == Some(true)
+        || note.is_some_and(|note| note.archived_at.is_some());
     if !record.attached && !deleted {
         sqlx::query("UPDATE drawer_artifacts SET attached = 1 WHERE id = ?")
             .bind(id)
@@ -463,10 +707,15 @@ async fn sync(pool: &SqlitePool, client: &RemoteClient) -> Result<()> {
     if records.is_empty() {
         return Ok(());
     }
-    let notes = client.list_drawer_notes().await?.drawer_notes;
+    let notes = if records.iter().any(|record| record.note_id.is_some()) {
+        client.list_drawer_notes().await?.drawer_notes
+    } else {
+        Vec::new()
+    };
     for record in records {
         client.ensure_account().await?;
         if pending_move(pool, record.id).await?.is_some() {
+            let _lifecycle = super::artifact_interactions::LIFECYCLE_LOCK.lock().await;
             if let Err(error) = resume_move(pool, &client, record.id).await {
                 tracing::warn!(%error, "Drawer artifact move recovery deferred");
             }
@@ -475,7 +724,7 @@ async fn sync(pool: &SqlitePool, client: &RemoteClient) -> Result<()> {
         reconcile(
             pool,
             record.id,
-            notes.iter().find(|note| note.id == record.note_id),
+            notes.iter().find(|note| Some(note.id) == record.note_id),
         )
         .await?;
     }
@@ -683,18 +932,25 @@ mod tests {
                 for attach in [false, true] {
                     let path = format!(
                         "/v1/drawer_notes/{}{}",
-                        record.note_id,
+                        record.note_id.unwrap(),
                         if attach { "/artifact-link" } else { "" }
                     );
                     let cloud = Cloud::new(&record, path, status, change).await;
                     let client = cloud.client.for_account(record.owner_id);
                     let error = if attach {
                         client
-                            .attach_drawer_artifact(record.note_id, record.id, record.host_id)
+                            .attach_drawer_artifact(
+                                record.note_id.unwrap(),
+                                record.id,
+                                record.host_id,
+                            )
                             .await
                             .unwrap_err()
                     } else {
-                        client.drawer_note(record.note_id).await.unwrap_err()
+                        client
+                            .drawer_note(record.note_id.unwrap())
+                            .await
+                            .unwrap_err()
                     };
                     assert!(matches!(
                         error,
@@ -732,7 +988,7 @@ mod tests {
             .for_account(Uuid::parse_str(ACCOUNT_A).unwrap())
             .clone();
         assert!(matches!(
-            client.drawer_note(record.note_id).await,
+            client.drawer_note(record.note_id.unwrap()).await,
             Err(super::super::remote_client::RemoteClientError::AccountChanged)
         ));
         assert_eq!(cloud.calls.load(Ordering::SeqCst), 0);
@@ -767,7 +1023,7 @@ mod tests {
                 missing
                     .client
                     .for_account(record.owner_id)
-                    .drawer_note(record.note_id)
+                    .drawer_note(record.note_id.unwrap())
                     .await
                     .unwrap()
                     .is_none()
@@ -800,7 +1056,7 @@ mod tests {
             let result = cloud
                 .client
                 .for_account(record.owner_id)
-                .drawer_note(record.note_id)
+                .drawer_note(record.note_id.unwrap())
                 .await;
             if changed {
                 assert!(matches!(
@@ -826,7 +1082,9 @@ mod tests {
     fn record() -> StoredArtifact {
         StoredArtifact {
             id: Uuid::new_v4(),
-            note_id: Uuid::new_v4(),
+            note_id: Some(Uuid::new_v4()),
+            workspace_id: None,
+            session_id: None,
             owner_id: Uuid::new_v4(),
             host_id: Uuid::new_v4(),
             channel_id: format!("synthetic_{}", Uuid::new_v4().simple()),
@@ -863,10 +1121,13 @@ mod tests {
             },
         ];
         record.channel_config = json!({"publishers":["synthetic-publisher"],"data_schema":{"type":"object","properties":{}}}).to_string();
-        record.version = document_version(record.note_id, &files, &record.channel_config).unwrap();
+        record.version =
+            document_version(record.note_id.unwrap(), &files, &record.channel_config).unwrap();
         record.document = serde_json::to_string(&DrawerArtifactDocument {
             id: record.id,
             note_id: record.note_id,
+            workspace_id: None,
+            session_id: None,
             name: "Synthetic dashboard".into(),
             path: "dashboard.html".into(),
             version: record.version.clone(),
@@ -897,17 +1158,306 @@ mod tests {
     #[test]
     fn moving_back_does_not_revive_the_original_document_version() {
         let original = frozen_record();
-        let first = moved_document(&original, Uuid::new_v4()).unwrap();
+        let first = moved_document(
+            &original,
+            &ArtifactOwner::Drawer {
+                note_id: Uuid::new_v4(),
+            },
+        )
+        .unwrap();
         let mut moved = original.clone();
         moved.note_id = first.note_id;
         moved.version = first.version.clone();
         moved.document = serde_json::to_string(&first).unwrap();
-        let returned = moved_document(&moved, original.note_id).unwrap();
+        let returned = moved_document(
+            &moved,
+            &ArtifactOwner::Drawer {
+                note_id: original.note_id.unwrap(),
+            },
+        )
+        .unwrap();
         assert_ne!(returned.version, original.version);
         let before: DrawerArtifactDocument = serde_json::from_str(&original.document).unwrap();
         assert_eq!(
             serde_json::to_value(returned.files).unwrap(),
             serde_json::to_value(before.files).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn all_transfer_directions_recover_and_survive_source_workspace_deletion() {
+        let directory = tempfile::tempdir().unwrap();
+        let pool = database("sqlite::memory:").await;
+        let mut record = frozen_record();
+        let mut first_note = note(&record);
+        first_note.body = "Original note prose".into();
+        let mut second_note = first_note.clone();
+        second_note.id = Uuid::new_v4();
+        let workspace_a = Uuid::new_v4();
+        let session_a = Uuid::new_v4();
+        let workspace_b = Uuid::new_v4();
+        let session_b = Uuid::new_v4();
+        let workspace_c = Uuid::new_v4();
+        let session_c = Uuid::new_v4();
+        for (workspace, session) in [
+            (workspace_a, session_a),
+            (workspace_b, session_b),
+            (workspace_c, session_c),
+        ] {
+            sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'synthetic/portable')")
+                .bind(workspace)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?, ?)")
+                .bind(session)
+                .bind(workspace)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        record.note_id = None;
+        record.workspace_id = Some(workspace_a);
+        record.session_id = Some(session_a);
+        let mut document: DrawerArtifactDocument = serde_json::from_str(&record.document).unwrap();
+        document.note_id = None;
+        document.workspace_id = Some(workspace_a);
+        document.session_id = Some(session_a);
+        record.document = serde_json::to_string(&document).unwrap();
+        let original_files = serde_json::to_value(&document.files).unwrap();
+        let original_config = record.channel_config.clone();
+        let channel = record.channel_id.clone();
+        let legacy_scope = json!({"owner_id":record.owner_id,"owner_host":"synthetic-host", "workspace_id":workspace_a,"session_id":session_a});
+        let notes = Arc::new(RwLock::new(vec![first_note.clone(), second_note.clone()]));
+        let worker = Arc::new(RwLock::new(
+            json!({"scope":legacy_scope,"version":record.binding_version,"receipt":null,"count":0}),
+        ));
+        let fail_body = Arc::new(AtomicBool::new(true));
+        let fail_worker = Arc::new(AtomicBool::new(true));
+        let router = Router::new().fallback({
+            let (notes, worker) = (notes.clone(), worker.clone());
+            move |OriginalUri(uri): OriginalUri, body: axum::body::Bytes| {
+                let (notes, worker, channel, fail_body, fail_worker) = (notes.clone(), worker.clone(), channel.clone(), fail_body.clone(), fail_worker.clone());
+                async move {
+                    if uri.path().ends_with("/transfer") {
+                        let input: Value = serde_json::from_slice(&body).unwrap();
+                        let mut worker = worker.write().await;
+                        if worker["receipt"]["operation_id"] != input["operation_id"] {
+                            assert_eq!(input["scope"], worker["scope"]);
+                            assert_eq!(input["version"], worker["version"]);
+                            worker["scope"] = input["target_scope"].clone();
+                            let count = worker["count"].as_u64().unwrap() + 1;
+                            worker["count"] = json!(count);
+                            worker["version"] = json!(format!("{count:064x}"));
+                            worker["receipt"] = input;
+                        } else { assert_eq!(input, worker["receipt"]); }
+                        if fail_worker.swap(false, Ordering::SeqCst) { return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+                        return Json(json!({"channel_id":channel,"version":worker["version"],"data_schema":{"type":"object","properties":{}},"actions":{}})).into_response();
+                    }
+                    let mut notes = notes.write().await;
+                    if uri.path().ends_with("/artifact-move") {
+                        let input: Value = serde_json::from_slice(&body).unwrap();
+                        let source = notes.iter().position(|note| uri.path() == format!("/v1/drawer_notes/{}/artifact-move", note.id)).unwrap();
+                        let target = notes.iter().position(|note| json!(note.id) == input["target_note_id"]).unwrap();
+                        assert_eq!(input["source_body"], notes[source].body);
+                        assert_eq!(input["target_body"], notes[target].body);
+                        notes[source].body = input["source_body_after"].as_str().unwrap().into();
+                        notes[target].body = input["target_body_after"].as_str().unwrap().into();
+                        return Json(json!({"data":notes[target],"txid":1})).into_response();
+                    }
+                    if uri.path().ends_with("/artifact-body") {
+                        let input: Value = serde_json::from_slice(&body).unwrap();
+                        let note = notes.iter_mut().find(|note| uri.path() == format!("/v1/drawer_notes/{}/artifact-body", note.id)).unwrap();
+                        assert_eq!(input["before"], note.body);
+                        note.body = input["after"].as_str().unwrap().into();
+                        if fail_body.swap(false, Ordering::SeqCst) { return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+                        return Json(json!({"data":note,"txid":1})).into_response();
+                    }
+                    let note = notes.iter().find(|note| uri.path() == format!("/v1/drawer_notes/{}", note.id)).unwrap();
+                    Json(json!(note)).into_response()
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let auth = AuthContext::new(
+            Arc::new(OAuthCredentials::new(
+                directory.path().join("synthetic-auth.json"),
+            )),
+            Arc::new(RwLock::new(None)),
+        );
+        auth.save_credentials(&credentials(TOKEN_A)).await.unwrap();
+        let client = RemoteClient::new(&url, auth, "synthetic-host".into())
+            .unwrap()
+            .for_account(record.owner_id);
+        let execution = Uuid::new_v4();
+        let destinations = [
+            ArtifactOwner::Drawer {
+                note_id: first_note.id,
+            },
+            ArtifactOwner::Drawer {
+                note_id: second_note.id,
+            },
+            ArtifactOwner::Workspace {
+                workspace_id: workspace_c,
+                session_id: session_c,
+            },
+            ArtifactOwner::Workspace {
+                workspace_id: workspace_b,
+                session_id: session_b,
+            },
+            ArtifactOwner::Drawer {
+                note_id: first_note.id,
+            },
+        ];
+        for (index, target) in destinations.into_iter().enumerate() {
+            let old_version = record.version.clone();
+            if index == 0 {
+                import_source(
+                    &pool,
+                    &record,
+                    execution,
+                    "synthetic-source",
+                    target.clone(),
+                    legacy_scope.clone(),
+                    "synthetic-host",
+                )
+                .await
+                .unwrap();
+                for failure in 0..2 {
+                    assert!(
+                        resume_move_to(&pool, &client, record.id, &url, "synthetic-token")
+                            .await
+                            .is_err()
+                    );
+                    assert_eq!(load(&pool, record.id).await.unwrap().version, old_version);
+                    assert!(pending_move(&pool, record.id).await.unwrap().is_some());
+                    if failure == 0 {
+                        sqlx::query("DELETE FROM workspaces WHERE id = ?")
+                            .bind(workspace_a)
+                            .execute(&pool)
+                            .await
+                            .unwrap();
+                    }
+                }
+            } else {
+                prepare_transfer(
+                    &pool,
+                    &client,
+                    &record,
+                    target.clone(),
+                    "synthetic-host",
+                    None,
+                )
+                .await
+                .unwrap();
+            }
+            record = resume_move_to(&pool, &client, record.id, &url, "synthetic-token")
+                .await
+                .unwrap();
+            assert_eq!(record.artifact_owner().unwrap(), target);
+            assert_ne!(record.version, old_version);
+            assert_eq!(record.channel_config, original_config);
+            assert!(!record.deleted && !record.archived && record.attached);
+            let saved: DrawerArtifactDocument = serde_json::from_str(&record.document).unwrap();
+            assert_eq!(saved.version, record.version);
+            assert_eq!(
+                (saved.note_id, saved.workspace_id, saved.session_id),
+                target.columns()
+            );
+            assert_eq!(serde_json::to_value(saved.files).unwrap(), original_files);
+            assert_eq!(worker.read().await["scope"], record.scope("synthetic-host"));
+            assert!(pending_move(&pool, record.id).await.unwrap().is_none());
+            if index == 3 {
+                sqlx::query("DELETE FROM workspaces WHERE id = ?")
+                    .bind(workspace_c)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                let saved = reconcile(&pool, record.id, None).await.unwrap();
+                assert!(!saved.deleted && !saved.archived);
+                sqlx::query("UPDATE workspaces SET archived = 1 WHERE id = ?")
+                    .bind(workspace_b)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                let paused = reconcile(&pool, record.id, None).await.unwrap();
+                assert!(paused.archived && !paused.deleted);
+                assert_eq!(paused.document, record.document);
+                sqlx::query("UPDATE workspaces SET archived = 0 WHERE id = ?")
+                    .bind(workspace_b)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                record = reconcile(&pool, record.id, None).await.unwrap();
+                assert!(!record.archived && !record.deleted);
+                assert!(
+                    source_transferred(&pool, execution, "synthetic-source")
+                        .await
+                        .unwrap()
+                );
+            }
+        }
+        assert_eq!(worker.read().await["count"], 5);
+        assert!(
+            notes
+                .read()
+                .await
+                .iter()
+                .all(|note| note.title == first_note.title)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn ownership_migration_keeps_legacy_documents_journals_and_foreign_keys() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let mut migrations = sqlx::migrate!("../db/migrations");
+        migrations.migrations = std::borrow::Cow::Owned(
+            migrations
+                .iter()
+                .filter(|migration| migration.version < 20261118010000)
+                .cloned()
+                .collect(),
+        );
+        migrations.run(&pool).await.unwrap();
+        let record = frozen_record();
+        sqlx::query("INSERT INTO drawer_artifacts (id, note_id, owner_id, host_id, channel_id, document, channel_config, version, binding_version, attached) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)")
+            .bind(record.id).bind(record.note_id).bind(record.owner_id).bind(record.host_id).bind(&record.channel_id)
+            .bind(&record.document).bind(&record.channel_config).bind(&record.version).bind(&record.binding_version).execute(&pool).await.unwrap();
+        let target = Uuid::new_v4();
+        sqlx::query("INSERT INTO drawer_artifact_moves (artifact_id, payload) VALUES (?, ?)")
+            .bind(record.id).bind(json!({"operation_id":Uuid::new_v4(),"source":record.note_id,"target":target,"version":record.version,"owner_host":"synthetic-host"}).to_string()).execute(&pool).await.unwrap();
+        let mut migration_tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../../db/migrations/20261118010000_artifact_owner_transfer.sql"
+        ))
+        .execute(&mut *migration_tx)
+        .await
+        .unwrap();
+        migration_tx.commit().await.unwrap();
+        let migrated = load(&pool, record.id).await.unwrap();
+        assert_eq!(migrated.document, record.document);
+        assert_eq!(migrated.channel_config, record.channel_config);
+        assert_eq!(
+            migrated.artifact_owner().unwrap(),
+            ArtifactOwner::Drawer {
+                note_id: record.note_id.unwrap()
+            }
+        );
+        let pending = pending_move(&pool, record.id).await.unwrap().unwrap();
+        assert_eq!(pending.target, ArtifactOwner::Drawer { note_id: target });
+        assert!(
+            sqlx::query("PRAGMA foreign_key_check")
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -990,7 +1540,7 @@ mod tests {
                     assert!(cloud_lost.swap(false, Ordering::SeqCst));
                     return StatusCode::SERVICE_UNAVAILABLE.into_response();
                 }
-                if uri.path().ends_with("/move-drawer") {
+                if uri.path().ends_with("/transfer") {
                     let input: Value = serde_json::from_slice(&body).unwrap();
                     assert_eq!(input["scope"]["kind"], "drawer");
                     moves.fetch_add(1, Ordering::SeqCst);
@@ -1039,7 +1589,10 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(load(&pool, record.id).await.unwrap().note_id, source.id);
+        assert_eq!(
+            load(&pool, record.id).await.unwrap().note_id,
+            Some(source.id)
+        );
         sqlx::query("ALTER TABLE synthetic_outbox RENAME TO automation_event_outbox")
             .execute(&pool)
             .await
@@ -1049,7 +1602,7 @@ mod tests {
         let moved = resume_move_to(&pool, &client, record.id, &url, "synthetic-token")
             .await
             .unwrap();
-        assert_eq!(moved.note_id, target.id);
+        assert_eq!(moved.note_id, Some(target.id));
         assert_eq!(moved.binding_version, "moved-binding");
         assert_eq!(moved.channel_id, record.channel_id);
         assert_eq!(moved.channel_config, record.channel_config);
@@ -1060,7 +1613,7 @@ mod tests {
         assert!(moved.attached);
         let before: DrawerArtifactDocument = serde_json::from_str(&record.document).unwrap();
         let after: DrawerArtifactDocument = serde_json::from_str(&moved.document).unwrap();
-        assert_eq!(after.note_id, target.id);
+        assert_eq!(after.note_id, Some(target.id));
         assert_eq!(after.version, moved.version);
         assert_ne!(after.version, before.version);
         assert_eq!(after.path, before.path);
@@ -1087,7 +1640,7 @@ mod tests {
     fn note(record: &StoredArtifact) -> DrawerNote {
         let now = DateTime::<Utc>::from_timestamp(1893456000, 0).unwrap();
         DrawerNote {
-            id: record.note_id,
+            id: record.note_id.unwrap(),
             owner_user_id: record.owner_id,
             host_id: Some(record.host_id),
             workspace_id: None,

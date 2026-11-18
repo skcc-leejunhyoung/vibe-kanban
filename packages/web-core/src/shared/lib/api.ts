@@ -3022,6 +3022,64 @@ export const drawerArtifactsApi = {
   },
 };
 
+function artifactOwnerParams(owner: import('shared/types').ArtifactOwner) {
+  const params = new URLSearchParams();
+  if (owner.kind === 'drawer') params.set('note_id', owner.note_id);
+  else {
+    params.set('workspace_id', owner.workspace_id);
+    params.set('session_id', owner.session_id);
+  }
+  return params;
+}
+
+export const ownedArtifactsApi = {
+  list: async (
+    workspaceId: string,
+    sessionId: string,
+    hostId: string | null,
+    signal?: AbortSignal
+  ) => {
+    const params = artifactOwnerParams({
+      kind: 'workspace',
+      workspace_id: workspaceId,
+      session_id: sessionId,
+    });
+    return handleApiResponse<import('shared/types').ArtifactSummary[]>(
+      await makeHostAwareRequest(`/api/artifacts?${params}`, hostId, { signal })
+    );
+  },
+  document: async (
+    id: string,
+    owner: import('shared/types').ArtifactOwner,
+    hostId: string | null,
+    signal?: AbortSignal
+  ) =>
+    handleApiResponse<DrawerArtifactDocument>(
+      await makeHostAwareRequest(
+        `/api/artifacts/${id}?${artifactOwnerParams(owner)}`,
+        hostId,
+        { signal }
+      )
+    ),
+  snapshot: async (
+    id: string,
+    owner: import('shared/types').ArtifactOwner,
+    version: string,
+    hostId: string | null,
+    signal?: AbortSignal
+  ) => {
+    const params = artifactOwnerParams(owner);
+    params.set('version', version);
+    return handleApiResponse<import('shared/types').ArtifactAutomationSnapshot>(
+      await makeHostAwareRequest(
+        `/api/artifacts/${id}/snapshot?${params}`,
+        hostId,
+        { signal }
+      )
+    );
+  },
+};
+
 export const agentsApi = {
   getUsage: async (
     agent: BaseCodingAgent,

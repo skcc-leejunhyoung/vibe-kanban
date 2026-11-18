@@ -66,7 +66,15 @@ pub(super) async fn artifact_channel<T: DeserializeOwned>(
     payload: serde_json::Value,
 ) -> Result<T, ApiError> {
     if !services::services::artifact_interactions::valid_channel_id(channel)
-        || !["describe", "snapshot", "request", "configure", "lifecycle"].contains(&operation)
+        || ![
+            "describe",
+            "snapshot",
+            "request",
+            "configure",
+            "lifecycle",
+            "inspect",
+        ]
+        .contains(&operation)
     {
         return Err(ApiError::BadRequest(
             "Invalid artifact automation operation".into(),
@@ -387,7 +395,9 @@ async fn proxy(
         && parsed
             .path()
             .trim_end_matches('/')
-            .ends_with("/move-drawer")
+            .rsplit('/')
+            .next()
+            .is_some_and(|operation| ["move-drawer", "transfer", "inspect"].contains(&operation))
     {
         return (
             StatusCode::FORBIDDEN,
@@ -444,6 +454,10 @@ mod drawer_move_tests {
     async fn generic_proxy_cannot_bypass_drawer_ownership_checks() {
         for tail in [
             "artifact-channels/synthetic/move-drawer",
+            "artifact-channels/synthetic/transfer",
+            "artifact-channels/synthetic/transfer/",
+            "artifact-channels/synthetic/extra/%2e%2e/transfer/",
+            "artifact-channels/synthetic/inspect",
             "artifact-channels/synthetic/move-drawer/",
             "artifact-channels//synthetic//move-drawer//",
             "artifact-channels/synthetic/extra/../move-drawer",

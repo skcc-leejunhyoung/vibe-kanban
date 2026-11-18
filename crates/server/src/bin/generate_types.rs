@@ -61,6 +61,8 @@ fn generate_types_content() -> String {
         services::services::artifact_interactions::ArtifactInputSchema::decl(),
         services::services::drawer_artifacts::DrawerArtifactFile::decl(),
         services::services::drawer_artifacts::DrawerArtifactDocument::decl(),
+        services::services::drawer_artifacts::ArtifactOwner::decl(),
+        server::routes::drawer_artifacts::ArtifactSummary::decl(),
         services::services::artifact_interactions::ArtifactDelivery::decl(),
         services::services::artifact_interactions::ArtifactHandler::decl(),
         services::services::artifact_interactions::ArtifactInteractionState::decl(),

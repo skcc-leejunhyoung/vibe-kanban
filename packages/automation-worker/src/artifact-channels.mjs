@@ -24,12 +24,17 @@ const drawerScopeKeys = [
   "note_id",
   "artifact_id",
 ];
+const workspaceArtifactKeys = ["kind", ...scopeKeys, "artifact_id"];
+const managedScope = (scope) =>
+  ["drawer", "workspace_artifact"].includes(scope?.kind);
 const fieldsFor = (scope) =>
   scope?.kind === "drawer"
     ? drawerScopeKeys
-    : scope?.kind === undefined
-      ? scopeKeys
-      : [];
+    : scope?.kind === "workspace_artifact"
+      ? workspaceArtifactKeys
+      : scope?.kind === undefined
+        ? scopeKeys
+        : [];
 const sameScope = (left, right) =>
   fieldsFor(left).length > 0 &&
   left?.kind === right?.kind &&
@@ -197,7 +202,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
     if (!state.enabled || !channel.enabled)
       fail("Artifact channel is disabled", 409);
     if (
-      channel.scope.kind === "drawer" &&
+      managedScope(channel.scope) &&
       state.artifactScopeEpochs[
         lifecycleKey(
           "drawer",
@@ -261,43 +266,121 @@ export function createArtifactChannels({ state, persist, runRule }) {
         return structuredClone(result.binding);
       });
     },
-    async moveDrawer(id, input) {
+    inspect(id, scope) {
+      return locked(() => {
+        const { channel, binding } = scoped(id, scope);
+        return structuredClone({
+          binding,
+          scope: channel.scope,
+          publishers: channel.publishers,
+          workspace_epoch: channel.workspace_epoch ?? 0,
+          transferable:
+            !Object.keys(channel.actions).length &&
+            !Object.values(state.artifactRequests).some(
+              (request) => request.channel_id === id && unresolved(request),
+            ),
+        });
+      });
+    },
+    moveDrawer(id, input) {
+      if (input?.scope?.kind !== "drawer") fail("Invalid Drawer move");
+      return this.transfer(id, {
+        ...input,
+        target_scope: { ...input.scope, note_id: input.target_note_id },
+      });
+    },
+    async transfer(id, input) {
       return locked(async () => {
+        const target = input?.target_scope;
         if (
-          !name(id) || !own(state.artifactChannels, id) ||
-          input?.scope?.kind !== "drawer" ||
-          !uuid(input.target_note_id) || !uuid(input.operation_id) ||
-          typeof input.version !== "string"
-        ) fail("Invalid Drawer move");
+          !name(id) ||
+          !own(state.artifactChannels, id) ||
+          !uuid(input?.operation_id) ||
+          typeof input.version !== "string" ||
+          !managedScope(target) ||
+          !uuid(target.artifact_id) ||
+          fieldsFor(target).some(
+            (key) =>
+              typeof target[key] !== "string" ||
+              !target[key] ||
+              target[key].length > 200,
+          ) ||
+          (target.kind === "drawer"
+            ? !uuid(target.note_id)
+            : !uuid(target.workspace_id) || !uuid(target.session_id))
+        )
+          fail("Invalid artifact transfer");
         const channel = state.artifactChannels[id];
         const move = {
           operation_id: input.operation_id,
           scope: input.scope,
           version: input.version,
-          target_note_id: input.target_note_id,
+          target_scope: target,
         };
         if (channel.drawer_move?.operation_id === input.operation_id) {
-          if (!sameScope(channel.drawer_move.scope, input.scope) ||
-              channel.drawer_move.version !== input.version ||
-              channel.drawer_move.target_note_id !== input.target_note_id)
-            fail("Conflicting Drawer move", 409);
+          if (
+            !sameScope(channel.drawer_move.scope, input.scope) ||
+            channel.drawer_move.version !== input.version ||
+            !sameScope(
+              channel.drawer_move.target_scope ?? {
+                ...channel.drawer_move.scope,
+                note_id: channel.drawer_move.target_note_id,
+              },
+              target,
+            )
+          )
+            fail("Conflicting artifact transfer", 409);
           return structuredClone(describe(channel));
         }
-        if (channel.scope.kind !== "drawer" || !sameScope(channel.scope, input.scope))
+        if (
+          !sameScope(channel.scope, input.scope) ||
+          target.owner_id !== channel.scope.owner_id ||
+          target.owner_host !== channel.scope.owner_host ||
+          (managedScope(channel.scope) &&
+            target.artifact_id !== channel.scope.artifact_id)
+        )
           fail("Wrong artifact channel scope", 403);
         if (describe(channel).version !== input.version)
           fail("Artifact channel changed; reload before moving", 409);
-        const ended = state.artifactScopeEpochs[lifecycleKey(
-          "drawer", channel.scope.owner_host, channel.scope.artifact_id,
-        )];
-        if (ended?.deleted) fail("Drawer artifact scope ended", 409);
-        const previous = { scope: channel.scope, drawer_move: channel.drawer_move };
-        channel.scope = { ...channel.scope, note_id: input.target_note_id };
+        if (
+          Object.keys(channel.actions).length ||
+          Object.values(state.artifactRequests).some(
+            (request) => request.channel_id === id && unresolved(request),
+          )
+        )
+          fail(
+            "Only read-only dashboards without unfinished requests can transfer",
+            409,
+          );
+        if (
+          managedScope(channel.scope) &&
+          state.artifactScopeEpochs[
+            lifecycleKey(
+              "drawer",
+              channel.scope.owner_host,
+              channel.scope.artifact_id,
+            )
+          ]?.deleted
+        )
+          fail("Artifact scope ended", 409);
+        const previous = {
+          scope: channel.scope,
+          drawer_move: channel.drawer_move,
+        };
+        const history = Object.values(state.artifactRequests)
+          .filter((request) => request.channel_id === id)
+          .map((request) => [request, request.scope]);
+        channel.scope = Object.fromEntries(
+          fieldsFor(target).map((key) => [key, target[key]]),
+        );
         channel.drawer_move = structuredClone(move);
+        for (const [request] of history)
+          request.scope = structuredClone(channel.scope);
         try {
           await persist();
         } catch (error) {
           Object.assign(channel, previous);
+          for (const [request, scope] of history) request.scope = scope;
           throw error;
         }
         return structuredClone(describe(channel));
@@ -339,7 +422,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
           if (input.deleted)
             for (const [id, channel] of Object.entries(channels)) {
               if (
-                channel.scope.kind === "drawer" &&
+                managedScope(channel.scope) &&
                 channel.scope.owner_host === input.hostId &&
                 channel.scope.artifact_id === input.artifactId
               ) {
@@ -377,6 +460,14 @@ export function createArtifactChannels({ state, persist, runRule }) {
           typeof input.deleted !== "boolean"
         )
           fail("Invalid artifact lifecycle event");
+        if (
+          input.preserve_channels !== undefined &&
+          (!Array.isArray(input.preserve_channels) ||
+            input.preserve_channels.length > 128 ||
+            input.preserve_channels.some((id) => !name(id)))
+        )
+          fail("Invalid artifact transfer cleanup fence");
+        const retained = new Set(input.preserve_channels ?? []);
         const key = input.sessionId
           ? lifecycleKey("session", input.hostId, input.sessionId)
           : lifecycleKey("workspace", input.hostId, input.workspaceId);
@@ -386,7 +477,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
           deleted: !!previousEpoch?.deleted || input.deleted,
         };
         const matches = (scope, epoch = 0) =>
-          scope?.kind !== "drawer" &&
+          !managedScope(scope) &&
           scope?.owner_host === input.hostId &&
           scope.workspace_id === input.workspaceId &&
           (input.sessionId
@@ -398,12 +489,16 @@ export function createArtifactChannels({ state, persist, runRule }) {
         const changed = [];
         state.artifactScopeEpochs[key] = ended;
         for (const [id, channel] of Object.entries(channels)) {
-          if (matches(channel.scope, channel.workspace_epoch)) {
+          if (
+            !retained.has(id) &&
+            matches(channel.scope, channel.workspace_epoch)
+          ) {
             delete state.artifactChannels[id];
             state.artifactClosedChannels[id] = true;
           }
         }
         for (const [id, record] of Object.entries(requests)) {
+          if (retained.has(record.channel_id)) continue;
           const channel = channels[record.channel_id];
           if (
             !matches(record.scope, record.workspace_epoch) &&
@@ -439,6 +534,11 @@ export function createArtifactChannels({ state, persist, runRule }) {
     },
     async configure(input) {
       return locked(async () => {
+        if (input?.scope?.kind === "workspace_artifact")
+          fail(
+            "Managed workspace artifacts require the checked transfer endpoint",
+            403,
+          );
         if (
           !name(input.id) ||
           input.sensitive !== false ||
@@ -619,7 +719,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
       return locked(async () => {
         const target = state.artifactChannels[id];
         if (
-          target?.scope.kind === "drawer" &&
+          managedScope(target?.scope) &&
           state.artifactScopeEpochs[
             lifecycleKey(
               "drawer",
@@ -695,7 +795,7 @@ export function createArtifactChannels({ state, persist, runRule }) {
       });
     },
     async request(id, input) {
-      if (state.artifactChannels[id]?.scope.kind === "drawer")
+      if (managedScope(state.artifactChannels[id]?.scope))
         fail("Drawer artifacts are read-only", 403);
       let dispatch;
       const record = await locked(async () => {

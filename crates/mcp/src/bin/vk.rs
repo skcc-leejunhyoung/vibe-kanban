@@ -246,6 +246,10 @@ const fn special(
 
 const GROUPS: &[(&str, &str)] = &[
     (
+        "artifacts",
+        "Portable read-only dashboards: list, read and transfer between workspace sessions and Drawer notes",
+    ),
+    (
         "ws",
         "Workspaces: list with live status, create, quick chat, git state, attachments, links",
     ),
@@ -2529,6 +2533,137 @@ const COMMANDS: &[Cmd] = &[
         &[req("body", "Preferences JSON", Where::Raw, Kind::Json)],
     )),
     // ---- drawer -------------------------------------------------------------
+    cmd(
+        &["artifacts", "list"],
+        "Managed artifacts owned by a workspace session",
+        "GET",
+        "/artifacts",
+        &[
+            keyed(
+                req("ws", "Workspace id", Where::Query, Kind::Str),
+                "workspace_id",
+            ),
+            keyed(
+                req("session", "Session id", Where::Query, Kind::Str),
+                "session_id",
+            ),
+        ],
+    ),
+    cmd(
+        &["artifacts", "get"],
+        "Read a managed artifact at its current owner",
+        "GET",
+        "/artifacts/{id}",
+        &[
+            pos("id", "Managed artifact UUID", Where::Path),
+            keyed(
+                opt("note", "Drawer note id", Where::Query, Kind::Str),
+                "note_id",
+            ),
+            keyed(
+                opt("ws", "Workspace id", Where::Query, Kind::Str),
+                "workspace_id",
+            ),
+            keyed(
+                opt("session", "Workspace session id", Where::Query, Kind::Str),
+                "session_id",
+            ),
+        ],
+    ),
+    cmd(
+        &["artifacts", "transfer"],
+        "Transfer a read-only dashboard between Drawer notes or workspace sessions without resetting its channel",
+        "POST",
+        "/artifacts/{id}/transfer",
+        &[
+            pos("id", "Managed artifact UUID", Where::Path),
+            req(
+                "source",
+                "Current owner JSON: kind=drawer/note_id or kind=workspace/workspace_id/session_id",
+                Where::Body,
+                Kind::Json,
+            ),
+            req(
+                "target",
+                "Destination owner JSON, same account and host",
+                Where::Body,
+                Kind::Json,
+            ),
+            req(
+                "version",
+                "Current managed document version",
+                Where::Body,
+                Kind::Str,
+            ),
+        ],
+    ),
+    cmd(
+        &["session", "artifacts", "transfer-info"],
+        "Read the immutable bundle version and registered automation channels before transferring",
+        "GET",
+        "/execution-processes/{exec}/artifacts/transfer",
+        &[
+            EXEC,
+            keyed(
+                req("ws", "Source workspace id", Where::Query, Kind::Str),
+                "workspace_id",
+            ),
+            keyed(
+                req("session", "Source session id", Where::Query, Kind::Str),
+                "session_id",
+            ),
+            req("id", "Source artifact id", Where::Query, Kind::Str),
+        ],
+    ),
+    cmd(
+        &["session", "artifacts", "transfer"],
+        "Transfer an execution dashboard and its existing automation channel into managed ownership",
+        "POST",
+        "/execution-processes/{exec}/artifacts/transfer",
+        &[
+            EXEC,
+            keyed(
+                req("ws", "Source workspace id", Where::Query, Kind::Str),
+                "workspace_id",
+            ),
+            keyed(
+                req("session", "Source session id", Where::Query, Kind::Str),
+                "session_id",
+            ),
+            req(
+                "id",
+                "Stable managed artifact UUID, reuse when retrying",
+                Where::Body,
+                Kind::Str,
+            ),
+            keyed(
+                req("artifact", "Source artifact id", Where::Body, Kind::Str),
+                "artifact_id",
+            ),
+            keyed(
+                req(
+                    "channel",
+                    "Registered source channel id",
+                    Where::Body,
+                    Kind::Str,
+                ),
+                "automation_channel",
+            ),
+            req(
+                "version",
+                "Source bundle version from transfer-info",
+                Where::Body,
+                Kind::Str,
+            ),
+            req(
+                "target",
+                "Destination owner JSON: Drawer note or workspace session",
+                Where::Body,
+                Kind::Json,
+            ),
+            req("sensitive", "Must be false", Where::Body, Kind::Bool),
+        ],
+    ),
     cmd(
         &["drawer", "artifacts", "get"],
         "Read a stored Drawer document and its current version",
@@ -6125,6 +6260,57 @@ mod tests {
             .map(|c| c["id"].as_str().unwrap())
             .collect();
         assert_eq!(ids, ["merge_remote", "reset_to_remote", "cancel"]);
+    }
+
+    #[test]
+    fn artifact_transfer_commands_preserve_explicit_source_target_and_version() {
+        let source = r#"{"kind":"workspace","workspace_id":"synthetic-workspace","session_id":"synthetic-session"}"#;
+        let target = r#"{"kind":"drawer","note_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}"#;
+        for argv in [
+            vec![
+                "vk",
+                "artifacts",
+                "transfer",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "--source",
+                source,
+                "--target",
+                target,
+                "--version",
+                "synthetic-version",
+            ],
+            vec![
+                "vk",
+                "session",
+                "artifacts",
+                "transfer",
+                "synthetic-execution",
+                "--ws",
+                "synthetic-workspace",
+                "--session",
+                "synthetic-session",
+                "--id",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "--artifact",
+                "synthetic-html",
+                "--channel",
+                "synthetic-channel",
+                "--version",
+                "synthetic-version",
+                "--target",
+                target,
+                "--sensitive",
+                "false",
+            ],
+        ] {
+            let matches = build_cli().try_get_matches_from(argv).unwrap();
+            let (_, args) = resolve(&matches).unwrap();
+            assert_eq!(args.get_one::<String>("target").unwrap(), target);
+            assert_eq!(
+                args.get_one::<String>("version").unwrap(),
+                "synthetic-version"
+            );
+        }
     }
 
     #[test]

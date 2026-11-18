@@ -122,8 +122,29 @@ async fn drain_to(pool: &SqlitePool, url: &str, token: &str, host_id: &str) {
         };
         let lifecycle =
             event["type"] == "artifact_scope_ended" || event["type"] == "drawer_artifact_lifecycle";
+        let _lifecycle_guard = if lifecycle {
+            Some(super::artifact_interactions::LIFECYCLE_LOCK.lock().await)
+        } else {
+            None
+        };
         if lifecycle {
             event["hostId"] = Value::String(host_id.to_owned());
+        }
+        if event["type"] == "artifact_scope_ended" {
+            // A durable transfer fences source cleanup until its channel moves.
+            let retained: Vec<String> = match sqlx::query_scalar(
+                "SELECT a.channel_id FROM drawer_artifact_moves m JOIN drawer_artifacts a ON a.id = m.artifact_id \
+                 WHERE m.completed = 0 AND json_extract(m.payload, '$.owner_host') = ? \
+                 AND json_extract(m.payload, '$.source.kind') = 'workspace' \
+                 AND json_extract(m.payload, '$.source.workspace_id') = ? \
+                 AND (? IS NULL OR json_extract(m.payload, '$.source.session_id') = ?)")
+                .bind(host_id).bind(event["workspaceId"].as_str())
+                .bind(event["sessionId"].as_str()).bind(event["sessionId"].as_str())
+                .fetch_all(pool).await {
+                    Ok(channels) => channels,
+                    Err(error) => { tracing::warn!(%error, "Artifact transfer cleanup fence unavailable"); continue; }
+                };
+            event["preserve_channels"] = serde_json::json!(retained);
         }
         let path = if lifecycle {
             "artifact-lifecycle"
@@ -183,7 +204,7 @@ mod tests {
 
         use axum::{Router, http::StatusCode, routing::post};
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query("CREATE TABLE automation_event_outbox (id TEXT PRIMARY KEY, payload TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)").execute(&pool).await.unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
         sqlx::query("INSERT INTO automation_event_outbox (id, payload) VALUES ('synthetic-cleanup', ?)")
             .bind(serde_json::json!({"id":"synthetic-cleanup", "type":kind, "workspaceId":"synthetic-workspace", "epoch":1, "deleted":false}).to_string()).execute(&pool).await.unwrap();
         let available = Arc::new(AtomicBool::new(false));
@@ -268,6 +289,79 @@ mod tests {
             action_receipt(&pool, "key").await.unwrap(),
             serde_json::json!({ "action": "notify", "status": "succeeded", "response": { "ok": true } })
         );
+    }
+
+    #[tokio::test]
+    async fn cleanup_fences_only_durable_transfers_for_the_exact_host_workspace_and_session() {
+        use std::sync::Arc;
+
+        use axum::{Json, Router, http::StatusCode, routing::post};
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let id = Uuid::new_v4();
+        let workspace = Uuid::new_v4();
+        let session = Uuid::new_v4();
+        sqlx::query("INSERT INTO drawer_artifacts (id, workspace_id, session_id, owner_id, host_id, channel_id, document, channel_config, version) VALUES (?, ?, ?, ?, ?, 'synthetic-retained', 'null', '{}', 'synthetic-version')")
+            .bind(id).bind(workspace).bind(session).bind(Uuid::new_v4()).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO drawer_artifact_moves (artifact_id, payload) VALUES (?, ?)").bind(id)
+            .bind(serde_json::json!({"owner_host":"synthetic-host","source":{"kind":"workspace","workspace_id":workspace,"session_id":session}}).to_string())
+            .execute(&pool).await.unwrap();
+        for (id, session_id) in [
+            ("workspace", None),
+            ("own-session", Some(session)),
+            ("other-session", Some(Uuid::new_v4())),
+        ] {
+            let mut event = serde_json::json!({"id":id,"type":"artifact_scope_ended","workspaceId":workspace,"deleted":true,"epoch":1,"preserve_channels":["unapproved"]});
+            if let Some(session_id) = session_id {
+                event["sessionId"] = serde_json::json!(session_id);
+            }
+            sqlx::query("INSERT INTO automation_event_outbox (id, payload) VALUES (?, ?)")
+                .bind(id)
+                .bind(event.to_string())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let received = Arc::new(tokio::sync::Mutex::new(Vec::<Value>::new()));
+        let messages = received.clone();
+        let router = Router::new().route(
+            "/api/artifact-lifecycle",
+            post(move |Json(event): Json<Value>| {
+                let messages = messages.clone();
+                async move {
+                    messages.lock().await.push(event);
+                    StatusCode::NO_CONTENT
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let guard = super::super::artifact_interactions::LIFECYCLE_LOCK
+            .lock()
+            .await;
+        let drain = drain_to(&pool, &url, "synthetic-token", "synthetic-host");
+        tokio::pin!(drain);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut drain)
+                .await
+                .is_err()
+        );
+        assert!(received.lock().await.is_empty());
+        drop(guard);
+        drain.await;
+        let messages = received.lock().await;
+        assert_eq!(messages.len(), 3);
+        for event in messages.iter() {
+            let expected = if event["id"] == "other-session" {
+                serde_json::json!([])
+            } else {
+                serde_json::json!(["synthetic-retained"])
+            };
+            assert_eq!(event["preserve_channels"], expected);
+            assert_eq!(event["hostId"], "synthetic-host");
+        }
+        server.abort();
     }
 
     #[tokio::test]

@@ -51,6 +51,45 @@ pub fn router() -> Router<AppState> {
         .merge(comment_mutation().router())
         .route("/drawer_notes/{id}/artifact-link", post(attach_artifact))
         .route("/drawer_notes/{id}/artifact-move", post(move_artifact))
+        .route(
+            "/drawer_notes/{id}/artifact-body",
+            post(compare_artifact_body),
+        )
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompareArtifactBody {
+    host_id: Uuid,
+    before: String,
+    after: String,
+}
+
+async fn compare_artifact_body(
+    State(pool): State<PgPool>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<CompareArtifactBody>,
+) -> Result<Json<MutationResponse<DrawerNote>>, ErrorResponse> {
+    check_note_fields(None, Some(&payload.after), None)?;
+    check_host(&pool, &ctx, Some(payload.host_id)).await?;
+    DrawerRepository::compare_artifact_body(
+        &pool,
+        id,
+        ctx.user.id,
+        payload.host_id,
+        &payload.before,
+        &payload.after,
+    )
+    .await
+    .map(Json)
+    .map_err(|error| match error {
+        sqlx::Error::RowNotFound => ErrorResponse::new(
+            StatusCode::CONFLICT,
+            "Drawer note changed; retry the transfer",
+        ),
+        error => write_error(error, "Drawer artifact link could not be updated"),
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -561,6 +600,53 @@ mod tests {
         assert_eq!(preserved.body, saved_comment.body);
         assert_eq!(preserved.created_at, saved_comment.created_at);
         assert_eq!(preserved.resolved_at, saved_comment.resolved_at);
+        for (owner, host, expected) in [
+            (stranger.user.id, host_id, moved.data.body.as_str()),
+            (ctx.user.id, other_host, moved.data.body.as_str()),
+            (ctx.user.id, host_id, "stale body"),
+        ] {
+            assert!(
+                DrawerRepository::compare_artifact_body(
+                    &pool,
+                    target.id,
+                    owner,
+                    host,
+                    expected,
+                    "unexpected"
+                )
+                .await
+                .is_err()
+            );
+        }
+        let changed = DrawerRepository::compare_artifact_body(
+            &pool,
+            target.id,
+            ctx.user.id,
+            host_id,
+            &moved.data.body,
+            "Synthetic workspace destination link",
+        )
+        .await
+        .unwrap();
+        let repeated = DrawerRepository::compare_artifact_body(
+            &pool,
+            target.id,
+            ctx.user.id,
+            host_id,
+            &moved.data.body,
+            "Synthetic workspace destination link",
+        )
+        .await
+        .unwrap();
+        assert_eq!(changed.data.updated_at, repeated.data.updated_at);
+        assert_eq!(
+            DrawerRepository::find_comment(&pool, saved_comment.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .body,
+            saved_comment.body
+        );
     }
 
     #[tokio::test]

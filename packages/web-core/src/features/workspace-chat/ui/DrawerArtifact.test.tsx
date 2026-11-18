@@ -19,6 +19,7 @@ vi.mock('./artifact-preview', () => ({
 }));
 vi.mock('@/shared/lib/api', () => ({
   drawerArtifactsApi: { document: vi.fn(), snapshot: vi.fn() },
+  ownedArtifactsApi: { document: vi.fn(), snapshot: vi.fn() },
 }));
 const clients: QueryClient[] = [];
 const source =
@@ -40,14 +41,14 @@ const document: DrawerArtifactDocument = {
     },
   ],
 };
-function render(archived = false, documentNoteId = document.note_id) {
+function render(archived = false, documentNoteId = document.note_id!) {
   const client = new QueryClient();
   clients.push(client);
   client.setQueryData(
     [
       'drawer-artifact-document',
       'synthetic-host',
-      document.note_id,
+      document.note_id!,
       document.id,
     ],
     { ...document, note_id: documentNoteId }
@@ -56,7 +57,7 @@ function render(archived = false, documentNoteId = document.note_id) {
     [
       'drawer-artifact-data',
       'synthetic-host',
-      document.note_id,
+      document.note_id!,
       document.id,
       document.version,
     ],
@@ -71,7 +72,7 @@ function render(archived = false, documentNoteId = document.note_id) {
     <QueryClientProvider client={client}>
       <DrawerArtifact
         id={document.id}
-        noteId={document.note_id}
+        noteId={document.note_id!}
         hostId="synthetic-host"
         archived={archived}
       />
@@ -115,5 +116,47 @@ describe('Drawer read-only dashboard', () => {
     expect(html).toContain('artifacts.drawer.unavailable');
     expect(html).not.toContain('<iframe');
     expect(buildArtifactPreview).not.toHaveBeenCalled();
+  });
+  it('renders a transferred workspace document using its exact workspace and session ownership', () => {
+    const workspace = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const session = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const client = new QueryClient();
+    clients.push(client);
+    const key = `${workspace}:${session}`;
+    const moved = {
+      ...document,
+      note_id: null,
+      workspace_id: workspace,
+      session_id: session,
+    };
+    client.setQueryData(
+      ['drawer-artifact-document', 'synthetic-host', key, document.id],
+      moved
+    );
+    const renderWorkspace = () =>
+      renderToStaticMarkup(
+        <QueryClientProvider client={client}>
+          <DrawerArtifact
+            id={document.id}
+            workspaceId={workspace}
+            sessionId={session}
+            hostId="synthetic-host"
+            archived={false}
+          />
+        </QueryClientProvider>
+      );
+    expect(renderWorkspace()).toContain('sandbox="allow-scripts"');
+    expect(vi.mocked(buildArtifactPreview).mock.calls[0][0]).toBe(source);
+    for (const mismatch of [
+      { workspace_id: document.id },
+      { session_id: document.id },
+      { note_id: document.note_id },
+    ]) {
+      client.setQueryData(
+        ['drawer-artifact-document', 'synthetic-host', key, document.id],
+        { ...moved, ...mismatch }
+      );
+      expect(renderWorkspace()).not.toContain('<iframe');
+    }
   });
 });

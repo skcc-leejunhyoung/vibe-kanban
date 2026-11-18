@@ -68,6 +68,26 @@ const NOTE_COLUMNS: &str = "id, owner_user_id, host_id, workspace_id, session_id
 pub struct DrawerRepository;
 
 impl DrawerRepository {
+    pub async fn compare_artifact_body(
+        pool: &PgPool,
+        id: Uuid,
+        owner: Uuid,
+        host: Uuid,
+        before: &str,
+        after: &str,
+    ) -> Result<MutationResponse<DrawerNote>, sqlx::Error> {
+        let mut tx = super::begin_tx(pool).await?;
+        let data = sqlx::query_as::<_, DrawerNote>(&format!(
+            "UPDATE drawer_notes SET body = $6, updated_at = CASE WHEN body = $6 THEN updated_at ELSE NOW() END
+             WHERE id = $1 AND owner_user_id = $2 AND host_id = $3 AND archived_at IS NULL
+                AND octet_length($6) <= $4 AND (body = $5 OR body = $6) RETURNING {NOTE_COLUMNS}"))
+            .bind(id).bind(owner).bind(host).bind(64_i32 * 1024).bind(before).bind(after)
+            .fetch_one(&mut *tx).await?;
+        let txid = get_txid(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(MutationResponse { data, txid })
+    }
+
     /// Compare and update both locked bodies atomically, without touching comments.
     pub async fn move_artifact_links(
         pool: &PgPool,

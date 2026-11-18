@@ -1023,6 +1023,11 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/artifacts", get(super::artifacts::list))
         .route("/artifacts/register", post(super::artifacts::register))
         .route("/artifacts/drawer", post(super::drawer_artifacts::register))
+        .route(
+            "/artifacts/transfer",
+            get(super::drawer_artifacts::transfer_info)
+                .post(super::drawer_artifacts::transfer_execution),
+        )
         .route("/artifacts/bundle", get(super::artifacts::bundle))
         .route("/artifacts/content", get(super::artifacts::content))
         .route(

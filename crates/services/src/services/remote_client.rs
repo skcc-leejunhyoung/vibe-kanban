@@ -253,6 +253,20 @@ impl RemoteClient {
         .await
     }
 
+    pub async fn compare_drawer_artifact_body(
+        &self,
+        id: Uuid,
+        host: Uuid,
+        before: &str,
+        after: &str,
+    ) -> Result<api_types::MutationResponse<api_types::DrawerNote>, RemoteClientError> {
+        self.post_authed(
+            &format!("/v1/drawer_notes/{id}/artifact-body"),
+            Some(&serde_json::json!({"host_id":host,"before":before,"after":after})),
+        )
+        .await
+    }
+
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
     const TOKEN_REFRESH_LEEWAY_SECS: i64 = 20;
 

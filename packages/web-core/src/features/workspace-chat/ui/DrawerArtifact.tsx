@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
-import { drawerArtifactsApi } from '@/shared/lib/api';
+import { drawerArtifactsApi, ownedArtifactsApi } from '@/shared/lib/api';
 import type {
   ArtifactInputBridge,
   ArtifactViewState,
@@ -12,15 +12,20 @@ import { buildArtifactPreview } from './artifact-preview';
 export function DrawerArtifact({
   id,
   noteId,
+  workspaceId,
+  sessionId,
   hostId,
   archived,
 }: {
   id: string;
-  noteId: string;
   hostId: string | null;
   archived: boolean;
-}) {
+} & (
+  | { noteId: string; workspaceId?: never; sessionId?: never }
+  | { noteId?: never; workspaceId: string; sessionId: string }
+)) {
   const { t } = useTranslation('common');
+  const locationKey = noteId ?? `${workspaceId}:${sessionId}`;
   const client = useQueryClient();
   const frame = useRef<HTMLIFrameElement>(null);
   const focusTarget = useRef<HTMLSpanElement>(null);
@@ -28,16 +33,27 @@ export function DrawerArtifact({
   const [scriptError, setScriptError] = useState<string>();
   const bridge = useMemo<ArtifactInputBridge>(
     () => ({
-      channel: `${hostId ?? 'local'}:${noteId}:${id}:${crypto.randomUUID()}`,
+      channel: `${hostId ?? 'local'}:${locationKey}:${id}:${crypto.randomUUID()}`,
       actions: [],
       initial: { status: 'loading', message: '', editable: false },
     }),
-    [id, noteId, hostId]
+    [id, locationKey, hostId]
   );
   const document = useQuery({
-    queryKey: ['drawer-artifact-document', hostId, noteId, id],
+    queryKey: ['drawer-artifact-document', hostId, locationKey, id],
     queryFn: ({ signal }) =>
-      drawerArtifactsApi.document(id, noteId, hostId, signal),
+      noteId !== undefined
+        ? drawerArtifactsApi.document(id, noteId, hostId, signal)
+        : ownedArtifactsApi.document(
+            id,
+            {
+              kind: 'workspace',
+              workspace_id: workspaceId!,
+              session_id: sessionId!,
+            },
+            hostId,
+            signal
+          ),
     staleTime: Infinity,
     gcTime: 0,
     retry: false,
@@ -48,18 +64,30 @@ export function DrawerArtifact({
     queryKey: [
       'drawer-artifact-data',
       hostId,
-      noteId,
+      locationKey,
       id,
       document.data?.version,
     ],
     queryFn: ({ signal }) =>
-      drawerArtifactsApi.snapshot(
-        id,
-        noteId,
-        document.data!.version,
-        hostId,
-        signal
-      ),
+      noteId === undefined
+        ? ownedArtifactsApi.snapshot(
+            id,
+            {
+              kind: 'workspace',
+              workspace_id: workspaceId!,
+              session_id: sessionId!,
+            },
+            document.data!.version,
+            hostId,
+            signal
+          )
+        : drawerArtifactsApi.snapshot(
+            id,
+            noteId,
+            document.data!.version,
+            hostId,
+            signal
+          ),
     enabled: !!document.data && !archived,
     retry: false,
     gcTime: 0,
@@ -72,14 +100,20 @@ export function DrawerArtifact({
   useEffect(() => {
     if (archived)
       void client.cancelQueries({
-        queryKey: ['drawer-artifact-data', hostId, noteId, id],
+        queryKey: ['drawer-artifact-data', hostId, locationKey, id],
         exact: false,
       });
-  }, [archived, client, hostId, noteId, id]);
+  }, [archived, client, hostId, locationKey, id]);
   const preview = useMemo(() => {
     if (!document.data) return null;
     const value = document.data;
-    if (value.note_id !== noteId)
+    if (
+      noteId !== undefined
+        ? value.note_id !== noteId
+        : value.note_id !== null ||
+          value.workspace_id !== workspaceId ||
+          value.session_id !== sessionId
+    )
       return { error: 'artifacts.drawer.unavailable' };
     const source = value.files.find((file) => file.path === value.path);
     if (!source) return { error: 'artifacts.drawer.unavailable' };
@@ -102,7 +136,7 @@ export function DrawerArtifact({
             : 'artifacts.drawer.unavailable',
       };
     }
-  }, [document.data, noteId, bridge]);
+  }, [document.data, noteId, workspaceId, sessionId, bridge]);
   const state = useRef<ArtifactViewState>({
     status: 'loading',
     message: '',
