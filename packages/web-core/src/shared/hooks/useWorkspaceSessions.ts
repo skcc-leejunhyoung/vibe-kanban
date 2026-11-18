@@ -65,7 +65,7 @@ export const useWorkspaceSessionSelectionStore =
       })),
   }));
 
-function workspaceSessionSelectionKey(
+export function workspaceSessionSelectionKey(
   workspaceId: string | undefined,
   hostId: string | null
 ) {
