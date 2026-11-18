@@ -56,6 +56,14 @@ impl ArtifactOwner {
             }
         }
     }
+
+    fn forward_href(&self, host: Uuid, artifact: Uuid) -> String {
+        let href = self.href(host);
+        format!(
+            "{href}{}artifact={artifact}",
+            if href.contains('?') { "&" } else { "?" }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -181,6 +189,8 @@ pub struct PendingMove {
     owner_host: String,
     #[serde(default)]
     source_scope: Option<Value>,
+    #[serde(default)]
+    pub previous_targets: Vec<ArtifactOwner>,
 }
 
 pub async fn pending_move(pool: &SqlitePool, id: Uuid) -> Result<Option<PendingMove>> {
@@ -255,7 +265,50 @@ fn move_links_to(body: &str, id: Uuid, href: &str) -> Result<(String, String)> {
 }
 
 fn move_links(body: &str, id: Uuid, target: Uuid) -> Result<(String, String)> {
-    move_links_to(body, id, &format!("/drawer?note={target}"))
+    move_links_to(
+        body,
+        id,
+        &ArtifactOwner::Drawer { note_id: target }.forward_href(Uuid::nil(), id),
+    )
+}
+
+fn redirect_forward_links(
+    body: &str,
+    id: Uuid,
+    previous: &[ArtifactOwner],
+    target: &ArtifactOwner,
+    host: Uuid,
+) -> String {
+    let old: Vec<_> = previous
+        .iter()
+        .map(|owner| format!("[Dashboard]({})", owner.forward_href(host, id)))
+        .collect();
+    let mut output = String::new();
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        if old
+            .iter()
+            .any(|old| old == line.trim_end_matches(['\r', '\n']))
+        {
+            // Probe with an attachment so the existing parser excludes code fences and quotes.
+            let probe = format!(
+                "{}[Dashboard](drawer-artifacts/{id} \"vibe-artifact\")\n",
+                &body[..offset]
+            );
+            if linked(&probe, id) && !linked(&body[..offset], id) {
+                output.push_str(&format!(
+                    "[Dashboard]({}){}",
+                    target.forward_href(host, id),
+                    if line.ends_with('\n') { "\n" } else { "" }
+                ));
+                offset += line.len();
+                continue;
+            }
+        }
+        output.push_str(line);
+        offset += line.len();
+    }
+    output
 }
 
 fn link_changes(
@@ -335,6 +388,7 @@ pub async fn prepare_move(
         version: record.version.clone(),
         owner_host: owner_host.into(),
         source_scope: None,
+        previous_targets: Vec::new(),
     };
     let inserted = sqlx::query("INSERT INTO drawer_artifact_moves (artifact_id, payload) VALUES (?, ?) ON CONFLICT(artifact_id) DO UPDATE SET payload = excluded.payload, completed = 0 WHERE completed = 1")
         .bind(record.id).bind(serde_json::to_string(&pending)?).execute(pool).await?;
@@ -387,13 +441,43 @@ pub async fn prepare_transfer(
         bail!("Only an attached active artifact can transfer to another owner");
     }
     let source_note = validate_owner(pool, client, record, &source).await?;
-    let target_note = validate_owner(pool, client, record, &target).await?;
+    validate_destination(pool, client, record, &target).await?;
     if let Some(note) = source_note {
-        move_links_to(&note.body, record.id, &target.href(record.host_id))?;
+        move_links_to(
+            &note.body,
+            record.id,
+            &target.forward_href(record.host_id, record.id),
+        )?;
     }
-    if let Some(note) = target_note {
+    let pending = PendingMove {
+        operation_id: Uuid::new_v4(),
+        source,
+        target,
+        version: record.version.clone(),
+        owner_host: host.into(),
+        source_scope,
+        previous_targets: Vec::new(),
+    };
+    client.ensure_account().await?;
+    let saved = sqlx::query("INSERT INTO drawer_artifact_moves (artifact_id, payload) VALUES (?, ?) ON CONFLICT(artifact_id) DO UPDATE SET payload = excluded.payload, completed = 0 WHERE completed = 1")
+        .bind(record.id).bind(serde_json::to_string(&pending)?).execute(pool).await?;
+    if saved.rows_affected() != 1 {
+        bail!("Another artifact transfer is pending");
+    }
+    Ok(())
+}
+
+pub async fn validate_destination(
+    pool: &SqlitePool,
+    client: &RemoteClient,
+    record: &StoredArtifact,
+    target: &ArtifactOwner,
+) -> Result<Option<DrawerNote>> {
+    moved_document(record, target)?;
+    let note = validate_owner(pool, client, record, target).await?;
+    if let Some(note) = &note {
         let body = if linked(&note.body, record.id) {
-            note.body
+            note.body.clone()
         } else {
             format!(
                 "{}\n\n[Dashboard]({} \"vibe-artifact\")",
@@ -405,20 +489,45 @@ pub async fn prepare_transfer(
             bail!("Target note cannot accept the artifact");
         }
     }
-    moved_document(record, &target)?;
-    let pending = PendingMove {
-        operation_id: Uuid::new_v4(),
-        source,
-        target,
-        version: record.version.clone(),
-        owner_host: host.into(),
-        source_scope,
-    };
+    Ok(note)
+}
+
+/// Keep the operation identity when recovering an ambiguous worker response.
+pub async fn retarget_transfer(
+    pool: &SqlitePool,
+    client: &RemoteClient,
+    record: &StoredArtifact,
+    target: ArtifactOwner,
+    expected_count: usize,
+) -> Result<()> {
+    let mut pending = pending_move(pool, record.id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("No pending transfer"))?;
+    if pending.source != record.artifact_owner()?
+        || pending.version != record.version
+        || record.deleted
+    {
+        bail!("Artifact transfer conflicts with the stored document");
+    }
+    if pending.previous_targets.len() != expected_count {
+        bail!("Recovery destination changed; read transfer status before retrying");
+    }
+    if pending.target == target {
+        return Ok(());
+    }
+    validate_destination(pool, client, record, &target).await?;
+    pending.previous_targets.push(pending.target);
+    pending.target = target;
     client.ensure_account().await?;
-    let saved = sqlx::query("INSERT INTO drawer_artifact_moves (artifact_id, payload) VALUES (?, ?) ON CONFLICT(artifact_id) DO UPDATE SET payload = excluded.payload, completed = 0 WHERE completed = 1")
-        .bind(record.id).bind(serde_json::to_string(&pending)?).execute(pool).await?;
+    let saved = sqlx::query(
+        "UPDATE drawer_artifact_moves SET payload = ? WHERE artifact_id = ? AND completed = 0",
+    )
+    .bind(serde_json::to_string(&pending)?)
+    .bind(record.id)
+    .execute(pool)
+    .await?;
     if saved.rows_affected() != 1 {
-        bail!("Another artifact transfer is pending");
+        bail!("Pending transfer changed");
     }
     Ok(())
 }
@@ -449,6 +558,7 @@ pub async fn import_source(
         version: record.version.clone(),
         owner_host: host.into(),
         source_scope: Some(source_scope),
+        previous_targets: Vec::new(),
     };
     let mut tx = pool.begin().await?;
     insert_on(&mut tx, record).await?;
@@ -504,24 +614,23 @@ async fn resume_move_to(
     };
     let target = validate_owner(pool, client, &record, &pending.target).await?;
     client.ensure_account().await?;
-    match (source, target) {
-        (Some(source), Some(target)) => {
-            if linked(&source.body, id) || !linked(&target.body, id) {
-                client
-                    .move_drawer_artifact_links(
-                        source.id,
-                        &link_changes(&record, &source, &target)?,
-                    )
-                    .await?;
-            }
+    match (&source, &target) {
+        (Some(source), Some(target)) if source.id != target.id && linked(&source.body, id) => {
+            client
+                .move_drawer_artifact_links(source.id, &link_changes(&record, source, target)?)
+                .await?;
         }
         (Some(source), None) if linked(&source.body, id) => {
-            let (after, _) = move_links_to(&source.body, id, &pending.target.href(record.host_id))?;
+            let (after, _) = move_links_to(
+                &source.body,
+                id,
+                &pending.target.forward_href(record.host_id, id),
+            )?;
             client
                 .compare_drawer_artifact_body(source.id, record.host_id, &source.body, &after)
                 .await?;
         }
-        (None, Some(target)) if !linked(&target.body, id) => {
+        (_, Some(target)) if !linked(&target.body, id) => {
             let after = format!(
                 "{}\n\n[Dashboard]({} \"vibe-artifact\")",
                 target.body,
@@ -536,6 +645,46 @@ async fn resume_move_to(
         }
         _ => {}
     }
+    if !pending.previous_targets.is_empty() {
+        let mut stale = pending.previous_targets.clone();
+        stale.push(pending.source.clone());
+        let mut visited = std::collections::HashSet::new();
+        for old in stale {
+            let ArtifactOwner::Drawer { note_id } = old else {
+                continue;
+            };
+            if old == pending.target || !visited.insert(note_id) {
+                continue;
+            }
+            if let Some(note) = client.drawer_note(note_id).await?
+                && note.owner_user_id == record.owner_id
+                && note.host_id == Some(record.host_id)
+                && note.archived_at.is_none()
+            {
+                let after = if linked(&note.body, id) {
+                    move_links_to(
+                        &note.body,
+                        id,
+                        &pending.target.forward_href(record.host_id, id),
+                    )?
+                    .0
+                } else {
+                    redirect_forward_links(
+                        &note.body,
+                        id,
+                        &pending.previous_targets,
+                        &pending.target,
+                        record.host_id,
+                    )
+                };
+                if after != note.body {
+                    client
+                        .compare_drawer_artifact_body(note.id, record.host_id, &note.body, &after)
+                        .await?;
+                }
+            }
+        }
+    }
     client.ensure_account().await?;
     let source_scope = pending
         .source_scope
@@ -545,7 +694,8 @@ async fn resume_move_to(
         .post(format!("{}/api/artifact-channels/{}/transfer", url.trim_end_matches('/'), record.channel_id))
         .timeout(std::time::Duration::from_secs(20)).bearer_auth(token)
         .json(&json!({"operation_id":pending.operation_id,"scope":source_scope,
-            "version":record.binding_version,"target_scope":pending.target.scope(id, record.owner_id, &pending.owner_host)}))
+            "version":record.binding_version,"target_scope":pending.target.scope(id, record.owner_id, &pending.owner_host),
+            "previous_targets":pending.previous_targets.iter().map(|owner| owner.scope(id, record.owner_id, &pending.owner_host)).collect::<Vec<_>>()}))
         .send().await?;
     if !response.status().is_success() {
         bail!(
@@ -1148,11 +1298,38 @@ mod tests {
         assert_eq!(
             moved,
             format!(
-                "Original text\r\n```text\n{line}\n```\n[Dashboard](/drawer?note={target})\n> {line}\nOther text"
+                "Original text\r\n```text\n{line}\n```\n[Dashboard](/drawer?note={target}&artifact={id})\n> {line}\nOther text"
             )
         );
         assert!(!linked(&moved, id));
         assert!(move_links(&format!("```\n{line}\n```"), id, target).is_err());
+    }
+
+    #[test]
+    fn recovery_redirects_only_its_forward_links_and_preserves_examples() {
+        let id = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let host = Uuid::new_v4();
+        let old = ArtifactOwner::Drawer {
+            note_id: Uuid::new_v4(),
+        };
+        let target = ArtifactOwner::Workspace {
+            workspace_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+        };
+        let original = format!("[Dashboard]({})", old.forward_href(host, id));
+        let unrelated = format!("[Dashboard]({})", old.forward_href(host, other));
+        let body = format!(
+            "Original prose\n```\n{original}\n```\n{original}\n> {original}\n{unrelated}\n"
+        );
+        let changed = redirect_forward_links(&body, id, &[old], &target, host);
+        assert_eq!(
+            changed,
+            format!(
+                "Original prose\n```\n{original}\n```\n[Dashboard]({})\n> {original}\n{unrelated}\n",
+                target.forward_href(host, id)
+            )
+        );
     }
 
     #[test]
@@ -1186,6 +1363,12 @@ mod tests {
 
     #[tokio::test]
     async fn all_transfer_directions_recover_and_survive_source_workspace_deletion() {
+        transfer_direction_case(true, false).await;
+        transfer_direction_case(false, false).await;
+        transfer_direction_case(false, true).await;
+    }
+
+    async fn transfer_direction_case(recover_before_worker: bool, restore_source: bool) {
         let directory = tempfile::tempdir().unwrap();
         let pool = database("sqlite::memory:").await;
         let mut record = frozen_record();
@@ -1193,6 +1376,8 @@ mod tests {
         first_note.body = "Original note prose".into();
         let mut second_note = first_note.clone();
         second_note.id = Uuid::new_v4();
+        let mut failed_note = first_note.clone();
+        failed_note.id = Uuid::new_v4();
         let workspace_a = Uuid::new_v4();
         let session_a = Uuid::new_v4();
         let workspace_b = Uuid::new_v4();
@@ -1228,56 +1413,65 @@ mod tests {
         let original_config = record.channel_config.clone();
         let channel = record.channel_id.clone();
         let legacy_scope = json!({"owner_id":record.owner_id,"owner_host":"synthetic-host", "workspace_id":workspace_a,"session_id":session_a});
-        let notes = Arc::new(RwLock::new(vec![first_note.clone(), second_note.clone()]));
+        let notes = Arc::new(RwLock::new(vec![
+            first_note.clone(),
+            second_note.clone(),
+            failed_note.clone(),
+        ]));
         let worker = Arc::new(RwLock::new(
             json!({"scope":legacy_scope,"version":record.binding_version,"receipt":null,"count":0}),
         ));
         let fail_body = Arc::new(AtomicBool::new(true));
-        let fail_worker = Arc::new(AtomicBool::new(true));
+        let fail_worker = Arc::new(AtomicBool::new(!recover_before_worker));
         let router = Router::new().fallback({
-            let (notes, worker) = (notes.clone(), worker.clone());
-            move |OriginalUri(uri): OriginalUri, body: axum::body::Bytes| {
-                let (notes, worker, channel, fail_body, fail_worker) = (notes.clone(), worker.clone(), channel.clone(), fail_body.clone(), fail_worker.clone());
-                async move {
-                    if uri.path().ends_with("/transfer") {
-                        let input: Value = serde_json::from_slice(&body).unwrap();
-                        let mut worker = worker.write().await;
-                        if worker["receipt"]["operation_id"] != input["operation_id"] {
+        let (notes, worker) = (notes.clone(), worker.clone());
+        move |OriginalUri(uri): OriginalUri, body: axum::body::Bytes| {
+            let (notes, worker, channel, fail_body, fail_worker) = (notes.clone(), worker.clone(), channel.clone(), fail_body.clone(), fail_worker.clone());
+            async move {
+                if uri.path().ends_with("/transfer") {
+                    let input: Value = serde_json::from_slice(&body).unwrap();
+                    let mut worker = worker.write().await;
+                    if worker["receipt"]["operation_id"] != input["operation_id"] || worker["receipt"]["previous_targets"] != input["previous_targets"] {
+                        if worker["receipt"]["operation_id"] == input["operation_id"] {
+                            assert_eq!(input["previous_targets"][0], worker["scope"]);
+                            assert_eq!(input["version"], worker["receipt"]["version"]);
+                        } else {
                             assert_eq!(input["scope"], worker["scope"]);
                             assert_eq!(input["version"], worker["version"]);
-                            worker["scope"] = input["target_scope"].clone();
-                            let count = worker["count"].as_u64().unwrap() + 1;
-                            worker["count"] = json!(count);
-                            worker["version"] = json!(format!("{count:064x}"));
-                            worker["receipt"] = input;
-                        } else { assert_eq!(input, worker["receipt"]); }
-                        if fail_worker.swap(false, Ordering::SeqCst) { return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
-                        return Json(json!({"channel_id":channel,"version":worker["version"],"data_schema":{"type":"object","properties":{}},"actions":{}})).into_response();
-                    }
-                    let mut notes = notes.write().await;
-                    if uri.path().ends_with("/artifact-move") {
-                        let input: Value = serde_json::from_slice(&body).unwrap();
-                        let source = notes.iter().position(|note| uri.path() == format!("/v1/drawer_notes/{}/artifact-move", note.id)).unwrap();
-                        let target = notes.iter().position(|note| json!(note.id) == input["target_note_id"]).unwrap();
-                        assert_eq!(input["source_body"], notes[source].body);
-                        assert_eq!(input["target_body"], notes[target].body);
-                        notes[source].body = input["source_body_after"].as_str().unwrap().into();
-                        notes[target].body = input["target_body_after"].as_str().unwrap().into();
-                        return Json(json!({"data":notes[target],"txid":1})).into_response();
-                    }
-                    if uri.path().ends_with("/artifact-body") {
-                        let input: Value = serde_json::from_slice(&body).unwrap();
-                        let note = notes.iter_mut().find(|note| uri.path() == format!("/v1/drawer_notes/{}/artifact-body", note.id)).unwrap();
-                        assert_eq!(input["before"], note.body);
-                        note.body = input["after"].as_str().unwrap().into();
-                        if fail_body.swap(false, Ordering::SeqCst) { return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
-                        return Json(json!({"data":note,"txid":1})).into_response();
-                    }
-                    let note = notes.iter().find(|note| uri.path() == format!("/v1/drawer_notes/{}", note.id)).unwrap();
-                    Json(json!(note)).into_response()
+                        }
+                        worker["scope"] = input["target_scope"].clone();
+                        let count = worker["count"].as_u64().unwrap() + 1;
+                        worker["count"] = json!(count);
+                        worker["version"] = json!(format!("{count:064x}"));
+                        worker["receipt"] = input;
+                    } else { assert_eq!(input, worker["receipt"]); }
+                    if fail_worker.swap(false, Ordering::SeqCst) { return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+                    return Json(json!({"channel_id":channel,"version":worker["version"],"data_schema":{"type":"object","properties":{}},"actions":{}})).into_response();
                 }
+                let mut notes = notes.write().await;
+                if uri.path().ends_with("/artifact-move") {
+                    let input: Value = serde_json::from_slice(&body).unwrap();
+                    let source = notes.iter().position(|note| uri.path() == format!("/v1/drawer_notes/{}/artifact-move", note.id)).unwrap();
+                    let target = notes.iter().position(|note| json!(note.id) == input["target_note_id"]).unwrap();
+                    assert_eq!(input["source_body"], notes[source].body);
+                    assert_eq!(input["target_body"], notes[target].body);
+                    notes[source].body = input["source_body_after"].as_str().unwrap().into();
+                    notes[target].body = input["target_body_after"].as_str().unwrap().into();
+                    return Json(json!({"data":notes[target],"txid":1})).into_response();
+                }
+                if uri.path().ends_with("/artifact-body") {
+                    let input: Value = serde_json::from_slice(&body).unwrap();
+                    let note = notes.iter_mut().find(|note| uri.path() == format!("/v1/drawer_notes/{}/artifact-body", note.id)).unwrap();
+                    assert_eq!(input["before"], note.body);
+                    note.body = input["after"].as_str().unwrap().into();
+                    if fail_body.swap(false, Ordering::SeqCst) { return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(); }
+                    return Json(json!({"data":note,"txid":1})).into_response();
+                }
+                let Some(note) = notes.iter().find(|note| uri.path() == format!("/v1/drawer_notes/{}", note.id)) else { return StatusCode::NOT_FOUND.into_response(); };
+                Json(json!(note)).into_response()
             }
-        });
+        }
+    });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1293,8 +1487,15 @@ mod tests {
             .for_account(record.owner_id);
         let execution = Uuid::new_v4();
         let destinations = [
-            ArtifactOwner::Drawer {
-                note_id: first_note.id,
+            if restore_source {
+                ArtifactOwner::Workspace {
+                    workspace_id: workspace_a,
+                    session_id: session_a,
+                }
+            } else {
+                ArtifactOwner::Drawer {
+                    note_id: first_note.id,
+                }
             },
             ArtifactOwner::Drawer {
                 note_id: second_note.id,
@@ -1319,13 +1520,15 @@ mod tests {
                     &record,
                     execution,
                     "synthetic-source",
-                    target.clone(),
+                    ArtifactOwner::Drawer {
+                        note_id: failed_note.id,
+                    },
                     legacy_scope.clone(),
                     "synthetic-host",
                 )
                 .await
                 .unwrap();
-                for failure in 0..2 {
+                for failure in 0..if recover_before_worker { 1 } else { 2 } {
                     assert!(
                         resume_move_to(&pool, &client, record.id, &url, "synthetic-token")
                             .await
@@ -1333,7 +1536,7 @@ mod tests {
                     );
                     assert_eq!(load(&pool, record.id).await.unwrap().version, old_version);
                     assert!(pending_move(&pool, record.id).await.unwrap().is_some());
-                    if failure == 0 {
+                    if failure == 0 && !restore_source {
                         sqlx::query("DELETE FROM workspaces WHERE id = ?")
                             .bind(workspace_a)
                             .execute(&pool)
@@ -1341,6 +1544,41 @@ mod tests {
                             .unwrap();
                     }
                 }
+                notes.write().await.retain(|note| note.id != failed_note.id);
+                assert!(
+                    resume_move_to(&pool, &client, record.id, &url, "synthetic-token")
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    retarget_transfer(&pool, &client, &record, target.clone(), 1)
+                        .await
+                        .is_err()
+                );
+                let mut foreign = first_note.clone();
+                foreign.id = Uuid::new_v4();
+                foreign.owner_user_id = Uuid::new_v4();
+                let forbidden = ArtifactOwner::Drawer {
+                    note_id: foreign.id,
+                };
+                notes.write().await.push(foreign.clone());
+                assert!(
+                    retarget_transfer(&pool, &client, &record, forbidden, 0)
+                        .await
+                        .is_err()
+                );
+                notes.write().await.retain(|note| note.id != foreign.id);
+                assert!(
+                    pending_move(&pool, record.id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .previous_targets
+                        .is_empty()
+                );
+                retarget_transfer(&pool, &client, &record, target.clone(), 0)
+                    .await
+                    .unwrap();
             } else {
                 prepare_transfer(
                     &pool,
@@ -1399,7 +1637,10 @@ mod tests {
                 );
             }
         }
-        assert_eq!(worker.read().await["count"], 5);
+        assert_eq!(
+            worker.read().await["count"],
+            if recover_before_worker { 5 } else { 6 }
+        );
         assert!(
             notes
                 .read()

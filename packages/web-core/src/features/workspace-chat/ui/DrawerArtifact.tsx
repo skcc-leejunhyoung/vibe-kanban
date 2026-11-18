@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { withDisplayTimeZone } from '@vibe/ui/lib/datetime';
 import { drawerArtifactsApi, ownedArtifactsApi } from '@/shared/lib/api';
+import type { ApiError } from '@/shared/lib/api';
 import type {
   ArtifactInputBridge,
   ArtifactViewState,
@@ -59,6 +60,14 @@ export function DrawerArtifact({
     retry: false,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
+    refetchInterval: (query) => {
+      const error = query.state.error as ApiError | null;
+      if (!error) return false;
+      if (error.statusCode === 409) return 2000;
+      return error.statusCode === undefined || error.statusCode >= 500
+        ? 10000
+        : false;
+    },
   });
   const snapshot = useQuery({
     queryKey: [
@@ -97,6 +106,11 @@ export function DrawerArtifact({
     refetchInterval: (query) =>
       archived ? false : query.state.error ? 10000 : 2000,
   });
+  const refreshDocument = document.refetch;
+  useEffect(() => {
+    if ((snapshot.error as ApiError | null)?.statusCode === 409)
+      void refreshDocument();
+  }, [snapshot.error, refreshDocument]);
   useEffect(() => {
     if (archived)
       void client.cancelQueries({

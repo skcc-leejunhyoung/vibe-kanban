@@ -2571,6 +2571,13 @@ const COMMANDS: &[Cmd] = &[
         ],
     ),
     cmd(
+        &["artifacts", "transfer-status"],
+        "Read pending transfer source, version and recovery count",
+        "GET",
+        "/artifacts/{id}/transfer",
+        &[pos("id", "Managed artifact UUID", Where::Path)],
+    ),
+    cmd(
         &["artifacts", "transfer"],
         "Transfer a read-only dashboard between Drawer notes or workspace sessions without resetting its channel",
         "POST",
@@ -2594,6 +2601,15 @@ const COMMANDS: &[Cmd] = &[
                 "Current managed document version",
                 Where::Body,
                 Kind::Str,
+            ),
+            keyed(
+                opt(
+                    "recovery-count",
+                    "Current count from transfer-status; required to change a pending destination",
+                    Where::Body,
+                    Kind::Int,
+                ),
+                "recovery_count",
             ),
         ],
     ),
@@ -2662,6 +2678,15 @@ const COMMANDS: &[Cmd] = &[
                 Kind::Json,
             ),
             req("sensitive", "Must be false", Where::Body, Kind::Bool),
+            keyed(
+                opt(
+                    "recovery-count",
+                    "Current count from transfer-status when recovering",
+                    Where::Body,
+                    Kind::Int,
+                ),
+                "recovery_count",
+            ),
         ],
     ),
     cmd(
@@ -6311,6 +6336,42 @@ mod tests {
                 "synthetic-version"
             );
         }
+        let matches = build_cli()
+            .try_get_matches_from([
+                "vk",
+                "artifacts",
+                "transfer",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "--source",
+                source,
+                "--target",
+                target,
+                "--version",
+                "synthetic-version",
+                "--recovery-count",
+                "0",
+            ])
+            .unwrap();
+        assert_eq!(
+            resolve(&matches)
+                .unwrap()
+                .1
+                .get_one::<String>("recovery-count")
+                .unwrap(),
+            "0"
+        );
+        let status = build_cli()
+            .try_get_matches_from([
+                "vk",
+                "artifacts",
+                "transfer-status",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            ])
+            .unwrap();
+        assert_eq!(
+            resolve(&status).unwrap().0.path,
+            &["artifacts", "transfer-status"]
+        );
     }
 
     #[test]

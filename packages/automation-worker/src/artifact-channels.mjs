@@ -27,6 +27,18 @@ const drawerScopeKeys = [
 const workspaceArtifactKeys = ["kind", ...scopeKeys, "artifact_id"];
 const managedScope = (scope) =>
   ["drawer", "workspace_artifact"].includes(scope?.kind);
+const validTransferScope = (scope) =>
+  managedScope(scope) &&
+  uuid(scope.artifact_id) &&
+  fieldsFor(scope).every(
+    (key) =>
+      typeof scope[key] === "string" &&
+      scope[key].length > 0 &&
+      scope[key].length <= 200,
+  ) &&
+  (scope.kind === "drawer"
+    ? uuid(scope.note_id)
+    : uuid(scope.workspace_id) && uuid(scope.session_id));
 const fieldsFor = (scope) =>
   scope?.kind === "drawer"
     ? drawerScopeKeys
@@ -231,6 +243,9 @@ export function createArtifactChannels({ state, persist, runRule }) {
         channel.actions,
         Object.values(channel.actions).map((action) => ruleFor(action.rule_id)),
         ...(channel.drawer_move ? [channel.drawer_move.operation_id] : []),
+        ...(channel.drawer_move?.recovery_generation
+          ? [channel.drawer_move.recovery_generation]
+          : []),
       ]),
       data_schema: channel.data_schema,
       actions,
@@ -292,22 +307,21 @@ export function createArtifactChannels({ state, persist, runRule }) {
     async transfer(id, input) {
       return locked(async () => {
         const target = input?.target_scope;
+        const previousTargets = input?.previous_targets ?? [];
         if (
           !name(id) ||
           !own(state.artifactChannels, id) ||
           !uuid(input?.operation_id) ||
           typeof input.version !== "string" ||
-          !managedScope(target) ||
-          !uuid(target.artifact_id) ||
-          fieldsFor(target).some(
-            (key) =>
-              typeof target[key] !== "string" ||
-              !target[key] ||
-              target[key].length > 200,
-          ) ||
-          (target.kind === "drawer"
-            ? !uuid(target.note_id)
-            : !uuid(target.workspace_id) || !uuid(target.session_id))
+          !validTransferScope(target) ||
+          !Array.isArray(previousTargets) ||
+          previousTargets.some(
+            (scope) =>
+              !validTransferScope(scope) ||
+              scope.owner_id !== target.owner_id ||
+              scope.owner_host !== target.owner_host ||
+              scope.artifact_id !== target.artifact_id,
+          )
         )
           fail("Invalid artifact transfer");
         const channel = state.artifactChannels[id];
@@ -316,31 +330,45 @@ export function createArtifactChannels({ state, persist, runRule }) {
           scope: input.scope,
           version: input.version,
           target_scope: target,
+          ...(previousTargets.length
+            ? { recovery_generation: previousTargets.length }
+            : {}),
         };
+        let recovering = false;
         if (channel.drawer_move?.operation_id === input.operation_id) {
+          const currentGeneration =
+            channel.drawer_move.recovery_generation ?? 0;
+          const currentTarget = channel.drawer_move.target_scope ?? {
+            ...channel.drawer_move.scope,
+            note_id: channel.drawer_move.target_note_id,
+          };
           if (
             !sameScope(channel.drawer_move.scope, input.scope) ||
             channel.drawer_move.version !== input.version ||
-            !sameScope(
-              channel.drawer_move.target_scope ?? {
-                ...channel.drawer_move.scope,
-                note_id: channel.drawer_move.target_note_id,
-              },
-              target,
-            )
+            previousTargets.length < currentGeneration
           )
             fail("Conflicting artifact transfer", 409);
-          return structuredClone(describe(channel));
+          if (previousTargets.length === currentGeneration) {
+            if (!sameScope(currentTarget, target))
+              fail("Conflicting artifact transfer", 409);
+            return structuredClone(describe(channel));
+          }
+          if (
+            !sameScope(previousTargets[currentGeneration], currentTarget) ||
+            !sameScope(channel.scope, currentTarget)
+          )
+            fail("Conflicting artifact recovery target", 409);
+          recovering = true;
         }
         if (
-          !sameScope(channel.scope, input.scope) ||
+          (!recovering && !sameScope(channel.scope, input.scope)) ||
           target.owner_id !== channel.scope.owner_id ||
           target.owner_host !== channel.scope.owner_host ||
           (managedScope(channel.scope) &&
             target.artifact_id !== channel.scope.artifact_id)
         )
           fail("Wrong artifact channel scope", 403);
-        if (describe(channel).version !== input.version)
+        if (!recovering && describe(channel).version !== input.version)
           fail("Artifact channel changed; reload before moving", 409);
         if (
           Object.keys(channel.actions).length ||

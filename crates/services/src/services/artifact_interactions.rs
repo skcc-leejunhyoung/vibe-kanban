@@ -2,7 +2,7 @@
 //! stay in the browser's memory. A restart never re-dispatches a receipt.
 use std::{collections::BTreeMap, path::PathBuf, sync::LazyLock};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Utc};
 use executors::logs::artifacts::ArtifactBundle;
 use serde::{Deserialize, Serialize};
@@ -564,6 +564,47 @@ pub async fn list(session_id: Uuid, execution_id: Uuid) -> Result<Vec<Receipt>> 
     Ok(receipts)
 }
 
+/// Caller holds LIFECYCLE_LOCK, excluding new bindings during the transfer.
+pub async fn ensure_exclusive_channel(
+    pool: &sqlx::SqlitePool,
+    selected: &ArtifactInteraction,
+) -> Result<()> {
+    let channel = &selected
+        .automation
+        .as_ref()
+        .context("Missing automation binding")?
+        .channel_id;
+    let executions: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM execution_processes WHERE session_id = ?")
+            .bind(selected.reference.session_id)
+            .fetch_all(pool)
+            .await?;
+    for execution in executions {
+        for receipt in list(selected.reference.session_id, execution).await? {
+            let other = &receipt.interaction;
+            if other.owner_id == selected.owner_id
+                && other.owner_host == selected.owner_host
+                && other.workspace_id == selected.workspace_id
+                && other.delivery == ArtifactDelivery::Automation
+                && other.state == ArtifactInteractionState::InputRequired
+                && other.expires_at > Utc::now()
+                && receipt.boot_id == *BOOT_ID
+                && other
+                    .automation
+                    .as_ref()
+                    .is_some_and(|binding| &binding.channel_id == channel)
+                && (execution != selected.reference.execution_id
+                    || other.artifact_id != selected.artifact_id)
+            {
+                bail!(
+                    "This channel is shared by another artifact; give it a dedicated channel before transferring"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A restored queue must not dispatch an accepted response a second time.
 pub async fn claim_dispatch(
     pool: &sqlx::SqlitePool,
@@ -780,6 +821,79 @@ mod tests {
             .await
             .unwrap();
         pool
+    }
+
+    #[tokio::test]
+    async fn transfer_rejects_shared_channels_across_artifacts_and_executions() {
+        let _guard = LIFECYCLE_LOCK.lock().await;
+        let mut first = receipt();
+        first.interaction.delivery = ArtifactDelivery::Automation;
+        first.interaction.automation = Some(ArtifactAutomationBinding {
+            channel_id: "synthetic-shared".into(),
+            version: "a".repeat(64),
+            data_schema: schema(),
+            actions: BTreeMap::new(),
+        });
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE execution_processes (id BLOB, session_id BLOB)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for separate_execution in [false, true] {
+            let mut other = first.clone();
+            other.interaction.reference.request_id = Uuid::new_v4();
+            other.interaction.artifact_id = "synthetic-other".into();
+            if separate_execution {
+                other.interaction.reference.execution_id = Uuid::new_v4();
+            }
+            for execution in [
+                first.interaction.reference.execution_id,
+                other.interaction.reference.execution_id,
+            ] {
+                sqlx::query("INSERT INTO execution_processes VALUES (?, ?)")
+                    .bind(execution)
+                    .bind(first.interaction.reference.session_id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            save(&first).await.unwrap();
+            save(&other).await.unwrap();
+            assert!(
+                ensure_exclusive_channel(&pool, &first.interaction)
+                    .await
+                    .is_err()
+            );
+            other.interaction.state = ArtifactInteractionState::Cancelled;
+            save(&other).await.unwrap();
+            ensure_exclusive_channel(&pool, &first.interaction)
+                .await
+                .unwrap();
+            tokio::fs::remove_dir_all(directory(&other.interaction.reference))
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM execution_processes")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        // A single artifact may have multiple requests for the same binding.
+        let mut retry = first.clone();
+        retry.interaction.reference.request_id = Uuid::new_v4();
+        save(&first).await.unwrap();
+        save(&retry).await.unwrap();
+        sqlx::query("INSERT INTO execution_processes VALUES (?, ?)")
+            .bind(first.interaction.reference.execution_id)
+            .bind(first.interaction.reference.session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        ensure_exclusive_channel(&pool, &first.interaction)
+            .await
+            .unwrap();
+        tokio::fs::remove_dir_all(directory(&first.interaction.reference))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

@@ -356,6 +356,7 @@ async fn move_artifact(
                 note_id: request.target_note_id,
             },
             version: request.version,
+            recovery_count: None,
         },
     )
     .await
@@ -367,6 +368,7 @@ struct TransferArtifact {
     source: ArtifactOwner,
     target: ArtifactOwner,
     version: String,
+    recovery_count: Option<usize>,
 }
 
 async fn transfer(
@@ -403,13 +405,24 @@ async fn transfer_checked(
         .await
         .map_err(bad)?
     {
-        if pending.source != request.source
-            || pending.target != request.target
-            || pending.version != request.version
-        {
+        if pending.source != request.source || pending.version != request.version {
             return Err(ApiError::Conflict(
                 "Another artifact transfer is pending; retry the original request".into(),
             ));
+        }
+        if pending.target != request.target {
+            if request.recovery_count != Some(pending.previous_targets.len()) {
+                return Err(ApiError::Conflict("Read transfer status and provide its current recovery_count before changing the destination".into()));
+            }
+            stored::retarget_transfer(
+                &deployment.db().pool,
+                &client,
+                &record,
+                request.target,
+                pending.previous_targets.len(),
+            )
+            .await
+            .map_err(bad)?;
         }
     } else {
         if let Some(completed) = stored::completed_move(&deployment.db().pool, id)
@@ -472,6 +485,33 @@ async fn write_access(deployment: &DeploymentImpl, headers: &HeaderMap) -> Resul
     Ok(())
 }
 
+async fn transfer_status(
+    State(deployment): State<DeploymentImpl>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
+    let (client, account, host) = owner(&deployment).await?;
+    let _guard = stored::LOCK.lock().await;
+    let record = stored::load(&deployment.db().pool, id)
+        .await
+        .map_err(|_| ApiError::Forbidden("Artifact is unavailable".into()))?;
+    if record.owner_id != account || record.host_id != host {
+        return Err(ApiError::Forbidden("Wrong artifact owner or host".into()));
+    }
+    if record.deleted {
+        return Err(ApiError::Conflict("Artifact is no longer available".into()));
+    }
+    let pending = stored::pending_move(&deployment.db().pool, id)
+        .await
+        .map_err(bad)?;
+    client.ensure_account().await?;
+    Ok(Json(ApiResponse::success(json!({"id":id,
+        "status": if pending.is_some() { "pending" } else { "ready" },
+        "source":record.artifact_owner().map_err(bad)?, "version":record.version,
+        "target":pending.as_ref().map(|pending| &pending.target),
+        "recovery_count":pending.as_ref().map_or(0, |pending| pending.previous_targets.len())
+    }))))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransferExecutionArtifact {
@@ -481,6 +521,7 @@ pub struct TransferExecutionArtifact {
     pub version: String,
     pub target: ArtifactOwner,
     pub sensitive: bool,
+    pub recovery_count: Option<usize>,
 }
 
 pub async fn transfer_info(
@@ -577,6 +618,7 @@ pub async fn transfer_execution(
                 source,
                 target: request.target,
                 version: request.version,
+                recovery_count: request.recovery_count,
             },
         )
         .await;
@@ -648,6 +690,12 @@ pub async fn transfer_execution(
             "Source binding changed or has actions or unfinished requests".into(),
         ));
     }
+    services::services::artifact_interactions::ensure_exclusive_channel(
+        &deployment.db().pool,
+        &receipt.interaction,
+    )
+    .await
+    .map_err(bad)?;
     let (path, files) = snapshot_files(&process, bundle).await?;
     let document = DrawerArtifactDocument {
         id: request.id,
@@ -681,25 +729,9 @@ pub async fn transfer_execution(
     stored::validate_owner(&deployment.db().pool, &client, &record, &source)
         .await
         .map_err(bad)?;
-    stored::validate_owner(&deployment.db().pool, &client, &record, &request.target)
+    stored::validate_destination(&deployment.db().pool, &client, &record, &request.target)
         .await
         .map_err(bad)?;
-    // Validate note fences and size before recording the source tombstone.
-    let target_note = if let ArtifactOwner::Drawer { note_id } = &request.target {
-        client.drawer_note(*note_id).await?
-    } else {
-        None
-    };
-    if let Some(note) = target_note {
-        let body = format!(
-            "{}\n\n[Dashboard]({} \"vibe-artifact\")",
-            note.body,
-            record.link()
-        );
-        if body.len() > 64 * 1024 || !stored::linked(&body, record.id) {
-            return Err(bad("Target cannot accept a standalone artifact link"));
-        }
-    }
     if source == request.target {
         return Err(bad("Choose another artifact owner"));
     }
@@ -829,20 +861,23 @@ async fn checked(
     let record = stored::load(&deployment.db().pool, id)
         .await
         .map_err(|_| ApiError::Forbidden("Drawer artifact is unavailable".into()))?;
-    if record.owner_id != owner
-        || record.host_id != host
-        || record.artifact_owner().map_err(bad)?.ne(artifact_owner)
-    {
+    if record.owner_id != owner || record.host_id != host {
         return Err(ApiError::Forbidden(
             "Wrong Drawer artifact owner, note or host".into(),
         ));
     }
-    if stored::pending_move(&deployment.db().pool, id)
+    let current_owner = record.artifact_owner().map_err(bad)?;
+    if let Some(pending) = stored::pending_move(&deployment.db().pool, id)
         .await
         .map_err(bad)?
-        .is_some()
+        && (current_owner == *artifact_owner || pending.target == *artifact_owner)
     {
         return Err(ApiError::Conflict("Drawer artifact move is pending".into()));
+    }
+    if current_owner != *artifact_owner {
+        return Err(ApiError::Forbidden(
+            "Wrong Drawer artifact owner, note or host".into(),
+        ));
     }
     let note = if let Some(note_id) = record.note_id {
         client.drawer_note(note_id).await?
@@ -916,6 +951,9 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/drawer-artifacts/{id}/move", post(move_artifact))
         .route("/artifacts/{id}", get(document))
         .route("/artifacts/{id}/snapshot", get(snapshot))
-        .route("/artifacts/{id}/transfer", post(transfer))
+        .route(
+            "/artifacts/{id}/transfer",
+            get(transfer_status).post(transfer),
+        )
         .route("/artifacts", get(workspace_list))
 }

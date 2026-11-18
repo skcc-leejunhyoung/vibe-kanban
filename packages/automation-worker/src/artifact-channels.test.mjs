@@ -1204,3 +1204,103 @@ test("Drawer lifecycle rejects malformed events, isolates hosts and rolls back f
   await t.channels.cleanupScope(event);
   await assert.rejects(t.channels.describe(config.id, drawer), /Unknown/);
 });
+
+test("recovery redirects an uncommitted or committed transfer, survives restart and fences stale recovery requests", async () => {
+  for (const committed of [false, true]) {
+    const t = await setup();
+    const config = { ...t.config, id: "recoverable-channel", actions: {} };
+    await t.channels.configure(config);
+    await t.channels.publish("publisher", config.id, { count: 17 });
+    const binding = await t.channels.describe(config.id, scope);
+    const first = {
+      kind: "drawer",
+      owner_id: scope.owner_id,
+      owner_host: scope.owner_host,
+      artifact_id: randomUUID(),
+      note_id: randomUUID(),
+    };
+    const original = {
+      operation_id: randomUUID(),
+      scope,
+      version: binding.version,
+      target_scope: first,
+    };
+    let firstVersion;
+    if (committed)
+      firstVersion = (await t.channels.transfer(config.id, original)).version;
+    const next = { ...first, note_id: randomUUID() };
+    const recovery = {
+      ...original,
+      target_scope: next,
+      previous_targets: [first],
+    };
+    const recovered = await t.channels.transfer(config.id, recovery);
+    const restarted = createArtifactChannels({
+      state: structuredClone(t.saved()),
+      persist: async () => {},
+      runRule: t.execute,
+    });
+    assert.deepEqual(await restarted.transfer(config.id, recovery), recovered);
+    await assert.rejects(
+      restarted.transfer(config.id, original),
+      /Conflicting/,
+    );
+    const back = { ...original, previous_targets: [first, next] };
+    const returned = await restarted.transfer(config.id, back);
+    if (firstVersion) assert.notEqual(returned.version, firstVersion);
+    assert.equal(
+      (await restarted.snapshot(config.id, first, returned.version)).data.count,
+      17,
+    );
+    await assert.rejects(
+      restarted.transfer(config.id, recovery),
+      /Conflicting/,
+    );
+    await assert.rejects(
+      restarted.transfer(config.id, {
+        ...back,
+        previous_targets: [next, next, next],
+      }),
+      /Conflicting/,
+    );
+    assert.deepEqual(t.state.rules, t.saved().rules);
+    assert.equal(t.calls(), 0);
+  }
+});
+
+test("a failed recovery write preserves the last committed owner, binding and data", async () => {
+  const t = await setup();
+  const config = { ...t.config, id: "recoverable-rollback", actions: {} };
+  await t.channels.configure(config);
+  await t.channels.publish("publisher", config.id, { count: 19 });
+  const binding = await t.channels.describe(config.id, scope);
+  const target = {
+    kind: "drawer",
+    owner_id: scope.owner_id,
+    owner_host: scope.owner_host,
+    artifact_id: randomUUID(),
+    note_id: randomUUID(),
+  };
+  const move = {
+    operation_id: randomUUID(),
+    scope,
+    version: binding.version,
+    target_scope: target,
+  };
+  const moved = await t.channels.transfer(config.id, move);
+  t.fail();
+  await assert.rejects(
+    t.channels.transfer(config.id, {
+      ...move,
+      target_scope: { ...target, note_id: randomUUID() },
+      previous_targets: [target],
+    }),
+    /disk/,
+  );
+  assert.deepEqual(await t.channels.describe(config.id, target), moved);
+  assert.equal(
+    (await t.channels.snapshot(config.id, target, moved.version)).data.count,
+    19,
+  );
+  assert.deepEqual(await t.channels.transfer(config.id, move), moved);
+});
