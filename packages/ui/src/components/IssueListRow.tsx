@@ -270,7 +270,7 @@ export function IssueListRow({
               card's own click opens the workspace (stops propagation). */}
           {workspaces.length > 0 && (
             <div
-              className="flex flex-col gap-half pr-double pb-half pl-[3.25rem]"
+              className="flex flex-col gap-half px-double pb-half"
               onMouseDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
               onPointerDown={(e) => e.stopPropagation()}
