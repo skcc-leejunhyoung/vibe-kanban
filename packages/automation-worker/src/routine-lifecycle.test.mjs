@@ -175,6 +175,7 @@ function harness({
     throw new Error(`Unexpected API call: ${method} ${endpoint}`);
   };
   const context = vm.createContext({
+    githubActivityWrites: new Set(),
     state,
     vm,
     URL,

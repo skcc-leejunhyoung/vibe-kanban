@@ -42,6 +42,7 @@ export async function searchGithubPrs({
   perPage,
   reviewLogin,
   dateRange,
+  onPr,
 }) {
   const prs = new Map();
   const scope = repository ? `repo:${repository} ` : '';
@@ -89,7 +90,7 @@ export async function searchGithubPrs({
         const { start, end, field } = dateRange;
         const middle = Math.floor((start + end) / 2);
         const options = {
-          fetchImpl, apiBase, headers, repository, qualifier, perPage,
+          fetchImpl, apiBase, headers, repository, qualifier, perPage, onPr,
         };
         const left = await searchGithubPrs({
           ...options,
@@ -120,6 +121,7 @@ export async function searchGithubPrs({
       }
       const pr = { ...item, repository: source };
       prs.set(githubIssueLinkKey(pr), pr);
+      onPr?.(pr);
     }
     if (body.items.length < perPage || page * perPage >= body.total_count) {
       if (!repository && prs.size !== body.total_count)

@@ -7,6 +7,23 @@ import {
   reconcileGithubReviewPrs,
 } from './github-review-prs.mjs';
 
+test('reports verified PRs even when a later search page fails', async () => {
+  const found = [];
+  const first = { number: 7, repository_url: 'https://api.github.com/repos/example/app' };
+  await assert.rejects(searchGithubPrs({
+    fetchImpl: async (input) => new URL(input).searchParams.get('page') === '1'
+      ? { ok: true, json: async () => ({ total_count: 2, items: [first] }) }
+      : { ok: false, status: 503 },
+    apiBase: 'https://api.github.com',
+    qualifier: 'is:open involves:synthetic',
+    perPage: 1,
+    onPr: (pr) => found.push(pr),
+  }), /503/);
+  assert.deepEqual(found.map(({ repository, number }) => [repository, number]), [
+    ['example/app', 7],
+  ]);
+});
+
 test('splits capped global searches into adjacent timestamp ranges', async () => {
   const start = Date.parse('2026-01-01T00:00:00Z') / 1000;
   const queries = [];

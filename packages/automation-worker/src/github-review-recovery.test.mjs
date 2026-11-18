@@ -164,7 +164,8 @@ function harness(options = {}) {
     errorMessage: (e) => e.message,
     retryDelay: () => 60000,
     log: async (level, message, meta) => h.logs.push({ level, message, meta }),
-    persistState: async () => {
+    persistState: async (_, update) => {
+      if (update) Object.assign(update.config, update.values);
       h.persisted = structuredClone(state);
       const hasMap = state.connectors.some(
         (c) => Object.keys(c.config.reviewPrIssueMap || {}).length,
@@ -1065,6 +1066,103 @@ test("automatic activities keep their cursor on incomplete global discovery", as
   assert.equal(h.github.config.prActivityDiscovery.complete, false);
   assert.equal(h.github.config.prActivityDiscovery.cursorTs, h.github.config.prActivityDiscovery.startedAt);
   assert.equal(h.github.config.prActivityDiscovery.repositories.length, 0);
+});
+
+test("retains PRs already found when a later activity search fails", async () => {
+  const h = harness();
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  delete h.github.config.reviewRepositories;
+  h.github.config.notifyPrComments = true;
+  let searches = 0;
+  h.context.fetch = async () => {
+    searches += 1;
+    if (searches === 2) return { ok: false, status: 503 };
+    const items = searches === 1 ? [fixture.searchItem] : [];
+    return { ok: true, json: async () => ({ total_count: items.length, items }) };
+  };
+  let reads = 0;
+  h.context.githubPrComments = async () => {
+    if (++reads === 1) throw new Error("fixture comment 503");
+    return [];
+  };
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  const first = await poll();
+  assert.equal(first.errors.length, 2);
+  assert.equal(reads, 1);
+  const saved = JSON.parse(JSON.stringify(h.persisted.connectors[0].config.prActivityDiscovery));
+  assert.equal(saved.complete, false);
+  assert.equal(saved.pendingPrs[0].number, fixture.searchItem.number);
+  h.github.config.prActivityDiscovery = saved;
+  assert.equal((await poll()).errors.length, 0);
+  assert.equal(reads, 2);
+  assert.equal(h.github.config.prActivityDiscovery.complete, true);
+  assert.equal(h.github.config.prActivityDiscovery.pendingPrs.length, 0);
+});
+
+test("publishes activity receipts only after a durable write and retains recovery state when a write fails", async () => {
+  const h = harness();
+  delete h.github.config.reviewRepositories;
+  h.github.config.notifyPrComments = true;
+  const cursor = new Date(Date.now() - 30_000).toISOString();
+  h.github.config.prCommentCursorTs = cursor;
+  h.context.fetch = async () => ({
+    ok: true,
+    json: async () => ({ total_count: 1, items: [fixture.searchItem] }),
+  });
+  const events = [];
+  h.context.runRules = async (event) => events.push(event);
+  h.context.githubPrComments = async () => [{
+    id: 123, user: { login: "fixture-author" }, created_at: cursor,
+  }];
+  let pauseWrite;
+  let renameStarted;
+  const waitForRename = new Promise((resolve) => { renameStarted = resolve; });
+  const writes = [];
+  let contents;
+  let fail = true;
+  Object.assign(h.context, await import("./github-pr-activity.mjs"), {
+    STATE_PATH: "/fixture/state.json", AUTOPILOT_OBSERVATIONS_PATH: "/fixture/observations.json",
+    writeQueue: Promise.resolve(), githubActivityWrites: new Set(),
+    process: { pid: 9 }, console: { error() {} },
+    fs: {
+      async writeFile(_path, data) {
+        if (fail) throw new Error("fixture write error");
+        contents = data;
+      },
+      async rename() {
+        if (!writes.length) await new Promise((resolve) => {
+          pauseWrite = resolve;
+          renameStarted();
+        });
+        writes.push(JSON.parse(contents));
+      },
+    },
+  });
+  vm.runInContext(
+    ["persistState", "enqueueWrite"].map(functionSource).join("\n"),
+    h.context,
+  );
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  await assert.rejects(poll(), /fixture write error/);
+  assert.equal(h.github.config.prActivityDiscovery.complete, false);
+  assert.equal(h.github.config.prActivityDiscovery.cursorTs, cursor);
+  assert.equal(h.github.config.prActivityDiscovery.repositories.length, 0);
+  assert.equal(h.github.config.prCommentErrors[0].repository, "GitHub persistence");
+  assert.equal(writes.length, 0);
+  fail = false;
+  const retry = poll();
+  await waitForRename;
+  assert.equal(h.github.config.prActivityDiscovery.complete, false);
+  h.state.enabled = false;
+  const concurrentWrite = h.context.persistState();
+  h.state.enabled = true;
+  pauseWrite();
+  await Promise.all([retry, concurrentWrite]);
+  assert.equal(events.length, 1);
+  assert.equal(writes.length, 2);
+  assert.equal(h.github.config.prActivityDiscovery.complete, true);
+  assert.equal(writes.at(-1).connectors[0].config.prActivityDiscovery.complete, true);
+  assert.equal(writes.at(-1).enabled, false);
 });
 
 test("activity searches bound historical PRs while request discovery remains cursor-independent", async () => {

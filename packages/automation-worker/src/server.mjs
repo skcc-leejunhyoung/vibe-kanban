@@ -311,6 +311,7 @@ const POLLABLE_TYPES = new Set(['slack', 'github', 'vibe_events']);
 // Caches accessed during the initial poll/rule runs that bootstrap() kicks off,
 // declared before `await bootstrap()` to avoid a temporal-dead-zone access.
 const githubLoginCache = new Map();
+const githubActivityWrites = new Set();
 const vibeTokenCache = new Map();
 const vibeTokenInflight = new Map();
 // One in-flight poll per connector. This is used during bootstrap's initial
@@ -2427,7 +2428,7 @@ function orderByParent(issues) {
 }
 
 async function githubSearchPrs(
-  connector, repository, qualifier, reviewLogin, dateRange
+  connector, repository, qualifier, reviewLogin, dateRange, onPr
 ) {
   const config = connector.config;
   return searchGithubPrs({
@@ -2442,6 +2443,7 @@ async function githubSearchPrs(
     perPage: repository ? githubPerPage(config) : 100,
     reviewLogin,
     dateRange,
+    onPr,
   });
 }
 
@@ -2848,23 +2850,20 @@ async function pollGithubPrComments(connector, login) {
   return total;
 }
 
-async function githubDiscoverActivityPrs(connector, login, since, pollStartedAt) {
+async function githubDiscoverActivityPrs(connector, login, since, pollStartedAt, onPr) {
   const end = Math.floor(Date.parse(pollStartedAt) / 1000);
   const updated = Math.floor(Date.parse(since) / 1000);
-  const prs = new Map();
   for (const qualifier of [`involves:${login}`, `review-involves:${login}`]) {
     for (const [state, field, start] of [
       ['open', 'created', 0],
       ['closed', 'updated', updated],
     ]) {
-      const rows = await githubSearchPrs(
+      await githubSearchPrs(
         connector, undefined, `is:${state} ${qualifier}`, undefined,
-        { field, start, end }
+        { field, start, end }, onPr
       );
-      for (const pr of rows) prs.set(githubIssueLinkKey(pr), pr);
     }
   }
-  return [...prs.values()];
 }
 
 async function pollGithubAutomaticPrActivity(connector, login) {
@@ -2879,11 +2878,13 @@ async function pollGithubAutomaticPrActivity(connector, login) {
   const startedAt = previousCursor
     ? new Date(Date.parse(previousCursor) - overlapMs).toISOString()
     : pollStartedAt.replace(/\.\d+Z$/, '.000Z');
-  const runtime = (config.prActivityDiscovery ||= {
+  const previous = config.prActivityDiscovery;
+  const runtime = {
     cursorTs: previousCursor || startedAt,
     startedAt,
-    seen: {},
-  });
+    ...previous,
+    seen: { ...previous?.seen },
+  };
   const since = new Date(
     Math.max(Date.parse(runtime.startedAt), Date.parse(runtime.cursorTs) - overlapMs)
   ).toISOString();
@@ -2894,13 +2895,12 @@ async function pollGithubAutomaticPrActivity(connector, login) {
   );
   let processed = 0;
   try {
-    const prs = await githubDiscoverActivityPrs(
-      connector, login, since, pollStartedAt
+    await githubDiscoverActivityPrs(
+      connector, login, since, pollStartedAt, ({ repository, number, html_url, title }) => {
+        const pr = { repository, number, html_url, title };
+        retry.set(githubIssueLinkKey(pr), pr);
+      }
     );
-    for (const { repository, number, html_url, title } of prs) {
-      const pr = { repository, number, html_url, title };
-      retry.set(githubIssueLinkKey(pr), pr);
-    }
   } catch (error) {
     errors.push({ repository: 'GitHub discovery', error: errorMessage(error) });
   }
@@ -2968,21 +2968,30 @@ async function pollGithubAutomaticPrActivity(connector, login) {
     errors.push({ repository: 'GitHub discovery', error: errorMessage(error) });
   }
   runtime.pendingPrs = [...retry.values()];
+  const receipt = { ...runtime, checkedAt: pollStartedAt, complete: errors.length === 0 };
   if (!errors.length) {
-    runtime.cursorTs = pollStartedAt;
+    receipt.cursorTs = pollStartedAt;
     const overlap = new Date(Date.parse(pollStartedAt) - overlapMs).toISOString();
-    runtime.seen = Object.fromEntries(
+    receipt.seen = Object.fromEntries(
       Object.entries(runtime.seen).filter(([, at]) => at >= overlap)
     );
   }
-  runtime.checkedAt = pollStartedAt;
-  runtime.complete = errors.length === 0;
   const failedRepos = new Set(errors.map((item) => item.repository));
-  runtime.repositories = [...receipts.values()].filter(
+  receipt.repositories = [...receipts.values()].filter(
     ({ repository }) => !failedRepos.has(repository)
   );
-  config.prCommentErrors = errors;
-  await persistState();
+  try {
+    await persistState(true, {
+      connector, config,
+      values: { prActivityDiscovery: receipt, prCommentErrors: errors },
+    });
+  } catch (error) {
+    if (connector.config === config) {
+      config.prActivityDiscovery = { ...runtime, checkedAt: pollStartedAt, complete: false, repositories: [] };
+      config.prCommentErrors = [...errors, { repository: 'GitHub persistence', error: errorMessage(error) }];
+    }
+    throw error;
+  }
   return { processed, seeded: 0, errors };
 }
 
@@ -5892,8 +5901,39 @@ async function readJson(filePath, fallback) {
   }
 }
 
-async function persistState(strict = false) {
-  await enqueueWrite(STATE_PATH, JSON.stringify(state, null, 2), strict);
+async function persistState(strict = false, connectorUpdate) {
+  const content = JSON.stringify(state, null, 2);
+  const current = ({ connector, config }) =>
+    state.connectors.includes(connector) && connector.config === config;
+  const earlier = [...githubActivityWrites].filter(current);
+  if (!connectorUpdate && !earlier.length) {
+    await enqueueWrite(STATE_PATH, content, strict);
+    return;
+  }
+  if (connectorUpdate) githubActivityWrites.add(connectorUpdate);
+  try {
+    await enqueueWrite(STATE_PATH, () => {
+      if (connectorUpdate && !current(connectorUpdate))
+        throw new Error('Connector configuration changed while saving poll state');
+      // Apply receipts committed ahead of this write without changing the rest of its queued snapshot.
+      const updates = earlier.filter((update) => update.committed);
+      if (connectorUpdate) updates.push(connectorUpdate);
+      if (!updates.length) return content;
+      const snapshot = JSON.parse(content);
+      for (const { connector, values } of updates) {
+        const target = snapshot.connectors.find((item) => item.id === connector.id);
+        Object.assign(target.config, values);
+      }
+      return JSON.stringify(snapshot, null, 2);
+    }, strict, () => {
+      if (connectorUpdate && current(connectorUpdate)) {
+        Object.assign(connectorUpdate.config, connectorUpdate.values);
+        connectorUpdate.committed = true;
+      }
+    });
+  } finally {
+    if (connectorUpdate) githubActivityWrites.delete(connectorUpdate);
+  }
 }
 
 // Logs are written from hot poll loops; coalesce the full-file rewrites into at
@@ -5910,7 +5950,7 @@ function scheduleLogFlush() {
   if (typeof logFlushTimer.unref === 'function') logFlushTimer.unref();
 }
 
-function enqueueWrite(filePath, content, strict = false) {
+function enqueueWrite(filePath, content, strict = false, afterWrite) {
   // Keep the chain alive: one rejected write must not permanently stall every
   // future persist. Artifact dispatch claims must report failures to the caller.
   // Shadow I/O has its own queue so it cannot hold delivery's durable claim.
@@ -5919,8 +5959,9 @@ function enqueueWrite(filePath, content, strict = false) {
   const pending = queue.then(async () => {
     try {
       const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await fs.writeFile(tmpPath, content);
+      await fs.writeFile(tmpPath, typeof content === 'function' ? content() : content);
       await fs.rename(tmpPath, filePath);
+      afterWrite?.();
     } catch (error) {
       console.error(
         `[persist] write failed for ${filePath}:`,
