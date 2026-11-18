@@ -317,6 +317,7 @@ const vibeTokenInflight = new Map();
 // One in-flight poll per connector. This is used during bootstrap's initial
 // scheduleAll() call, so it must be initialized before bootstrap starts.
 const pollInFlight = new Map();
+const connectorSaves = new Map();
 // connectorId -> start time of the last issue-sync round (see
 // shouldReconcileGithubIssues). In memory only, so a restart syncs at once.
 const githubIssueSyncLastRunAt = new Map();
@@ -673,9 +674,8 @@ async function route(req, res) {
   }
 
   if (url.pathname === '/api/connectors' && req.method === 'POST') {
-    const connector = await readBodyJson(req);
-    upsertConnector(connector);
-    await persistState();
+    const connector = normalizeConnector(await readBodyJson(req));
+    await saveConnectorAfterPoll(connector.id, () => upsertConnector(connector));
     scheduleAll();
     await log('info', 'connector saved', {
       id: connector.id,
@@ -687,10 +687,10 @@ async function route(req, res) {
 
   if (url.pathname.startsWith('/api/connectors/') && req.method === 'DELETE') {
     const id = decodeURIComponent(url.pathname.split('/').pop() || '');
-    state.connectors = state.connectors.filter(
-      (connector) => connector.id !== id
-    );
-    await persistState();
+    await saveConnectorAfterPoll(id, () => {
+      state.connectors = state.connectors.filter((connector) => connector.id !== id);
+      githubLoginCache.delete(id);
+    });
     scheduleAll();
     await log('info', 'connector deleted', { id });
     sendState(res);
@@ -700,9 +700,7 @@ async function route(req, res) {
   if (url.pathname.startsWith('/api/connectors/') && req.method === 'PATCH') {
     const id = decodeURIComponent(url.pathname.split('/').pop() || '');
     const patch = await readBodyJson(req);
-    const connector = findConnector(id);
-    applyConnectorPatch(connector, patch);
-    await persistState();
+    await saveConnectorAfterPoll(id, () => applyConnectorPatch(findConnector(id), patch));
     scheduleAll();
     await log('info', 'connector updated', {
       id,
@@ -902,12 +900,13 @@ function sendState(res) {
   sendJson(res, 200, maskState(state));
 }
 
-function upsertConnector(input) {
-  const connector = normalizeConnector(input);
+function upsertConnector(connector) {
   if (connector.type === 'github') githubReviewRepositories(connector.config);
   const index = state.connectors.findIndex((item) => item.id === connector.id);
   if (index >= 0) {
-    preserveMaskedSecrets(state.connectors[index].config, connector.config);
+    const previous = state.connectors[index];
+    preserveMaskedSecrets(previous.config, connector.config);
+    preserveGithubActivityConfig(previous, connector);
     state.connectors[index] = connector;
   } else {
     preserveMaskedSecrets(undefined, connector.config);
@@ -946,7 +945,42 @@ function applyConnectorPatch(connector, patch) {
     preserveMissingRuntimeConfig(prev, next);
     preserveMaskedSecrets(prev, next);
     if (connector.type === 'github') githubReviewRepositories(next);
+    preserveGithubActivityConfig(connector, { ...connector, config: next });
     connector.config = next;
+  }
+}
+
+function preserveGithubActivityConfig(previous, connector) {
+  if (previous.type !== connector.type) githubLoginCache.delete(connector.id);
+  if (previous.type !== 'github' || connector.type !== 'github') return;
+  const prev = previous.config;
+  const next = connector.config;
+  const source = (config) => [
+    config.token,
+    String(config.apiBase || 'https://api.github.com').replace(/\/+$/, ''),
+    String(config.username || '').toLowerCase(),
+    String(config.owner || '').toLowerCase(),
+    String(config.repo || '').toLowerCase(),
+  ];
+  const nextSource = source(next);
+  if (source(prev).some((value, index) => value !== nextSource[index])) {
+    githubLoginCache.delete(connector.id);
+    delete next.prActivityDiscovery;
+    delete next.prCommentErrors;
+    return;
+  }
+  if (next.prActivityDiscovery === null) {
+    delete next.prCommentErrors;
+    return;
+  }
+  const previousReceipt = prev.prActivityDiscovery;
+  const checkedAt = normalizeOptionalTimestamp(previousReceipt?.checkedAt);
+  const incomingAt = normalizeOptionalTimestamp(next.prActivityDiscovery?.checkedAt);
+  if (previousReceipt && (next.prActivityDiscovery === undefined || (
+    checkedAt && (!incomingAt || incomingAt <= checkedAt)
+  ))) {
+    next.prActivityDiscovery = previousReceipt;
+    next.prCommentErrors = prev.prCommentErrors;
   }
 }
 
@@ -2168,7 +2202,31 @@ async function enqueueRoutineRetry(routine, event, idempotencyKey, error) {
   await enqueueRetry(syntheticRule, { ...redactEvent(event), routineId: routine.id, routineIdempotencyKey: idempotencyKey }, error);
 }
 
+function saveConnectorAfterPoll(id, change) {
+  const queued = connectorSaves.get(id);
+  if (!queued && !state.connectors.some((connector) => connector.id === id && connector.type === 'github')) {
+    change();
+    return persistState();
+  }
+  // Keep the connector configuration stable until the poll has saved its receipt.
+  const previous = queued || pollInFlight.get(id);
+  const save = Promise.resolve(previous).catch(() => {}).then(async () => {
+    change();
+    await persistState();
+  }).finally(() => {
+    if (connectorSaves.get(id) === save) connectorSaves.delete(id);
+  });
+  connectorSaves.set(id, save);
+  return save;
+}
+
 function pollConnector(id, manual) {
+  const saving = connectorSaves.get(id);
+  if (saving) {
+    return manual
+      ? saving.then(() => pollConnector(id, true))
+      : Promise.resolve({ ok: true, skipped: 'in-flight' });
+  }
   const existing = pollInFlight.get(id);
   if (existing) {
     // Interval ticks skip a busy connector; a manual poll awaits the live run

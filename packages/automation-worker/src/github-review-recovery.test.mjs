@@ -1165,6 +1165,84 @@ test("publishes activity receipts only after a durable write and retains recover
   assert.equal(writes.at(-1).enabled, false);
 });
 
+test("connector settings saved during a poll inherit the new receipt without replaying events", async (t) => {
+  for (const method of ["POST", "PATCH"]) await t.test(method, async (subtest) => {
+    const h = harness();
+    delete h.github.config.reviewRepositories;
+    h.github.config.notifyPrComments = true;
+    const cursor = new Date(Date.now() - 30_000).toISOString();
+    const previous = { startedAt: cursor, cursorTs: cursor, checkedAt: cursor, seen: {} };
+    h.github.config.prActivityDiscovery = previous;
+    const stale = { ...h.github.config, token: "__stored__", intervalSeconds: 120 };
+    const events = [];
+    let saveStarted;
+    let releaseSave;
+    const writing = new Promise((resolve) => { saveStarted = resolve; });
+    const held = new Promise((resolve) => { releaseSave = resolve; });
+    subtest.after(releaseSave);
+    let first = true;
+    Object.assign(h.context, await import("./github-pr-activity.mjs"), {
+      pollInFlight: new Map(), connectorSaves: new Map(), githubLoginCache: new Map(),
+      SECRET_CONFIG_KEYS: ["token"], SECRET_MASK: "__stored__",
+      RUNTIME_CONFIG_KEYS: ["prActivityDiscovery", "prCommentErrors"],
+      fetch: async () => ({
+        ok: true,
+        json: async () => ({ total_count: 1, items: [fixture.searchItem] }),
+      }),
+      runRules: async (event) => events.push(event),
+      githubPrComments: async () => [{
+        id: 123, user: { login: "fixture-author" }, created_at: cursor,
+      }],
+      persistState: async (_, update) => {
+        if (update && first) {
+          first = false;
+          saveStarted();
+          await held;
+        }
+        if (update) Object.assign(update.config, update.values);
+        h.persisted = structuredClone(h.state);
+      },
+    });
+    h.context.runPoll = async (id) => id === h.github.id
+      ? h.context.pollGithubPrComments(h.context.findConnector(id), fixture.login)
+      : { ok: true };
+    vm.runInContext([
+      "saveConnectorAfterPoll", "pollConnector", "withIssueSyncResult",
+      "applyConnectorPatch", "upsertConnector", "preserveGithubActivityConfig",
+      "preserveMissingRuntimeConfig", "preserveMaskedSecrets",
+    ].map(functionSource).join("\n"), h.context);
+    const id = h.github.id;
+    const firstPoll = h.context.pollConnector(id, false);
+    await writing;
+    const save = h.context.saveConnectorAfterPoll(id, () => method === "POST"
+      ? h.context.upsertConnector({ ...h.github, config: stale })
+      : h.context.applyConnectorPatch(h.github, { config: stale }));
+    const manual = h.context.pollConnector(id, true);
+    assert.equal((await h.context.pollConnector(id, false)).skipped, "in-flight");
+    assert.equal((await h.context.pollConnector("other", false)).ok, true);
+    assert.equal(h.context.findConnector(id).config.intervalSeconds, undefined);
+    releaseSave();
+    await Promise.all([firstPoll, save, manual]);
+    const current = h.context.findConnector(id);
+    assert.equal(current.config.intervalSeconds, 120);
+    assert.equal(current.config.token, "synthetic");
+    assert.ok(current.config.prActivityDiscovery.checkedAt > previous.checkedAt);
+    assert.equal(current.config.prActivityDiscovery.seen["issue:123"], cursor);
+    assert.equal(h.persisted.connectors[0].config.prActivityDiscovery.seen["issue:123"], cursor);
+    assert.equal(events.length, 1);
+
+    const receipt = current.config.prActivityDiscovery;
+    h.context.applyConnectorPatch(current, { config: { ...current.config, prActivityDiscovery: null } });
+    assert.equal(current.config.prActivityDiscovery, null);
+    h.context.githubLoginCache.set(id, fixture.login);
+    h.context.applyConnectorPatch(current, {
+      config: { ...current.config, token: "fixture-other-token", prActivityDiscovery: receipt },
+    });
+    assert.equal(current.config.prActivityDiscovery, undefined);
+    assert.equal(h.context.githubLoginCache.has(id), false);
+  });
+});
+
 test("activity searches bound historical PRs while request discovery remains cursor-independent", async () => {
   const h = harness();
   const queries = [];
@@ -1214,6 +1292,7 @@ test("a manual poll joining an interval run that skipped the issue sync polls ag
   const runs = [];
   const context = vm.createContext({
     pollInFlight: new Map(),
+    connectorSaves: new Map(),
     runPoll: async (id, manual) => {
       runs.push(manual);
       await new Promise((resolve) => setImmediate(resolve));
@@ -1241,6 +1320,7 @@ test("a manual poll waits for its issue sync outside the connector's poll slot",
   const runs = [];
   const context = vm.createContext({
     pollInFlight: new Map(),
+    connectorSaves: new Map(),
     runPoll: async (id, manual) => {
       runs.push(manual);
       return { ok: true, issueSync: manual ? sync : null };

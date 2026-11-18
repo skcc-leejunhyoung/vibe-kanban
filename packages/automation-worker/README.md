@@ -334,6 +334,8 @@ miss would never be re-tried.
   window and seen event IDs. A failed search still processes PRs found before
   the error. PRs whose activity reads failed stay queued even when the next
   search omits them. The worker reports completion after saving the receipt.
+  Settings saves wait for the active poll and keep the latest receipt for the
+  same GitHub connection. Set `prActivityDiscovery` to `null` to reset it.
   An explicit repository list keeps the
   previous scoped notification behavior, including independent cursors and
   first-poll seeding per repository.
