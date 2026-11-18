@@ -55,6 +55,9 @@ async-trait = "0.1"
 aws-lc-sys = "=0.44.0"
 aws-lc-rs = "=1.18.0"
 
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 debug = 1
 split-debuginfo = "packed"
