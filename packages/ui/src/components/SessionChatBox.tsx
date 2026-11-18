@@ -442,8 +442,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   const showRunningAnimation =
     (status === 'running' || status === 'sending' || status === 'creating') &&
     !isInApprovalMode &&
-    !isInAskQuestionMode &&
-    editor.value.trim().length === 0;
+    !isInAskQuestionMode;
 
   const placeholder = isInFeedbackMode
     ? 'Provide feedback for the plan...'

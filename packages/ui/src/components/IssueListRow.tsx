@@ -113,7 +113,6 @@ export function IssueListRow({
   onMoreActionsClick,
   className,
 }: IssueListRowProps) {
-  const showCheckbox = isMultiSelectActive || isChecked;
   const visibleTags = tags.slice(0, MAX_VISIBLE_TAGS);
 
   return (
@@ -159,16 +158,12 @@ export function IssueListRow({
                 container query root: the id hides under 32rem and the badges on
                 the right under 48rem so the title keeps its room. */}
             <div className="flex items-center gap-double flex-1 min-w-0">
-              {/* Multi-select checkbox — shown on hover or when selection is
+              {/* Multi-select checkbox — occupies space only while selection is
                 active. Pointer/touch starts are swallowed so grabbing the
                 checkbox never begins a row drag. */}
-              <div className="absolute inset-y-0 left-0 flex w-double items-center justify-center">
+              {isMultiSelectActive && (
                 <div
-                  className={cn(
-                    'flex items-center justify-center',
-                    !showCheckbox &&
-                      'opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100'
-                  )}
+                  className="flex w-4 shrink-0 items-center justify-center"
                   onClick={(e) => e.stopPropagation()}
                   onMouseDown={(e) => e.stopPropagation()}
                   onTouchStart={(e) => e.stopPropagation()}
@@ -182,7 +177,7 @@ export function IssueListRow({
                     }}
                   />
                 </div>
-              </div>
+              )}
               <PriorityIcon priority={issue.priority} />
               <span className="hidden @lg:inline font-ibm-plex-mono text-sm text-normal shrink-0">
                 {issue.simple_id}

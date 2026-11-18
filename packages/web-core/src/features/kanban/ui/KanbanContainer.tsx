@@ -15,7 +15,7 @@ import { useActions } from '@/shared/hooks/useActions';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { useWorkspaceHostMap } from '@/shared/hooks/useWorkspaceHostMap';
-import { useIsMobile, useIsTouchDevice } from '@/shared/hooks/useIsMobile';
+import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { usePaneNarrowerThan } from '@/shared/components/workspace-panes/PaneWidthContext';
 import { cn } from '@/shared/lib/utils';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
@@ -203,9 +203,6 @@ export function KanbanContainer() {
   const isMobileViewport = useIsMobile();
   const isNarrowPane = usePaneNarrowerThan(768);
   const isMobile = isMobileViewport || isNarrowPane;
-  // Touch devices (incl. iPadOS, which can spoof a desktop UA/viewport) need the
-  // explicit multi-select toggle since there is no Cmd/Shift+Click affordance.
-  const isTouch = useIsTouchDevice();
   const { t } = useTranslation('common');
   const appNavigation = useAppNavigation();
   const openInSplitPane = useOpenInSplitPane();
@@ -1829,9 +1826,7 @@ export function KanbanContainer() {
             )}
             isMobile={isMobile}
             isSelectionMode={isSelectionMode}
-            onToggleSelectionMode={
-              isMobile || isTouch ? handleToggleSelectionMode : undefined
-            }
+            onToggleSelectionMode={handleToggleSelectionMode}
           />
         </div>
       </div>
