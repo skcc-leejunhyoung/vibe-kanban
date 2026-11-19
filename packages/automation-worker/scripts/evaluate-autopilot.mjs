@@ -31,6 +31,7 @@ async function readPeriodicLog(file) {
           status: item.status,
           source: item.source,
           evidence: item.evidence,
+          system_one_fallback: item.system_one_fallback,
         },
       });
     }

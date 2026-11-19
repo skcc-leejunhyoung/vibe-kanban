@@ -12,6 +12,9 @@ import runpy
 import sys
 import tempfile
 
+PR_URL = re.compile(r'https://github\.com/([^/]+/[^/]+)/pull/(\d+)')
+AGENT_AUDIT_INTERVAL = dt.timedelta(hours=2)
+
 
 def rows(value):
     return list(value.values()) if isinstance(value, dict) else value if isinstance(value, list) else []
@@ -48,7 +51,7 @@ def registry(ap, config):
         repo = entry.get('repo') or entry.get('repository') or config.get('defaultRepository')
         refs.append({'repository': repo, 'number': int(str(entry['pr']).lstrip('#'))})
     for url in (schedule.get('tracked_reconcile_checkpoint', {}).get('heads', {})):
-        match = re.fullmatch(r'https://github\.com/([^/]+/[^/]+)/pull/(\d+)', url)
+        match = PR_URL.fullmatch(url)
         if not match:
             raise ValueError('unrecognized tracked PR')
         refs.append({'repository': match[1], 'number': int(match[2])})
@@ -58,18 +61,65 @@ def registry(ap, config):
     stable.update(board={'rows': board.get('rows', {}), 'needs': board.get('needs', [])}, dispatch=requests)
     digest = hashlib.sha256(json.dumps(semantic_registry(stable), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     tracked = sorted({(ref['repository'].lower(), ref['number']) for ref in refs})
-    scope = {key: config[key] for key in ('connectorId', 'githubConnectorId', 'projectId', 'reviewTagId', 'hosts')}
+    scope = {key: config[key] for key in ('connectorId', 'githubConnectorId', 'hosts')}
+    if 'projects' in config:
+        scope['projects'] = config['projects']
+    else:
+        scope.update(projectId=config['projectId'], reviewTagId=config['reviewTagId'])
     scope.update(tracked=[{'repository': repo, 'number': number} for repo, number in tracked], registryHash=digest)
     scope['ignoreWorkspaces'] = sorted({task['ws'] for task in rows(tasks) if task.get('kind') == 'periodic' and task.get('ws')})
-    checkpoints = [schedule.get(key, {}) for key, _ in ap['CHECKPOINTS']]
-    if all(item.get('status') == 'success' and item.get('by') == ap['CHECKPOINT_BY'] and
-           not ap['evidence_problems'](ap['load'](item.get('evidence', ''), None)) for item in checkpoints):
-        timestamps = [ap['parse'](schedule.get(key, {}).get(field)) for key, field in ap['CHECKPOINTS']]
-        if all(timestamps):
-            # A newly written checkpoint cannot make an older evidence file fresh.
-            timestamps += [dt.datetime.fromtimestamp(os.path.getmtime(item['evidence']), dt.timezone.utc) for item in checkpoints]
-            scope['acknowledgedAt'] = min(timestamps).isoformat()
     return scope
+
+
+def checkpoint_proof(ap):
+    schedule = ap['load'](ap['SCHED'], {})
+    checkpoints = [(schedule.get(key, {}), field) for key, field in ap['CHECKPOINTS']]
+    if not checkpoints or not all(row.get('status') == 'success' and row.get('by') == ap['CHECKPOINT_BY'] and not row.get('errors') for row, _ in checkpoints):
+        return None
+    paths = {row.get('evidence') for row, _ in checkpoints}
+    if len(paths) != 1 or not (path := paths.pop()):
+        return None
+    evidence = ap['load'](path, None)
+    timestamps = [ap['parse'](row.get(field)) for row, field in checkpoints]
+    if not all(timestamps) or ap['evidence_problems'](evidence):
+        return None
+    # Re-recording an old file does not make its evidence fresh.
+    written = dt.datetime.fromtimestamp(os.path.getmtime(path), dt.timezone.utc)
+    return evidence, min(*timestamps, written)
+
+
+def project_pairs(projects):
+    if not isinstance(projects, list) or not projects or not all(isinstance(row, dict) and
+            all(isinstance(row.get(key), str) and row[key] for key in ('projectId', 'reviewTagId')) for row in projects):
+        return None
+    pairs = {(row['projectId'], row['reviewTagId']) for row in projects}
+    return pairs if len({pair[0] for pair in pairs}) == len(projects) else None
+
+
+def matches_coverage(scope, coverage):
+    if not isinstance(coverage, dict) or set(coverage) != {'projects', 'hosts', 'repositories'}:
+        return False
+    for key in ('hosts', 'repositories'):
+        values = coverage[key]
+        if not isinstance(values, list) or not values or not all(isinstance(item, str) and item for item in values) or len(set(values)) != len(values):
+            return False
+    expected_projects = project_pairs(scope.get('projects', [scope]))
+    return (expected_projects is not None and project_pairs(coverage['projects']) == expected_projects and
+            set(coverage['hosts']) == set(scope['hosts']) and
+            all(ref['repository'] in coverage['repositories'] for ref in scope['tracked']))
+
+
+def identity_recheck_due(ap, reviewed_at):
+    schedule = ap['load'](ap['SCHED'], {})
+    now = ap['now']()
+    for key in ap['PENDING_KEYS']:
+        for row in rows(schedule.get(key)):
+            if not isinstance(row, dict) or row.get('status') != 'needs_identity' or not row.get('next_check_at'):
+                continue
+            due = ap['parse'](row['next_check_at'])
+            if not due or reviewed_at < due <= now:
+                return True
+    return False
 
 
 def install(ap, config):
@@ -84,20 +134,62 @@ def install(ap, config):
 
     def quiet_checkpoint(due):
         if manual_delegation_open():
-            return None
+            return None, 'existing_delegation'
         scope = registry(ap, config)
+        proof = checkpoint_proof(ap)
+        if proof is None:
+            return None, 'missing_scope_proof'
+        evidence, acknowledged = proof
+        coverage = evidence.get('coverage')
+        if (not matches_coverage(scope, coverage) or
+            any(section.get('projects', len(coverage['projects'])) != len(coverage['projects'])
+                for section in (evidence.get('counts', {}), evidence.get('discovery_scope', {}))) or
+            len(evidence.get('counts', {}).get('workspaces', coverage['hosts'])) != len(coverage['hosts'])):
+            return None, 'scope_mismatch'
+        reviewed_at = ap['parse'](evidence['agentReviewedAt']) if 'agentReviewedAt' in evidence else acknowledged
+        if not reviewed_at or not reviewed_at <= acknowledged <= ap['now']():
+            return None, 'invalid_agent_review_time'
+        if ap['now']() - reviewed_at >= AGENT_AUDIT_INTERVAL:
+            return None, 'scope_audit_due'
+        if identity_recheck_due(ap, reviewed_at):
+            return None, 'identity_recheck_due'
+        scope['acknowledgedAt'] = acknowledged.isoformat()
         report = ap['api']('/api/automation/autopilot/reconcile', scope, timeout=110)
-        counts = report.get('counts', {}) if isinstance(report, dict) else {}
-        if (not isinstance(report, dict) or report.get('status') != 'ok' or report.get('changed') is not False or report.get('errors') != [] or
+        if not isinstance(report, dict) or report.get('status') != 'ok':
+            return None, 'source_unavailable'
+        if report.get('changed') is not False:
+            return None, 'facts_changed'
+        counts = report.get('counts', {})
+        if (report.get('errors') != [] or
             not re.fullmatch(r'[0-9a-f]{64}', report.get('fingerprint', '')) or
             any(type(counts.get(key)) is not int or counts[key] < 0 for key in ('issues', 'prs', 'hosts')) or
-            counts.get('hosts') != len(set(scope['hosts']))):
-            return None
-        # A slow collection can outlive a new hold, delegation, or registry edit.
+            counts['hosts'] != len(set(scope['hosts'])) or
+            not matches_coverage(scope, report.get('coverage')) or
+            set(report['coverage']['repositories']) != set(coverage['repositories']) or
+            report.get('registryHash') != scope['registryHash'] or report.get('checkedTracked') != scope['tracked']):
+            return None, 'incomplete_coverage'
+        findings = evidence.get('board_findings')
+        if not isinstance(findings, list) or evidence.get('board_mismatches', []) not in ([], 0):
+            return None, 'unverified_board'
+        if 'board_followups_due' in ap and ap['board_followups_due'](ap['load'](ap['BOARD'], {}), ap['now']()):
+            return None, 'board_followup_due'
+        tracked = {(pr['repository'], pr['number']) for pr in scope['tracked']}
+        for finding in findings:
+            match = PR_URL.fullmatch(finding.get('pr_url', ''))
+            if not match or (match[1].lower(), int(match[2])) not in tracked:
+                return None, 'unverified_board'
+        try:
+            ap['verify_board_coverage'](evidence, {})
+        except (KeyError, ValueError):
+            return None, 'unverified_board'
         rest, decision = original(due, dry=True)
-        if (not decision or decision.get('status') != 'would_delegate' or
-            manual_delegation_open() or registry(ap, config) != scope):
-            return None
+        scope.pop('acknowledgedAt')
+        if (not decision or decision.get('status') != 'would_delegate' or manual_delegation_open() or
+            checkpoint_proof(ap) != proof or registry(ap, config) != scope or identity_recheck_due(ap, reviewed_at) or
+            ap['now']() - reviewed_at >= AGENT_AUDIT_INTERVAL):
+            return None, 'admission_changed'
+        report.update(board_findings=findings, board_mismatches=[], board_snapshot_sha=evidence['board_snapshot_sha'],
+                      agentReviewedAt=reviewed_at.isoformat())
         folder = config.get('evidenceDirectory') or os.path.join(ap['AP'], 'system-one-evidence')
         os.makedirs(folder, mode=0o700, exist_ok=True)
         handle, path = tempfile.mkstemp(prefix='reconcile-', suffix='.json', dir=folder)
@@ -106,8 +198,8 @@ def install(ap, config):
         with contextlib.redirect_stdout(io.StringIO()):
             result = ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
         if result != 0:
-            return None
-        return rest, {'status': 'handled', 'source': 'code', 'evidence': path, 'counts': counts}
+            return None, 'checkpoint_rejected'
+        return (rest, {'status': 'handled', 'source': 'code', 'evidence': path, 'counts': counts}), None
 
     def periodic(due, dry=False):
         rest, decision = original(due, dry=True)
@@ -115,14 +207,28 @@ def install(ap, config):
             return rest, decision
         if decision and decision.get('status') == 'would_delegate':
             try:
-                handled = quiet_checkpoint(due)
+                handled, reason = quiet_checkpoint(due)
             except Exception:
-                handled = None
+                handled, reason = None, 'reconciliation_unavailable'
             if handled is not None:
                 return handled
+            rest, result = original(due, dry=False)
+            if isinstance(result, dict):
+                result = {**result, 'system_one_fallback': reason}
+            return rest, result
         return original(due, dry=False)
 
     original.__globals__['periodic_gate'] = periodic
+    if 'periodic_prompt' in ap:
+        original_prompt = ap['periodic_prompt']
+
+        def periodic_prompt():
+            return (original_prompt() +
+                    ' System One 검증용으로 공식 증거에 coverage를 기록한다. ' +
+                    'projects는 실제 대조한 {projectId, reviewTagId} 항목 목록, repositories는 전체 발견을 완료한 owner/repo 목록, ' +
+                    'hosts는 확인한 네이티브 machine ID 목록이다. 세 범위를 모두 공식 조회로 확인한 경우에만 coverage를 추가한다.')
+
+        ap['periodic_prompt'] = periodic_prompt
 
 
 def main():

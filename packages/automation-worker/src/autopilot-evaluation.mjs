@@ -8,10 +8,15 @@ const percentile = (values, p) =>
 function periodicSummary(rows) {
   const available = Array.isArray(rows);
   const outcomes = new Map();
+  const fallbacks = new Map();
   for (const row of rows || []) {
     const item = row?.periodic;
     const at = Date.parse(row?.at);
     if (!item || !Number.isFinite(at)) continue;
+    if (/^[a-z][a-z_]{1,50}$/.test(item.system_one_fallback || '')) {
+      const reason = item.system_one_fallback;
+      fallbacks.set(reason, (fallbacks.get(reason) || 0) + 1);
+    }
     let key, status;
     if (
       item.status === 'handled' &&
@@ -53,6 +58,7 @@ function periodicSummary(rows) {
     suppressedRuns: values.filter((row) => row.status === 'suppressed').length,
     agentAdmissions: values.filter((row) => row.status === 'admitted').length,
     unresolvedRuns: values.filter((row) => row.status === 'unresolved').length,
+    fallbackAttemptsByReason: Object.fromEntries(fallbacks),
     observedFrom: times.length
       ? new Date(Math.min(...times)).toISOString()
       : null,
@@ -166,6 +172,17 @@ export function evaluateAutopilotRecords({
     .map((row) => row.shadow)
     .filter(Boolean);
   const previews = shadowRuns.map((row) => row.routing_preview).filter(Boolean);
+  const exclusions = new Map();
+  for (const preview of previews) {
+    for (const [reason, count] of Object.entries(preview.exclusions || {})) {
+      if (
+        /^[a-z][a-z_]{1,50}$/.test(reason) &&
+        Number.isSafeInteger(count) &&
+        count > 0
+      )
+        exclusions.set(reason, (exclusions.get(reason) || 0) + count);
+    }
+  }
   const periodic = periodicSummary(periodicLog);
   const suppressed =
     completed.filter((row) => row.active.suppressed === true).length +
@@ -202,6 +219,7 @@ export function evaluateAutopilotRecords({
       wouldSuppressBatches: previews.filter(
         (row) => row.would_suppress === true
       ).length,
+      excludedEventsByReason: Object.fromEntries(exclusions),
     },
     classification: {
       samples: candidates.length,

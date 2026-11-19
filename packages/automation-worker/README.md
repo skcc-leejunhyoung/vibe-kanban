@@ -181,9 +181,13 @@ python3 packages/automation-worker/scripts/ap-system-one.py --ap /path/to/ap --c
 ```
 
 The private JSON configuration needs `enabled`, `connectorId`,
-`githubConnectorId`, `projectId`, `reviewTagId`, `hosts` (configured native machine
-IDs), `defaultRepository` and optional `tracked` entries containing `repository`
-and `number`. Keep it in ignored/private runtime storage. The default is disabled
+`githubConnectorId`, `hosts` (configured native machine IDs), `defaultRepository`
+and optional `tracked` entries containing `repository` and `number`. Set
+`projectId` and `reviewTagId` for one project, or set `projects` to the full list
+of `{connectorId, projectId, reviewTagId}` entries. Each project requires an
+enabled Vibe connector scoped to that project. The top-level `connectorId`
+supplies the owned host catalog and host bridges. Keep this configuration in
+ignored/private runtime storage. The default is disabled
 unless `enabled` is exactly `true`. Set `AUTOPILOT_PERIODIC_RECONCILE=true` on
 the worker to enable this path independently of active Routine routing. If the
 variable is unset, the API follows `AUTOPILOT_DECISIONS_ACTIVE` as before.
@@ -193,7 +197,7 @@ No live `ap`, launchd job or runtime ledger is changed by this implementation.
 
 When the existing gate says its 30-minute checkpoint is due, the adapter reads
 registered PRs from the schedule, board and dispatch ledger. The authenticated
-worker `/api/autopilot/reconcile` endpoint independently reads all review-tagged
+worker `/api/autopilot/reconcile` endpoint verifies each project's tag and reads all review-tagged
 issues (100-row pages, including candidates without sessions), every linked PR,
 review-requested PRs in the GitHub connector's explicit repository allowlist,
 current heads and all decision reviews, plus every session's queue/execution and
@@ -210,14 +214,25 @@ facts are handled by code, with no Decisions request or agent admission. A new
 baseline, changed head, same-head new/dismissed review, changed queue or registry,
 or incomplete source read retains the original agent delegation. The adapter
 preserves all pending/cancelled/held ledger states; it never marks them complete.
-Only a fresh official successful checkpoint can acknowledge a changed baseline.
-Before recording a quiet checkpoint, the adapter rechecks the local gate and
-registry so a hold, delegation or scope change during collection is respected.
-Collection failure cannot advance it. No successful partial discovery is recorded.
+Both official checkpoints must point to the same successful evidence file with
+`coverage: {projects: [{projectId, reviewTagId}], repositories: ["owner/repo"], hosts: ["machine-id"]}`.
+The adapter supplies this evidence format to subsequent periodic delegations.
+The worker reports its verified coverage and checked tracked references. The
+adapter requires a match with the official scope, rechecks the published board
+and local gate, and calls the official checkpoint only when the complete scope
+is unchanged. Older evidence without coverage retains the agent path until an
+official scoped checkpoint is available. Code checkpoints preserve the last
+agent verification time, so a fresh agent audit is required at least every two
+hours. A waiting identity is preserved and an explicit recheck that became due
+since the last agent audit requires agent handling.
 The registry hash excludes the periodic job's own dispatches, model-selection
 metadata, render metadata and observation timestamps. PR dispatch state, board
 content and pending/cancelled/held intentions still participate. Review-request
-discovery runs once per repository, retaining full pagination.
+discovery runs once per repository, retaining full pagination. Allowlisted PR
+references that GitHub resolves to the same ID and version share a review read.
+Terminal PR metadata is refreshed every cycle. Matching closed PR review history
+is audited at least every two hours and reopening immediately restores full
+review reads. A collection deadline aborts remaining source reads.
 
 ### Measure before promotion
 
@@ -233,7 +248,8 @@ delegation, after official checkpoint confirmation. Repeated evidence references
 and repeated queued/started task IDs count once; holds and in-flight observations
 are not admissions. Unknown admission outcomes remain unresolved. The `periodic`
 section exposes its counts, observed time range, and p50/p90 of the whole gate
-cycle (not model latency). These counts also contribute to the aggregate delivery
+cycle (not model latency). It counts fallback attempts by reason separately from
+admissions. These counts also contribute to the aggregate delivery
 and hypothetical savings fields. With this input omitted, `periodic.available`
 is false and estimates explicitly have `scope=completion_only`. Supply matched
 time ranges for the state/observation inputs and gate log before comparing totals.
@@ -247,7 +263,8 @@ values, using the same currency. No changing price or agent cost is hardcoded.
 The JSON report includes confusion counts, false routine labels, unmatched
 labels, coverage/fallbacks/timeouts, p50/p90 latency, tokens, completed suppressed
 runs and actual agent admissions. `shadowRouting` separately counts whole-batch
-predictions and older records that lack a routing preview. Its predictions never
+predictions, event exclusions by reason and older records that lack a routing
+preview. Its predictions never
 contribute to actual suppression or avoided cost. Pending or unknown request/cache-write usage makes cost
 unknown; missing cached usage makes the known-token estimate an upper bound.
 Cache writes are counted separately within the input total; they are not charged a second time as uncached input. See the [official Decisions guide](https://developers.openai.com/api/docs/guides/decisions). Fixed subscription cash savings remain unknown. Avoided agent cost and net

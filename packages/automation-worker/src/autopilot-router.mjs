@@ -20,7 +20,11 @@ const uncertain = (retryable = false) =>
 
 export async function previewAutopilot({ event, minConfidence, ...options }) {
   const record = {};
-  const { remaining, eligibleIndexes = [] } = await routeAutopilot({
+  const {
+    remaining,
+    eligibleIndexes = [],
+    exclusions,
+  } = await routeAutopilot({
     ...options,
     event,
     minConfidence,
@@ -47,6 +51,7 @@ export async function previewAutopilot({ event, minConfidence, ...options }) {
       eligible_events: eligibleIndexes.length,
       remaining_events: remaining.length,
       would_suppress: eventCount > 0 && remaining.length === 0,
+      exclusions,
     },
   };
 }
@@ -113,18 +118,32 @@ export async function routeAutopilot({
     minConfidence <= 0 ||
     minConfidence > 1
   )
-    return { remaining: items, handled: [] };
+    return {
+      remaining: items,
+      handled: [],
+      exclusions: { invalid_threshold: items.length },
+    };
   // User instructions, approvals and unknown event types take the prompt path immediately.
   if (
     items.some(
       (item) => !['process.completed', 'cloud.notification'].includes(item.kind)
     )
   )
-    return { remaining: items, handled: [] };
+    return {
+      remaining: items,
+      handled: [],
+      exclusions: { protected_batch: items.length },
+    };
   const remaining = new Set();
   const handled = [];
   const eligible = [];
   const hosts = new Map();
+  const excluded = {};
+  const keep = (index, reason) => {
+    if (preview && !remaining.has(index))
+      excluded[reason] = (excluded[reason] || 0) + 1;
+    remaining.add(index);
+  };
   const started = Date.now();
   const controller = new AbortController();
   const deadline = () => {
@@ -163,7 +182,7 @@ export async function routeAutopilot({
     if (item.notificationClaim) {
       // A dry run cannot prove the central service will accept the claim.
       if (preview) {
-        remaining.add(index);
+        keep(index, 'cloud_confirmation_required');
         return;
       }
       record.cloud_attempted = [
@@ -177,7 +196,7 @@ export async function routeAutopilot({
         throw uncertain(true);
       }
       if (!completed) {
-        remaining.add(index);
+        keep(index, 'cloud_confirmation_required');
         return;
       }
     }
@@ -206,7 +225,10 @@ export async function routeAutopilot({
         } catch {
           if (record.cloud_attempted?.includes(ids[index]))
             throw uncertain(true);
-          remaining.add(index);
+          keep(
+            index,
+            controller.signal.aborted ? 'timeout' : 'notification_unavailable'
+          );
           continue;
         }
       }
@@ -215,7 +237,10 @@ export async function routeAutopilot({
         !UUID.test(item.executionId) ||
         !UUID.test(item.hostId)
       ) {
-        remaining.add(index);
+        keep(
+          index,
+          index >= MAX_COMPLETIONS ? 'batch_limit' : 'missing_identity'
+        );
         continue;
       }
       try {
@@ -226,8 +251,15 @@ export async function routeAutopilot({
           guard.hostId !== host.machineId ||
           guard.execution_id !== item.executionId ||
           (item.workspaceId && guard.workspace_id !== item.workspaceId)
-        )
-          throw new Error('host evidence mismatch');
+        ) {
+          if (
+            record.attempted?.includes(ids[index]) ||
+            record.cloud_attempted?.includes(ids[index])
+          )
+            throw uncertain(true);
+          keep(index, 'host_evidence_mismatch');
+          continue;
+        }
         if (
           guard.receipt?.action === 'autopilot_result' &&
           guard.receipt.execution_id === item.executionId &&
@@ -238,7 +270,10 @@ export async function routeAutopilot({
           !allowNewActions &&
           !record.attempted?.includes(ids[index])
         ) {
-          remaining.add(index);
+          keep(index, 'routing_disabled');
+        } else if (ids.indexOf(ids[index]) !== ids.lastIndexOf(ids[index])) {
+          if (record.attempted?.includes(ids[index])) throw uncertain(true);
+          keep(index, 'duplicate_event');
         } else if (
           guard.eligible === true &&
           typeof guard.version === 'string' &&
@@ -247,7 +282,7 @@ export async function routeAutopilot({
           eligible.push({ index, item, guard, host, path });
         } else {
           if (record.attempted?.includes(ids[index])) throw uncertain(true);
-          remaining.add(index);
+          keep(index, 'ineligible_execution');
         }
       } catch (error) {
         if (error.indeterminate) throw error;
@@ -256,7 +291,7 @@ export async function routeAutopilot({
           record.cloud_attempted?.includes(ids[index])
         )
           throw uncertain(true);
-        remaining.add(index);
+        keep(index, controller.signal.aborted ? 'timeout' : 'host_unavailable');
       }
     }
     if (eligible.length) {
@@ -286,9 +321,13 @@ export async function routeAutopilot({
         const { index, item, host, guard, path } = entry;
         const candidate = record.candidate;
         const candidateIndex = record.candidate_ids?.indexOf(ids[index]);
-        const result = candidate.results?.find(
-          (row) => row.event_index === candidateIndex
-        );
+        const result =
+          candidateIndex >= 0 &&
+          candidateIndex === record.candidate_ids?.lastIndexOf(ids[index])
+            ? candidate.results?.find(
+                (row) => row.event_index === candidateIndex
+              )
+            : undefined;
         if (
           candidate.status !== 'completed' ||
           result?.source !== 'decisions' ||
@@ -300,7 +339,12 @@ export async function routeAutopilot({
           result.evidence_hash !== guard.result_hash
         ) {
           if (record.attempted?.includes(ids[index])) throw uncertain();
-          remaining.add(index);
+          keep(
+            index,
+            candidate.reason === 'timeout'
+              ? 'timeout'
+              : 'classification_not_qualified'
+          );
           continue;
         }
         if (preview) {
@@ -326,7 +370,7 @@ export async function routeAutopilot({
             /already running/i.test(error.message)
           )
             throw uncertain(true);
-          remaining.add(index);
+          keep(index, 'host_rejected');
           continue;
         }
         if (
@@ -345,11 +389,13 @@ export async function routeAutopilot({
     }
   } catch (error) {
     if (error.indeterminate) throw error;
-    for (const { index } of eligible)
-      if (!handled.some((row) => row.index === index)) remaining.add(index);
     // An unavailable collector must never silently consume an unvisited event.
     for (let index = 0; index < items.length; index++)
-      if (!handled.some((row) => row.index === index)) remaining.add(index);
+      if (!handled.some((row) => row.index === index))
+        keep(
+          index,
+          controller.signal.aborted ? 'timeout' : 'routing_unavailable'
+        );
   } finally {
     controller.abort();
   }
@@ -357,6 +403,7 @@ export async function routeAutopilot({
     return {
       remaining: [...remaining].map((index) => items[index]),
       eligibleIndexes: eligible.map(({ index }) => index),
+      exclusions: excluded,
     };
   record.event_ids = ids;
   record.outcome = {

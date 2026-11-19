@@ -17,13 +17,29 @@ spec.loader.exec_module(adapter)
 class PeriodicTests(unittest.TestCase):
     def fixture(self, decision='would_delegate', report=None, checkpoint=0):
         values = {'schedule': {key: [] for key in ('pending_admissions',)}, 'board': {'rows': {}}, 'dispatch': {'requests': {}}, 'deleg': {'tasks': {}}, 'inbox': {'items': {}}}
+        evidence_path = os.path.join(self.folder, 'official-evidence.json')
+        coverage = {'projects': [{'projectId': 'synthetic-project', 'reviewTagId': 'synthetic-tag'}], 'hosts': ['synthetic-machine'], 'repositories': ['synthetic/widgets']}
+        values[evidence_path] = {'status': 'ok', 'errors': [], 'coverage': coverage, 'board_findings': [], 'board_snapshot_sha': 'b' * 64}
+        Path(evidence_path).write_text(json.dumps(values[evidence_path]))
+        stamp = dt.datetime(2020, 1, 1, tzinfo=dt.timezone.utc)
+        os.utime(evidence_path, (stamp.timestamp(), stamp.timestamp()))
+        for key in ('a', 'b'):
+            values['schedule'][key] = {'status': 'success', 'by': 'ap checkpoint', 'evidence': evidence_path, 'at': stamp.isoformat()}
         calls = []
         namespace = {'calls': calls, 'decision': decision}
         exec("def periodic_gate(due, dry=False):\n calls.append(('gate',dry))\n return ['other'], {'status':decision if dry else 'legacy'}", namespace)
+        def api(path, body, **kwargs):
+            calls.append(('request', dict(body)))
+            return report if report is not None else {'status': 'ok', 'changed': False, 'errors': [], 'fingerprint': 'a' * 64,
+                'counts': {'issues': 0, 'prs': len(body['tracked']), 'hosts': 1}, 'coverage': dict(coverage),
+                'registryHash': body['registryHash'], 'checkedTracked': body['tracked']}
         namespace.update(SCHED='schedule', BOARD='board', DISPATCH='dispatch', DELEG='deleg', INBOX='inbox', AP=self.folder,
                          PENDING_KEYS=('pending_admissions',), CHECKPOINTS=(('a', 'at'), ('b', 'at')), CHECKPOINT_BY='ap checkpoint',
                          load=lambda path, default: values.get(path, default),
-                         api=lambda path, body, **kwargs: calls.append(('request', body)) or report or {'status': 'ok', 'changed': False, 'errors': [], 'fingerprint': 'a' * 64, 'counts': {'issues': 0, 'prs': 0, 'hosts': 1}},
+                         api=api, parse=lambda value: dt.datetime.fromisoformat(value) if value else None,
+                         now=lambda: stamp + dt.timedelta(hours=1),
+                         evidence_problems=lambda evidence: [] if evidence and evidence.get('status') == 'ok' else ['invalid'],
+                         verify_board_coverage=lambda evidence, mismatches: None,
                          cmd_checkpoint=lambda args: calls.append(('checkpoint', args.evidence)) or checkpoint)
         config = {'connectorId': 'synthetic-vibe', 'githubConnectorId': 'synthetic-github', 'projectId': 'synthetic-project', 'reviewTagId': 'synthetic-tag', 'hosts': ['synthetic-machine'], 'defaultRepository': 'synthetic/widgets'}
         self.ap, self.config = namespace, config
@@ -66,7 +82,7 @@ import {readFileSync} from 'node:fs';
 const scopes=JSON.parse(readFileSync(0,'utf8'));const record={};const flags=[];let now=Date.parse('2002-03-04T00:00:00Z');
 for(const [index,scope] of scopes.entries()){
  now+=1800000;
- const collect=()=>collectReconciliation({scope,repositories:['synthetic/widgets'],discover:async()=>[],github:async()=>({}),vibe:async()=>({issues:[],total_count:0,offset:0}),host:async()=>({hostId:'synthetic-machine',complete:true,workspaces:[]})});
+ const collect=()=>collectReconciliation({scope,repositories:['synthetic/widgets'],discover:async()=>[],github:async()=>({}),vibe:async(method)=>method==='GET'?{id:scope.reviewTagId,project_id:scope.projectId}:{issues:[],total_count:0,offset:0},host:async()=>({hostId:'synthetic-machine',complete:true,workspaces:[]})});
  flags.push((await reconcileAutopilot({scope,record,collect,persist:async()=>{},now:()=>now,acknowledgedAt:index?new Date(now-1500000).toISOString():undefined})).changed);
 }
 console.log(JSON.stringify(flags));
@@ -85,8 +101,8 @@ console.log(JSON.stringify(flags));
         ap = {'SCHED': 'schedule', 'BOARD': 'board', 'DISPATCH': 'dispatch', 'DELEG': 'deleg', 'PENDING_KEYS': (), 'CHECKPOINTS': (('first', 'at'), ('second', 'at')), 'CHECKPOINT_BY': 'ap checkpoint',
               'load': lambda name, default: {'status': 'ok', 'errors': []} if name == path else values.get(name, default), 'evidence_problems': lambda value: [], 'parse': dt.datetime.fromisoformat}
         config = {'connectorId': 'synthetic-vibe', 'githubConnectorId': 'synthetic-github', 'projectId': 'synthetic-project', 'reviewTagId': 'synthetic-tag', 'hosts': ['synthetic-machine']}
-        result = adapter.registry(ap, config)
-        self.assertEqual(result['acknowledgedAt'], '2001-02-03T00:00:00+00:00')
+        _, acknowledged = adapter.checkpoint_proof(ap)
+        self.assertEqual(acknowledged.isoformat(), '2001-02-03T00:00:00+00:00')
 
     def test_default_off_entrypoint_keeps_original_main(self):
         path = os.path.join(self.folder, 'synthetic-ap.py')
@@ -104,6 +120,83 @@ console.log(JSON.stringify(flags));
         self.assertEqual(result['status'], 'handled')
         self.assertEqual([name for name, _ in calls], ['gate', 'request', 'gate', 'checkpoint'])
         self.assertTrue(os.path.isfile(result['evidence']))
+
+    def test_partial_or_unproven_scope_cannot_checkpoint(self):
+        for change in ('missing', 'projects', 'repository', 'host', 'remote_subset', 'partial_tracked', 'registry', 'different_checkpoint'):
+            with self.subTest(change=change):
+                gate, calls, values = self.fixture()
+                evidence = values[values['schedule']['a']['evidence']]
+                request = self.ap['api']
+                if change == 'missing':
+                    evidence.pop('coverage')
+                elif change == 'projects':
+                    evidence['counts'] = {'projects': 2}
+                elif change == 'repository':
+                    values['schedule']['pending_admissions'].append({'pr': 7, 'repo': 'synthetic/sibling'})
+                elif change == 'host':
+                    evidence['coverage']['hosts'] = ['synthetic-machine', 'synthetic-other']
+                elif change == 'different_checkpoint':
+                    values['schedule']['b']['evidence'] = 'other-evidence'
+                else:
+                    evidence['coverage']['repositories'].append('synthetic/sibling')
+                    values['schedule']['pending_admissions'].append({'pr': 7, 'repo': 'synthetic/widgets'})
+
+                    def reconcile(*args, **kwargs):
+                        report = request(*args, **kwargs)
+                        if change == 'remote_subset':
+                            report['coverage']['repositories'] = ['synthetic/widgets']
+                        elif change == 'registry':
+                            report['registryHash'] = 'c' * 64
+                        else:
+                            report['checkedTracked'] = []
+                        return report
+
+                    self.ap['api'] = reconcile
+                _, result = gate(['periodic due'])
+                self.assertEqual(result['status'], 'legacy')
+                self.assertIn(result['system_one_fallback'], {'missing_scope_proof', 'scope_mismatch', 'incomplete_coverage'})
+                self.assertFalse(any(name == 'checkpoint' for name, _ in calls))
+
+    def test_identity_wait_falls_back_only_when_a_recheck_became_due(self):
+        for due, expected in [('2019-01-01T00:00:00+00:00', 'handled'), ('2020-01-01T00:30:00+00:00', 'legacy'), ('2020-01-01T01:30:00+00:00', 'handled')]:
+            gate, calls, values = self.fixture()
+            values['schedule']['pending_admissions'] = [{'pr': 7, 'status': 'needs_identity', 'next_check_at': due}]
+            old_wait = dict(values['schedule']['pending_admissions'][0])
+            _, result = gate(['periodic due'])
+            self.assertEqual(result['status'], expected)
+            if expected == 'legacy':
+                self.assertEqual(result['system_one_fallback'], 'identity_recheck_due')
+                self.assertFalse(any(name == 'request' for name, _ in calls))
+            self.assertEqual(values['schedule']['pending_admissions'][0], old_wait)
+
+    def test_complete_multiple_projects_reach_checkpoint_and_carry_agent_audit_time(self):
+        gate, calls, values = self.fixture()
+        evidence = values[values['schedule']['a']['evidence']]
+        evidence['coverage']['projects'].append({'projectId': 'synthetic-other-project', 'reviewTagId': 'synthetic-other-tag'})
+        self.config['projects'] = [dict(project, connectorId='synthetic-other-connector') for project in evidence['coverage']['projects']]
+        evidence['counts'] = {'projects': 2}
+        _, handled = gate(['periodic due'])
+        self.assertEqual(handled['status'], 'handled')
+        derived = json.loads(Path(handled['evidence']).read_text())
+        self.assertEqual(derived['agentReviewedAt'], values['schedule']['a']['at'])
+        original_now = self.ap['now']
+        values[handled['evidence']] = derived
+        for key in ('a', 'b'):
+            values['schedule'][key].update(evidence=handled['evidence'], at=original_now().isoformat())
+        self.ap['now'] = lambda: original_now() + dt.timedelta(hours=1)
+        calls.clear()
+        _, fallback = gate(['periodic due'])
+        self.assertEqual(fallback['system_one_fallback'], 'scope_audit_due')
+        self.assertFalse(any(name == 'request' for name, _ in calls))
+
+    def test_board_drift_cannot_be_checkpointed_even_when_worker_is_quiet(self):
+        gate, calls, _ = self.fixture()
+        def verify(*args):
+            raise ValueError('synthetic board drift')
+        self.ap['verify_board_coverage'] = verify
+        _, result = gate(['periodic due'])
+        self.assertEqual(result['system_one_fallback'], 'unverified_board')
+        self.assertFalse(any(name == 'checkpoint' for name, _ in calls))
 
     def test_stale_quiet_result_does_not_checkpoint(self):
         for change in ('hold', 'registry'):

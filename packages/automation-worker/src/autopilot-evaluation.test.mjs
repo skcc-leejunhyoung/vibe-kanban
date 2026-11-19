@@ -80,9 +80,19 @@ test('shadow predictions are separate from observed suppression and legacy recor
       qualified: {
         routing_preview: { eligible_events: 1, would_suppress: true },
       },
-      mixed: { routing_preview: { eligible_events: 1, would_suppress: false } },
+      mixed: {
+        routing_preview: {
+          eligible_events: 1,
+          would_suppress: false,
+          exclusions: { timeout: 1 },
+        },
+      },
       protected: {
-        routing_preview: { eligible_events: 0, would_suppress: false },
+        routing_preview: {
+          eligible_events: 0,
+          would_suppress: false,
+          exclusions: { protected_batch: 2 },
+        },
       },
       elapsed: { status: 'fallback', request_outcome_unknown: true },
     },
@@ -93,6 +103,7 @@ test('shadow predictions are separate from observed suppression and legacy recor
     withoutPreview: 2,
     batchesWithEligibleEvents: 2,
     wouldSuppressBatches: 1,
+    excludedEventsByReason: { timeout: 1, protected_batch: 2 },
   });
   assert.equal(evaluation.estimates.avoidedAgentCost, 0);
   assert.equal(evaluation.estimates.decisionsCost, null);
@@ -140,7 +151,14 @@ test('periodic gate logs count finalized skips and deduplicate admissions withou
     { at, ms: 400, periodic: { status: 'queued', id: 'synthetic-task' } },
     { at, ms: 999, periodic: { status: 'started', id: 'synthetic-task' } },
     { at, periodic: { status: 'in_flight', id: 'synthetic-task' } },
-    { at, periodic: { status: 'blocked', id: 'synthetic-blocked' } },
+    {
+      at,
+      periodic: {
+        status: 'blocked',
+        id: 'synthetic-blocked',
+        system_one_fallback: 'scope_mismatch',
+      },
+    },
     { at, periodic: { status: 'would_delegate' } },
   ];
   const report = evaluateAutopilotRecords({
@@ -157,6 +175,9 @@ test('periodic gate logs count finalized skips and deduplicate admissions withou
   assert.equal(report.delivery.suppressedRuns, 3);
   assert.equal(report.delivery.agentAdmissions, 1);
   assert.equal(report.periodic.unresolvedRuns, 0);
+  assert.deepEqual(report.periodic.fallbackAttemptsByReason, {
+    scope_mismatch: 1,
+  });
   assert.equal(report.periodic.gateP50Ms, 200);
   assert.equal(report.periodic.gateP90Ms, 400);
   assert.equal(report.estimates.avoidedAgentCost, 0.75);

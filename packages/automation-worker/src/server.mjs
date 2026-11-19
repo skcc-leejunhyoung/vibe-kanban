@@ -1,6 +1,10 @@
 import { createNotificationRouting } from './notification-routing.mjs';
 import { previewAutopilot, routeAutopilot } from './autopilot-router.mjs';
-import { collectReconciliation, validateReconciliationScope } from './autopilot-reconcile.mjs';
+import {
+  collectReconciliation,
+  reconciliationProjects,
+  validateReconciliationScope,
+} from './autopilot-reconcile.mjs';
 import {
   githubReviewRepositories,
   githubReviewIssueId,
@@ -1535,14 +1539,37 @@ async function reconcileRoutineAutopilot(input) {
     !connector.enabled ||
     connector.type !== 'vibe_kanban' ||
     !github.enabled ||
-    github.type !== 'github' ||
-    connector.config.projectId !== input.projectId
+    github.type !== 'github'
   )
     throw new Error('enabled, scoped reconciliation connectors required');
   const repositories = githubReviewRepositories(github.config);
   if (!repositories.length) throw new Error('repository allowlist required');
   validateReconciliationScope(input, repositories);
-  const catalog = await vibeApi(connector, 'GET', '/v1/hosts');
+  const projects = new Map();
+  for (const project of reconciliationProjects(input)) {
+    const projectConnector = findConnector(
+      project.connectorId || input.connectorId
+    );
+    if (
+      !projectConnector.enabled ||
+      projectConnector.type !== 'vibe_kanban' ||
+      projectConnector.config.projectId !== project.projectId
+    )
+      throw new Error(
+        'enabled, scoped reconciliation connector required for each project'
+      );
+    projects.set(project.projectId, projectConnector);
+  }
+  const signal = AbortSignal.timeout(90000);
+  const catalog = await vibeApi(
+    connector,
+    'GET',
+    '/v1/hosts',
+    undefined,
+    undefined,
+    undefined,
+    signal
+  );
   for (const machineId of input.hosts) {
     if (
       !catalog.hosts?.some(
@@ -1557,9 +1584,15 @@ async function reconcileRoutineAutopilot(input) {
       JSON.stringify([
         connector.id,
         github.id,
-        input.projectId,
-        input.reviewTagId,
+        reconciliationProjects(input)
+          .map(({ projectId, reviewTagId }) => [
+            projectId,
+            reviewTagId,
+            projects.get(projectId).id,
+          ])
+          .sort(),
         [...input.hosts].sort(),
+        [...repositories].sort(),
       ])
     )
     .digest('hex');
@@ -1569,20 +1602,22 @@ async function reconcileRoutineAutopilot(input) {
   try {
     const record = ((state.autopilotReconciliations ||= {})[key] ||= {});
     const login = await withTimeout(
-      githubLogin(github),
+      githubLogin(github, signal),
       15000,
       'GitHub identity timeout'
     );
-    const collect = () =>
+    const collect = (terminalReviews) =>
       collectReconciliation({
         scope: input,
         repositories,
+        terminalReviews,
+        signal,
         github: async (path) => {
           const response = await fetch(
             `${(github.config.apiBase || 'https://api.github.com').replace(/\/$/, '')}${path}`,
             {
               headers: githubHeaders(github.config.token),
-              signal: AbortSignal.timeout(15000),
+              signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
             }
           );
           if (!response.ok) throw new Error('GitHub reconciliation failed');
@@ -1593,16 +1628,28 @@ async function reconcileRoutineAutopilot(input) {
             github,
             repository,
             `is:open review-requested:${login}`,
-            login
+            login,
+            signal
           ),
-        vibe: (method, path, body) => vibeApi(connector, method, path, body),
+        vibe: (method, path, body, project) =>
+          vibeApi(
+            projects.get(project.projectId),
+            method,
+            path,
+            body,
+            undefined,
+            undefined,
+            signal
+          ),
         host: (machineId) =>
           vibeApi(
             connector,
             'GET',
             '/api/automation-actions/autopilot-snapshot',
             undefined,
-            connector.config.hostBridges[machineId].baseUrl
+            connector.config.hostBridges[machineId].baseUrl,
+            undefined,
+            signal
           ),
       });
     const routed = await routeAutopilot({
@@ -1611,7 +1658,7 @@ async function reconcileRoutineAutopilot(input) {
       persist: () => persistState(true),
       reconciliation: {
         scope: input,
-        collect: () => withTimeout(collect(), 90000, 'reconciliation timeout'),
+        collect,
         acknowledgedAt: input.acknowledgedAt,
       },
     });
@@ -2322,7 +2369,7 @@ function githubHeaders(token) {
   };
 }
 
-async function githubLogin(connector) {
+async function githubLogin(connector, signal) {
   const config = connector.config || {};
   if (config.username) return String(config.username);
   const cached = githubLoginCache.get(connector.id);
@@ -2333,6 +2380,7 @@ async function githubLogin(connector) {
   );
   const response = await fetch(`${apiBase}/user`, {
     headers: githubHeaders(config.token),
+    signal,
   });
   if (!response.ok) throw new Error(`GitHub /user failed: ${response.status}`);
   const body = await response.json();
@@ -2402,10 +2450,18 @@ function orderByParent(issues) {
   return result;
 }
 
-async function githubSearchPrs(connector, repository, qualifier, reviewLogin) {
+async function githubSearchPrs(
+  connector,
+  repository,
+  qualifier,
+  reviewLogin,
+  signal
+) {
   const config = connector.config;
   return searchGithubPrs({
-    fetchImpl: fetch,
+    fetchImpl: signal
+      ? (url, options) => fetch(url, { ...options, signal })
+      : fetch,
     apiBase: String(config.apiBase || 'https://api.github.com').replace(
       /\/+$/,
       ''
@@ -5532,7 +5588,9 @@ async function vibeApi(
   const config = connector.config || {};
   const baseUrl = String(baseUrlOverride || config.baseUrl || '').replace(/\/+$/, '');
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    signal?.throwIfAborted();
     const accessToken = await getVibeAccessToken(connector, attempt > 0);
+    signal?.throwIfAborted();
     const headers = { 'content-type': 'application/json' };
     if (accessToken) headers.authorization = `Bearer ${accessToken}`;
     if (config.authHeaderName && config.authHeaderValue) {

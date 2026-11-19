@@ -151,6 +151,7 @@ test('shadow distinguishes a fully qualified batch from partial and protected ba
   ]);
   assert.equal(partial.routing_preview.would_suppress, false);
   assert.equal(partial.routing_preview.remaining_events, 1);
+  assert.deepEqual(partial.routing_preview.exclusions, { missing_identity: 1 });
   assert.equal(partial.results[0].event_index, 1);
   const protectedBatch = await preview([
     completion,
@@ -158,6 +159,9 @@ test('shadow distinguishes a fully qualified batch from partial and protected ba
   ]);
   assert.equal(protectedBatch.routing_preview.eligible_events, 0);
   assert.equal(protectedBatch.routing_preview.would_suppress, false);
+  assert.deepEqual(protectedBatch.routing_preview.exclusions, {
+    protected_batch: 2,
+  });
   assert.equal(h.calls, 2);
   assert.equal(h.posts, 0);
   assert.equal(h.writes, 0);
@@ -179,6 +183,9 @@ test('shadow keeps claimed cloud completions on the agent path until acknowledge
   assert.equal(result.results[0].route, 'routine_result');
   assert.equal(result.routing_preview.eligible_events, 1);
   assert.equal(result.routing_preview.would_suppress, false);
+  assert.deepEqual(result.routing_preview.exclusions, {
+    cloud_confirmation_required: 1,
+  });
   assert.equal(h.posts, 0);
   assert.equal(h.acks, undefined);
   assert.ok(!JSON.stringify(result).includes('synthetic-token'));
@@ -311,9 +318,38 @@ test('rollback recovers existing receipts but does not begin new suppression act
 test('an unresponsive host is bounded and falls back without a paid request', async () => {
   const h = fixture();
   const start = Date.now();
-  const result = await h.route({ resolveHost: () => new Promise(() => {}) });
-  assert.equal(result.remaining.length, 1);
+  const result = await previewAutopilot({
+    ...h.options,
+    resolveHost: () => new Promise(() => {}),
+  });
+  assert.equal(result.routing_preview.remaining_events, 1);
+  assert.deepEqual(result.routing_preview.exclusions, { timeout: 1 });
   assert.equal(h.calls, 0);
   assert.equal(h.posts, 0);
   assert.ok(Date.now() - start < 5000);
+});
+
+test('shadow separates execution policy from host lookup failures', async () => {
+  const h = fixture();
+  h.guard.eligible = false;
+  const ineligible = await previewAutopilot(h.options);
+  assert.deepEqual(ineligible.routing_preview.exclusions, {
+    ineligible_execution: 1,
+  });
+  h.offline = true;
+  const unavailable = await previewAutopilot(h.options);
+  assert.deepEqual(unavailable.routing_preview.exclusions, {
+    host_unavailable: 1,
+  });
+  assert.equal(h.calls, 0);
+});
+
+test('duplicate event identities cannot borrow a classification or trigger a new host mutation', async () => {
+  const h = fixture();
+  const event = { events: [completion, { ...completion }] };
+  const result = await previewAutopilot({ ...h.options, event });
+  assert.deepEqual(result.routing_preview.exclusions, { duplicate_event: 2 });
+  assert.equal((await h.route({ event })).remaining.length, 2);
+  assert.equal(h.calls, 0);
+  assert.equal(h.posts, 0);
 });

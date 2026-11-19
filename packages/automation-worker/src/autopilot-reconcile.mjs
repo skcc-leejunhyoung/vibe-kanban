@@ -6,12 +6,42 @@ const sorted = (rows) =>
   rows.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const sha1 = /^[0-9a-f]{40}$/i;
+const SOURCE_READ_CONCURRENCY = 8;
+const TERMINAL_REVIEW_AUDIT_MS = 2 * 60 * 60 * 1000;
+
+export const reconciliationProjects = (scope) =>
+  scope.projects === undefined ? [scope] : scope.projects;
+
+async function readBatches(items, read, signal) {
+  const result = [];
+  for (let i = 0; i < items.length; i += SOURCE_READ_CONCURRENCY) {
+    signal?.throwIfAborted();
+    const batch = await Promise.allSettled(
+      items.slice(i, i + SOURCE_READ_CONCURRENCY).map(read)
+    );
+    for (const row of batch) {
+      if (row.status === 'rejected') throw row.reason;
+      result.push(row.value);
+    }
+  }
+  return result;
+}
+
+function prVersion(pr) {
+  if (
+    !Number.isSafeInteger(pr?.id) ||
+    pr.id < 1 ||
+    !sha1.test(pr.head?.sha || '') ||
+    !['open', 'closed'].includes(pr.state) ||
+    !Number.isFinite(Date.parse(pr.updated_at))
+  )
+    throw new Error('invalid PR identity or head');
+  return sha([pr.id, pr.head.sha, pr.state, pr.draft, pr.updated_at]);
+}
 
 export function validateReconciliationScope(scope, repositories) {
   if (
     !scope ||
-    !uuid.test(scope.projectId) ||
-    !uuid.test(scope.reviewTagId) ||
     !Array.isArray(scope.hosts) ||
     !scope.hosts.length ||
     scope.hosts.length > 8 ||
@@ -23,6 +53,17 @@ export function validateReconciliationScope(scope, repositories) {
     !/^[0-9a-f]{64}$/i.test(scope.registryHash || '')
   )
     throw new Error('invalid reconciliation scope');
+  const projects = reconciliationProjects(scope);
+  if (
+    !Array.isArray(projects) ||
+    !projects.length ||
+    projects.length > 16 ||
+    projects.some(
+      (item) => !uuid.test(item?.projectId) || !uuid.test(item?.reviewTagId)
+    ) ||
+    new Set(projects.map(({ projectId }) => projectId)).size !== projects.length
+  )
+    throw new Error('invalid reconciliation projects');
   if (
     scope.ignoreWorkspaces !== undefined &&
     (!Array.isArray(scope.ignoreWorkspaces) ||
@@ -94,12 +135,15 @@ export async function collectReconciliation({
   vibe,
   host,
   now = Date.now,
+  terminalReviews = {},
+  signal,
 }) {
   validateReconciliationScope(scope, repositories);
   const prs = new Map(
     scope.tracked.map((pr) => [`${pr.repository}#${pr.number}`, pr])
   );
   for (const repository of repositories) {
+    signal?.throwIfAborted();
     for (const pr of await discover(repository)) {
       if (
         pr.repository !== repository ||
@@ -111,112 +155,179 @@ export async function collectReconciliation({
     }
   }
   const issues = [];
-  let total;
-  for (let offset = 0; ; offset += 100) {
-    const page = await vibe('POST', '/v1/issues/search', {
-      project_id: scope.projectId,
-      tag_id: scope.reviewTagId,
-      limit: 100,
-      offset,
-      sort_field: 'created_at',
-      sort_direction: 'asc',
-    });
-    if (
-      !Array.isArray(page.issues) ||
-      !Number.isSafeInteger(page.total_count) ||
-      page.total_count < 0 ||
-      (total !== undefined && total !== page.total_count) ||
-      page.offset !== offset ||
-      page.issues.length > 100 ||
-      page.issues.length !==
-        Math.min(100, Math.max(0, page.total_count - offset))
-    )
-      throw new Error('incomplete issue discovery');
-    total = page.total_count;
-    for (const issue of page.issues) {
+  const issueIds = new Set();
+  for (const project of reconciliationProjects(scope)) {
+    signal?.throwIfAborted();
+    const tag = await vibe(
+      'GET',
+      `/v1/tags/${project.reviewTagId}`,
+      undefined,
+      project
+    );
+    if (tag?.id !== project.reviewTagId || tag.project_id !== project.projectId)
+      throw new Error('missing review tag for project');
+    let total;
+    for (let offset = 0; ; offset += 100) {
+      signal?.throwIfAborted();
+      const page = await vibe(
+        'POST',
+        '/v1/issues/search',
+        {
+          project_id: project.projectId,
+          tag_id: project.reviewTagId,
+          limit: 100,
+          offset,
+          sort_field: 'created_at',
+          sort_direction: 'asc',
+        },
+        project
+      );
       if (
-        !uuid.test(issue.id) ||
-        issue.project_id !== scope.projectId ||
-        issues.some((row) => row.id === issue.id)
+        !Array.isArray(page.issues) ||
+        !Number.isSafeInteger(page.total_count) ||
+        page.total_count < 0 ||
+        (total !== undefined && total !== page.total_count) ||
+        page.offset !== offset ||
+        page.issues.length > 100 ||
+        page.issues.length !==
+          Math.min(100, Math.max(0, page.total_count - offset))
       )
-        throw new Error('invalid issue discovery');
-      const links = await vibe('GET', `/v1/pull_requests?issue_id=${issue.id}`);
-      if (!Array.isArray(links.pull_requests))
-        throw new Error('incomplete linked PR discovery');
-      const urls = [];
-      for (const pr of links.pull_requests) {
-        const match =
-          /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(
-            pr.url || ''
-          );
-        if (!match || !repositories.includes(match[1].toLowerCase()))
-          throw new Error('linked PR outside allowlist');
-        const ref = {
-          repository: match[1].toLowerCase(),
-          number: Number(match[2]),
-        };
-        prs.set(`${ref.repository}#${ref.number}`, ref);
-        urls.push(pr.url);
+        throw new Error('incomplete issue discovery');
+      total = page.total_count;
+      for (const issue of page.issues) {
+        if (
+          !uuid.test(issue.id) ||
+          issue.project_id !== project.projectId ||
+          issueIds.has(issue.id)
+        )
+          throw new Error('invalid issue discovery');
+        issueIds.add(issue.id);
       }
-      issues.push({
-        id: issue.id,
-        status_id: issue.status_id,
-        updated_at: issue.updated_at,
-        completed_at: issue.completed_at,
-        prs: urls.sort(),
-      });
-    }
-    if (offset + page.issues.length >= total) break;
-    if (offset >= 100000)
-      throw new Error('issue discovery exceeds reconciliation limit');
-  }
-  const heads = [];
-  for (const [key, pr] of [...prs].sort(([a], [b]) => a.localeCompare(b))) {
-    const path = `/repos/${pr.repository}/pulls/${pr.number}`;
-    const before = await github(path);
-    if (!sha1.test(before.head?.sha)) throw new Error('invalid PR head');
-    const reviews = [];
-    for (let page = 1; ; page++) {
-      const rows = await github(`${path}/reviews?per_page=100&page=${page}`);
-      if (!Array.isArray(rows)) throw new Error('incomplete reviews');
-      reviews.push(...rows);
-      if (rows.length < 100) break;
-      if (page >= 1000) throw new Error('review pagination limit');
-    }
-    const after = await github(path);
-    if (
-      before.head.sha !== after.head?.sha ||
-      before.state !== after.state ||
-      before.updated_at !== after.updated_at
-    )
-      throw new Error('PR changed during reconciliation');
-    heads.push({
-      key,
-      head: before.head.sha,
-      state: before.state,
-      draft: before.draft,
-      updated_at: before.updated_at,
-      reviewEvents: sorted(
-        reviews.map((review) => {
-          if (
-            !Number.isSafeInteger(review.id) ||
-            typeof review.state !== 'string'
-          )
-            throw new Error('invalid review event');
+      const pageIssues = await readBatches(
+        page.issues,
+        async (issue) => {
+          const links = await vibe(
+            'GET',
+            `/v1/pull_requests?issue_id=${issue.id}`,
+            undefined,
+            project
+          );
+          if (!Array.isArray(links.pull_requests))
+            throw new Error('incomplete linked PR discovery');
+          const urls = [];
+          for (const pr of links.pull_requests) {
+            const match =
+              /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(
+                pr.url || ''
+              );
+            if (
+              !match ||
+              !repositories.includes(match[1].toLowerCase()) ||
+              !Number.isSafeInteger(Number(match[2])) ||
+              Number(match[2]) < 1
+            )
+              throw new Error('linked PR outside allowlist');
+            const ref = {
+              repository: match[1].toLowerCase(),
+              number: Number(match[2]),
+            };
+            prs.set(`${ref.repository}#${ref.number}`, ref);
+            urls.push(pr.url);
+          }
           return {
-            id: review.id,
-            state: review.state,
-            head: review.commit_id,
-            at: review.submitted_at,
+            id: issue.id,
+            status_id: issue.status_id,
+            updated_at: issue.updated_at,
+            completed_at: issue.completed_at,
+            prs: urls.sort(),
           };
-        })
-      ),
-      reviews: decisionReviews(reviews, before.head.sha),
-    });
+        },
+        signal
+      );
+      issues.push(...pageIssues);
+      if (offset + page.issues.length >= total) break;
+      if (offset >= 100000)
+        throw new Error('issue discovery exceeds reconciliation limit');
+    }
   }
+  const references = await readBatches(
+    [...prs].sort(([a], [b]) => a.localeCompare(b)),
+    async ([key, pr]) => {
+      const path = `/repos/${pr.repository}/pulls/${pr.number}`;
+      const before = await github(path);
+      return { key, path, before, version: prVersion(before) };
+    },
+    signal
+  );
+  const identities = new Map();
+  for (const reference of references) {
+    const id = reference.before.id;
+    if (identities.has(id) && identities.get(id).version !== reference.version)
+      throw new Error('PR changed during alias resolution');
+    if (!identities.has(id)) identities.set(id, reference);
+  }
+  const audited = {};
+  const heads = await readBatches(
+    [...identities.values()],
+    async ({ key, path, before, version }) => {
+      const previous = terminalReviews[before.id];
+      const age = now() - previous?.auditedAt;
+      // Always refresh identity, head and state; reopening must invalidate the audit immediately.
+      if (
+        before.state === 'closed' &&
+        previous?.version === version &&
+        age >= 0 &&
+        age < TERMINAL_REVIEW_AUDIT_MS
+      ) {
+        audited[before.id] = previous;
+        return { ...previous.facts, key };
+      }
+      const reviews = [];
+      for (let page = 1; ; page++) {
+        signal?.throwIfAborted();
+        const rows = await github(`${path}/reviews?per_page=100&page=${page}`);
+        if (!Array.isArray(rows)) throw new Error('incomplete reviews');
+        reviews.push(...rows);
+        if (rows.length < 100) break;
+        if (page >= 1000) throw new Error('review pagination limit');
+      }
+      const after = await github(path);
+      if (version !== prVersion(after))
+        throw new Error('PR changed during reconciliation');
+      const facts = {
+        key,
+        id: before.id,
+        head: before.head.sha,
+        state: before.state,
+        draft: before.draft,
+        updated_at: before.updated_at,
+        reviewEvents: sorted(
+          reviews.map((review) => {
+            if (
+              !Number.isSafeInteger(review.id) ||
+              typeof review.state !== 'string'
+            )
+              throw new Error('invalid review event');
+            return {
+              id: review.id,
+              state: review.state,
+              head: review.commit_id,
+              at: review.submitted_at,
+            };
+          })
+        ),
+        reviews: decisionReviews(reviews, before.head.sha),
+      };
+      if (before.state === 'closed')
+        audited[before.id] = { version, auditedAt: now(), facts };
+      return facts;
+    },
+    signal
+  );
   const hosts = [];
   let requiresAgent = false;
   for (const machineId of [...new Set(scope.hosts)].sort()) {
+    signal?.throwIfAborted();
     const snapshot = await host(machineId);
     if (
       snapshot?.hostId !== machineId ||
@@ -254,7 +365,18 @@ export async function collectReconciliation({
       workspaces: sorted(workspaces),
     });
   }
+  signal?.throwIfAborted();
   const facts = {
+    coverage: {
+      projects: sorted(
+        reconciliationProjects(scope).map(({ projectId, reviewTagId }) => ({
+          projectId,
+          reviewTagId,
+        }))
+      ),
+      repositories: [...new Set(repositories)].sort(),
+      hosts: hosts.map(({ machineId }) => machineId),
+    },
     registryHash: scope.registryHash,
     issues: sorted(issues),
     heads,
@@ -265,19 +387,20 @@ export async function collectReconciliation({
     fingerprint: sha(facts),
     requiresAgent,
     counts: { issues: issues.length, prs: heads.length, hosts: hosts.length },
+    checkedTracked: scope.tracked,
+    terminalReviews: audited,
   };
 }
 
 // Only an official, later agent checkpoint can acknowledge a changed baseline.
 export async function reconcileAutopilot({
-  scope,
   record,
   collect,
   persist,
   acknowledgedAt,
   now = Date.now,
 }) {
-  const snapshot = await collect();
+  const snapshot = await collect(record.terminalReviews);
   const at = new Date(now()).toISOString();
   const acknowledged = Date.parse(acknowledgedAt);
   const pendingAt = Date.parse(record.pending?.at);
@@ -297,6 +420,8 @@ export async function reconcileAutopilot({
     fingerprint: snapshot.fingerprint,
     counts: snapshot.counts,
   };
+  if (snapshot.terminalReviews)
+    record.terminalReviews = snapshot.terminalReviews;
   record.checkedAt = at;
   await persist();
   return {
@@ -309,5 +434,8 @@ export async function reconcileAutopilot({
     checkedAt: at,
     counts: snapshot.counts,
     fingerprint: snapshot.fingerprint,
+    coverage: snapshot.facts?.coverage,
+    registryHash: snapshot.facts?.registryHash,
+    checkedTracked: snapshot.checkedTracked,
   };
 }

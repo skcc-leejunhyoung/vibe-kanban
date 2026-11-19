@@ -23,26 +23,33 @@ function fixture() {
   const h = { reads: [], reviews: [], issueCount: 101 };
   h.collect = () =>
     collectReconciliation({
-      scope,
-      repositories: ['synthetic/widgets'],
-      discover: async () => {
+      scope: h.scope || scope,
+      repositories: h.repositories || ['synthetic/widgets'],
+      discover: async (repository) => {
         h.discoverCalls = (h.discoverCalls || 0) + 1;
-        return [{ repository: 'synthetic/widgets', number: 8 }];
+        return h.discovered ?? [{ repository, number: 8 }];
       },
       github: async (path) => {
         h.reads.push(path);
         return path.includes('/reviews?')
           ? h.reviews
           : {
+              id: h.identity?.(path) ?? Number(path.split('/').at(-1)),
               head: { sha: h.heads?.shift() || h.head || head },
-              state: 'open',
+              state: h.state || 'open',
               draft: false,
               updated_at: '2002-03-04T00:00:00Z',
             };
       },
-      vibe: async (method, path, body) => {
+      vibe: async (method, path, body, project) => {
+        if (path.startsWith('/v1/tags/')) {
+          if (project.projectId === h.missingTagFor) return {};
+          return { id: project.reviewTagId, project_id: project.projectId };
+        }
         if (path === '/v1/issues/search') {
           h.reads.push(body.offset);
+          h.searchedProjects ||= [];
+          h.searchedProjects.push(project.projectId);
           return {
             offset: body.offset,
             total_count: h.issueCount,
@@ -50,7 +57,7 @@ function fixture() {
               { length: Math.min(100, h.issueCount - body.offset) },
               (_, index) => ({
                 id: `30000000-0000-4000-8000-${String(body.offset + index).padStart(12, '0')}`,
-                project_id: projectId,
+                project_id: project.projectId,
                 status_id: reviewTagId,
                 updated_at: '2002-03-04T00:00:00Z',
               })
@@ -65,6 +72,8 @@ function fixture() {
         workspaces: h.workspaces || [],
       }),
       now: () => h.now ?? Date.now(),
+      terminalReviews: h.terminalReviews,
+      signal: h.signal,
     });
   return h;
 }
@@ -292,4 +301,107 @@ test('a head change during reads and an invalid page count reject the whole snap
   const invalid = fixture();
   invalid.issueCount = -1;
   await assert.rejects(invalid.collect(), /incomplete issue discovery/);
+});
+
+test('only matching GitHub identities share one paginated review read', async () => {
+  const h = fixture();
+  h.issueCount = 0;
+  h.repositories = ['synthetic/widgets', 'synthetic/archive'];
+  h.discovered = [];
+  h.scope = {
+    ...scope,
+    tracked: [...scope.tracked, { repository: 'synthetic/archive', number: 8 }],
+  };
+  h.identity = () => 50;
+  const snapshots = await h.collect();
+  assert.equal(snapshots.counts.prs, 1);
+  assert.equal(snapshots.checkedTracked.length, 2);
+  assert.equal(
+    h.reads.filter(
+      (path) => typeof path === 'string' && path.includes('/reviews?')
+    ).length,
+    1
+  );
+  assert.deepEqual(snapshots.facts.coverage.repositories, [
+    'synthetic/archive',
+    'synthetic/widgets',
+  ]);
+  h.identity = undefined;
+  assert.equal((await h.collect()).counts.prs, 2);
+  h.identity = () => 50;
+  h.heads = [head, 'c'.repeat(40)];
+  await assert.rejects(h.collect(), /alias resolution/);
+});
+
+test('each project tag must be verified before reporting complete scope', async () => {
+  const h = fixture();
+  h.issueCount = 0;
+  const secondProject = '20000000-0000-4000-8000-000000000004';
+  h.scope = {
+    ...scope,
+    projects: [
+      { projectId, reviewTagId },
+      { projectId: secondProject, reviewTagId },
+    ],
+  };
+  const result = await h.collect();
+  assert.deepEqual(h.searchedProjects, [projectId, secondProject]);
+  assert.deepEqual(result.facts.coverage.projects, h.scope.projects);
+  h.missingTagFor = secondProject;
+  const record = {};
+  await assert.rejects(
+    reconcileAutopilot({
+      record,
+      collect: h.collect,
+      persist: async () => assert.fail('partial proof persisted'),
+    }),
+    /review tag/
+  );
+  assert.deepEqual(record, {});
+});
+
+test('terminal review cache skips repeated audit, refreshes on expiry and detects a reopened PR', async () => {
+  const h = fixture();
+  h.issueCount = 0;
+  h.discovered = [];
+  h.state = 'closed';
+  h.now = Date.parse('2002-03-04T00:00:00Z');
+  const first = await h.collect();
+  h.terminalReviews = first.terminalReviews;
+  h.reads.length = 0;
+  h.now += 60_000;
+  const cached = await h.collect();
+  assert.equal(cached.fingerprint, first.fingerprint);
+  assert.equal(h.reads.filter((path) => typeof path === 'string').length, 1);
+  h.now += 2 * 60 * 60 * 1000;
+  const refreshed = await h.collect();
+  assert.ok(
+    refreshed.terminalReviews[7].auditedAt > first.terminalReviews[7].auditedAt
+  );
+  h.terminalReviews = refreshed.terminalReviews;
+  h.state = 'open';
+  h.reads.length = 0;
+  const reopened = await h.collect();
+  assert.notEqual(reopened.fingerprint, first.fingerprint);
+  assert.ok(
+    h.reads.includes(
+      '/repos/synthetic/widgets/pulls/7/reviews?per_page=100&page=1'
+    )
+  );
+  assert.deepEqual(reopened.terminalReviews, {});
+});
+
+test('an aborted collection cannot persist reconciliation state', async () => {
+  const h = fixture();
+  h.signal = AbortSignal.abort(new Error('synthetic timeout'));
+  const record = { terminalReviews: { 7: { auditedAt: 0 } } };
+  await assert.rejects(
+    reconcileAutopilot({
+      record,
+      collect: h.collect,
+      persist: async () => assert.fail('not persisted'),
+    }),
+    /synthetic timeout/
+  );
+  assert.deepEqual(record, { terminalReviews: { 7: { auditedAt: 0 } } });
 });
