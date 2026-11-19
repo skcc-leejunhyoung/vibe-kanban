@@ -522,3 +522,75 @@ test('a GitHub write re-reads the parent and skips when the prefetch is stale', 
     [`${API}/repos/example/app/issues/5/parent`, 'GET'],
   ]);
 });
+
+test('links wait for their repository milestones, so a failed milestone move is retried', async () => {
+  const links = [
+    {
+      id: 'L1',
+      issue_id: 'i1',
+      github_node_id: 'A',
+      repository: 'example/old',
+      number: 1,
+      url: 'u1',
+    },
+  ];
+  const milestones = [
+    { id: 'm1', source_repository: 'example/old', source_number: 1 },
+  ];
+  const vibe = { id: 'vibe', enabled: true, config: { projectId: 'p' } };
+  let milestoneOutage = true;
+  const patched = [];
+  const h = harness({
+    state: {
+      rules: [
+        {
+          enabled: true,
+          kind: 'github_issue_sync',
+          config: { githubConnectorId: 'github', vibeConnectorId: 'vibe' },
+        },
+      ],
+    },
+    findConnector: () => vibe,
+    retryPendingGithubIssueLinks: async () => 0,
+    backfillGithubIssueMapLinks: async () => 0,
+    shouldReconcileGithubIssueLink: () => true,
+    githubCommentSyncKey: (github, v, link) => link.id,
+    githubCommentSyncCache: new Map(),
+    githubGraphql: async () => ({
+      data: { nodes: [node('A', 'example/new', 1)] },
+    }),
+    vibeApi: async (connector, method, url, payload) => {
+      if (method === 'GET' && url.startsWith('/v1/github_issue_links'))
+        return { github_issue_links: links };
+      if (method === 'GET' && url.startsWith('/v1/issues'))
+        return { issues: [{ id: 'i1' }] };
+      if (method === 'GET' && url.startsWith('/v1/project_milestones'))
+        return milestones;
+      if (method === 'GET') return [];
+      if (url.startsWith('/v1/project_milestones/') && milestoneOutage)
+        throw new Error('synthetic outage');
+      patched.push(url);
+      return { data: { ...payload } };
+    },
+    reconcileGithubIssueLink: async () => {},
+  });
+  const round = () =>
+    h.reconcileGithubIssueRules({
+      id: 'github',
+      config: { owner: 'example', repo: 'app', apiBase: API },
+    });
+
+  await round();
+  assert.deepEqual(patched, []);
+  assert.equal(links[0].repository, 'example/old');
+  assert.equal(milestones[0].source_repository, 'example/old');
+
+  milestoneOutage = false;
+  await round();
+  assert.deepEqual(patched, [
+    '/v1/project_milestones/m1',
+    '/v1/github_issue_links/L1',
+  ]);
+  assert.equal(links[0].repository, 'example/new');
+  assert.equal(milestones[0].source_repository, 'example/new');
+});

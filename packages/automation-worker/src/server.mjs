@@ -4592,8 +4592,20 @@ async function reconcileGithubIssueRules(githubConnector) {
     );
     const repositoryMoves = githubRepositoryMoves(links, githubNodes);
     repositoryMoves.delete(ownRepository.toLowerCase());
-    await relocateGithubIssueLinks(vibe, links, githubNodes, ownRepository);
-    await relocateGithubMilestones(vibe, milestones, repositoryMoves);
+    // Milestones first: a move is only seen while some link still holds the
+    // old name, so links wait for their repository's milestones to follow.
+    const stalledMoves = await relocateGithubMilestones(
+      vibe,
+      milestones,
+      repositoryMoves
+    );
+    await relocateGithubIssueLinks(
+      vibe,
+      links,
+      githubNodes,
+      ownRepository,
+      stalledMoves
+    );
     const linksByIssueId = new Map(
       links.map((candidate) => [candidate.issue_id, candidate])
     );
@@ -4699,8 +4711,15 @@ async function loadGithubIssueNodes(github, links) {
 // new address another link already holds keeps its old one (the server would
 // answer 409); a failed PATCH is retried next round. Links at the connector's
 // own repository stay put: the poll still finds issues by that name, so they
-// move only after the connector's repository is updated.
-async function relocateGithubIssueLinks(vibe, links, nodes, ownRepository) {
+// move only after the connector's repository is updated. Links of a repository
+// in `stalled` (its milestones failed to follow) stay put until they have.
+async function relocateGithubIssueLinks(
+  vibe,
+  links,
+  nodes,
+  ownRepository,
+  stalled = new Set()
+) {
   const byKey = new Map(links.map((link) => [githubIssueLinkKey(link), link]));
   const own = String(ownRepository || '').toLowerCase();
   let heldByConnector = 0;
@@ -4710,7 +4729,9 @@ async function relocateGithubIssueLinks(vibe, links, nodes, ownRepository) {
       nodes.get(link.github_node_id)
     );
     if (!next) continue;
-    if (String(link.repository || '').toLowerCase() === own) {
+    const repository = String(link.repository || '').toLowerCase();
+    if (stalled.has(repository)) continue;
+    if (repository === own) {
       heldByConnector += 1;
       continue;
     }
@@ -4764,8 +4785,10 @@ async function relocateGithubIssueLinks(vibe, links, nodes, ownRepository) {
 
 // Milestones live in their repository, so they follow a renamed or
 // transferred one; otherwise milestone sync stops matching them and would
-// recreate them under the new name.
+// recreate them under the new name. Returns the old repositories (lowercase)
+// with a milestone that failed to move.
 async function relocateGithubMilestones(vibe, milestones, moves) {
+  const stalled = new Set();
   const list = Array.isArray(milestones) ? milestones : [];
   const sourceKey = (repository, number) =>
     `${String(repository || '').toLowerCase()}#${number}`;
@@ -4795,6 +4818,7 @@ async function relocateGithubMilestones(vibe, milestones, moves) {
       );
       Object.assign(milestone, response?.data || { source_repository: to });
     } catch (error) {
+      stalled.add(String(from).toLowerCase());
       await log('warn', 'github milestone relocation failed', {
         milestoneId: milestone.id,
         from,
@@ -4803,6 +4827,7 @@ async function relocateGithubMilestones(vibe, milestones, moves) {
       });
     }
   }
+  return stalled;
 }
 
 async function reconcileGithubIssueParent({
