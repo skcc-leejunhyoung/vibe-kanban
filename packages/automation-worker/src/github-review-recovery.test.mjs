@@ -48,6 +48,7 @@ function connectorSettings(h) {
     ...[
       "applyConnectorPatch", "upsertConnector", "preserveGithubActivityConfig",
       "preserveMissingRuntimeConfig", "preserveMaskedSecrets", "githubApiBase", "fetchGithubAccount",
+      "moveGithubActivityRepository", "fetchGithubRepository",
     ].map(functionSource),
   ].join("\n"), h.context);
 }
@@ -77,6 +78,7 @@ const names = [
   "githubDiscoverActivityPrs",
   "pollGithubAutomaticPrActivity",
   "githubLegacyPrActivityKey",
+  "githubPrActivityKey",
   "emitGithubPrActivity",
   "githubCommentPrNumber",
   "orderByParent",
@@ -1331,6 +1333,111 @@ test("token rotation keeps activity only for the verified GitHub account", async
   assert.equal(h.github.config.prActivityDiscovery, undefined);
   assert.equal(h.github.config.prCommentCursorTs, undefined);
   assert.equal(h.github.config.seenPrCommentIds, undefined);
+});
+
+test("a primary repository transfer preserves the activity window and retries at the verified new address", async (t) => {
+  for (const verified of [true, false]) await t.test(verified ? "same repository ID" : "different repository ID", async () => {
+    const h = harness();
+    connectorSettings(h);
+    Object.assign(h.context, await import("./github-pr-activity.mjs"));
+    const oldRepo = "example/app";
+    const newRepo = "example/moved";
+    const cursor = new Date(Date.now() - 60_000).toISOString();
+    const createdAt = new Date(Date.now() - 30_000).toISOString();
+    const pending = { ...pr, repository: oldRepo };
+    const oldUrl = `https://github.com/${oldRepo}`;
+    const newUrl = `https://github.com/${newRepo}`;
+    Object.assign(h.github.config, {
+      notifyPrComments: true, reviewRepositories: [],
+      prCommentCursorTs: cursor, seenPrCommentIds: ["issue:91"],
+      prActivityDiscovery: { cursorTs: cursor, startedAt: cursor, seen: {}, pendingPrs: [pending] },
+    });
+    h.context.fetch = async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/search/issues") return { ok: true, json: async () => ({ total_count: 0, items: [] }) };
+      assert.ok([`/repos/${oldRepo}`, `/repos/${newRepo}`].includes(url.pathname));
+      const isNew = url.pathname === `/repos/${newRepo}`;
+      return { ok: true, json: async () => ({ id: isNew && !verified ? 16 : 15, html_url: isNew ? newUrl : oldUrl }) };
+    };
+    await h.context.applyConnectorPatch(h.github, { config: { ...h.github.config, repo: "moved" } });
+    const config = h.github.config;
+    const expectedRepo = verified ? newRepo : oldRepo;
+    assert.equal(config.prActivityDiscovery.cursorTs, cursor);
+    assert.deepEqual(Object.keys(config.prCommentCursors), [expectedRepo]);
+    assert.equal(config.prCommentCursors[expectedRepo].cursorTs, cursor);
+    assert.equal(config.prCommentCursorTs, undefined);
+    assert.equal(config.prActivityDiscovery.pendingPrs[0].repository, expectedRepo);
+    const events = [];
+    h.context.runRules = async (event) => events.push(event);
+    h.context.githubPrComments = async (_connector, since, source) => {
+      assert.equal(since, cursor);
+      assert.equal(source, expectedRepo);
+      return [91, 92].map((id) => ({ id, created_at: createdAt, user: { login: "fixture-author" } }));
+    };
+    assert.equal((await h.context.pollGithubPrComments(h.github, fixture.login)).processed, 1);
+    assert.deepEqual(events.map((event) => [event.repo, event.raw.id]), [[expectedRepo, 92]]);
+    if (verified) assert.equal(events[0].pullRequestUrl, `${newUrl}/pull/${pr.number}`);
+  });
+});
+
+test("switching between automatic and explicit scope does not replay a PR activity", async () => {
+  const h = harness();
+  connectorSettings(h);
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  const scopedRepo = `${h.github.config.owner}/${h.github.config.repo}`;
+  const scopedPr = { ...pr, repository: scopedRepo };
+  const cursor = new Date(Date.now() - 360_000).toISOString();
+  Object.assign(h.github.config, {
+    notifyPrComments: true, reviewRepositories: [],
+    prCommentCursors: { [scopedRepo]: { cursorTs: cursor, seenIds: [] } },
+  });
+  const comment = (id, ago) => ({
+    id, url: `https://api.github.com/repos/example/app/issues/comments/${id}`,
+    issue_url: `https://api.github.com/repos/example/app/issues/${scopedPr.number}`,
+    created_at: new Date(Date.now() - ago).toISOString(), user: { login: "fixture-author" },
+  });
+  const body = [comment(91, 330_000), comment(92, 25_000)];
+  const emitted = [];
+  Object.assign(h.context, {
+    githubDiscoverActivityPrs: async (_, __, ___, ____, onPr) => { onPr(scopedPr); return []; },
+    githubRelatedPrs: async () => [scopedPr], githubPrComments: async () => body,
+    runRules: async ({ raw }) => emitted.push(raw.id),
+  });
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  const scope = (reviewRepositories) => h.context.applyConnectorPatch(h.github, {
+    config: { ...h.github.config, reviewRepositories },
+  });
+  assert.equal((await poll()).processed, 2);
+  assert.equal(h.github.config.prActivityDiscovery.seen["issue:91"], undefined);
+  body.push(comment(93, 20_000));
+  await scope([scopedRepo]);
+  assert.equal((await poll()).processed, 1);
+  assert.deepEqual(emitted, [91, 92, 93]);
+  await scope([]);
+  assert.equal((await poll()).processed, 0);
+  assert.deepEqual(emitted, [91, 92, 93]);
+});
+
+test("explicit scope still reads the gap before the first automatic collection", async () => {
+  const h = harness();
+  const beforeAuto = new Date(Date.now() - 30 * 60_000).toISOString();
+  const gapEventAt = new Date(Date.now() - 20 * 60_000).toISOString();
+  const autoStartedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+  Object.assign(h.github.config, {
+    notifyPrComments: true,
+    prCommentCursors: { [repository]: { cursorTs: beforeAuto, seenIds: [] } },
+    prActivityDiscovery: { startedAt: autoStartedAt, cursorTs: new Date().toISOString(), seen: {} },
+  });
+  const event = { id: 94, issue_url: `https://fixture.invalid/issues/${pr.number}`,
+    created_at: gapEventAt, user: { login: "fixture-author" } };
+  const emitted = [];
+  Object.assign(h.context, {
+    githubRelatedPrs: async () => [pr],
+    githubPrComments: async (_, since) => Date.parse(since) <= Date.parse(gapEventAt) ? [event] : [],
+    runRules: async ({ raw }) => emitted.push(raw.id),
+  });
+  await h.context.pollGithubRepositoryPrComments(h.github, fixture.login, repository);
+  assert.deepEqual(emitted, [event.id]);
 });
 
 test("activity searches bound historical PRs while request discovery remains cursor-independent", async () => {

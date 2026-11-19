@@ -339,6 +339,10 @@ miss would never be re-tried.
   same account. If a connector has saved activity but no verified account ID,
   keep its previous token active for the first rotation. Set
   `prActivityDiscovery` to `null` to reset automatic activity explicitly.
+  Changing the primary repository keeps the account-wide activity window. A
+  rename or transfer verified by the GitHub repository ID also moves the old
+  scoped cursor and pending PRs to the new address. When switching to an
+  explicit list, collection resumes using the automatic cursor and seen IDs.
   An explicit repository list keeps the
   previous scoped notification behavior, including independent cursors and
   first-poll seeding per repository.

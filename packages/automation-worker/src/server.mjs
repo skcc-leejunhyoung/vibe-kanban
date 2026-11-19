@@ -969,8 +969,6 @@ async function preserveGithubActivityConfig(previous, connector) {
   const source = (config) => [
     githubApiBase(config),
     String(config.username || '').toLowerCase(),
-    String(config.owner || '').toLowerCase(),
-    String(config.repo || '').toLowerCase(),
   ];
   const nextSource = source(next);
   let sameSource = source(prev).every((value, index) => value === nextSource[index]);
@@ -1004,11 +1002,56 @@ async function preserveGithubActivityConfig(previous, connector) {
     if (sameSource && prev[key] !== undefined) next[key] = prev[key];
     else delete next[key];
   }
+  const oldPrimary = `${prev.owner}/${prev.repo}`.toLowerCase();
+  const newPrimary = `${next.owner}/${next.repo}`.toLowerCase();
+  if (sameSource && oldPrimary !== newPrimary) {
+    await moveGithubActivityRepository(next, oldPrimary, newPrimary);
+  }
   if (accountId) next.githubActivityAccountId = accountId;
   if (resetDiscovery) {
     next.prActivityDiscovery = null;
     delete next.prCommentErrors;
   }
+}
+
+async function moveGithubActivityRepository(config, oldPrimary, newPrimary) {
+  const cursors = { ...config.prCommentCursors };
+  const scoped = cursors[oldPrimary];
+  const legacy = scoped || config.prCommentCursorTs || config.seenPrCommentIds?.length ? {
+    cursorTs: scoped?.cursorTs || config.prCommentCursorTs,
+    seenIds: [...new Set([...(scoped?.seenIds || []), ...(config.seenPrCommentIds || [])])],
+  } : undefined;
+  const activity = config.prActivityDiscovery;
+  const pending = activity?.pendingPrs || [];
+  delete config.prCommentCursorTs;
+  delete config.seenPrCommentIds;
+  if (legacy) cursors[oldPrimary] = legacy;
+  if (legacy || pending.some((pr) => pr.repository === oldPrimary) ||
+      config.reviewRepositories?.some((repository) => repository.trim().toLowerCase() === oldPrimary)) {
+    const oldRepo = await fetchGithubRepository(config, oldPrimary);
+    const newRepo = oldRepo && await fetchGithubRepository(config, newPrimary);
+    if (oldRepo && newRepo && oldRepo.id === newRepo.id) {
+      if (legacy) {
+        const existing = cursors[newPrimary];
+        const cursorTs = [legacy.cursorTs, existing?.cursorTs]
+          .map((value) => normalizeOptionalTimestamp(value)).filter(Boolean).sort()[0];
+        cursors[newPrimary] = { cursorTs, seenIds: [...new Set([...(legacy.seenIds || []), ...(existing?.seenIds || [])])] };
+        delete cursors[oldPrimary];
+      }
+      if (activity) {
+        const moved = pending.map((pr) => pr.repository === oldPrimary ? {
+          ...pr, repository: newPrimary, html_url: newRepo.html_url ? `${newRepo.html_url}/pull/${pr.number}` : pr.html_url,
+        } : pr);
+        config.prActivityDiscovery = { ...activity, pendingPrs: [...new Map(moved.map((pr) => [githubIssueLinkKey(pr), pr])).values()] };
+      }
+      if (config.reviewRepositories) {
+        config.reviewRepositories = [...new Set(config.reviewRepositories.map((repository) =>
+          repository.trim().toLowerCase() === oldPrimary ? newPrimary : repository
+        ))];
+      }
+    }
+  }
+  config.prCommentCursors = cursors;
 }
 
 function applyRulePatch(rule, patch) {
@@ -2436,6 +2479,20 @@ function githubApiBase(config) {
   return String(config.apiBase || 'https://api.github.com').replace(/\/+$/, '');
 }
 
+async function fetchGithubRepository(config, repository) {
+  const parts = repository.split('/');
+  if (parts.length !== 2 || parts.some((part) => !/^[a-z0-9_.-]+$/i.test(part) || part === '.' || part === '..')) return null;
+  const response = await fetch(`${githubApiBase(config)}/repos/${parts.map(encodeURIComponent).join('/')}`, {
+    headers: githubHeaders(config.token),
+  });
+  if (response.status === 404 || response.status === 410) return null;
+  if (!response.ok) throw new Error(`GitHub repository identity lookup failed for ${repository}: ${response.status}`);
+  const body = await response.json();
+  if (!Number.isSafeInteger(body.id) || body.id <= 0)
+    throw new Error(`GitHub returned no repository identity for ${repository}`);
+  return body;
+}
+
 async function fetchGithubAccount(config) {
   const response = await fetch(`${githubApiBase(config)}/user`, {
     headers: githubHeaders(config.token),
@@ -2969,9 +3026,7 @@ async function pollGithubAutomaticPrActivity(connector, login) {
   const pollStartedAt = new Date().toISOString();
   const primary = `${config.owner}/${config.repo}`.toLowerCase();
   const cursors = config.prCommentCursors || {};
-  const previousCursor = normalizeOptionalTimestamp(
-    cursors[primary]?.cursorTs || config.prCommentCursorTs
-  );
+  const previousCursor = normalizeOptionalTimestamp(cursors[primary]?.cursorTs || config.prCommentCursorTs);
   const overlapMs = 5 * 60 * 1000;
   const startedAt = previousCursor
     ? new Date(Date.parse(previousCursor) - overlapMs).toISOString()
@@ -3035,10 +3090,7 @@ async function pollGithubAutomaticPrActivity(connector, login) {
           !at || at < since ||
           comment.user?.login?.toLowerCase() === login.toLowerCase()
         ) continue;
-        const kind = comment.review_state
-          ? 'review'
-          : comment.pull_request_url ? 'inline' : 'issue';
-        const key = `${kind}:${comment.id}`;
+        const key = githubPrActivityKey(comment);
         if (!legacy.has(key)) pending.push({ pr, comment, key, at });
       }
       retry.delete(githubIssueLinkKey(pr));
@@ -3089,10 +3141,16 @@ async function pollGithubAutomaticPrActivity(connector, login) {
 }
 
 function githubLegacyPrActivityKey(key) {
+  if (/^(?:issue|inline|review):\d+$/.test(key)) return key;
   const match =
     /(?:\/pulls\/\d+\/reviews\/|#pullrequestreview-|(\/pulls\/comments\/|#discussion_r)|(\/issues\/comments\/|#issuecomment-))\d+:(\d+)$/.exec(key);
   if (!match) return null;
   return `${match[1] ? 'inline' : match[2] ? 'issue' : 'review'}:${match[3]}`;
+}
+
+function githubPrActivityKey(comment) {
+  const kind = comment.review_state ? 'review' : comment.pull_request_url ? 'inline' : 'issue';
+  return `${kind}:${comment.id}`;
 }
 
 async function pollGithubRepositoryPrComments(connector, login, repository) {
@@ -3104,7 +3162,13 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
     repository === primary
       ? { cursorTs: config.prCommentCursorTs, seenIds: config.seenPrCommentIds }
       : {});
-  const cursor = String(runtime.cursorTs || '');
+  const auto = config.prActivityDiscovery;
+  const scopedCursor = normalizeOptionalTimestamp(runtime.cursorTs);
+  const autoCursor = normalizeOptionalTimestamp(auto?.cursorTs);
+  const autoStartedAt = normalizeOptionalTimestamp(auto?.startedAt);
+  const canResumeFromAuto = autoCursor && (!scopedCursor ||
+    (autoCursor > scopedCursor && (!autoStartedAt || scopedCursor >= autoStartedAt)));
+  const cursor = canResumeFromAuto ? autoCursor : String(runtime.cursorTs || '');
   const seeding = !cursor && (runtime.seenIds || []).length === 0;
   const pollStartedAt = new Date().toISOString();
   if (seeding) {
@@ -3113,7 +3177,7 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
     return { processed: 0, seeded: 0 };
   }
 
-  const seen = new Set(runtime.seenIds || []);
+  const seen = new Set((runtime.seenIds || []).map((key) => githubLegacyPrActivityKey(key) || key));
   // Search results can lag behind comment APIs. Re-read a short overlap so a
   // newly related/updated PR can appear before its comment falls behind the
   // cursor; seen IDs keep the overlap idempotent.
@@ -3134,23 +3198,26 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
     ),
   ]);
   const pending = [];
+  const autoWindow = autoCursor && new Date(Date.parse(autoCursor) - 5 * 60 * 1000).toISOString();
+  const collect = (pr, comment) => {
+    const key = githubPrActivityKey(comment);
+    if (seen.has(key) || seen.has(`${comment.url || ''}:${comment.id}`)) return;
+    seen.add(key);
+    const at = normalizeOptionalTimestamp(comment.created_at);
+    // The automatic receipt drops IDs before its overlap window.
+    if (auto?.seen?.[key] || (autoStartedAt && at && at >= autoStartedAt && at < autoWindow)) return;
+    if (comment.user?.login?.toLowerCase() === login.toLowerCase()) return;
+    pending.push({ pr, comment });
+  };
 
   for (const comment of comments) {
     const pr = prsByNumber.get(
       githubIssueLinkKey({ repository, number: githubCommentPrNumber(comment) })
     );
-    if (!pr) continue;
-    const key = `${comment.url || ''}:${comment.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (comment.user && comment.user.login === login) continue;
-    pending.push({ pr, comment });
+    if (pr) collect(pr, comment);
   }
   for (const { pr, activity } of reviews) {
-    const key = `${activity.url || ''}:${activity.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    pending.push({ pr, comment: activity });
+    collect(pr, activity);
   }
 
   pending.sort((a, b) =>
