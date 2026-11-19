@@ -76,7 +76,7 @@ function fixture(instanceId = "instance") {
       throw Object.assign(new Error("expired"), { status: 409 });
     if (path === "/v1/autopilot-notification-leases") return { id: "lease", protocol };
     if (path.startsWith("/v1/notification-claims?"))
-      return { claims: recovered };
+      return { claims: await recovered };
     if (path.includes("/receipts/")) return receipt;
     return { data: { claim_token: "claim" } };
   };
@@ -272,6 +272,55 @@ test("batch is frozen before the host stages and admits it", async () => {
     paths.indexOf("/queue/notification-handoff") > paths.indexOf("/v1/notifications/a/handoff"),
   );
   assert.equal(paths.some((path) => path.endsWith("/consume")), false);
+});
+
+test("a persisted batch renders and hands off each live notification once", async () => {
+  const f = fixture();
+  await f.routing.register(routine, [], true);
+  const first = { ...f.event("synthetic-alert"), id: "agent-event:1" };
+  const other = { ...f.event("synthetic-other"), id: "agent-event:2" };
+  for (const event of [first, other]) await f.routing.claim(routine, event);
+  const replay = { ...first, id: "notification:synthetic-alert:1:instance" };
+  const process = { id: "synthetic-process", kind: "process.failed" };
+  const batch = redactEvent({ count: 4, events: [first, process, replay, other] });
+  f.setFailure(
+    (path, body) => path.endsWith("/handoff") &&
+      new Set(body.members.map((item) => item.id)).size !== body.members.length,
+  );
+
+  await f.routing.deliver(routine, batch, (event) => {
+    assert.deepEqual(event.events.map((item) => item.id), [first.id, process.id, other.id]);
+    assert.equal(event.count, 3);
+    return { path: "/queue", payload: { message: "synthetic" }, meta: { idempotencyKey: "synthetic-batch" } };
+  });
+
+  const handoffs = f.calls.filter((call) => call.path.endsWith("/handoff"));
+  assert.equal(handoffs.length, 1);
+  assert.equal(handoffs[0].payload.handoff_key, "synthetic-batch");
+  assert.deepEqual(handoffs[0].payload.members.map((member) => member.id), [first.notificationId, other.notificationId]);
+  assert.equal(f.calls.filter((call) => call.path.endsWith("/renew-claim")).length, 2);
+  assert.equal(f.calls.filter((call) => call.path === "/queue/notification-handoff").length, 1);
+  assert.equal(batch.events.length, 4);
+});
+
+test("a newer renewed revision replaces an older one in the same handoff", async () => {
+  const f = fixture();
+  await f.routing.register(routine, [], true);
+  const older = f.event("synthetic-versioned");
+  const newer = { ...older, notificationRevision: 2 };
+  for (const event of [older, newer]) await f.routing.claim(routine, event);
+  const staleCopy = { ...newer, notificationClaim: { lease_id: "another-lease" } };
+  f.setFailure((path, body) => path.endsWith("/renew-claim") && body.lease_id !== "lease");
+
+  await f.routing.deliver(routine, { events: [older, staleCopy, newer] }, (event) => {
+    assert.deepEqual(event.events.map((item) => item.notificationRevision), [2]);
+    return { path: "/queue", payload: { message: "synthetic" }, meta: { idempotencyKey: "synthetic-versioned" } };
+  });
+
+  const handoff = f.calls.find((call) => call.path.endsWith("/handoff"));
+  assert.deepEqual(handoff.payload.members, [
+    { id: "synthetic-versioned", revision: 2, claim_token: "claim" },
+  ]);
 });
 
 test("expired revision prevents any queue side effect", async () => {
@@ -526,6 +575,34 @@ test("restored local buffers renew their central claims without adding a duplica
   ]);
   assert.deepEqual(await f.routing.recover(routine), []);
   assert.ok(f.calls.some((c) => c.path.endsWith("/renew-claim")));
+});
+
+test("a stale recovery page cannot erase or overwrite a claim made during the read", async () => {
+  for (const oldRows of [[], [{ id: "alert", revision: 1, claim_token: null }]]) {
+    const f = fixture();
+    await f.routing.register(routine, [], true);
+    const stale = Promise.withResolvers();
+    f.setRecovered(stale.promise);
+    const recovery = f.routing.recover(routine);
+    const journal = { ...f.event(), id: "agent-event:1" };
+    assert.equal(await f.routing.claim(routine, journal), true);
+    f.setFailure((path, payload) => path.endsWith("/renew-claim") && payload.claim_token !== "claim");
+    stale.resolve(oldRows);
+    assert.deepEqual(await recovery, []);
+    f.setRecovered([{ id: "alert", revision: 1, claim_token: "claim" }]);
+    assert.deepEqual(await f.routing.recover(routine), []);
+    assert.equal(f.calls.at(-1).payload.claim_token, "claim");
+  }
+});
+
+test("journal and recovery cannot claim the same notification concurrently", async () => {
+  const f = fixture();
+  await f.routing.register(routine, [], true);
+  const journal = { ...f.event(), id: "agent-event:1" };
+  const replay = { ...f.event(), id: "notification:alert:1:instance" };
+  const results = await Promise.all([f.routing.claim(routine, journal), f.routing.claim(routine, replay)]);
+  assert.deepEqual(results, [true, false]);
+  assert.equal(f.calls.filter((call) => call.path.endsWith("/claim")).length, 1);
 });
 
 test("a redacted restored buffer refreshes its token from the central claim", async () => {

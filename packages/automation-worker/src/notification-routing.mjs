@@ -8,6 +8,7 @@ export const HANDOFF_MARGIN_MS = 60000;
 export function createNotificationRouting({ api, instanceId, now = Date.now }) {
   const leases = new Map();
   const known = new Map();
+  const claiming = new Set();
   const keyOf = (item) => `${item.notificationId}:${item.notificationRevision}`;
   const itemsOf = (event) =>
     (event.events || [event])
@@ -99,10 +100,11 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
       const lease = leases.get(routine.id)?.id;
       if (!lease) return false;
       const key = keyOf(event);
-      if (known.has(key)) return false;
-      if (event.notificationClaim?.lease_id !== lease)
-        event.notificationClaim = { lease_id: lease };
+      if (known.has(key) || claiming.has(key)) return false;
+      claiming.add(key);
       try {
+        if (event.notificationClaim?.lease_id !== lease)
+          event.notificationClaim = { lease_id: lease };
         const sent = now();
         const result = await request(routine, event, "claim");
         event.notificationClaim.claim_token = result.data.claim_token;
@@ -114,6 +116,8 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
       } catch (error) {
         if ([404, 409].includes(error.status)) return false;
         throw error;
+      } finally {
+        claiming.delete(key);
       }
     },
     async releasePending(routine, event) {
@@ -143,6 +147,7 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
     async recover(routine) {
       const lease = leases.get(routine.id)?.id;
       if (!lease) return [];
+      const beforeRead = new Map(known);
       const page = await api(
         routine,
         "GET",
@@ -152,8 +157,13 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
         const active = new Set(
           (page.claims || []).map((row) => `${row.id}:${row.revision}`),
         );
-        for (const [key, item] of known)
-          if (item.notificationClaim.lease_id === lease && !active.has(key))
+        // A page may predate a claim registered while the request was in flight.
+        for (const [key, item] of beforeRead)
+          if (
+            item.notificationClaim.lease_id === lease &&
+            !active.has(key) &&
+            known.get(key) === item
+          )
             known.delete(key);
       }
       const recovered = [];
@@ -186,9 +196,11 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
           data: { id: row.id, type: row.type },
         };
         const key = keyOf(event);
+        const tracked = known.get(key);
+        if (claiming.has(key) || tracked !== beforeRead.get(key)) continue;
         if (row.handoff_key) {
           if (!(await owned(request(routine, event, "renew-claim")))) {
-            known.delete(key);
+            if (known.get(key) === tracked) known.delete(key);
             continue;
           }
           // The queue receipt is authoritative even if its HTTP response was lost.
@@ -200,7 +212,7 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
             true,
           );
           if (receipt.status === "succeeded") {
-            known.delete(key);
+            if (known.get(key) === tracked) known.delete(key);
           } else if (receipt.status === "missing" && row.handoff) {
             const members = row.handoff.members || [];
             const first = members[0];
@@ -226,7 +238,7 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
               // A member of the frozen batch is gone, so it can never be
               // admitted: this one goes back to the user instead of retrying.
               await owned(request(routine, event, "release"));
-              known.delete(key);
+              if (known.get(key) === tracked) known.delete(key);
               continue;
             }
             await api(
@@ -241,12 +253,16 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
           // Running or unreachable is uncertain: renew, never resend under a new key.
           continue;
         }
-        if (known.has(key)) {
-          known.set(key, {
-            ...known.get(key),
+        if (tracked) {
+          const refreshed = {
+            ...tracked,
             notificationClaim: event.notificationClaim,
-          });
-          if (!(await owned(request(routine, known.get(key), "renew-claim"))))
+          };
+          known.set(key, refreshed);
+          if (
+            !(await owned(request(routine, refreshed, "renew-claim"))) &&
+            known.get(key) === refreshed
+          )
             known.delete(key);
           continue;
         }
@@ -303,23 +319,34 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
     // `build(event)` renders the delivery for the alerts this worker still owns,
     // so an expired member never blocks, or appears in, the rest of its batch.
     async deliver(routine, event, build) {
-      const items = [];
-      const lost = new Set();
-      for (const item of itemsOf(event)) {
-        if (await owned(request(routine, item, "renew-claim"))) items.push(item);
-        else {
-          lost.add(keyOf(item));
-          known.delete(keyOf(item));
-        }
+      const candidates = itemsOf(event);
+      const renewed = new Map();
+      for (const item of candidates) {
+        const selected = renewed.get(item.notificationId);
+        if (selected?.notificationRevision >= item.notificationRevision) continue;
+        const key = keyOf(item);
+        const tracked = known.get(key);
+        if (await owned(request(routine, item, "renew-claim")))
+          renewed.set(item.notificationId, item);
+        else if (
+          tracked &&
+          known.get(key) === tracked &&
+          tracked.notificationClaim.lease_id === item.notificationClaim.lease_id &&
+          tracked.notificationClaim.claim_token === item.notificationClaim.claim_token
+        )
+          known.delete(key);
       }
-      if (lost.size) {
+      const items = [...renewed.values()];
+      if (candidates.length) {
+        const retained = new Set(items.map(keyOf));
         const events = (event.events || [event]).filter(
-          (item) => !item.notificationClaim || !lost.has(keyOf(item)),
+          (item) => !item.notificationClaim || retained.delete(keyOf(item)),
         );
         if (!events.length) return { skipped: "notification claims expired" };
         // Leftovers keep the batch key, which the host refuses once it was
         // admitted, so a lost response cannot deliver them twice.
-        event = event.events ? { ...event, events, count: events.length } : event;
+        if (event.events && events.length !== event.events.length)
+          event = { ...event, events, count: events.length };
       }
       items.sort((a, b) => a.notificationId.localeCompare(b.notificationId));
       const delivery = {
@@ -342,7 +369,7 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
           handoff: delivery,
           members: delivery.members,
         });
-      } else if (lost.size) {
+      } else if (candidates.length) {
         // Every alert is gone. If an admission whose response was lost took
         // them, the host already queued these leftovers under this key and
         // refuses it for a plain queue; only its own receipt can say so.
