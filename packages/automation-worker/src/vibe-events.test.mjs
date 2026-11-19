@@ -8,6 +8,7 @@ import {
   createCoalescer,
   eventLine,
   retryExhaustedEvent,
+  reviewRequestedEvent,
   deliversToAutopilot,
   journalEventToWorkerEvent,
   kindMatches,
@@ -346,4 +347,17 @@ test('a batch that already reports an exhausted retry does not announce another'
   assert.ok(!carriesRetryExhausted({ type: 'vk_event_batch', events: [other] }));
   assert.ok(!carriesRetryExhausted(other));
   assert.ok(!carriesRetryExhausted(undefined));
+});
+
+test('a re-requested review PR matches routines subscribed to pr. events', () => {
+  const event = reviewRequestedEvent({
+    connectorId: 'github-default', repository: 'acme/widgets', number: 7,
+    url: 'https://github.com/acme/widgets/pull/7', headSha: 'a'.repeat(40),
+    issueId: 'issue-1', awaitingEndedAt: '2026-01-02T00:00:00.000Z',
+  });
+  assert.equal(event.kind, 'pr.review_requested');
+  assert.equal(event.id, 'github-review-requested:acme/widgets#7:2026-01-02T00:00:00.000Z');
+  assert.ok(kindMatches(event.kind, ['pr.']));
+  assert.equal(event.connectorId, undefined); // must not trip a routine's connector filter
+  assert.match(eventLine(event), /^- worker pr\.review_requested · https:\/\/github\.com\/acme\/widgets\/pull\/7 · GitHub: Awaiting review from you again/);
 });

@@ -160,6 +160,8 @@ export async function collectReconciliation({
   const prs = new Map(
     scope.tracked.map((pr) => [`${pr.repository}#${pr.number}`, pr])
   );
+  // GitHub's "Awaiting review from you" (`review-requested:`) set.
+  const awaiting = new Set();
   for (const repository of repositories) {
     signal?.throwIfAborted();
     for (const pr of await discover(repository)) {
@@ -170,6 +172,7 @@ export async function collectReconciliation({
       )
         throw new Error('invalid review discovery');
       prs.set(`${repository}#${pr.number}`, { repository, number: pr.number });
+      awaiting.add(`${repository}#${pr.number}`);
     }
   }
   const issues = [];
@@ -290,6 +293,8 @@ export async function collectReconciliation({
   const heads = await readBatches(
     [...identities.values()],
     async ({ key, aliases, path, before, version }) => {
+      // A re-request changes this even when the head and reviews do not.
+      const awaitingReview = [key, ...aliases].some((ref) => awaiting.has(ref));
       const previous = terminalReviews[before.id];
       const age = now() - previous?.auditedAt;
       // Always refresh identity, head and state; reopening must invalidate the audit immediately.
@@ -300,7 +305,7 @@ export async function collectReconciliation({
         age < TERMINAL_REVIEW_AUDIT_MS
       ) {
         audited[before.id] = previous;
-        return { ...previous.facts, key, aliases };
+        return { ...previous.facts, key, aliases, awaitingReview };
       }
       const reviews = [];
       for (let page = 1; ; page++) {
@@ -322,6 +327,7 @@ export async function collectReconciliation({
         state: before.state,
         draft: before.draft,
         updated_at: before.updated_at,
+        awaitingReview,
         reviewEvents: sorted(
           reviews.map((review) => {
             if (
@@ -466,8 +472,14 @@ function reconcileBoardReviews(scope, record, snapshot, acknowledged, now) {
       )
       .map((row) => [row.key, row])
   );
-  for (const { key, aliases = [], head, state, reviewEvents } of snapshot.facts
-    ?.heads || []) {
+  for (const {
+    key,
+    aliases = [],
+    head,
+    state,
+    reviewEvents,
+    awaitingReview,
+  } of snapshot.facts?.heads || []) {
     const keys = [key, ...aliases].filter(
       (key) => boardPrs.has(key) || Object.hasOwn(pending, key)
     );
@@ -478,7 +490,11 @@ function reconcileBoardReviews(scope, record, snapshot, acknowledged, now) {
         Number.isFinite(Date.parse(at)) &&
         BOARD_DECISION_STATES.has(state)
     );
-    const fingerprint = sha([head, decisions]);
+    // Awaiting review from you again (same head) makes the row due; the
+    // unrequested fingerprint is unchanged so existing rows stay settled.
+    const fingerprint = sha(
+      awaitingReview ? [head, decisions, 'awaiting-review'] : [head, decisions]
+    );
     for (const key of keys) {
       const previous = record.boardReviews?.[key];
       reviews[key] = { head, fingerprint };

@@ -534,3 +534,41 @@ test('an aborted collection cannot persist reconciliation state', async () => {
   );
   assert.deepEqual(record, { terminalReviews: { 7: { auditedAt: 0 } } });
 });
+
+test('a same-head re-request (Awaiting review from you) changes facts and makes the board row due', async () => {
+  const h = fixture();
+  h.scope = { ...scope, boardPrs: ['synthetic/widgets#7'] };
+  h.discovered = [];
+  const record = {};
+  h.now = Date.parse('2002-03-06T00:00:00Z');
+  h.reviews = [
+    {
+      id: 30,
+      state: 'APPROVED',
+      commit_id: head,
+      submitted_at: '2002-03-05T00:00:00Z',
+      user: { login: 'synthetic-reviewer' },
+    },
+  ];
+  const poll = () =>
+    reconcileAutopilot({
+      scope: h.scope,
+      record,
+      collect: h.collect,
+      persist: async () => {},
+      now: () => h.now,
+    });
+  const first = await poll();
+  assert.equal(first.boardPending.length, 1); // first sighting of a decision
+  const settled = { ...record.boardReviews };
+  record.boardPending = {};
+  h.now += 1000;
+  assert.deepEqual((await poll()).boardPending, []);
+  assert.deepEqual(record.boardReviews, settled);
+  h.discovered = [{ repository: 'synthetic/widgets', number: 7 }];
+  h.now += 1000;
+  const requested = await poll();
+  assert.notEqual(requested.fingerprint, first.fingerprint);
+  assert.equal(requested.boardPending[0].key, 'synthetic/widgets#7');
+  assert.equal(requested.boardPending[0].head, head);
+});

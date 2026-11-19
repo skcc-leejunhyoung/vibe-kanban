@@ -208,6 +208,11 @@ export function githubReviewRuleVersion(rule) {
 
 // Independent of issue cursors/seed/seenIds: old, newly requested reviews and
 // previously seeded misses are reconciled against actual PR→issue links.
+// `loadPrs` is GitHub's "Awaiting review from you" (`review-requested:`) list.
+// A tracked PR that left it (review submitted, request removed, closed) and
+// comes back is awaiting this account again: `pr_review_requested`.
+// `stillAwaiting` confirms a departure on the PR itself, so a one-poll search
+// miss or the direct-only fallback list cannot start a review round.
 export async function reconcileGithubReviewPrs({
   config,
   repositories,
@@ -217,6 +222,8 @@ export async function reconcileGithubReviewPrs({
   pendingRetry,
   emit,
   persist,
+  stillAwaiting = async () => false,
+  now = () => new Date().toISOString(),
 }) {
   const rows = [];
   const errors = [];
@@ -225,11 +232,33 @@ export async function reconcileGithubReviewPrs({
   for (const repository of repositories) {
     try {
       const prs = await loadPrs(repository);
+      const awaiting = new Set(prs.map(githubIssueLinkKey));
+      for (const [key, row] of Object.entries(heads)) {
+        if (
+          !key.startsWith(`${repository}#`) ||
+          awaiting.has(key) ||
+          row.awaiting === false
+        )
+          continue;
+        // Pre-upgrade rows (no flag) were not seen awaiting: nothing to confirm.
+        if (row.awaiting === true) {
+          const number = Number(key.slice(repository.length + 1));
+          try {
+            if (await stillAwaiting({ repository, number })) continue;
+          } catch {
+            continue; // unconfirmed: ask again next poll
+          }
+        }
+        // When it left identifies the round its return re-requests.
+        row.awaiting = false;
+        row.awaitingEndedAt = now();
+      }
       for (const pr of prs) {
         try {
           const key = githubIssueLinkKey(pr);
           const head = await loadHead(pr);
-          const previousHeadSha = heads[key]?.headSha || null;
+          const previous = heads[key];
+          const previousHeadSha = previous?.headSha || null;
           let tracking = await findTracking(pr, head);
           const retry = pendingRetry(pr);
           if ((!tracking || tracking.needsDelivery) && !retry) {
@@ -240,7 +269,17 @@ export async function reconcileGithubReviewPrs({
           if (tracking && previousHeadSha && previousHeadSha !== head.headSha) {
             await emit({ ...pr, ...head, type: 'pr_updated', previousHeadSha });
           }
-          heads[key] = head;
+          if (tracking && previous?.awaiting === false) {
+            await emit({
+              ...pr,
+              ...head,
+              type: 'pr_review_requested',
+              issueId: tracking.issueId,
+              previousHeadSha,
+              awaitingEndedAt: previous.awaitingEndedAt || null,
+            });
+          }
+          heads[key] = { ...head, awaiting: true };
           for (const target of tracking?.targets || []) {
             if (target.error)
               errors.push({

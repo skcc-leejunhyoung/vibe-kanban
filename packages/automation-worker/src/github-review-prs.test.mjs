@@ -365,3 +365,66 @@ test('an unreadable PR remains visibly missing without skipping later PRs in the
   assert.equal(result.open[1].status, 'tracked');
   assert.equal(h.events.length, 1);
 });
+
+test('a tracked PR back in "Awaiting review from you" is a re-request, even at the same head', async () => {
+  const h = harness();
+  let awaiting = true;
+  const loadPrs = h.args.loadPrs;
+  h.args.loadPrs = async (repo) => (awaiting ? loadPrs(repo) : []);
+  h.args.now = () => '2026-01-02T00:00:00.000Z';
+  await reconcileGithubReviewPrs(h.args);
+  await reconcileGithubReviewPrs(h.args);
+  assert.deepEqual(h.events.map((e) => e.type), ['pr', 'pr']);
+  awaiting = false; // review submitted: GitHub drops the request
+  await reconcileGithubReviewPrs(h.args);
+  assert.equal(h.args.config.reviewPrHeads[`${repository}#42`].awaiting, false);
+  awaiting = true; // author re-requests without pushing
+  await reconcileGithubReviewPrs(h.args);
+  const requested = h.events.filter((e) => e.type === 'pr_review_requested');
+  assert.equal(requested.length, 2);
+  assert.equal(requested[1].repository, repository);
+  assert.equal(requested[1].headSha, head.headSha);
+  assert.equal(requested[1].issueId, 'issue-1');
+  assert.equal(requested[1].awaitingEndedAt, '2026-01-02T00:00:00.000Z');
+  // Still awaiting: announced once per round.
+  await reconcileGithubReviewPrs(h.args);
+  assert.equal(h.events.filter((e) => e.type === 'pr_review_requested').length, 2);
+});
+
+test('rows saved before awaiting tracking do not announce on upgrade', async () => {
+  const h = harness({
+    reviewPrHeads: { [`${repository}#42`]: { ...head }, 'example/app#42': { ...head, headSha: 'b'.repeat(40) } },
+  });
+  h.links.set(`https://github.com/${repository}/pull/42`, { issueId: 'TEST-1', linked: true });
+  h.links.set('https://github.com/example/app/pull/42', { issueId: 'TEST-2', linked: true });
+  await reconcileGithubReviewPrs(h.args);
+  assert.deepEqual(h.events, []);
+});
+
+test('a search miss GitHub does not confirm (or cannot check) is not a departure', async () => {
+  const h = harness();
+  let listed = true;
+  let confirm = async () => true;
+  const loadPrs = h.args.loadPrs;
+  h.args.loadPrs = async (repo) => (listed ? loadPrs(repo) : []);
+  h.args.stillAwaiting = (pr) => confirm(pr);
+  await reconcileGithubReviewPrs(h.args);
+  listed = false; // one-poll miss while GitHub still requests the review
+  await reconcileGithubReviewPrs(h.args);
+  confirm = async () => {
+    throw new Error('GitHub 502');
+  };
+  await reconcileGithubReviewPrs(h.args);
+  assert.equal(h.args.config.reviewPrHeads[`${repository}#42`].awaiting, true);
+  listed = true;
+  await reconcileGithubReviewPrs(h.args);
+  assert.deepEqual(h.events.map((e) => e.type), ['pr', 'pr']);
+  const asked = [];
+  confirm = async (pr) => (asked.push(pr), false); // review submitted
+  listed = false;
+  await reconcileGithubReviewPrs(h.args);
+  assert.deepEqual(asked.at(-1), { repository, number: 42 });
+  listed = true;
+  await reconcileGithubReviewPrs(h.args);
+  assert.equal(h.events.filter((e) => e.type === 'pr_review_requested').length, 2);
+});

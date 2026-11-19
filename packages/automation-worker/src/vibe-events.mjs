@@ -163,6 +163,46 @@ export function retryExhaustedEvent({
   };
 }
 
+// GitHub put a tracked review PR back in "Awaiting review from you" (a
+// re-request, possibly at the same head). A journal-shaped `pr.` event so the
+// Autopilot routine starts a new review round. The PR title is left out: it is
+// third-party text.
+export function reviewRequestedEvent({
+  connectorId, repository, number, url, headSha, previousHeadSha, issueId, awaitingEndedAt,
+}) {
+  return {
+    id: `github-review-requested:${repository}#${number}:${awaitingEndedAt || headSha}`,
+    source: 'automation',
+    type: 'vk_event',
+    kind: 'pr.review_requested',
+    autopilot: false,
+    cursor: null,
+    hostId: null,
+    hostName: 'worker',
+    workspaceId: null,
+    sessionId: null,
+    executionId: null,
+    at: new Date().toISOString(),
+    title: [
+      'pr.review_requested',
+      url,
+      'GitHub: Awaiting review from you again - start a new review round',
+      issueId ? `issue ${issueId}` : null,
+      headSha ? `head ${headSha}` : null,
+    ].filter(Boolean).join(' · '),
+    data: {
+      connector_id: connectorId ?? null,
+      repository,
+      number,
+      pr_url: url,
+      head_sha: headSha ?? null,
+      previous_head_sha: previousHeadSha ?? null,
+      issue_id: issueId ?? null,
+      awaiting_ended_at: awaitingEndedAt ?? null,
+    },
+  };
+}
+
 // The event (or a coalesced batch of them) already reports a retry that ran out.
 export function carriesRetryExhausted(event) {
   const isExhausted = (item) => item?.kind === 'automation.retry_exhausted';

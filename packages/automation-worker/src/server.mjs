@@ -92,6 +92,7 @@ import {
   kindMatches,
   createCoalescer,
   retryExhaustedEvent,
+  reviewRequestedEvent,
   carriesRetryExhausted,
   deliversToAutopilot,
   journalEventToWorkerEvent,
@@ -1343,6 +1344,27 @@ async function announceRetryExhausted(details) {
       error: errorMessage(error),
     });
   }
+}
+
+// Unlike an exhausted retry, a delivery that throws leaves the PR "left" so
+// the next review poll announces it again; routine run failures themselves go
+// to the routine retry queue.
+async function announceReviewRequested(connector, pr) {
+  const event = reviewRequestedEvent({
+    connectorId: connector.id,
+    repository: pr.repository,
+    number: pr.number,
+    url: pr.html_url,
+    headSha: pr.headSha,
+    previousHeadSha: pr.previousHeadSha,
+    issueId: pr.issueId,
+    awaitingEndedAt: pr.awaitingEndedAt,
+  });
+  const key = automationEventKey(event);
+  // A crash mid-delivery leaves `indeterminate`: redeliver (a repeat wake is
+  // harmless, a lost one skips the round).
+  if (state.eventReceipts[key]?.status === 'succeeded') return;
+  await processAutomationEvent(key, event);
 }
 
 async function processAutomationEvent(key, event) {
@@ -2675,6 +2697,8 @@ async function pollGithubReviews(connector, login) {
         login
       ),
     loadHead: (pr) => githubPrBranches(connector, pr.number, pr.repository),
+    stillAwaiting: ({ repository, number }) =>
+      githubPrAwaitingReview(connector, repository, number, login),
     findTracking: (pr, head) =>
       reconcileGithubReviewTargets(connector, { ...pr, ...head }),
     pendingRetry: (pr) => {
@@ -2693,28 +2717,30 @@ async function pollGithubReviews(connector, login) {
         : null;
     },
     emit: (pr) =>
-      runRules({
-        source: 'github',
-        type: pr.type,
-        connectorId: connector.id,
-        repo: pr.repository,
-        number: pr.number,
-        title: pr.title,
-        url: pr.html_url,
-        state: pr.state,
-        user: pr.user?.login || null,
-        assignees: (pr.assignees || []).map((a) => a.login),
-        labels: (pr.labels || []).map((l) =>
-          typeof l === 'string' ? l : l.name
-        ),
-        body: pr.body || '',
-        headRef: pr.headRef,
-        baseRef: pr.baseRef,
-        headSha: pr.headSha,
-        previousHeadSha: pr.previousHeadSha || null,
-        updatedAt: pr.updated_at,
-        raw: pr,
-      }),
+      pr.type === 'pr_review_requested'
+        ? announceReviewRequested(connector, pr)
+        : runRules({
+            source: 'github',
+            type: pr.type,
+            connectorId: connector.id,
+            repo: pr.repository,
+            number: pr.number,
+            title: pr.title,
+            url: pr.html_url,
+            state: pr.state,
+            user: pr.user?.login || null,
+            assignees: (pr.assignees || []).map((a) => a.login),
+            labels: (pr.labels || []).map((l) =>
+              typeof l === 'string' ? l : l.name
+            ),
+            body: pr.body || '',
+            headRef: pr.headRef,
+            baseRef: pr.baseRef,
+            headSha: pr.headSha,
+            previousHeadSha: pr.previousHeadSha || null,
+            updatedAt: pr.updated_at,
+            raw: pr,
+          }),
     persist: persistState,
   });
   await log(
@@ -2888,6 +2914,34 @@ async function ensureGithubReviewIssueReady(connector, issueId, event) {
       throw error;
     }
   }
+}
+
+// Still "Awaiting review from you" on the PR itself: open, and the account (or
+// any team, whose membership is not checked) is a requested reviewer. Drafts
+// count, as on GitHub. A missing PR (404) has left.
+async function githubPrAwaitingReview(connector, repository, number, login) {
+  const config = connector.config || {};
+  const apiBase = String(config.apiBase || 'https://api.github.com').replace(
+    /\/+$/,
+    ''
+  );
+  const response = await fetch(
+    `${apiBase}/repos/${repository}/pulls/${number}`,
+    { headers: githubHeaders(config.token) }
+  );
+  if (response.status === 404) return false;
+  if (!response.ok)
+    throw new Error(
+      `GitHub PR review request lookup failed for ${repository}#${number}: ${response.status}`
+    );
+  const pr = await response.json();
+  return (
+    pr.state === 'open' &&
+    ((pr.requested_reviewers || []).some(
+      (user) => String(user?.login).toLowerCase() === login.toLowerCase()
+    ) ||
+      (pr.requested_teams || []).length > 0)
+  );
 }
 
 // Fetch a PR's head/base branch names (the issues/search payloads omit them).

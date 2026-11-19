@@ -211,8 +211,9 @@ resumes without this evidence retain agent delegation.
 
 Both periodic checks and completion events enter the same router. Unchanged
 facts are handled by code, with no Decisions request or agent admission. A new
-baseline, changed head, same-head new/dismissed review, changed queue or registry,
-or incomplete source read retains the original agent delegation. The adapter
+baseline, changed head, same-head new/dismissed review, a PR entering or leaving
+"Awaiting review from you", changed queue or registry, or incomplete source read
+retains the original agent delegation. The adapter
 preserves all pending/cancelled/held ledger states; it never marks them complete.
 Both official checkpoints must point to the same successful evidence file with
 `coverage: {projects: [{projectId, reviewTagId}], repositories: ["owner/repo"], hosts: ["machine-id"]}`.
@@ -237,7 +238,8 @@ the scope for retry. A shared token refresh can still complete for other callers
 
 Set `boardNoteId` to the published Drawer board's note ID to verify board
 corrections. For tracked board entries, the worker retains each changed decision
-review, including a new decision at the same head. It also checks existing open
+review, including a new decision at the same head, and a same-head re-request
+("Awaiting review from you" again). It also checks existing open
 rows with decisions on the first observation. While a row needs attention, the
 adapter saves its `key`, `head` and `fingerprint` in
 `board-reconciliation.json` under the evidence directory and uses the original
@@ -359,7 +361,14 @@ miss would never be re-tried.
   sets. Identity is repository + PR number; the source repository and head SHA
   are retained in runtime state and initial issue metadata. Head changes emit
   `pr_updated` with `previousHeadSha` without creating another issue, and update
-  that issue's head metadata. Existing structural PR links (including manual
+  that issue's head metadata. The search is GitHub's "Awaiting review from you"
+  list. A tracked PR that leaves it (review submitted, request removed, or
+  closed — confirmed on the PR itself, so a one-poll search miss does not
+  count; drafts stay awaiting, as on GitHub) and returns is a re-request, even
+  at the same head. The worker then dispatches a `pr.review_requested` event
+  (PR URL, head, issue ID; no PR title) to routines; an Autopilot routine whose
+  `vk_event` kinds include `pr.` starts a new review round. It is announced
+  once per round; a delivery that throws is retried on the next poll. Existing structural PR links (including manual
   recovery) and prior assigned-PR `issueMap` entries are adopted in the intended
   project. New review issues use a deterministic client UUID per project + PR
   URL, independent of head SHA. After a lost create response or server restart,
