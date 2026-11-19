@@ -855,6 +855,14 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const activeExecutor =
     latestConfig?.executor ??
     (session?.executor as BaseCodingAgent | null | undefined);
+  // A queued message for another agent (a handoff) or model names it.
+  const queuedTarget = (config: ExecutorConfig) =>
+    config.executor !== activeExecutor ||
+    (!!config.model_id && config.model_id !== latestConfig?.model_id)
+      ? [toPrettyCase(config.executor), config.model_id]
+          .filter(Boolean)
+          .join(' · ')
+      : null;
 
   // Message editor state
   const {
@@ -1026,12 +1034,20 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!editingQueuedId || !localMessage.trim() || !executorConfig) return;
     const messageId = editingQueuedId;
     const message = localMessage;
+    // Editing the text never moves a message to another agent: a handoff
+    // queued for one keeps it while the composer is on another.
+    const queuedConfig = queuedMessages.find((m) => m.id === messageId)?.data
+      .executor_config;
+    const config =
+      queuedConfig && queuedConfig.executor !== executorConfig.executor
+        ? queuedConfig
+        : executorConfig;
     // The list already shows the edit; leave edit mode now and only report a
     // refusal (the list is rolled back by the hook).
     const editedSession = sessionId;
     exitQueuedEdit();
     try {
-      await updateQueued(messageId, message, executorConfig);
+      await updateQueued(messageId, message, config);
     } catch (error) {
       // The list rolled back: keep the edit in the composer, in front of the
       // draft that came back when edit mode closed.
@@ -1051,6 +1067,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     editingQueuedId,
     localMessage,
     executorConfig,
+    queuedMessages,
     sessionId,
     updateQueued,
     exitQueuedEdit,
@@ -1983,7 +2000,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       sessionId,
       prompt,
       executorConfig,
-      latestCreatedAtMs(processes)
+      latestCreatedAtMs(processes),
+      activeExecutor && activeExecutor !== executorConfig.executor
+        ? { handoffFrom: activeExecutor }
+        : undefined
     );
     const { deferred, stopReal } = createStopReal(workspaceId, sessionId);
     const pendingState: PendingSend = {
@@ -2066,6 +2086,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     localMessage,
     reviewMarkdown,
     executorConfig,
+    activeExecutor,
     processes,
     steer,
     cancelDebouncedSave,
@@ -2657,6 +2678,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           message: m.data.message,
           startError: m.start_error,
           editable: !m.artifact_request,
+          target: queuedTarget(m.data.executor_config),
         }))}
       onRemoveQueued={handleRemoveQueued}
       onSteerQueued={
@@ -2692,7 +2714,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
               selected: handoffTarget,
               options: executorOptions,
               onChange: handleHandoff,
-              disabled: isAttemptRunning || !!pendingSend,
+              // While a turn runs, the pick applies to queued messages: each
+              // hands off when its turn comes.
+              disabled: !!pendingSend,
             }
           : undefined
       }

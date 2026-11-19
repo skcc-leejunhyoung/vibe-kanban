@@ -51,9 +51,16 @@ function appendAgentTurnEntries(
         .replace(/[_-]+/g, ' ')
         .toLowerCase()
         .replace(/\b\w/g, (char) => char.toUpperCase());
+    // The target as it runs: agent, and the model when one was picked.
+    const target = [
+      prettyExecutor(action.executor_config.executor),
+      action.executor_config.model_id,
+    ]
+      .filter(Boolean)
+      .join(' · ');
     const handoffEntry: NormalizedEntry = {
       entry_type: { type: 'system_message' },
-      content: `--- ${prettyExecutor(action.handoff_from)} → ${prettyExecutor(action.executor_config.executor)} ---`,
+      content: `--- ${prettyExecutor(action.handoff_from)} → ${target} ---`,
       timestamp: null,
     };
     turnEntries.push(

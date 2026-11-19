@@ -38,6 +38,36 @@ pub struct CodingAgentInitialRequest {
 }
 
 impl CodingAgentInitialRequest {
+    /// The official handoff of Vibe session `vibe_session_id` from `from` to
+    /// `executor_config`'s agent: a fresh native session told where it is,
+    /// with the user's own words kept for the conversation view.
+    pub fn handoff(
+        user_prompt: &str,
+        executor_config: ExecutorConfig,
+        working_dir: Option<String>,
+        from: BaseCodingAgent,
+        from_session_id: Option<String>,
+        vibe_session_id: uuid::Uuid,
+    ) -> Self {
+        let prompt = format!(
+            "You are taking over an existing Vibe Kanban workspace session from {from}. \
+Continue the work in place without restarting or discarding existing changes. The prior conversation \
+remains visible to the user in Vibe Kanban, but is not replayed into your native session. Inspect the \
+repository state, git diff, and relevant files before proceeding. Vibe session ID: {vibe_session_id}. Previous agent \
+session ID: {}. Working directory: {}.\n\nUser request:\n{user_prompt}",
+            from_session_id.as_deref().unwrap_or("unavailable"),
+            working_dir.as_deref().unwrap_or("workspace root"),
+        );
+        Self {
+            prompt,
+            executor_config,
+            working_dir,
+            handoff_from: Some(from),
+            handoff_session_id: from_session_id,
+            handoff_user_prompt: Some(user_prompt.to_string()),
+        }
+    }
+
     pub fn base_executor(&self) -> BaseCodingAgent {
         self.executor_config.executor
     }

@@ -671,3 +671,30 @@ for (const processCount of [1, 20]) {
     if (profile) expect(after.maxMs).toBeLessThan(2);
   }, 20_000);
 }
+
+it('names the handoff target with its model in the turn divider', () => {
+  const handoff = makeProcess('handoff', 1, {
+    typ: {
+      type: 'CodingAgentInitialRequest',
+      prompt: 'bootstrap',
+      executor_config: {
+        executor: BaseCodingAgent.CLAUDE_CODE,
+        model_id: 'claude-opus-5-5',
+      },
+      working_dir: null,
+      handoff_from: BaseCodingAgent.CODEX,
+      handoff_session_id: 'codex-thread',
+      handoff_user_prompt: 'continue in Claude',
+    },
+    next_action: null,
+  });
+  const { entries } = entryDerivation.deriveConversationEntries({
+    source: sourceOf([[handoff, [entry()]]]),
+    scriptOutputCache: new Map(),
+  });
+  const contents = entries.flatMap((e) =>
+    e.type === 'NORMALIZED_ENTRY' ? [e.content.content] : []
+  );
+  expect(contents).toContain('--- Codex → Claude Code · claude-opus-5-5 ---');
+  expect(contents).toContain('continue in Claude');
+});

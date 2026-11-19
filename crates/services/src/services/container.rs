@@ -188,6 +188,65 @@ pub async fn lock_repo_checkout(repo_path: &Path) -> tokio::sync::OwnedMutexGuar
     lock.lock_owned().await
 }
 
+/// What sending `prompt` to `executor_config`'s agent in `session` runs: a
+/// follow-up of the native session the latest turn left, or, when that agent
+/// is another one, its official handoff (fresh native session, same Vibe
+/// session and worktree). `reset` rewinds the follow-up to the latest turn's
+/// message (a retry).
+pub async fn coding_turn_request(
+    pool: &sqlx::SqlitePool,
+    session: &Session,
+    prompt: &str,
+    executor_config: &ExecutorConfig,
+    reset: bool,
+) -> Result<ExecutorActionType, ContainerError> {
+    let working_dir = session
+        .agent_working_dir
+        .as_ref()
+        .filter(|dir| !dir.is_empty())
+        .cloned();
+    let resume = CodingAgentTurn::find_latest_session_info(pool, session.id).await?;
+    // The agent whose session a follow-up would continue; with none, the one
+    // the session last ran (its turns never got a native session).
+    let source = match CodingAgentTurn::find_latest_session_executor(pool, session.id).await? {
+        Some(executor) => Some(executor),
+        None => ExecutionProcess::latest_executor_profile_for_session(pool, session.id)
+            .await?
+            .map(|profile| profile.executor),
+    };
+    let target = executor_config.executor;
+    Ok(match (source.filter(|source| *source != target), resume) {
+        (Some(from), resume) => {
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest::handoff(
+                prompt.trim(),
+                executor_config.clone(),
+                working_dir,
+                from,
+                resume.map(|info| info.session_id),
+                session.id,
+            ))
+        }
+        (None, Some(info)) => {
+            ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
+                prompt: prompt.to_string(),
+                session_id: info.session_id,
+                reset_to_message_id: if reset { info.message_id } else { None },
+                discard_from_message_id: info.discard_from_message_id,
+                executor_config: executor_config.clone(),
+                working_dir,
+            })
+        }
+        (None, None) => ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+            prompt: prompt.to_string(),
+            executor_config: executor_config.clone(),
+            working_dir,
+            handoff_from: None,
+            handoff_session_id: None,
+            handoff_user_prompt: None,
+        }),
+    })
+}
+
 /// Per-session stop counters of starts in flight; see
 /// [`ContainerService::watch_session_stops`].
 pub type SessionStopSignals = Arc<std::sync::Mutex<HashMap<Uuid, tokio::sync::watch::Sender<u64>>>>;
@@ -1990,64 +2049,30 @@ pub trait ContainerService {
         data: &DraftFollowUpData,
         artifact_request: Option<&super::artifact_interactions::ArtifactInteractionRef>,
     ) -> Result<(ExecutionProcess, ExecutorAction), ContainerError> {
-        let executor_profile_id = data.executor_config.profile_id();
-
-        // Validate executor matches session if session has prior executions
-        let expected_executor: Option<String> =
-            ExecutionProcess::latest_executor_profile_for_session(&self.db().pool, session.id)
-                .await?
-                .map(|profile| profile.executor.to_string())
-                .or_else(|| session.executor.clone());
-
-        if let Some(expected) = expected_executor {
-            let actual = executor_profile_id.executor.to_string();
-            if expected != actual {
-                return Err(SessionError::ExecutorMismatch { expected, actual }.into());
+        // An agent this host can't run fails here, with no turn recorded: the
+        // message waits in front with the reason, never going to another one.
+        #[cfg(not(feature = "qa-mode"))]
+        {
+            let profile_id = data.executor_config.profile_id();
+            if ExecutorConfigs::get_cached()
+                .get_coding_agent(&profile_id)
+                .is_none()
+            {
+                return Err(ExecutorError::UnknownExecutorType(profile_id.to_string()).into());
             }
         }
-
-        if session.executor.is_none() {
-            Session::update_executor(
-                &self.db().pool,
-                session.id,
-                &executor_profile_id.executor.to_string(),
-            )
-            .await?;
-        }
-
-        // Get latest agent turn for session continuity (from coding agent turns)
-        let latest_session_info =
-            CodingAgentTurn::find_latest_session_info(&self.db().pool, session.id).await?;
-
+        // A message queued for another agent is that agent's official
+        // handoff, never a turn of the current one.
+        let action_type = coding_turn_request(
+            &self.db().pool,
+            session,
+            &data.message,
+            &data.executor_config,
+            false,
+        )
+        .await?;
         let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
         let cleanup_action = self.cleanup_actions_for_repos(&repos);
-
-        let working_dir = session
-            .agent_working_dir
-            .as_ref()
-            .filter(|dir| !dir.is_empty())
-            .cloned();
-
-        let action_type = if let Some(info) = latest_session_info {
-            ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
-                prompt: data.message.clone(),
-                session_id: info.session_id,
-                reset_to_message_id: None,
-                discard_from_message_id: info.discard_from_message_id,
-                executor_config: data.executor_config.clone(),
-                working_dir: working_dir.clone(),
-            })
-        } else {
-            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
-                prompt: data.message.clone(),
-                executor_config: data.executor_config.clone(),
-                working_dir,
-                handoff_from: None,
-                handoff_session_id: None,
-                handoff_user_prompt: None,
-            })
-        };
-
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
         let _lifecycle = if artifact_request.is_some() {
@@ -2068,6 +2093,15 @@ pub trait ContainerService {
                 &ExecutionProcessRunReason::CodingAgent,
             )
             .await?;
+        // The session now runs this agent (a handoff, or its first turn). Only
+        // a label: the row above already decides what the next turn resumes.
+        let executor = data.executor_config.executor.to_string();
+        if session.executor.as_deref() != Some(executor.as_str())
+            && let Err(error) =
+                Session::update_executor(&self.db().pool, session.id, &executor).await
+        {
+            tracing::warn!(session_id = %session.id, %error, "Could not record the session's executor");
+        }
         if let Some(reference) = artifact_request
             && let Err(error) =
                 super::artifact_interactions::mark_started(reference, record.id).await

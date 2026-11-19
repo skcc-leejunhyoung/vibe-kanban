@@ -793,7 +793,7 @@ const COMMANDS: &[Cmd] = &[
     ),
     special(
         &["session", "send"],
-        "Send a prompt: run now, --queue behind the running turn, or --steer to interrupt",
+        "Send a prompt: run now, --queue behind the running turn, or --steer to interrupt; --queue with another --executor hands the session off when its turn comes",
         "session.send",
         &[
             SESSION,

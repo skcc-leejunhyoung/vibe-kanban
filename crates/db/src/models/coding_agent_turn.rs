@@ -1,8 +1,11 @@
 use chrono::{DateTime, Utc};
+use executors::executors::BaseCodingAgent;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 use ts_rs::TS;
 use uuid::Uuid;
+
+use super::execution_process::ExecutorActionField;
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
 pub struct CodingAgentTurn {
@@ -74,6 +77,34 @@ impl CodingAgentTurn {
         )
         .fetch_optional(pool)
         .await
+    }
+
+    /// Executor of the turn [`Self::find_latest_session_info`] resumes: the
+    /// agent whose native session a follow-up continues. A turn that never
+    /// started one (a handoff whose agent failed to start) does not count, so
+    /// retrying it hands off again instead of resuming someone else's session.
+    pub async fn find_latest_session_executor(
+        pool: &SqlitePool,
+        session_id: Uuid,
+    ) -> Result<Option<BaseCodingAgent>, sqlx::Error> {
+        let action: Option<sqlx::types::Json<ExecutorActionField>> = sqlx::query_scalar(
+            r#"SELECT ep.executor_action
+               FROM execution_processes ep
+               CROSS JOIN coding_agent_turns cat ON ep.id = cat.execution_process_id
+               WHERE ep.session_id = $1
+                 AND ep.run_reason = 'codingagent'
+                 AND ep.dropped = FALSE
+                 AND cat.agent_session_id IS NOT NULL
+               ORDER BY ep.created_at DESC
+               LIMIT 1"#,
+        )
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?;
+        Ok(action.and_then(|action| match action.0 {
+            ExecutorActionField::ExecutorAction(action) => action.base_executor(),
+            ExecutorActionField::Other(_) => None,
+        }))
     }
 
     /// Find coding agent turn by execution process ID

@@ -27,14 +27,16 @@ use db::models::{
 use deployment::Deployment;
 use executors::{
     actions::{
-        ExecutorAction, ExecutorActionType, coding_agent_follow_up::CodingAgentFollowUpRequest,
-        coding_agent_initial::CodingAgentInitialRequest,
+        ExecutorAction, ExecutorActionType, coding_agent_initial::CodingAgentInitialRequest,
     },
     executors::BaseCodingAgent,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
 use serde::{Deserialize, Serialize};
-use services::services::{container::ContainerService, issue_gating};
+use services::services::{
+    container::{ContainerService, coding_turn_request},
+    issue_gating,
+};
 use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -513,39 +515,19 @@ async fn follow_up_inner(
             .await?;
     }
 
-    let latest_session_info = CodingAgentTurn::find_latest_session_info(pool, session.id).await?;
-
-    let prompt = payload.prompt;
-
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
 
-    let working_dir = session
-        .agent_working_dir
-        .as_ref()
-        .filter(|dir| !dir.is_empty())
-        .cloned();
-
-    let action_type = if let Some(info) = latest_session_info {
-        let is_reset = payload.retry_process_id.is_some();
-        ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
-            prompt: prompt.clone(),
-            session_id: info.session_id,
-            reset_to_message_id: if is_reset { info.message_id } else { None },
-            discard_from_message_id: info.discard_from_message_id,
-            executor_config: executor_config.clone(),
-            working_dir: working_dir.clone(),
-        })
-    } else {
-        ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
-            prompt,
-            executor_config: executor_config.clone(),
-            working_dir,
-            handoff_from: None,
-            handoff_session_id: None,
-            handoff_user_prompt: None,
-        })
-    };
+    // After a handoff whose agent never started a native session, this is
+    // that handoff again rather than a resume of the previous agent's session.
+    let action_type = coding_turn_request(
+        pool,
+        &session,
+        &payload.prompt,
+        &executor_config,
+        payload.retry_process_id.is_some(),
+    )
+    .await?;
 
     let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new))
         .with_automation_origin(automation_origin);
@@ -742,26 +724,15 @@ pub async fn handoff(
         .cloned();
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
-    let prompt = format!(
-        "You are taking over an existing Vibe Kanban workspace session from {source_executor}. \
-Continue the work in place without restarting or discarding existing changes. The prior conversation \
-remains visible to the user in Vibe Kanban, but is not replayed into your native session. Inspect the \
-repository state, git diff, and relevant files before proceeding. Vibe session ID: {}. Previous agent \
-session ID: {}. Working directory: {}.\n\nUser request:\n{}",
-        session.id,
-        source_native_session_id.as_deref().unwrap_or("unavailable"),
-        working_dir.as_deref().unwrap_or("workspace root"),
-        user_prompt
-    );
     let action = ExecutorAction::new(
-        ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
-            prompt,
-            executor_config: payload.executor_config.clone(),
+        ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest::handoff(
+            user_prompt,
+            payload.executor_config.clone(),
             working_dir,
-            handoff_from: Some(source_executor),
-            handoff_session_id: source_native_session_id,
-            handoff_user_prompt: Some(user_prompt.to_string()),
-        }),
+            source_executor,
+            source_native_session_id,
+            session.id,
+        )),
         cleanup_action.map(Box::new),
     );
 

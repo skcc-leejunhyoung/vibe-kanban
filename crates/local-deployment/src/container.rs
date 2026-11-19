@@ -6799,7 +6799,15 @@ done
         assert!(queued[0].start_error.is_some());
     }
 
-    const MISMATCH: &str = "Executor mismatch";
+    /// A message for an agent profile this host can't run: its start fails
+    /// before any turn is recorded.
+    fn unavailable(message: &str) -> DraftFollowUpData {
+        let mut data = follow_up(message, BaseCodingAgent::ClaudeCode);
+        data.executor_config.variant = Some("NOT_ON_THIS_HOST".into());
+        data
+    }
+
+    const UNAVAILABLE: &str = "Unknown executor type";
 
     #[cfg(unix)]
     #[tokio::test]
@@ -7048,7 +7056,7 @@ done
                 .await
                 .unwrap();
             let queue = &container.queued_message_service;
-            let mut queued = queue.enqueue(session.id, follow_up("next", BaseCodingAgent::Codex));
+            let mut queued = queue.enqueue(session.id, unavailable("next"));
             container
                 .finalize_with_queued_followup(&ctx, false, false)
                 .await;
@@ -7161,7 +7169,7 @@ done
                         .contains_key(&session.id)
                 );
                 drop(hold);
-                queued = queue.enqueue(session.id, follow_up("next", BaseCodingAgent::Codex));
+                queued = queue.enqueue(session.id, unavailable("next"));
                 let result = if scenario == "failed drain releases last hold" {
                     container.drain_queue_if_idle(&session, &workspace).await
                 } else {
@@ -7220,7 +7228,7 @@ done
                     if scenario == "failed before spawn" {
                         "Container ref not found"
                     } else {
-                        MISMATCH
+                        UNAVAILABLE
                     }
                 ));
             }
@@ -7231,20 +7239,20 @@ done
     async fn queue_drain_start_failure_keeps_the_message_and_the_queue() {
         let (container, session, workspace) = queue_test_container().await;
         let queue = &container.queued_message_service;
-        let a = queue.enqueue(session.id, follow_up("a", BaseCodingAgent::Codex));
+        let a = queue.enqueue(session.id, unavailable("a"));
         let b = queue.enqueue(session.id, follow_up("b", BaseCodingAgent::ClaudeCode));
         let turn = finished_turn(&session, &workspace, ExecutionProcessStatus::Completed);
 
         container
             .finalize_with_queued_followup(&turn, false, false)
             .await;
-        assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
+        assert_kept_in_front(&container, &session, a.id, b.id, UNAVAILABLE).await;
 
         // The next finished turn doesn't retry it, or run `b` ahead of it.
         container
             .finalize_with_queued_followup(&turn, false, false)
             .await;
-        assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
+        assert_kept_in_front(&container, &session, a.id, b.id, UNAVAILABLE).await;
     }
 
     #[tokio::test]
@@ -7252,7 +7260,7 @@ done
         let (container, session, workspace) = queue_test_container().await;
         let queue = &container.queued_message_service;
         let b = queue.enqueue(session.id, follow_up("b", BaseCodingAgent::ClaudeCode));
-        let a = queue.enqueue_front(session.id, follow_up("a", BaseCodingAgent::Codex));
+        let a = queue.enqueue_front(session.id, unavailable("a"));
         assert!(queue.mark_steering(session.id, a.id));
         let killed = finished_turn(&session, &workspace, ExecutionProcessStatus::Killed);
 
@@ -7261,7 +7269,7 @@ done
             .await
             .unwrap();
         assert!(!queue.is_steering(session.id));
-        assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
+        assert_kept_in_front(&container, &session, a.id, b.id, UNAVAILABLE).await;
 
         // A plain stop still discards the queue.
         container
@@ -7269,6 +7277,150 @@ done
             .await
             .unwrap();
         assert!(!queue.has_queued(session.id));
+    }
+
+    /// Coding-agent turns of the session, oldest first: process id + request.
+    async fn coding_requests(
+        container: &LocalContainerService,
+        session_id: Uuid,
+    ) -> Vec<(Uuid, ExecutorActionType)> {
+        ExecutionProcess::find_by_session_id(&container.db.pool, session_id, false)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|process| process.run_reason == ExecutionProcessRunReason::CodingAgent)
+            .map(|process| (process.id, process.executor_action().unwrap().typ().clone()))
+            .collect()
+    }
+
+    /// The handoff `request` must be: from `from`'s native session `native`.
+    fn assert_handoff(request: &ExecutorActionType, from: BaseCodingAgent, native: &str) {
+        let ExecutorActionType::CodingAgentInitialRequest(handoff) = request else {
+            panic!("expected a handoff, got {request:?}");
+        };
+        assert_eq!(handoff.handoff_from, Some(from), "{handoff:?}");
+        assert_eq!(handoff.handoff_session_id.as_deref(), Some(native));
+    }
+
+    /// Codex runs the session; the next message is queued for Claude Code
+    /// Opus 5.5. Its turn is the official handoff in the same session (from
+    /// Codex's native session, the user's text kept) and starts once however
+    /// many drains look. A start that fails before Claude has a session of its
+    /// own waits in front and hands off again on retry, never resuming Codex's
+    /// session; once Claude has one, its next message continues it, and a
+    /// message queued back for Codex hands off from Claude.
+    #[tokio::test]
+    async fn queued_message_for_another_agent_hands_off_once() {
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let pool = &container.db.pool;
+        let queue = container.queued_message_service.clone();
+        Session::update_executor(pool, session.id, "CODEX")
+            .await
+            .unwrap();
+        let session = Session::find_by_id(pool, session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let codex = container
+            .create_execution_record(
+                &workspace,
+                &session,
+                &ExecutorAction::new(
+                    ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                        prompt: "codex work".into(),
+                        executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                        working_dir: None,
+                        handoff_from: None,
+                        handoff_session_id: None,
+                        handoff_user_prompt: None,
+                    }),
+                    None,
+                ),
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await
+            .unwrap();
+        CodingAgentTurn::update_agent_session_id(pool, codex.id, "codex-thread")
+            .await
+            .unwrap();
+        ExecutionProcess::update_completion(
+            pool,
+            codex.id,
+            ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+
+        let mut opus = follow_up("continue in Claude", BaseCodingAgent::ClaudeCode);
+        opus.executor_config.model_id = Some("claude-opus-5-5".into());
+        let queued = queue.enqueue(session.id, opus.clone());
+        let _ = tokio::join!(
+            container.drain_queue_if_idle(&session, &workspace),
+            container.drain_queue_if_idle(&session, &workspace),
+        );
+        let requests = coding_requests(&container, session.id).await;
+        assert_eq!(requests.len(), 2, "one start for two drains: {requests:?}");
+        assert_handoff(&requests[1].1, BaseCodingAgent::Codex, "codex-thread");
+        let ExecutorActionType::CodingAgentInitialRequest(handoff) = &requests[1].1 else {
+            unreachable!()
+        };
+        assert_eq!(handoff.executor_config, opus.executor_config);
+        assert_eq!(
+            handoff.handoff_user_prompt.as_deref(),
+            Some("continue in Claude")
+        );
+        assert_eq!(
+            Session::find_by_id(pool, session.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .executor
+                .as_deref(),
+            Some("CLAUDE_CODE")
+        );
+        // No worktree here, so the start failed: the message waits in front
+        // with the reason, still for Claude.
+        let waiting = queue.get_queued(session.id);
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].id, queued.id);
+        assert!(waiting[0].start_error.is_some());
+        assert_eq!(waiting[0].data.executor_config, opus.executor_config);
+
+        // Retry ("send now"): Claude never got a session, so it is the handoff
+        // from Codex again, not a resume of Codex's session.
+        assert!(queue.promote_to_front(session.id, queued.id));
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        let requests = coding_requests(&container, session.id).await;
+        assert_eq!(requests.len(), 3);
+        assert_handoff(&requests[2].1, BaseCodingAgent::Codex, "codex-thread");
+
+        // Claude's turn got its own session.
+        CodingAgentTurn::update_agent_session_id(pool, requests[2].0, "claude-session")
+            .await
+            .unwrap();
+        queue.cancel_message(session.id, queued.id).await.unwrap();
+        let more = queue.enqueue(session.id, opus.clone());
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        let requests = coding_requests(&container, session.id).await;
+        assert_eq!(requests.len(), 4);
+        let ExecutorActionType::CodingAgentFollowUpRequest(follow) = &requests[3].1 else {
+            panic!("expected Claude's follow-up, got {:?}", requests[3].1);
+        };
+        assert_eq!(follow.session_id, "claude-session");
+
+        queue.cancel_message(session.id, more.id).await.unwrap();
+        queue.enqueue(session.id, follow_up("back", BaseCodingAgent::Codex));
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        let requests = coding_requests(&container, session.id).await;
+        assert_eq!(requests.len(), 5);
+        assert_handoff(
+            &requests[4].1,
+            BaseCodingAgent::ClaudeCode,
+            "claude-session",
+        );
     }
 
     /// The steer route's fallback (kill found no child) fails either preparing
@@ -7279,7 +7431,7 @@ done
         let (container, session, workspace) = queue_test_container().await;
         let queue = &container.queued_message_service;
         let b = queue.enqueue(session.id, follow_up("b", BaseCodingAgent::ClaudeCode));
-        let a = queue.enqueue_front(session.id, follow_up("a", BaseCodingAgent::Codex));
+        let a = queue.enqueue_front(session.id, unavailable("a"));
 
         // No repo: the workspace can't be prepared.
         assert!(queue.mark_steering(session.id, a.id));
@@ -7314,7 +7466,7 @@ done
         container
             .run_steered_message(&session, workspace.clone())
             .await;
-        assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
+        assert_kept_in_front(&container, &session, a.id, b.id, UNAVAILABLE).await;
 
         let msg = queue
             .cancel_message(session.id, a.id)
@@ -7327,7 +7479,7 @@ done
                 .await
                 .is_err()
         );
-        assert_kept_in_front(&container, &session, a.id, b.id, MISMATCH).await;
+        assert_kept_in_front(&container, &session, a.id, b.id, UNAVAILABLE).await;
     }
 
     /// The capture path reads a child's stdout in arbitrary-sized chunks, so a
