@@ -520,6 +520,7 @@ impl FollowUpSteps for Live {
     async fn push_targets(&self, workspace: &Workspace, run: &VibeRun) -> Result<(), String> {
         let deployment = &self.0;
         let pool = &deployment.db().pool;
+        let _generation = VibeRun::lock_generation(workspace.id).await;
         let bases = vibe_pr_bases::validate(pool, deployment.git(), workspace, run, true).await?;
         let repos =
             vibe_pr_bases::confirmed_merge_repos(pool, deployment.git(), workspace, &bases).await?;
@@ -634,6 +635,7 @@ impl FollowUpSteps for Live {
             .map_err(|e| format!("{}: drafting the pull request failed: {e}", repo.name))?;
 
             // Drafting can take minutes; a target changed meanwhile needs confirmation.
+            let _generation = VibeRun::lock_generation(workspace.id).await;
             vibe_pr_bases::validate(pool, deployment.git(), workspace, run, true).await?;
             let title = generated.title.trim();
             let request = CreatePrApiRequest {

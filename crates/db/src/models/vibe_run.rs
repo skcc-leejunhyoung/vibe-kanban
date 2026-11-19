@@ -1,3 +1,8 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
+
 use chrono::{DateTime, Utc};
 use executors::profile::ExecutorConfig;
 use serde::{Deserialize, Serialize};
@@ -90,6 +95,20 @@ pub struct MergeWait {
 }
 
 impl VibeRun {
+    /// Serialize generation changes with Git/PR effects and recheck the run
+    /// under this guard. If a checkout lock is needed too, acquire it first.
+    pub async fn lock_generation(workspace_id: Uuid) -> tokio::sync::OwnedMutexGuard<()> {
+        static LOCKS: OnceLock<Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+        let lock = LOCKS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .entry(workspace_id)
+            .or_default()
+            .clone();
+        lock.lock_owned().await
+    }
+
     /// The agent config the PR text is drafted with. `None` — nothing was
     /// recorded, or what was no longer names a known config — drafts with the
     /// workspace's latest.
@@ -204,6 +223,7 @@ impl VibeRun {
         review_session_id: Uuid,
         pr: Option<&PrRequest>,
     ) -> Result<(), VibeRunError> {
+        let _generation = Self::lock_generation(workspace_id).await;
         sqlx::query(
             "UPDATE vibe_runs \
              SET phase = 'review', generation = generation + 1, review_session_id = ?, review_turns = 0, \
@@ -402,6 +422,7 @@ impl VibeRun {
         expected: &Self,
         bases: Option<&[PrBase]>,
     ) -> Result<bool, VibeRunError> {
+        let _generation = Self::lock_generation(expected.workspace_id).await;
         let done = sqlx::query(
             "UPDATE vibe_runs SET phase = COALESCE(failed_phase, 'merging'), \
                  pr_bases = CASE WHEN ? THEN ? ELSE pr_bases END, \
@@ -479,6 +500,67 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn reviews_and_retries_wait_for_git_effects_in_their_workspace() {
+        use std::time::Duration;
+
+        use tokio::time::timeout;
+
+        let (pool, id) = run_in_review(None).await;
+        let original = run(&pool, id).await;
+        let held = VibeRun::lock_generation(id).await;
+        let other = timeout(
+            Duration::from_secs(1),
+            VibeRun::lock_generation(Uuid::new_v4()),
+        )
+        .await
+        .expect("another workspace must remain independent");
+        drop(other);
+        let review = VibeRun::begin_review(&pool, id, original.review_session_id.unwrap(), None);
+        tokio::pin!(review);
+        assert!(
+            timeout(Duration::from_millis(50), &mut review)
+                .await
+                .is_err()
+        );
+        assert_eq!(run(&pool, id).await.generation, original.generation);
+        drop(held);
+        timeout(Duration::from_secs(1), review)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let reviewed = run(&pool, id).await;
+        VibeRun::record_merge_failure(
+            &pool,
+            id,
+            reviewed.generation,
+            "blocked",
+            "synthetic failure",
+            None,
+        )
+        .await
+        .unwrap();
+        let blocked = run(&pool, id).await;
+        let held = VibeRun::lock_generation(id).await;
+        let retry = VibeRun::retry(&pool, &blocked, None);
+        tokio::pin!(retry);
+        assert!(
+            timeout(Duration::from_millis(50), &mut retry)
+                .await
+                .is_err()
+        );
+        assert_eq!(run(&pool, id).await.generation, blocked.generation);
+        drop(held);
+        assert!(
+            timeout(Duration::from_secs(1), retry)
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        assert_eq!(run(&pool, id).await.generation, blocked.generation + 1);
     }
 
     /// The merge of a "review and create PR" run is not its end: it goes on to
