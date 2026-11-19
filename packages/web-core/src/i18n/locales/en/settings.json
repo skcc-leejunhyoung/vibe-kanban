@@ -1040,11 +1040,12 @@
     "automation": {
       "reviewScope": "Review requests monitored: {{repositories}}",
       "reviewScopeNone": "None (disabled)",
+      "prActivityAutomaticScope": "PR activity notifications automatically follow pull requests related to the connected GitHub account.",
       "reviewScopeWarning": "Repositories outside this list are not monitored for review requests. Assigned issue filters apply only to the primary repository. Add a repository below using the existing credential; no organization-wide access is requested.",
       "editReviewScope": "Edit monitored repositories",
       "reviewReconciliation": "Last review check: {{checkedAt}} · Open: {{open}} · Untracked or unlinked: {{missing}} · Complete: {{complete}}",
       "reviewRepositories": "Review repositories (one owner/repo per line)",
-      "reviewRepositoriesHelp": "Save to monitor these repositories. Empty uses the primary owner/repo. Review imports include existing open requests even on the first poll. Enable the connector to start.",
+      "reviewRepositoriesHelp": "Leave empty to discover related PR activity automatically and import review requests from the primary repository. Review imports include existing open requests on the first poll.",
       "reviewRepositoriesInvalid": "Use explicit owner/repo names, one per line.",
       "reviewPrs": "Import my review requests"
     }

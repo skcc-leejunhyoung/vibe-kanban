@@ -324,6 +324,10 @@ test('an unresponsive host is bounded and falls back without a paid request', as
   });
   assert.equal(result.routing_preview.remaining_events, 1);
   assert.deepEqual(result.routing_preview.exclusions, { timeout: 1 });
+  assert.equal(result.status, 'fallback');
+  assert.equal(result.reason, 'timeout');
+  assert.ok(result.routing_preview.duration_ms >= 2900);
+  assert.equal(result.request_outcome_unknown, undefined);
   assert.equal(h.calls, 0);
   assert.equal(h.posts, 0);
   assert.ok(Date.now() - start < 5000);

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 
 // The host's network path stalls for ~10s now and then (container and host
 // alike, every destination at once). Calls caught in a stall fail with undici
@@ -38,24 +39,29 @@ export async function fetchWithRetry(
     attempts = 3,
     timeoutMs = 30_000,
     backoffMs = [1_000, 3_000],
-    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    sleep = (ms, signal) => delay(ms, undefined, { signal }),
   } = {}
 ) {
   const method = String(options.method || 'GET').toUpperCase();
   for (let attempt = 1; ; attempt += 1) {
+    options.signal?.throwIfAborted();
     try {
       return await fetchImpl(url, {
         ...options,
         signal: options.signal ?? AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
+      options.signal?.throwIfAborted();
       const code =
         error?.name === 'TimeoutError' ? error.name : error?.cause?.code;
       const retryable =
         CONNECT_ERRORS.has(code) ||
         (IN_FLIGHT_ERRORS.has(code) && replaySafe(url, method));
       if (!retryable || attempt >= attempts) throw error;
-      await sleep(backoffMs[Math.min(attempt, backoffMs.length) - 1]);
+      await sleep(
+        backoffMs[Math.min(attempt, backoffMs.length) - 1],
+        options.signal
+      );
     }
   }
 }
@@ -66,7 +72,10 @@ export async function fetchWithRetry(
 // GitHub GET (requests built by githubHeaders carry the API-version header)
 // and replay the body on 304. Other requests pass through untouched.
 // ponytail: in-memory LRU of maxEntries bodies, empty after a restart.
-export function withGithubConditionalGet(fetchImpl, { maxEntries = 1000 } = {}) {
+export function withGithubConditionalGet(
+  fetchImpl,
+  { maxEntries = 1000 } = {}
+) {
   const cache = new Map();
   return async (url, options = {}) => {
     const headers = options.headers || {};

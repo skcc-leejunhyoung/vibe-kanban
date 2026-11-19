@@ -19,6 +19,7 @@ const uncertain = (retryable = false) =>
   );
 
 export async function previewAutopilot({ event, minConfidence, ...options }) {
+  const started = performance.now();
   const record = {};
   const {
     remaining,
@@ -34,18 +35,21 @@ export async function previewAutopilot({ event, minConfidence, ...options }) {
   });
   const candidate = record.candidate;
   const incomplete = candidate?.status === 'pending';
+  const timedOut = incomplete || (!candidate && exclusions?.timeout > 0);
   const eventCount = (event.events || [event]).length;
   return {
     ...candidate,
     mode: 'shadow',
     delivery: 'unchanged',
-    status: incomplete ? 'fallback' : candidate?.status || 'skipped',
-    ...(incomplete && { reason: 'timeout', request_outcome_unknown: true }),
+    status: timedOut ? 'fallback' : candidate?.status || 'skipped',
+    ...(timedOut && { reason: 'timeout' }),
+    ...(incomplete && { request_outcome_unknown: true }),
     results: (candidate?.results || []).map((result) => ({
       ...result,
       event_index: eligibleIndexes[result.event_index],
     })),
     routing_preview: {
+      duration_ms: Math.round(performance.now() - started),
       min_confidence: minConfidence,
       event_count: eventCount,
       eligible_events: eligibleIndexes.length,

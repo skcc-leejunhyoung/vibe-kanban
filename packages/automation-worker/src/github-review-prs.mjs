@@ -41,11 +41,19 @@ export async function searchGithubPrs({
   qualifier,
   perPage,
   reviewLogin,
+  dateRange,
+  onPr,
 }) {
   const prs = new Map();
+  const scope = repository ? `repo:${repository} ` : '';
+  const date = (seconds) => new Date(seconds * 1000).toISOString();
+  const range = dateRange
+    ? ` ${dateRange.field}:${date(dateRange.start)}..${date(dateRange.end)}`
+    : '';
+  const searchScope = repository || 'related PRs';
   for (let page = 1; ; page += 1) {
     const params = new URLSearchParams({
-      q: `repo:${repository} is:pr ${qualifier}`,
+      q: `${scope}is:pr ${qualifier}${range}`,
       per_page: String(perPage),
       page: String(page),
       sort: 'updated',
@@ -56,7 +64,7 @@ export async function searchGithubPrs({
     });
     if (!response.ok)
       throw new Error(
-        `GitHub PR search failed for ${repository}: ${response.status}`
+        `GitHub PR search failed for ${searchScope}: ${response.status}`
       );
     const body = await response.json();
     // GitHub search cannot page beyond 1000. Never publish a partial snapshot
@@ -74,22 +82,58 @@ export async function searchGithubPrs({
           repository,
           reviewLogin,
         });
-      throw new Error(`Incomplete GitHub PR search for ${repository}`);
+      if (
+        body.total_count > 1000 &&
+        dateRange &&
+        dateRange.start < dateRange.end
+      ) {
+        const { start, end, field } = dateRange;
+        const middle = Math.floor((start + end) / 2);
+        const options = {
+          fetchImpl, apiBase, headers, repository, qualifier, perPage, onPr,
+        };
+        let failure;
+        for (const [from, to] of [[start, middle], [middle + 1, end]]) {
+          try {
+            const found = await searchGithubPrs({
+              ...options,
+              dateRange: { field, start: from, end: to },
+            });
+            for (const pr of found) prs.set(githubIssueLinkKey(pr), pr);
+          } catch (error) {
+            failure ??= error;
+          }
+        }
+        if (failure) throw failure;
+        return [...prs.values()];
+      }
+      throw new Error(`Incomplete GitHub PR search for ${searchScope}`);
     }
     for (const item of body.items) {
       const source = githubIssueRepository(item)?.toLowerCase();
-      if (source !== repository.toLowerCase()) {
+      if (
+        !source ||
+        !/^[a-z0-9_-]+\/[a-z0-9_.-]+$/.test(source) ||
+        ['.', '..'].includes(source.split('/')[1]) ||
+        !Number.isSafeInteger(item.number) ||
+        item.number < 1 ||
+        (repository && source !== repository.toLowerCase())
+      ) {
         throw new Error(
-          `GitHub PR search returned an unexpected repository for ${repository}`
+          `GitHub PR search returned an unexpected repository or PR number for ${searchScope}`
         );
       }
       const pr = { ...item, repository: source };
       prs.set(githubIssueLinkKey(pr), pr);
+      onPr?.(pr);
     }
-    if (body.items.length < perPage || page * perPage >= body.total_count)
+    if (body.items.length < perPage || page * perPage >= body.total_count) {
+      if ((!repository || reviewLogin) && prs.size !== body.total_count)
+        throw new Error(`Incomplete GitHub PR search for ${searchScope}`);
       break;
+    }
     if (page * perPage >= 1000)
-      throw new Error(`GitHub PR search pagination limit for ${repository}`);
+      throw new Error(`GitHub PR search pagination limit for ${searchScope}`);
   }
   return [...prs.values()];
 }

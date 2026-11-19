@@ -16,6 +16,12 @@ import { createNotificationRouting } from './notification-routing.mjs';
 import { previewAutopilot, routeAutopilot } from './autopilot-router.mjs';
 import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
 
+import {
+  collectReconciliation,
+  reconciliationProjects,
+  validateReconciliationScope
+} from './autopilot-reconcile.mjs';
+
 const source = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
 function productionFunction(name) {
   const match = new RegExp(`^(?:async )?function ${name}\\(`, 'm').exec(source);
@@ -176,6 +182,7 @@ function harness({
     throw new Error(`Unexpected API call: ${method} ${endpoint}`);
   };
   const context = vm.createContext({
+    githubActivityWrites: new Set(),
     state,
     vm,
     URL,
@@ -281,6 +288,158 @@ test('shadow mode is off by default and preserves the original prompt', async ()
   assert.equal(h.store.queue[0].data.message, 'Synthetic check 3');
   assert.equal(h.state.routineRuns[0].autopilotShadow, undefined);
 });
+
+test(
+  'periodic reconciliation releases its scope when shared token refresh outlasts the deadline',
+  { timeout: 1000 },
+  async () => {
+    const projectId = '20000000-0000-4000-8000-000000000001';
+    const reviewTagId = '20000000-0000-4000-8000-000000000002';
+    const secondProjectId = '20000000-0000-4000-8000-000000000003';
+    const secondTagId = '20000000-0000-4000-8000-000000000004';
+    const baseUrl = 'https://fixture.invalid';
+    const hosts = ['synthetic-machine'];
+    const legacyKey = createHash('sha256')
+      .update(JSON.stringify(['host', 'github', projectId, reviewTagId, hosts]))
+      .digest('hex');
+    const pending = { key: 'synthetic/widgets#7', fingerprint: 'b'.repeat(64) };
+    const state = {
+      autopilotReconciliations: {
+        [legacyKey]: { boardPending: { [pending.key]: pending } }
+      }
+    };
+    const connectors = {
+      host: {
+        id: 'host',
+        type: 'vibe_kanban',
+        enabled: true,
+        config: {
+          baseUrl,
+          bearerToken: 'synthetic',
+          projectId,
+          hostBridges: { [hosts[0]]: { baseUrl } }
+        }
+      },
+      project: {
+        id: 'project',
+        type: 'vibe_kanban',
+        enabled: true,
+        config: {
+          baseUrl,
+          tokenUrl: baseUrl + '/token',
+          projectId: secondProjectId
+        }
+      },
+      github: { id: 'github', type: 'github', enabled: true, config: {} }
+    };
+    const scope = {
+      connectorId: 'host',
+      githubConnectorId: 'github',
+      hosts,
+      projects: [
+        { projectId, reviewTagId, connectorId: 'host' },
+        {
+          projectId: secondProjectId,
+          reviewTagId: secondTagId,
+          connectorId: 'project'
+        }
+      ],
+      tracked: [],
+      registryHash: 'a'.repeat(64)
+    };
+    const deadline = new AbortController();
+    const inFlight = new Set();
+    const tokenRequested = Promise.withResolvers();
+    const refresh = Promise.withResolvers();
+    let tokenReads = 0;
+    let deadlines = 0;
+    const context = vm.createContext({
+      AbortSignal: {
+        any: AbortSignal.any.bind(AbortSignal),
+        timeout: (ms) =>
+          ms === 90000 && deadlines++ === 0
+            ? deadline.signal
+            : AbortSignal.timeout(ms)
+      },
+      createHash,
+      state,
+      routeAutopilot,
+      collectReconciliation,
+      reconciliationProjects,
+      validateReconciliationScope,
+      reconciliationInFlight: inFlight,
+      vibeTokenCache: new Map(),
+      vibeTokenInflight: new Map(),
+      findConnector: (id) => connectors[id],
+      githubReviewRepositories: () => ['synthetic/widgets'],
+      githubLogin: async () => 'synthetic-reviewer',
+      githubSearchPrs: async () => [],
+      persistState: async () => {},
+      fetch: async (url) => {
+        const path = new URL(url).pathname;
+        if (path === '/token') {
+          tokenReads++;
+          tokenRequested.resolve();
+          return refresh.promise;
+        }
+        if (path === '/v1/hosts')
+          return Response.json({
+            hosts: [{ machine_id: hosts[0], access_role: 'owner' }]
+          });
+        if (path === `/v1/tags/${reviewTagId}`)
+          return Response.json({ id: reviewTagId, project_id: projectId });
+        if (path === `/v1/tags/${secondTagId}`)
+          return Response.json({
+            id: secondTagId,
+            project_id: secondProjectId
+          });
+        if (path === '/v1/issues/search')
+          return Response.json({ issues: [], total_count: 0, offset: 0 });
+        assert.equal(path, '/api/automation-actions/autopilot-snapshot');
+        return Response.json({
+          hostId: hosts[0],
+          complete: true,
+          workspaces: []
+        });
+      }
+    });
+    vm.runInContext(
+      [
+        'reconcileRoutineAutopilot',
+        'vibeApi',
+        'getVibeAccessToken',
+        'fetchVibeAccessToken'
+      ]
+        .map(productionFunction)
+        .join('\n'),
+      context
+    );
+    const request = context.reconcileRoutineAutopilot(scope);
+    await tokenRequested.promise;
+    assert.equal(inFlight.size, 1);
+    await assert.rejects(
+      context.reconcileRoutineAutopilot(scope),
+      /already running/
+    );
+    deadline.abort(new Error('synthetic collection deadline'));
+    await assert.rejects(request, /synthetic collection deadline/);
+    assert.equal(inFlight.size, 0);
+    assert.equal(context.vibeTokenInflight.size, 1);
+
+    const retry = context.reconcileRoutineAutopilot(scope);
+    refresh.resolve(
+      Response.json({
+        access_token: 'synthetic',
+        expires_at: new Date(Date.now() + 60000).toISOString()
+      })
+    );
+    const result = await retry;
+    assert.equal(result.status, 'ok');
+    assert.equal(result.coverage.projects.length, 2);
+    assert.deepEqual(result.boardPending, [pending]);
+    assert.equal(tokenReads, 1);
+  }
+);
 
 test('a pending shadow classification cannot delay or suppress agent delivery', async () => {
   let finish;

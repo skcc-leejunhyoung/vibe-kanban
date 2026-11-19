@@ -7,6 +7,75 @@ import {
   reconcileGithubReviewPrs,
 } from './github-review-prs.mjs';
 
+test('reports verified PRs even when a later search page fails', async () => {
+  const found = [];
+  const first = { number: 7, repository_url: 'https://api.github.com/repos/example/app' };
+  await assert.rejects(searchGithubPrs({
+    fetchImpl: async (input) => new URL(input).searchParams.get('page') === '1'
+      ? { ok: true, json: async () => ({ total_count: 2, items: [first] }) }
+      : { ok: false, status: 503 },
+    apiBase: 'https://api.github.com',
+    qualifier: 'is:open involves:synthetic',
+    perPage: 1,
+    onPr: (pr) => found.push(pr),
+  }), /503/);
+  assert.deepEqual(found.map(({ repository, number }) => [repository, number]), [
+    ['example/app', 7],
+  ]);
+});
+
+test('splits capped global searches into adjacent timestamp ranges', async () => {
+  const start = Date.parse('2026-01-01T00:00:00Z') / 1000;
+  const queries = [];
+  const prs = await searchGithubPrs({
+    fetchImpl: async (input) => {
+      const q = new URL(input).searchParams.get('q');
+      queries.push(q);
+      const number = queries.length - 1;
+      return {
+        ok: true,
+        json: async () => number === 0
+          ? { total_count: 1001, items: [] }
+          : { total_count: 1, items: [{
+            number,
+            repository_url: 'https://api.github.com/repos/example/app',
+          }] },
+      };
+    },
+    apiBase: 'https://api.github.com',
+    qualifier: 'is:open involves:synthetic',
+    perPage: 100,
+    dateRange: { field: 'created', start, end: start + 3 },
+  });
+  assert.deepEqual(prs.map(({ number }) => number), [1, 2]);
+  assert.match(queries[1], /00:00:00(?:\.000)?Z\.\..*00:00:01(?:\.000)?Z$/);
+  assert.match(queries[2], /00:00:02(?:\.000)?Z\.\..*00:00:03(?:\.000)?Z$/);
+  assert.ok(queries.every((q) => !q.includes('repo:')));
+});
+
+test('delivers the successful split range even if an earlier range fails', async () => {
+  const start = Date.parse('2026-01-01T00:00:00Z') / 1000;
+  const found = [];
+  const result = searchGithubPrs({
+    fetchImpl: async (input) => {
+      const q = new URL(input).searchParams.get('q');
+      if (q.endsWith('00:00:01.000Z')) return { ok: false, status: 503 };
+      if (q.includes('created:2026-01-01T00:00:02.000Z')) {
+        const item = { number: 7, repository_url: 'https://api.github.com/repos/example/app' };
+        return { ok: true, json: async () => ({ total_count: 1, items: [item] }) };
+      }
+      return { ok: true, json: async () => ({ total_count: 1001, items: [] }) };
+    },
+    apiBase: 'https://api.github.com',
+    qualifier: 'is:open involves:synthetic',
+    perPage: 100,
+    dateRange: { field: 'created', start, end: start + 3 },
+    onPr: (pr) => found.push(pr.number),
+  });
+  await assert.rejects(result, /503/);
+  assert.deepEqual(found, [7]);
+});
+
 const fixture = JSON.parse(
   await readFile(new URL('./fixtures/review-request.json', import.meta.url))
 );
@@ -105,6 +174,24 @@ test('rejects partial, capped, failed and out-of-scope search instead of claimin
       qualifier: '',
       perPage: 100,
     })
+  );
+});
+
+test('repository review discovery rejects a short page with a larger reported total', async () => {
+  await assert.rejects(
+    searchGithubPrs({
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({ total_count: 2, items: [fixture.searchItem] }),
+      }),
+      apiBase: '',
+      headers: {},
+      repository,
+      qualifier: `review-requested:${fixture.login}`,
+      reviewLogin: fixture.login,
+      perPage: 100,
+    }),
+    /Incomplete GitHub PR search/
   );
 });
 

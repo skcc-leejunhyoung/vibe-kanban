@@ -42,7 +42,8 @@ def registry(ap, config):
     requests = {key: item for key, item in dispatch.get('requests', {}).items()
                 if item.get('pr') and key not in periodic_keys and item.get('session') not in periodic_sessions}
     refs = list(config.get('tracked', []))
-    entries = [{**row, 'pr': row.get('pr', key)} for key, row in board.get('rows', {}).items()] + rows(requests)
+    board_entries = [{**row, 'pr': row.get('pr', key)} for key, row in board.get('rows', {}).items()]
+    entries = board_entries + rows(requests)
     for key in ap['PENDING_KEYS']:
         entries += rows(schedule.get(key, []))
     for entry in entries:
@@ -67,6 +68,13 @@ def registry(ap, config):
     else:
         scope.update(projectId=config['projectId'], reviewTagId=config['reviewTagId'])
     scope.update(tracked=[{'repository': repo, 'number': number} for repo, number in tracked], registryHash=digest)
+    scope['boardPrs'] = sorted({
+        '%s#%d' % ((entry.get('repo') or entry.get('repository') or config['defaultRepository']).lower(),
+                    int(str(entry['pr']).lstrip('#')))
+        for entry in board_entries if entry.get('pr')
+    })
+    if config.get('boardNoteId'):
+        scope['boardNoteId'] = config['boardNoteId']
     scope['ignoreWorkspaces'] = sorted({task['ws'] for task in rows(tasks) if task.get('kind') == 'periodic' and task.get('ws')})
     return scope
 
@@ -153,12 +161,11 @@ def install(ap, config):
             return None, 'scope_audit_due'
         if identity_recheck_due(ap, reviewed_at):
             return None, 'identity_recheck_due'
-        scope['acknowledgedAt'] = acknowledged.isoformat()
-        report = ap['api']('/api/automation/autopilot/reconcile', scope, timeout=110)
+        request = {**scope, 'acknowledgedAt': reviewed_at.isoformat(),
+                   'boardResolutions': [row for row in rows(evidence.get('boardResolutions')) if isinstance(row, dict)]}
+        report = ap['api']('/api/automation/autopilot/reconcile', request, timeout=110)
         if not isinstance(report, dict) or report.get('status') != 'ok':
             return None, 'source_unavailable'
-        if report.get('changed') is not False:
-            return None, 'facts_changed'
         counts = report.get('counts', {})
         if (report.get('errors') != [] or
             not re.fullmatch(r'[0-9a-f]{64}', report.get('fingerprint', '')) or
@@ -168,6 +175,19 @@ def install(ap, config):
             set(report['coverage']['repositories']) != set(coverage['repositories']) or
             report.get('registryHash') != scope['registryHash'] or report.get('checkedTracked') != scope['tracked']):
             return None, 'incomplete_coverage'
+        folder = config.get('evidenceDirectory') or os.path.join(ap['AP'], 'system-one-evidence')
+        board_report = os.path.join(folder, 'board-reconciliation.json')
+        pending = report.get('boardPending')
+        if not isinstance(pending, list):
+            return None, 'unverified_board'
+        if pending or os.path.exists(board_report):
+            os.makedirs(folder, mode=0o700, exist_ok=True)
+            handle, path = tempfile.mkstemp(prefix='board-', suffix='.json', dir=folder)
+            with os.fdopen(handle, 'w') as stream:
+                json.dump({'checkedAt': report['checkedAt'], 'boardPending': pending}, stream)
+            os.replace(path, board_report)
+        if pending or report.get('changed') is not False:
+            return None, 'facts_changed'
         findings = evidence.get('board_findings')
         if not isinstance(findings, list) or evidence.get('board_mismatches', []) not in ([], 0):
             return None, 'unverified_board'
@@ -183,14 +203,12 @@ def install(ap, config):
         except (KeyError, ValueError):
             return None, 'unverified_board'
         rest, decision = original(due, dry=True)
-        scope.pop('acknowledgedAt')
         if (not decision or decision.get('status') != 'would_delegate' or manual_delegation_open() or
             checkpoint_proof(ap) != proof or registry(ap, config) != scope or identity_recheck_due(ap, reviewed_at) or
             ap['now']() - reviewed_at >= AGENT_AUDIT_INTERVAL):
             return None, 'admission_changed'
         report.update(board_findings=findings, board_mismatches=[], board_snapshot_sha=evidence['board_snapshot_sha'],
                       agentReviewedAt=reviewed_at.isoformat())
-        folder = config.get('evidenceDirectory') or os.path.join(ap['AP'], 'system-one-evidence')
         os.makedirs(folder, mode=0o700, exist_ok=True)
         handle, path = tempfile.mkstemp(prefix='reconcile-', suffix='.json', dir=folder)
         with os.fdopen(handle, 'w') as stream:
@@ -226,7 +244,9 @@ def install(ap, config):
             return (original_prompt() +
                     ' System One 검증용으로 공식 증거에 coverage를 기록한다. ' +
                     'projects는 실제 대조한 {projectId, reviewTagId} 항목 목록, repositories는 전체 발견을 완료한 owner/repo 목록, ' +
-                    'hosts는 확인한 네이티브 machine ID 목록이다. 세 범위를 모두 공식 조회로 확인한 경우에만 coverage를 추가한다.')
+                    'hosts는 확인한 네이티브 machine ID 목록이다. 세 범위를 모두 공식 조회로 확인한 경우에만 coverage를 추가한다. ' +
+                    '증거 디렉터리의 board-reconciliation.json에 대기 항목이 있으면 각 key와 fingerprint를 확인하고, '
+                    '게시 검증 시 disposition=published와 rowSha256을, 보류 시 disposition=hold와 reason, owner, recheckAt을 boardResolutions에 기록한다.')
 
         ap['periodic_prompt'] = periodic_prompt
 

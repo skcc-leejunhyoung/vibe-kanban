@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import {
   collectReconciliation,
@@ -11,6 +12,7 @@ import { routeAutopilot } from './autopilot-router.mjs';
 const projectId = '20000000-0000-4000-8000-000000000001';
 const reviewTagId = '20000000-0000-4000-8000-000000000002';
 const issueId = '20000000-0000-4000-8000-000000000003';
+const boardNoteId = '20000000-0000-4000-8000-000000000004';
 const scope = {
   projectId,
   reviewTagId,
@@ -45,6 +47,10 @@ function fixture() {
         if (path.startsWith('/v1/tags/')) {
           if (project.projectId === h.missingTagFor) return {};
           return { id: project.reviewTagId, project_id: project.projectId };
+        }
+        if (path === `/v1/drawer_notes/${boardNoteId}`) {
+          if (h.boardUnavailable) throw new Error('board read failed');
+          return { id: boardNoteId, body: h.board };
         }
         if (path === '/v1/issues/search') {
           h.reads.push(body.offset);
@@ -126,6 +132,109 @@ test('same-head review changes, dismissed reviews and timestamp conflicts remain
   const before = await h.collect();
   h.reviews = [review];
   assert.notEqual((await h.collect()).fingerprint, before.fingerprint);
+});
+
+test('same-head discrepancies survive stale and failed publication until the board readback matches', async () => {
+  const h = fixture();
+  h.scope = { ...scope, boardNoteId, boardPrs: ['synthetic/widgets#7'] };
+  const record = {};
+  h.now = Date.parse('2002-03-06T00:00:00Z');
+  const poll = (acknowledgedAt) =>
+    reconcileAutopilot({
+      scope: h.scope,
+      record,
+      collect: h.collect,
+      persist: async () => {},
+      now: () => h.now,
+      acknowledgedAt,
+    });
+  await poll();
+  h.now += 1000;
+  const stamp = () => new Date(h.now).toISOString();
+  assert.equal((await poll(stamp())).changed, false);
+  h.now += 1000;
+  h.reviews = [
+    {
+      id: 20,
+      state: 'CHANGES_REQUESTED',
+      commit_id: head,
+      submitted_at: stamp(),
+      user: { login: 'synthetic-reviewer' },
+    },
+  ];
+  const {
+    boardPending: [pending],
+  } = await poll();
+  assert.equal(pending.key, 'synthetic/widgets#7');
+
+  const published =
+    '| [PR 7](https://github.com/synthetic/widgets/pull/7) | Changes requested |';
+  h.scope.boardResolutions = [
+    {
+      key: pending.key,
+      fingerprint: pending.fingerprint,
+      disposition: 'published',
+      rowSha256: createHash('sha256').update(published).digest('hex'),
+    },
+  ];
+  h.now += 1000;
+  const acknowledgedAt = stamp();
+  h.board = published.replace('Changes requested', 'Approved');
+  assert.deepEqual((await poll(acknowledgedAt)).boardPending, [pending]);
+  h.now += 1000;
+  h.boardUnavailable = true;
+  assert.equal((await poll(acknowledgedAt)).changed, true);
+  h.boardUnavailable = false;
+  h.board = `${published}\n${published}`;
+  assert.equal((await poll(acknowledgedAt)).changed, true);
+  h.board = published;
+  const result = await poll(acknowledgedAt);
+  assert.deepEqual(result.boardPending, []);
+  assert.equal(result.changed, false);
+});
+
+test('a board hold requires reason, owner and future time and becomes due again', async () => {
+  const h = fixture();
+  h.scope = { ...scope, boardPrs: ['synthetic/widgets#7'] };
+  h.now = Date.parse('2002-03-06T00:00:00Z');
+  h.reviews = [
+    {
+      id: 21,
+      state: 'APPROVED',
+      commit_id: head,
+      submitted_at: '2002-03-05T00:00:00Z',
+      user: { login: 'synthetic-reviewer' },
+    },
+  ];
+  const record = {};
+  const poll = (acknowledgedAt) =>
+    reconcileAutopilot({
+      scope: h.scope,
+      record,
+      collect: h.collect,
+      persist: async () => {},
+      now: () => h.now,
+      acknowledgedAt,
+    });
+  const {
+    boardPending: [pending],
+  } = await poll();
+  h.now += 1000;
+  const acknowledgedAt = new Date(h.now).toISOString();
+  const hold = {
+    key: pending.key,
+    fingerprint: pending.fingerprint,
+    disposition: 'hold',
+    reason: 'Waiting for authoritative decision',
+    owner: '',
+    recheckAt: new Date(h.now + 2000).toISOString(),
+  };
+  h.scope.boardResolutions = [hold];
+  assert.equal((await poll(acknowledgedAt)).changed, true);
+  hold.owner = 'synthetic-operator';
+  assert.equal((await poll(acknowledgedAt)).changed, false);
+  h.now += 2000;
+  assert.equal((await poll()).changed, true);
 });
 
 test('missing initial baseline and changed queues require an agent; only official acknowledgement permits quiet routing', async () => {
@@ -310,6 +419,7 @@ test('only matching GitHub identities share one paginated review read', async ()
   h.discovered = [];
   h.scope = {
     ...scope,
+    boardPrs: ['synthetic/widgets#7'],
     tracked: [...scope.tracked, { repository: 'synthetic/archive', number: 8 }],
   };
   h.identity = () => 50;
@@ -326,6 +436,25 @@ test('only matching GitHub identities share one paginated review read', async ()
     'synthetic/archive',
     'synthetic/widgets',
   ]);
+  h.reviews = [
+    {
+      id: 6,
+      state: 'APPROVED',
+      commit_id: head,
+      submitted_at: '2002-03-04T01:00:00Z',
+      user: { login: 'synthetic-reviewer' },
+    },
+  ];
+  const { boardPending } = await reconcileAutopilot({
+    scope: h.scope,
+    collect: h.collect,
+    record: {},
+    persist: async () => {},
+  });
+  assert.deepEqual(
+    boardPending.map((row) => row.key),
+    ['synthetic/widgets#7']
+  );
   h.identity = undefined;
   assert.equal((await h.collect()).counts.prs, 2);
   h.identity = () => 50;

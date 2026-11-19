@@ -40,6 +40,18 @@ function functionSource(name) {
   assert.ok(match, `Missing production function ${name}`);
   return source.slice(match.index, source.indexOf("\n}\n", match.index) + 2);
 }
+
+function connectorSettings(h) {
+  Object.assign(h.context, { githubLoginCache: new Map() });
+  vm.runInContext([
+    source.slice(source.indexOf('const RUNTIME_CONFIG_KEYS'), source.indexOf('// Deep copy of state')),
+    ...[
+      "applyConnectorPatch", "upsertConnector", "preserveGithubActivityConfig",
+      "preserveMissingRuntimeConfig", "preserveMaskedSecrets", "githubApiBase", "fetchGithubAccount",
+      "moveGithubActivityRepository", "fetchGithubRepository",
+    ].map(functionSource),
+  ].join("\n"), h.context);
+}
 const names = [
   "processRetryQueue",
   "removeRetryItem",
@@ -49,6 +61,7 @@ const names = [
   "ensureGithubReviewIssueReady",
   "reconcileGithubReviewTargets",
   "githubSearchPrs",
+  "githubApiBase",
   "githubPerPage",
   "githubHeaders",
   "githubPrBranches",
@@ -63,6 +76,13 @@ const names = [
   "startGithubIssueSync",
   "pollGithubPrComments",
   "pollGithubRepositoryPrComments",
+  "githubDiscoverActivityPrs",
+  "githubOldestScopedActivityCursor",
+  "pollGithubAutomaticPrActivity",
+  "githubLegacyPrActivityKey",
+  "githubPrActivityKey",
+  "githubScopedActivityState",
+  "emitGithubPrActivity",
   "githubCommentPrNumber",
   "orderByParent",
 ];
@@ -136,6 +156,7 @@ function harness(options = {}) {
     githubIssueSyncVibeConnectorId,
     shouldRunGithubIssueSyncRule,
     normalizeOptionalTimestamp,
+    GITHUB_ACTIVITY_OVERLAP_MS: 5 * 60 * 1000,
     githubIssuePollSince,
     selectGithubPollCandidates,
     selectGithubImportCandidates,
@@ -160,7 +181,8 @@ function harness(options = {}) {
     errorMessage: (e) => e.message,
     retryDelay: () => 60000,
     log: async (level, message, meta) => h.logs.push({ level, message, meta }),
-    persistState: async () => {
+    persistState: async (_, update) => {
+      if (update) Object.assign(update.config, update.values);
       h.persisted = structuredClone(state);
       const hasMap = state.connectors.some(
         (c) => Object.keys(c.config.reviewPrIssueMap || {}).length,
@@ -950,6 +972,690 @@ test("a deleted cached review tag is refreshed after a failed attachment instead
   assert.equal(result.missing.length, 0);
 });
 
+test("automatic activity discovers current repositories, retries partial reads and delivers new reviews once", async () => {
+  const h = harness();
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  vm.runInContext(
+    ["githubPrComments", "githubPrReviews"].map(functionSource).join("\n"),
+    h.context,
+  );
+  delete h.github.config.reviewRepositories;
+  h.github.config.notifyPrComments = true;
+  const cursor = new Date(Date.now() - 30_000).toISOString();
+  const stamp = new Date(Date.now() - 10_000).toISOString();
+  const lateIndexed = new Date(Date.parse(cursor) - 30_000).toISOString();
+  h.github.config.prCommentCursors = {
+    "example/app": { cursorTs: cursor, seenIds: [
+      "https://github.com/example/app/pull/42#pullrequestreview-4:4",
+    ] },
+  };
+  const app = "moved/product";
+  const another = "another/service";
+  const item = (repo) => ({
+    ...fixture.searchItem,
+    repository_url: `https://api.github.com/repos/${repo}`,
+    html_url: `https://github.com/${repo}/pull/42`,
+  });
+  const json = (data) => ({
+    ok: true,
+    json: async () => data,
+    text: async () => JSON.stringify(data),
+  });
+  let unavailable = true;
+  let newReview = false;
+  let retryReads = 0;
+  const events = [];
+  h.context.runRules = async (event) => events.push(event);
+  h.context.fetch = async (input) => {
+    const url = new URL(input);
+    if (url.pathname === "/search/issues") {
+      const q = url.searchParams.get("q");
+      assert.ok(!q.includes("repo:"), q);
+      assert.match(q, /^is:pr is:(open|closed) (review-)?involves:/);
+      const items = q.includes("is:closed") ? [] : q.includes("review-involves:") && unavailable
+        ? [item(app), item(another)] : [item(app)];
+      return json({ total_count: items.length, incomplete_results: false, items });
+    }
+    assert.match(url.pathname, /^\/repos\/(moved\/product|another\/service)\/(issues|pulls)\/42\/(comments|reviews)$/);
+    if (url.pathname.includes(another)) {
+      retryReads += 1;
+      if (unavailable) return { ok: false, status: 503, text: async () => "fixture" };
+      if (!url.pathname.endsWith("/reviews")) return json([]);
+      return json([{ id: 7, user: { login: "synthetic-reviewer" },
+        state: "APPROVED", submitted_at: stamp, commit_id: headA }]);
+    }
+    const reviewer = { login: "synthetic-reviewer" };
+    if (url.pathname.endsWith("/reviews"))
+      return json([4, 5, ...(newReview ? [6] : [])].map((id) => ({
+        id, user: reviewer, state: "CHANGES_REQUESTED", submitted_at: id === 6 ? stamp : lateIndexed,
+        commit_id: headA, html_url: `${item(app).html_url}#pullrequestreview-${id}`,
+      })));
+    if (url.pathname.includes("/issues/"))
+      return json([{ id: 5, user: reviewer, created_at: stamp,
+        html_url: `${item(app).html_url}#issuecomment-5`, body: "fixture comment" }]);
+    return json([]);
+  };
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.equal((await poll()).processed, 2);
+  const runtime = h.github.config.prActivityDiscovery;
+  assert.equal(runtime.cursorTs, cursor);
+  assert.equal(runtime.complete, false);
+  assert.equal(runtime.repositories.length, 1);
+  assert.equal(runtime.repositories[0].repository, app);
+  assert.equal(h.github.config.prCommentErrors[0].repository, another);
+  assert.deepEqual(events.map((event) => [event.repo, event.reviewState, event.raw.id]), [
+    [app, "changes_requested", 5], [app, null, 5],
+  ]);
+  assert.equal(runtime.pendingPrs.length, 1);
+  assert.equal(runtime.pendingPrs[0].repository, another);
+  h.github.config.prActivityDiscovery = JSON.parse(JSON.stringify(runtime));
+  unavailable = false;
+  newReview = true;
+  assert.equal((await poll()).processed, 2);
+  assert.deepEqual(events.slice(2).map((event) => event.raw.id).sort(), [6, 7]);
+  const recovered = h.github.config.prActivityDiscovery;
+  assert.equal(recovered.complete, true);
+  assert.ok(recovered.cursorTs > cursor);
+  assert.equal(recovered.repositories.length, 2);
+  assert.equal(recovered.pendingPrs.length, 0);
+  const readsAfterRecovery = retryReads;
+  assert.equal((await poll()).processed, 0);
+  assert.equal(retryReads, readsAfterRecovery);
+  assert.equal(h.store.issues.size, 0);
+});
+
+test("automatic activities keep their cursor on incomplete global discovery", async () => {
+  const h = harness();
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  delete h.github.config.reviewRepositories;
+  h.github.config.notifyPrComments = true;
+  let searchCalls = 0;
+  h.context.fetch = async (input) => {
+    const url = new URL(input);
+    searchCalls += 1;
+    assert.equal(url.pathname, "/search/issues");
+    return { ok: false, status: 403 };
+  };
+  const result = await h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.equal(searchCalls, 4);
+  assert.equal(result.errors.length, 4);
+  assert.equal(result.errors[0].repository, "GitHub discovery");
+  assert.equal(h.github.config.prActivityDiscovery.complete, false);
+  assert.equal(h.github.config.prActivityDiscovery.cursorTs, h.github.config.prActivityDiscovery.startedAt);
+  assert.equal(h.github.config.prActivityDiscovery.repositories.length, 0);
+});
+
+test("automatic activity skips unchanged open PRs and reuses comment URLs within one window", async () => {
+  const h = harness();
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  vm.runInContext(["githubPrComments", "githubPrReviews"].map(functionSource).join("\n"), h.context);
+  let now = Date.parse("2002-03-06T00:32:00Z");
+  h.context.Date = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+  };
+  Object.assign(h.github.config, {
+    notifyPrComments: true, reviewRepositories: [],
+    prCommentCursorTs: "2002-03-06T00:31:00Z",
+  });
+  const unchanged = Array.from({ length: 50 }, (_, index) => ({
+    ...fixture.searchItem, number: index + 100,
+    created_at: "2002-03-05T00:00:00Z", updated_at: "2002-03-05T00:00:00Z",
+  }));
+  const active = { ...fixture.searchItem, updated_at: "2002-03-06T00:31:50Z" };
+  const reads = [];
+  h.context.fetch = async (input) => {
+    const url = new URL(input);
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q");
+      const match = / (updated|created):([^ ]+)\.\.([^ ]+)$/.exec(query);
+      assert.ok(match, query);
+      const [, field, since, until] = match;
+      const items = query.includes("is:closed") || query.includes("review-involves:") ? [] :
+        [...unchanged, active].filter((row) =>
+          Date.parse(row[`${field}_at`]) >= Date.parse(since) &&
+          Date.parse(row[`${field}_at`]) <= Date.parse(until));
+      return Response.json({ total_count: items.length, items });
+    }
+    reads.push(url);
+    return Response.json([]);
+  };
+  for (let index = 0; index < 2; index++) {
+    assert.equal((await h.context.pollGithubPrComments(h.github, fixture.login)).errors.length, 0);
+    now += 60_000;
+  }
+  assert.equal(reads.length, 6);
+  assert.ok(reads.every(({ pathname }) => pathname.includes(`/${active.number}/`)));
+  assert.deepEqual(reads.slice(0, 3).map(String).sort(), reads.slice(3).map(String).sort());
+});
+
+test("retains PRs already found when a later activity search fails", async () => {
+  const h = harness();
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  delete h.github.config.reviewRepositories;
+  h.github.config.notifyPrComments = true;
+  const extraPr = { ...fixture.searchItem, number: fixture.searchItem.number + 1 };
+  let firstPoll = true;
+  h.context.fetch = async (input) => {
+    const query = new URL(input).searchParams.get("q");
+    if (firstPoll && query.includes("is:closed involves:")) return { ok: false, status: 503 };
+    const items = !firstPoll || !query.includes("is:open") ? []
+      : query.includes("review-involves:") ? [extraPr] : [fixture.searchItem];
+    return { ok: true, json: async () => ({ total_count: items.length, items }) };
+  };
+  let reads = 0;
+  h.context.githubPrComments = async (_, since, repository, number) => {
+    reads += 1;
+    if (firstPoll && number === fixture.searchItem.number) throw new Error("fixture comment 503");
+    return [];
+  };
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  const first = await poll();
+  assert.equal(first.errors.length, 2);
+  assert.equal(reads, 2);
+  assert.equal(first.errors[0].state, "closed");
+  assert.equal(first.errors[0].qualifier, "involves");
+  const saved = JSON.parse(JSON.stringify(h.persisted.connectors[0].config.prActivityDiscovery));
+  assert.equal(saved.complete, false);
+  assert.equal(saved.pendingPrs[0].number, fixture.searchItem.number);
+  h.github.config.prActivityDiscovery = saved;
+  firstPoll = false;
+  assert.equal((await poll()).errors.length, 0);
+  assert.equal(reads, 3);
+  assert.equal(h.github.config.prActivityDiscovery.complete, true);
+  assert.equal(h.github.config.prActivityDiscovery.pendingPrs.length, 0);
+});
+
+test("publishes activity receipts only after a durable write and retains recovery state when a write fails", async () => {
+  const h = harness();
+  delete h.github.config.reviewRepositories;
+  h.github.config.notifyPrComments = true;
+  const cursor = new Date(Date.now() - 30_000).toISOString();
+  h.github.config.prCommentCursorTs = cursor;
+  h.context.fetch = async () => ({
+    ok: true,
+    json: async () => ({ total_count: 1, items: [fixture.searchItem] }),
+  });
+  const events = [];
+  h.context.runRules = async (event) => events.push(event);
+  h.context.githubPrComments = async () => [{
+    id: 123, user: { login: "fixture-author" }, created_at: cursor,
+  }];
+  let pauseWrite;
+  let renameStarted;
+  const waitForRename = new Promise((resolve) => { renameStarted = resolve; });
+  const writes = [];
+  let contents;
+  let fail = true;
+  Object.assign(h.context, await import("./github-pr-activity.mjs"), {
+    STATE_PATH: "/fixture/state.json", AUTOPILOT_OBSERVATIONS_PATH: "/fixture/observations.json",
+    writeQueue: Promise.resolve(), githubActivityWrites: new Set(),
+    process: { pid: 9 }, console: { error() {} },
+    fs: {
+      async writeFile(_path, data) {
+        if (fail) throw new Error("fixture write error");
+        contents = data;
+      },
+      async rename() {
+        if (!writes.length) await new Promise((resolve) => {
+          pauseWrite = resolve;
+          renameStarted();
+        });
+        writes.push(JSON.parse(contents));
+      },
+    },
+  });
+  vm.runInContext(
+    ["persistState", "enqueueWrite"].map(functionSource).join("\n"),
+    h.context,
+  );
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  await assert.rejects(poll(), /fixture write error/);
+  assert.equal(h.github.config.prActivityDiscovery.complete, false);
+  assert.equal(h.github.config.prActivityDiscovery.cursorTs, cursor);
+  assert.equal(h.github.config.prActivityDiscovery.repositories.length, 0);
+  assert.equal(h.github.config.prCommentErrors[0].repository, "GitHub persistence");
+  assert.equal(writes.length, 0);
+  fail = false;
+  const retry = poll();
+  await waitForRename;
+  assert.equal(h.github.config.prActivityDiscovery.complete, false);
+  h.state.enabled = false;
+  const concurrentWrite = h.context.persistState();
+  h.state.enabled = true;
+  pauseWrite();
+  await Promise.all([retry, concurrentWrite]);
+  assert.equal(events.length, 1);
+  assert.equal(writes.length, 2);
+  assert.equal(h.github.config.prActivityDiscovery.complete, true);
+  assert.equal(writes.at(-1).connectors[0].config.prActivityDiscovery.complete, true);
+  assert.equal(writes.at(-1).enabled, false);
+});
+
+test("connector settings saved during a poll inherit the new receipt without replaying events", async (t) => {
+  for (const method of ["POST", "PATCH"]) await t.test(method, async (subtest) => {
+    const h = harness();
+    delete h.github.config.reviewRepositories;
+    h.github.config.notifyPrComments = true;
+    const cursor = new Date(Date.now() - 30_000).toISOString();
+    const previous = { startedAt: cursor, cursorTs: cursor, checkedAt: cursor, seen: {} };
+    h.github.config.prActivityDiscovery = previous;
+    const stale = { ...h.github.config, token: "__stored__", intervalSeconds: 120 };
+    const events = [];
+    let saveStarted;
+    let releaseSave;
+    const writing = new Promise((resolve) => { saveStarted = resolve; });
+    const held = new Promise((resolve) => { releaseSave = resolve; });
+    subtest.after(releaseSave);
+    let first = true;
+    Object.assign(h.context, await import("./github-pr-activity.mjs"), {
+      pollInFlight: new Map(), connectorSaves: new Map(),
+      fetch: async () => ({
+        ok: true,
+        json: async () => ({ total_count: 1, items: [fixture.searchItem] }),
+      }),
+      runRules: async (event) => events.push(event),
+      githubPrComments: async () => [{
+        id: 123, user: { login: "fixture-author" }, created_at: cursor,
+      }],
+      persistState: async (_, update) => {
+        if (update && first) {
+          first = false;
+          saveStarted();
+          await held;
+        }
+        if (update) Object.assign(update.config, update.values);
+        h.persisted = structuredClone(h.state);
+      },
+    });
+    h.context.runPoll = async (id) => id === h.github.id
+      ? h.context.pollGithubPrComments(h.context.findConnector(id), fixture.login)
+      : { ok: true };
+    connectorSettings(h);
+    vm.runInContext(["saveConnectorAfterPoll", "pollConnector", "withIssueSyncResult"]
+      .map(functionSource).join("\n"), h.context);
+    const id = h.github.id;
+    const firstPoll = h.context.pollConnector(id, false);
+    await writing;
+    const save = h.context.saveConnectorAfterPoll(id, () => method === "POST"
+      ? h.context.upsertConnector({ ...h.github, config: stale })
+      : h.context.applyConnectorPatch(h.github, { config: stale }));
+    const manual = h.context.pollConnector(id, true);
+    assert.equal((await h.context.pollConnector(id, false)).skipped, "in-flight");
+    assert.equal((await h.context.pollConnector("other", false)).ok, true);
+    assert.equal(h.context.findConnector(id).config.intervalSeconds, undefined);
+    releaseSave();
+    await Promise.all([firstPoll, save, manual]);
+    const current = h.context.findConnector(id);
+    assert.equal(current.config.intervalSeconds, 120);
+    assert.equal(current.config.token, "synthetic");
+    assert.ok(current.config.prActivityDiscovery.checkedAt > previous.checkedAt);
+    assert.equal(current.config.prActivityDiscovery.seen["issue:123"], cursor);
+    assert.equal(h.persisted.connectors[0].config.prActivityDiscovery.seen["issue:123"], cursor);
+    assert.equal(events.length, 1);
+
+    const receipt = current.config.prActivityDiscovery;
+    await h.context.applyConnectorPatch(current, { config: { ...current.config, prActivityDiscovery: null } });
+    assert.equal(current.config.prActivityDiscovery, null);
+    h.context.githubLoginCache.set(id, fixture.login);
+    h.context.fetch = async (url, { headers }) => {
+      assert.equal(url, "https://api.github.com/user");
+      const accountId = headers.authorization === "Bearer synthetic" ? 11 : 12;
+      return { ok: true, json: async () => ({ id: accountId, login: "fixture-login" }) };
+    };
+    await h.context.applyConnectorPatch(current, {
+      config: { ...current.config, token: "fixture-other-token", prActivityDiscovery: receipt },
+    });
+    assert.equal(current.config.prActivityDiscovery, undefined);
+    assert.equal(h.context.githubLoginCache.has(id), false);
+  });
+});
+
+test("saving stale settings preserves scoped GitHub cursors and avoids redelivery", async (t) => {
+  for (const method of ["POST", "PATCH"]) await t.test(method, async () => {
+    const h = harness();
+    connectorSettings(h);
+    const config = h.github.config;
+    config.notifyPrComments = true;
+    config.prCommentCursors = { [repository]: { cursorTs: new Date(Date.now() - 30_000).toISOString(), seenIds: [] } };
+    const stale = structuredClone(config);
+    const comment = { id: 31, url: "https://fixture.invalid/comment/31",
+      issue_url: `https://fixture.invalid/issues/${pr.number}`, user: { login: "fixture-author" } };
+    const emitted = [];
+    Object.assign(h.context, {
+      githubRelatedPrs: async () => [pr], githubPrComments: async () => [comment],
+      runRules: async (event) => emitted.push(event.raw.id),
+    });
+    const poll = () => h.context.pollGithubRepositoryPrComments(h.state.connectors[0], fixture.login, repository);
+    await poll();
+    const cursor = config.prCommentCursors[repository].cursorTs;
+    stale.intervalSeconds = 120;
+    if (method === "POST") await h.context.upsertConnector({ ...h.github, config: stale });
+    else await h.context.applyConnectorPatch(h.github, { config: stale });
+    assert.equal(h.state.connectors[0].config.intervalSeconds, 120);
+    assert.equal(h.state.connectors[0].config.prCommentCursors[repository].cursorTs, cursor);
+    await poll();
+    assert.deepEqual(emitted, [comment.id]);
+  });
+});
+
+test("token rotation keeps activity only for the verified GitHub account", async () => {
+  const h = harness();
+  connectorSettings(h);
+  const receipt = { pendingPrs: [pr], cursorTs: "2025-01-01T00:00:00Z" };
+  h.github.config.prActivityDiscovery = receipt;
+  h.github.config.prCommentCursorTs = receipt.cursorTs;
+  h.github.config.seenPrCommentIds = ["fixture"];
+  let oldTokenActive = true;
+  const tokens = [];
+  h.context.fetch = async (url, { headers }) => {
+    assert.equal(url, "https://api.github.com/user");
+    const token = headers.authorization.slice("Bearer ".length);
+    tokens.push(token);
+    if (token === "synthetic" && !oldTokenActive) return { ok: false, status: 401 };
+    const id = token === "fixture-other-account" ? 11 : 10;
+    return { ok: true, json: async () => ({ id, login: "fixture-login" }) };
+  };
+  const patchToken = (token) => h.context.applyConnectorPatch(h.github, {
+    name: "fixture settings", config: { ...h.github.config, token, githubActivityAccountId: 999 },
+  });
+  oldTokenActive = false;
+  await assert.rejects(patchToken("fixture-rotation"), /Cannot verify the previous GitHub account/);
+  assert.equal(h.github.config.token, "synthetic");
+  assert.equal(h.github.name, undefined);
+  oldTokenActive = true;
+  await patchToken("fixture-rotation");
+  assert.equal(h.github.config.prActivityDiscovery, receipt);
+  assert.equal(h.github.config.githubActivityAccountId, 10);
+  tokens.length = 0;
+  h.state.connectors.unshift({ id: "fixture-deleted" });
+  const save = h.context.upsertConnector({ ...h.github, config: { ...h.github.config, token: "fixture-next-rotation" } });
+  h.state.connectors.shift();
+  await save;
+  assert.deepEqual(tokens, ["fixture-next-rotation"]);
+  assert.deepEqual(h.state.connectors.map(({ id }) => id), [h.github.id, h.target.id]);
+  assert.equal(h.state.connectors[0].config.token, "fixture-next-rotation");
+  h.github = h.state.connectors[0];
+  assert.equal(h.github.config.prActivityDiscovery, receipt);
+  h.github.config.prActivityDiscovery = null;
+  await patchToken("fixture-scoped-rotation");
+  assert.equal(h.github.config.prActivityDiscovery, null);
+  assert.equal(h.github.config.prCommentCursorTs, receipt.cursorTs);
+  h.github.config.prActivityDiscovery = receipt;
+  await patchToken("fixture-other-account");
+  assert.equal(h.github.config.prActivityDiscovery, undefined);
+  assert.equal(h.github.config.prCommentCursorTs, undefined);
+  assert.equal(h.github.config.seenPrCommentIds, undefined);
+});
+
+test("a primary repository transfer preserves the activity window and retries at the verified new address", async (t) => {
+  for (const verified of [true, false]) await t.test(verified ? "same repository ID" : "different repository ID", async () => {
+    const h = harness();
+    connectorSettings(h);
+    Object.assign(h.context, await import("./github-pr-activity.mjs"));
+    const oldRepo = "example/app";
+    const newRepo = "example/moved";
+    const cursor = new Date(Date.now() - 60_000).toISOString();
+    const createdAt = new Date(Date.now() - 30_000).toISOString();
+    const pending = { ...pr, repository: oldRepo };
+    const oldUrl = `https://github.com/${oldRepo}`;
+    const newUrl = `https://github.com/${newRepo}`;
+    Object.assign(h.github.config, {
+      notifyPrComments: true, reviewRepositories: [],
+      prCommentCursorTs: cursor, seenPrCommentIds: ["issue:91"],
+      prActivityDiscovery: { cursorTs: cursor, startedAt: cursor, seen: {}, pendingPrs: [pending] },
+    });
+    h.context.fetch = async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/search/issues") return { ok: true, json: async () => ({ total_count: 0, items: [] }) };
+      assert.ok([`/repos/${oldRepo}`, `/repos/${newRepo}`].includes(url.pathname));
+      const isNew = url.pathname === `/repos/${newRepo}`;
+      return { ok: true, json: async () => ({ id: isNew && !verified ? 16 : 15, html_url: isNew ? newUrl : oldUrl }) };
+    };
+    await h.context.applyConnectorPatch(h.github, { config: { ...h.github.config, repo: "moved" } });
+    const config = h.github.config;
+    const expectedRepo = verified ? newRepo : oldRepo;
+    assert.equal(config.prActivityDiscovery.cursorTs, cursor);
+    assert.deepEqual(Object.keys(config.prCommentCursors), [expectedRepo]);
+    assert.equal(config.prCommentCursors[expectedRepo].cursorTs, cursor);
+    assert.equal(config.prCommentCursorTs, undefined);
+    assert.equal(config.prActivityDiscovery.pendingPrs[0].repository, expectedRepo);
+    const events = [];
+    h.context.runRules = async (event) => events.push(event);
+    h.context.githubPrComments = async (_connector, since, source) => {
+      assert.equal(since, cursor);
+      assert.equal(source, expectedRepo);
+      return [91, 92].map((id) => ({ id, created_at: createdAt, user: { login: "fixture-author" } }));
+    };
+    assert.equal((await h.context.pollGithubPrComments(h.github, fixture.login)).processed, 1);
+    assert.deepEqual(events.map((event) => [event.repo, event.raw.id]), [[expectedRepo, 92]]);
+    if (verified) assert.equal(events[0].pullRequestUrl, `${newUrl}/pull/${pr.number}`);
+  });
+});
+
+test("switching between automatic and explicit scope does not replay a PR activity", async () => {
+  const h = harness();
+  connectorSettings(h);
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  const scopedRepo = `${h.github.config.owner}/${h.github.config.repo}`;
+  const scopedPr = { ...pr, repository: scopedRepo };
+  const cursor = new Date(Date.now() - 360_000).toISOString();
+  Object.assign(h.github.config, {
+    notifyPrComments: true, reviewRepositories: [],
+    prCommentCursors: { [scopedRepo]: { cursorTs: cursor, seenIds: [] } },
+  });
+  const comment = (id, ago) => ({
+    id, url: `https://api.github.com/repos/example/app/issues/comments/${id}`,
+    issue_url: `https://api.github.com/repos/example/app/issues/${scopedPr.number}`,
+    created_at: new Date(Date.now() - ago).toISOString(), user: { login: "fixture-author" },
+  });
+  const body = [comment(91, 330_000), comment(92, 25_000)];
+  const emitted = [];
+  Object.assign(h.context, {
+    githubDiscoverActivityPrs: async (_, __, ___, ____, onPr) => { onPr(scopedPr); return []; },
+    githubRelatedPrs: async () => [scopedPr], githubPrComments: async () => body,
+    runRules: async ({ raw }) => emitted.push(raw.id),
+  });
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  const scope = (reviewRepositories) => h.context.applyConnectorPatch(h.github, {
+    config: { ...h.github.config, reviewRepositories },
+  });
+  assert.equal((await poll()).processed, 2);
+  assert.equal(h.github.config.prActivityDiscovery.seen["issue:91"], undefined);
+  body.push(comment(93, 20_000));
+  await scope([scopedRepo]);
+  assert.equal((await poll()).processed, 1);
+  assert.deepEqual(emitted, [91, 92, 93]);
+  await scope([]);
+  assert.equal((await poll()).processed, 0);
+  assert.deepEqual(emitted, [91, 92, 93]);
+});
+
+test("explicit scope still reads the gap before the first automatic collection", async () => {
+  const h = harness();
+  const beforeAuto = new Date(Date.now() - 30 * 60_000).toISOString();
+  const gapEventAt = new Date(Date.now() - 20 * 60_000).toISOString();
+  const autoStartedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+  Object.assign(h.github.config, {
+    notifyPrComments: true,
+    prCommentCursors: { [repository]: { cursorTs: beforeAuto, seenIds: [] } },
+    prActivityDiscovery: { startedAt: autoStartedAt, cursorTs: new Date().toISOString(), seen: {} },
+  });
+  const event = { id: 94, issue_url: `https://fixture.invalid/issues/${pr.number}`,
+    created_at: gapEventAt, user: { login: "fixture-author" } };
+  const emitted = [];
+  Object.assign(h.context, {
+    githubRelatedPrs: async () => [pr],
+    githubPrComments: async (_, since) => Date.parse(since) <= Date.parse(gapEventAt) ? [event] : [],
+    runRules: async ({ raw }) => emitted.push(raw.id),
+  });
+  await h.context.pollGithubRepositoryPrComments(h.github, fixture.login, repository);
+  assert.deepEqual(emitted, [event.id]);
+});
+
+test("switching to automatic recovers the older cursor of an unavailable scoped repository", async (t) => {
+  for (const previouslyAutomatic of [false, true]) {
+    await t.test(`previously automatic: ${previouslyAutomatic}`, async () => {
+      const h = harness();
+      connectorSettings(h);
+      Object.assign(h.context, await import("./github-pr-activity.mjs"));
+      const time = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+      const oldCursor = time(40);
+      const eventAt = time(35);
+      Object.assign(h.github.config, {
+        notifyPrComments: true,
+        prCommentCursors: {
+          "example/app": { cursorTs: time(2), seenIds: [] },
+          [repository]: { cursorTs: oldCursor, seenIds: [] },
+        },
+        prActivityDiscovery: previouslyAutomatic
+          ? { startedAt: time(20), cursorTs: time(10), seen: {} }
+          : undefined,
+      });
+      const emitted = [];
+      let unavailable = true;
+      Object.assign(h.context, {
+        githubRelatedPrs: async (_, __, repo) => repo === repository ? [pr] : [],
+        githubDiscoverActivityPrs: async (_, __, since, ____, onPr) => {
+          assert.ok(since <= eventAt);
+          onPr(pr);
+          return [];
+        },
+        githubPrComments: async (_, since, repo) => {
+          if (repo !== repository) return [];
+          if (unavailable) throw new Error("fixture GitHub 503");
+          return eventAt >= since ? [{ id: 304, created_at: eventAt, user: { login: "fixture-author" } }] : [];
+        },
+        runRules: async ({ raw }) => emitted.push(raw.id),
+      });
+      const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+      assert.equal((await poll()).errors.length, 1);
+      assert.equal(h.github.config.prCommentCursors[repository].cursorTs, oldCursor);
+      unavailable = false;
+      await h.context.applyConnectorPatch(h.github, { config: { ...h.github.config, reviewRepositories: [] } });
+      assert.equal((await poll()).processed, 1);
+      assert.equal(h.github.config.prActivityDiscovery.complete, true);
+      assert.deepEqual(emitted, [304]);
+    });
+  }
+});
+
+test("a new scoped repository ignores comments from before the automatic connection even if edited later", async () => {
+  const h = harness();
+  const start = new Date(Date.now() - 60_000).toISOString();
+  const old = new Date(Date.parse(start) - 60_000).toISOString();
+  Object.assign(h.github.config, {
+    notifyPrComments: true, prActivityDiscovery: { startedAt: start, cursorTs: start },
+  });
+  const comments = [old, start].map((created_at, index) => ({
+    id: index + 300, issue_url: `https://fixture.invalid/issues/${pr.number}`,
+    created_at, updated_at: start, user: { login: "fixture-author" },
+  }));
+  const emitted = [];
+  Object.assign(h.context, {
+    githubRelatedPrs: async () => [pr],
+    githubPrComments: async (_, since, repo) => repo === repository ? comments.filter((row) => row.updated_at >= since) : [],
+    runRules: async ({ raw }) => emitted.push(raw.id),
+  });
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.equal((await poll()).processed, 1);
+  assert.equal((await poll()).processed, 0);
+  assert.deepEqual(emitted, [301]);
+});
+
+test("a newly scoped repository collects a comment never read by automatic discovery", async () => {
+  const h = harness();
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  const time = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const first = { ...pr, repository: "example/app" };
+  const event = {
+    id: 95, issue_url: `https://fixture.invalid/issues/${pr.number}`, created_at: time(20),
+    updated_at: time(1), user: { login: "fixture-author" },
+  };
+  Object.assign(h.github.config, {
+    notifyPrComments: true, reviewRepositories: [],
+    prActivityDiscovery: { startedAt: time(60), cursorTs: time(45), seen: {} },
+  });
+  const reads = [];
+  const emitted = [];
+  Object.assign(h.context, {
+    githubDiscoverActivityPrs: async (_, __, ___, ____, onPr) => { onPr(first); return []; },
+    githubRelatedPrs: async () => [pr],
+    githubPrComments: async (_, since, selected) => {
+      reads.push(selected);
+      return selected === repository && event.updated_at >= since ? [event] : [];
+    },
+    runRules: async ({ raw }) => emitted.push(raw.id),
+  });
+  await h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.deepEqual(reads, [first.repository]);
+  await h.context.pollGithubRepositoryPrComments(h.github, fixture.login, repository);
+  assert.deepEqual(emitted, [event.id]);
+});
+
+test("explicit activity receipts survive restart and automatic replay after 2001 events", async () => {
+  const h = harness();
+  connectorSettings(h);
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  vm.runInContext(functionSource("maskState"), h.context);
+  const time = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const result = Array.from({ length: 2001 }, (_, index) => ({
+    id: index + 1, issue_url: `https://fixture.invalid/issues/${pr.number}`,
+    created_at: time(20 - index / 200), user: { login: "fixture-author" },
+  }));
+  h.github.config.owner = "example";
+  h.github.config.repo = "search";
+  Object.assign(h.github.config, {
+    notifyPrComments: true,
+    prCommentCursors: { [repository]: { cursorTs: time(25), seenIds: [] } },
+    prActivityDiscovery: { startedAt: time(60), cursorTs: time(45), seen: {} },
+  });
+  const emitted = [];
+  Object.assign(h.context, {
+    githubDiscoverActivityPrs: async (_, __, ___, ____, onPr) => { onPr(pr); return []; },
+    githubRelatedPrs: async () => [pr], githubPrComments: async () => result,
+    runRules: async ({ raw }) => emitted.push(raw.id),
+  });
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.equal((await poll()).processed, 2001);
+  h.github.config = structuredClone(h.persisted.connectors[0].config);
+  assert.equal(h.github.config.prCommentCursors[repository].seenIds.length, 2001);
+  const edited = h.context.maskState(h.state).connectors[0].config;
+  assert.equal(edited.prCommentCursors[repository].seenIds, undefined);
+  await h.context.applyConnectorPatch(h.github, { config: { ...edited, reviewRepositories: [] } });
+  assert.equal((await poll()).processed, 0);
+  assert.equal(emitted.length, 2001);
+});
+
+test("a scoped delivery failure keeps successful IDs without advancing past the failed event", async () => {
+  const h = harness();
+  const cursor = new Date(Date.now() - 60_000).toISOString();
+  const events = [301, 302].map((id) => ({
+    id, issue_url: `https://fixture.invalid/issues/${pr.number}`, created_at: cursor,
+    user: { login: "fixture-author" },
+  }));
+  Object.assign(h.github.config, {
+    owner: "example", repo: "search", notifyPrComments: true,
+    prCommentCursors: { [repository]: { cursorTs: cursor, seenIds: [] } },
+  });
+  let fail = true;
+  const emitted = [];
+  Object.assign(h.context, {
+    githubRelatedPrs: async () => [pr], githubPrComments: async () => events,
+    runRules: async ({ raw }) => {
+      if (fail && raw.id === 302) throw new Error("fixture delivery failed");
+      emitted.push(raw.id);
+    },
+  });
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.equal((await poll()).errors.length, 1);
+  h.github.config = structuredClone(h.persisted.connectors[0].config);
+  assert.equal(h.github.config.prCommentCursors[repository].cursorTs, cursor);
+  assert.deepEqual(h.github.config.prCommentCursors[repository].seenIds, ["issue:301"]);
+  fail = false;
+  assert.equal((await poll()).processed, 1);
+  assert.deepEqual(emitted, [301, 302]);
+});
+
 test("activity searches bound historical PRs while request discovery remains cursor-independent", async () => {
   const h = harness();
   const queries = [];
@@ -999,6 +1705,7 @@ test("a manual poll joining an interval run that skipped the issue sync polls ag
   const runs = [];
   const context = vm.createContext({
     pollInFlight: new Map(),
+    connectorSaves: new Map(),
     runPoll: async (id, manual) => {
       runs.push(manual);
       await new Promise((resolve) => setImmediate(resolve));
@@ -1026,6 +1733,7 @@ test("a manual poll waits for its issue sync outside the connector's poll slot",
   const runs = [];
   const context = vm.createContext({
     pollInFlight: new Map(),
+    connectorSaves: new Map(),
     runPoll: async (id, manual) => {
       runs.push(manual);
       return { ok: true, issueSync: manual ? sync : null };

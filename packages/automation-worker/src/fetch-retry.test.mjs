@@ -79,6 +79,30 @@ test('non-network errors are not retried', async () => {
   assert.equal(fake.calls.length, 1);
 });
 
+test(
+  'caller abort interrupts retry backoff without another request',
+  { timeout: 1000 },
+  async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const request = fetchWithRetry(
+      'https://vk.test/v1/hosts',
+      { signal: controller.signal },
+      {
+        backoffMs: [10_000],
+        fetchImpl: async () => {
+          calls += 1;
+          throw networkError('UND_ERR_SOCKET');
+        },
+      }
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await assert.rejects(request, { name: 'AbortError' });
+    assert.equal(calls, 1);
+  }
+);
+
 test('GitHub GETs replay the cached body on 304 and leave other requests alone', async () => {
   const sent = [];
   const replies = [
@@ -93,7 +117,10 @@ test('GitHub GETs replay the cached body on 304 and leave other requests alone',
     return replies.shift();
   });
   const url = 'https://api.github.com/repos/o/r/issues/1';
-  const headers = { authorization: 'Bearer t', 'x-github-api-version': '2022-11-28' };
+  const headers = {
+    authorization: 'Bearer t',
+    'x-github-api-version': '2022-11-28',
+  };
   assert.deepEqual(await (await get(url, { headers })).json(), { n: 1 });
   const unchanged = await get(url, { headers });
   assert.equal(unchanged.status, 200);

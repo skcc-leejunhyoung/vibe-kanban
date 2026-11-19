@@ -232,7 +232,27 @@ discovery runs once per repository, retaining full pagination. Allowlisted PR
 references that GitHub resolves to the same ID and version share a review read.
 Terminal PR metadata is refreshed every cycle. Matching closed PR review history
 is audited at least every two hours and reopening immediately restores full
-review reads. A collection deadline aborts remaining source reads.
+review reads. A collection deadline aborts remaining source reads and releases
+the scope for retry. A shared token refresh can still complete for other callers.
+
+Set `boardNoteId` to the published Drawer board's note ID to verify board
+corrections. For tracked board entries, the worker retains each changed decision
+review, including a new decision at the same head. It also checks existing open
+rows with decisions on the first observation. While a row needs attention, the
+adapter saves its `key`, `head` and `fingerprint` in
+`board-reconciliation.json` under the evidence directory and uses the original
+delegation. A checkpoint alone cannot retire these rows.
+
+Include a `boardResolutions` array in the official checkpoint evidence:
+
+- For a published correction, copy the pending `key` and `fingerprint`, set
+  `disposition` to `published`, and supply `rowSha256`, the SHA-256 of the
+  intended Markdown table row in UTF-8 after trimming surrounding whitespace.
+  The worker reads the owned Drawer note afresh and requires a unique matching
+  PR row with that hash.
+- For a hold, copy the pending `key` and `fingerprint`, set `disposition` to
+  `hold`, and supply a non-empty `reason`, `owner` and future ISO 8601
+  `recheckAt`. A new decision or elapsed deadline makes the entry due again.
 
 ### Measure before promotion
 
@@ -262,9 +282,9 @@ Prices are explicit `inputPerMillion`, `cachedInputPerMillion`, `cacheWritePerMi
 values, using the same currency. No changing price or agent cost is hardcoded.
 The JSON report includes confusion counts, false routine labels, unmatched
 labels, coverage/fallbacks/timeouts, p50/p90 latency, tokens, completed suppressed
-runs and actual agent admissions. `shadowRouting` separately counts whole-batch
-predictions, event exclusions by reason and older records that lack a routing
-preview. Its predictions never
+runs and actual agent admissions. `shadowRouting` reports p50/p90 for the
+whole preview including host reads, whole-batch predictions, event exclusions
+by reason and older records that lack a routing preview. Its predictions never
 contribute to actual suppression or avoided cost. Pending or unknown request/cache-write usage makes cost
 unknown; missing cached usage makes the known-token estimate an upper bound.
 Cache writes are counted separately within the input total; they are not charged a second time as uncached input. See the [official Decisions guide](https://developers.openai.com/api/docs/guides/decisions). Fixed subscription cash savings remain unknown. Avoided agent cost and net
@@ -319,11 +339,10 @@ miss would never be re-tried.
   Set `reviewPrs: true` to also import open, non-draft PRs where review is
   requested from the user (Search API). Set `reviewRepositories` to an explicit
   allowlist such as `["example/app", "example/search"]`; an absent or empty
-  list uses the primary `owner/repo`. This list affects review PRs and their
-  comment/review notifications only. Ordinary assigned/created/mentioned issues
-  still use the primary repository and its existing filter. Other repositories
-  are **not monitored**; no organization-wide discovery or credential expansion
-  occurs. Edit the list in Settings → Automation → Edit monitored repositories.
+  list uses the primary `owner/repo` for review request imports. Ordinary
+  assigned/created/mentioned issues also use the primary repository and its
+  existing filter. Edit the list in Settings → Automation → Edit monitored
+  repositories.
   Imported PRs are tagged `review` in Vibe (the tag is created in the project if
   missing). Branch metadata is fetched via `GET /repos/.../pulls/{n}`.
   Open review requests are reconciled every poll, including the first poll and
@@ -343,11 +362,7 @@ miss would never be re-tried.
   `reviewPrRuleReceipts` so repair polls do not repeat arbitrary script actions.
   Missing review tags and structural links are repaired on the existing issue,
   including a restart between issue creation and link creation. A failed repair
-  remains visible as missing; it is not reported as tracked. Comment/review
-  failures are isolated per repository and never block primary issue polling;
-  unsuccessful activity reads do not advance their repository cursor. Related
-  activity searches use the overlap day's update filter so a large historical
-  authored/reviewed set cannot permanently block current comment collection.
+  remains visible as missing; it is not reported as tracked.
   Review-request discovery remains independent of issue/update cursors.
   The settings page shows the last reconciliation time, open PRs/heads, missing
   or pending links, pending/exhausted retries, and per-repository errors. Search
@@ -355,16 +370,34 @@ miss would never be re-tried.
   ceiling, it falls back to all pages of that same repository's open PRs and
   filters direct requested reviewers. Failed reads remain visible and are never
   published as a successful partial reconciliation.
-  PR details, comments and submitted reviews always use the original repository;
-  comment cursors are independent per repository and newly added repositories
-  seed old comments without notifications. Credentials must already allow access
-  to each selected repository; access failures remain visible.
-  With `notifyPrComments` enabled (the default), it also watches PRs authored by,
-  assigned to, awaiting review from, or previously reviewed by the authenticated
-  user. New issue comments and inline review comments from other users create
-  Vibe notifications. This includes issue comments, inline review comments, and
-  non-empty submitted review bodies (for example APPROVED or CHANGES_REQUESTED
-  reviews). The first poll seeds existing comments without notifying.
+  With `notifyPrComments` enabled (the default) and an empty repository list,
+  `involves` and `review-involves` discover recently updated open and closed
+  PRs visible to the connected account. The worker reads each discovered PR's
+  issue comments, inline comments and submitted reviews from its search result
+  repository. New approvals and change requests can notify even with an empty
+  review body. Search windows that exceed 1,000 results are split. Incomplete
+  searches and activity read failures retain the cursor. The
+  `prActivityDiscovery` status records the last poll, completeness and counts
+  for each successfully read repository. A new connector starts at the first
+  poll time. An existing connector carries forward its activity cursor, overlap
+  window and seen event IDs. Independent queries and split windows continue
+  when one fails. PRs whose activity reads failed stay queued even when the next
+  search omits them. The worker reports completion after saving the receipt.
+  Settings saves wait for the active poll and keep the latest receipt and
+  repository cursors. Token rotation keeps activity when GitHub verifies the
+  same account. If a connector has saved activity but no verified account ID,
+  keep its previous token active for the first rotation. Set
+  `prActivityDiscovery` to `null` to reset automatic activity explicitly.
+  Changing the primary repository keeps the account-wide activity window. A
+  rename or transfer verified by the GitHub repository ID also moves the old
+  scoped cursor and pending PRs to the new address. Automatic and explicit
+  collection keep independent cursors and share delivered activity IDs per
+  repository. Switching to automatic collection can recover from the oldest
+  scoped cursor. A newly scoped repository uses the automatic collection's
+  initial timestamp as its lower bound. With no prior cursor, a new connection
+  seeds at its first poll. Per-PR comment reads reuse URLs within a five-minute
+  bucket and filter results against the actual cursor. Delivery history stays
+  in worker state and is omitted from settings responses.
 - `vibe_kanban`: creates Vibe Kanban issues through HTTP.
 
 The `vibe_kanban` connector posts to `{baseUrl}/v1/issues` on the **remote** API.

@@ -14,11 +14,12 @@ export function GithubReviewScope({
   onEdit: (connector: AutomationConnector) => void;
 }) {
   const { t } = useTranslation('settings');
-  const repositories =
-    Array.isArray(c.config.reviewRepositories) &&
-    c.config.reviewRepositories.length
-      ? c.config.reviewRepositories.map(String)
-      : [`${c.config.owner}/${c.config.repo}`];
+  const configured = Array.isArray(c.config.reviewRepositories)
+    ? c.config.reviewRepositories.map(String)
+    : [];
+  const repositories = configured.length
+    ? configured
+    : [`${c.config.owner}/${c.config.repo}`];
   const reconciliation = c.config.reviewPrReconciliation as
     | {
         checkedAt: string;
@@ -65,6 +66,17 @@ export function GithubReviewScope({
           }
         )}
       </p>
+      {workerEnabled &&
+        c.enabled &&
+        c.config.notifyPrComments !== false &&
+        configured.length === 0 && (
+          <p>
+            {t(
+              'settings.automation.prActivityAutomaticScope',
+              'PR activity notifications automatically follow pull requests related to the connected GitHub account.'
+            )}
+          </p>
+        )}
       <p className="text-low">
         {t(
           'settings.automation.reviewScopeWarning',
@@ -82,9 +94,13 @@ export function GithubReviewScope({
       />
       {Array.isArray(c.config.prCommentErrors) &&
         c.config.prCommentErrors.map(
-          (error: { repository: string; error: string }) => (
-            <p className="text-warning" key={`activity:${error.repository}`}>
-              {error.repository}: {error.error}
+          (error: { repository: string; number?: number; error: string }) => (
+            <p
+              className="text-warning"
+              key={`activity:${error.repository}:${error.number}`}
+            >
+              {error.repository}
+              {error.number ? `#${error.number}` : ''}: {error.error}
             </p>
           )
         )}

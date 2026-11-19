@@ -32,7 +32,7 @@ class PeriodicTests(unittest.TestCase):
             calls.append(('request', dict(body)))
             return report if report is not None else {'status': 'ok', 'changed': False, 'errors': [], 'fingerprint': 'a' * 64,
                 'counts': {'issues': 0, 'prs': len(body['tracked']), 'hosts': 1}, 'coverage': dict(coverage),
-                'registryHash': body['registryHash'], 'checkedTracked': body['tracked']}
+                'registryHash': body['registryHash'], 'checkedTracked': body['tracked'], 'boardPending': []}
         namespace.update(SCHED='schedule', BOARD='board', DISPATCH='dispatch', DELEG='deleg', INBOX='inbox', AP=self.folder,
                          PENDING_KEYS=('pending_admissions',), CHECKPOINTS=(('a', 'at'), ('b', 'at')), CHECKPOINT_BY='ap checkpoint',
                          load=lambda path, default: values.get(path, default),
@@ -183,6 +183,11 @@ console.log(JSON.stringify(flags));
         values[handled['evidence']] = derived
         for key in ('a', 'b'):
             values['schedule'][key].update(evidence=handled['evidence'], at=original_now().isoformat())
+        self.ap['now'] = lambda: original_now() + dt.timedelta(minutes=30)
+        calls.clear()
+        self.assertEqual(gate(['periodic due'])[1]['status'], 'handled')
+        request = next(body for name, body in calls if name == 'request')
+        self.assertEqual(request['acknowledgedAt'], derived['agentReviewedAt'])
         self.ap['now'] = lambda: original_now() + dt.timedelta(hours=1)
         calls.clear()
         _, fallback = gate(['periodic due'])
@@ -239,6 +244,28 @@ console.log(JSON.stringify(flags));
         self.assertEqual(repr(values), before)
         body = next(value for name, value in calls if name == 'request')
         self.assertEqual(body['tracked'], [{'repository': 'synthetic/widgets', 'number': 17}, {'repository': 'synthetic/widgets', 'number': 18}, {'repository': 'synthetic/widgets', 'number': 19}])
+        self.assertEqual(body['boardPrs'], ['synthetic/widgets#17'])
+
+    def test_unresolved_board_report_is_preserved_for_delegation_and_evidence_is_forwarded(self):
+        pending = {'key': 'synthetic/widgets#17', 'head': 'b' * 40, 'fingerprint': 'c' * 64}
+        gate, calls, values = self.fixture()
+        api = self.ap['api']
+        self.ap['api'] = lambda *args, **kwargs: {
+            **api(*args, **kwargs), 'changed': True, 'checkedAt': self.ap['now']().isoformat(),
+            'boardPending': [pending],
+        }
+        self.config['boardNoteId'] = '20000000-0000-4000-8000-000000000001'
+        values['board']['rows']['17'] = {'repo': 'synthetic/widgets'}
+        proof = {'key': pending['key'], 'fingerprint': pending['fingerprint'],
+                 'disposition': 'published', 'rowSha256': 'd' * 64}
+        values[values['schedule']['a']['evidence']]['boardResolutions'] = [proof]
+        _, result = gate(['periodic due'])
+        self.assertEqual(result['status'], 'legacy')
+        body = next(value for name, value in calls if name == 'request')
+        self.assertEqual(body['boardNoteId'], self.config['boardNoteId'])
+        self.assertIn(proof, body['boardResolutions'])
+        with open(os.path.join(self.folder, 'system-one-evidence', 'board-reconciliation.json')) as stream:
+            self.assertEqual(json.load(stream)['boardPending'], [pending])
 
 
 if __name__ == '__main__':

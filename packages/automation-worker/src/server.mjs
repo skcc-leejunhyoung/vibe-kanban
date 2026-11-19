@@ -318,11 +318,14 @@ const POLLABLE_TYPES = new Set(['slack', 'github', 'vibe_events']);
 // Caches accessed during the initial poll/rule runs that bootstrap() kicks off,
 // declared before `await bootstrap()` to avoid a temporal-dead-zone access.
 const githubLoginCache = new Map();
+const githubActivityWrites = new Set();
+const GITHUB_ACTIVITY_OVERLAP_MS = 5 * 60 * 1000;
 const vibeTokenCache = new Map();
 const vibeTokenInflight = new Map();
 // One in-flight poll per connector. This is used during bootstrap's initial
 // scheduleAll() call, so it must be initialized before bootstrap starts.
 const pollInFlight = new Map();
+const connectorSaves = new Map();
 // connectorId -> start time of the last issue-sync round (see
 // shouldReconcileGithubIssues). In memory only, so a restart syncs at once.
 const githubIssueSyncLastRunAt = new Map();
@@ -679,9 +682,8 @@ async function route(req, res) {
   }
 
   if (url.pathname === '/api/connectors' && req.method === 'POST') {
-    const connector = await readBodyJson(req);
-    upsertConnector(connector);
-    await persistState();
+    const connector = normalizeConnector(await readBodyJson(req));
+    await saveConnectorAfterPoll(connector.id, () => upsertConnector(connector));
     scheduleAll();
     await log('info', 'connector saved', {
       id: connector.id,
@@ -693,10 +695,10 @@ async function route(req, res) {
 
   if (url.pathname.startsWith('/api/connectors/') && req.method === 'DELETE') {
     const id = decodeURIComponent(url.pathname.split('/').pop() || '');
-    state.connectors = state.connectors.filter(
-      (connector) => connector.id !== id
-    );
-    await persistState();
+    await saveConnectorAfterPoll(id, () => {
+      state.connectors = state.connectors.filter((connector) => connector.id !== id);
+      githubLoginCache.delete(id);
+    });
     scheduleAll();
     await log('info', 'connector deleted', { id });
     sendState(res);
@@ -706,9 +708,7 @@ async function route(req, res) {
   if (url.pathname.startsWith('/api/connectors/') && req.method === 'PATCH') {
     const id = decodeURIComponent(url.pathname.split('/').pop() || '');
     const patch = await readBodyJson(req);
-    const connector = findConnector(id);
-    applyConnectorPatch(connector, patch);
-    await persistState();
+    await saveConnectorAfterPoll(id, () => applyConnectorPatch(findConnector(id), patch));
     scheduleAll();
     await log('info', 'connector updated', {
       id,
@@ -849,6 +849,7 @@ const RUNTIME_CONFIG_KEYS = [
   'reviewPrReconciliation',
   'prCommentCursors',
   'prCommentErrors',
+  'prActivityDiscovery',
   'tagMap',
   'githubIssueLinkBackfillSkipped',
 ];
@@ -858,6 +859,13 @@ const RUNTIME_CONFIG_KEYS = [
 // that echoes the mask back is treated as "unchanged" (see preserveMaskedSecrets).
 const SECRET_CONFIG_KEYS = ['token', 'bearerToken', 'authHeaderValue'];
 const SECRET_MASK = '__stored__';
+const GITHUB_ACTIVITY_CONFIG_KEYS = [
+  'prActivityDiscovery',
+  'prCommentCursors',
+  'prCommentCursorTs',
+  'seenPrCommentIds',
+  'prCommentErrors',
+];
 
 function preserveMissingRuntimeConfig(prevConfig, nextConfig) {
   const prev = prevConfig || {};
@@ -896,6 +904,13 @@ function maskState(current) {
   for (const connector of copy.connectors || []) {
     const config = connector.config;
     if (!config) continue;
+    if (connector.type === 'github') {
+      delete config.githubActivityAccountId;
+      for (const cursor of Object.values(config.prCommentCursors || {})) {
+        if (cursor) delete cursor.seenIds;
+      }
+      if (config.prActivityDiscovery) delete config.prActivityDiscovery.seen;
+    }
     for (const key of SECRET_CONFIG_KEYS) {
       if (config[key]) config[key] = SECRET_MASK;
     }
@@ -907,15 +922,16 @@ function sendState(res) {
   sendJson(res, 200, maskState(state));
 }
 
-function upsertConnector(input) {
-  const connector = normalizeConnector(input);
+async function upsertConnector(connector) {
   if (connector.type === 'github') githubReviewRepositories(connector.config);
-  const index = state.connectors.findIndex((item) => item.id === connector.id);
-  if (index >= 0) {
-    preserveMaskedSecrets(state.connectors[index].config, connector.config);
-    state.connectors[index] = connector;
+  const previous = state.connectors.find((item) => item.id === connector.id);
+  if (previous) {
+    preserveMaskedSecrets(previous.config, connector.config);
+    await preserveGithubActivityConfig(previous, connector);
+    state.connectors[state.connectors.indexOf(previous)] = connector;
   } else {
     preserveMaskedSecrets(undefined, connector.config);
+    if (connector.type === 'github') delete connector.config.githubActivityAccountId;
     state.connectors.push(connector);
   }
 }
@@ -940,10 +956,8 @@ function upsertRule(input) {
 
 // PATCH must not let clients rewrite identity/type fields: `id` and `type` key
 // the timers map and poll dispatch. Only mutable fields are accepted.
-function applyConnectorPatch(connector, patch) {
+async function applyConnectorPatch(connector, patch) {
   if (!patch || typeof patch !== 'object') throw new Error('invalid patch');
-  if ('name' in patch) connector.name = String(patch.name);
-  if ('enabled' in patch) connector.enabled = Boolean(patch.enabled);
   if ('config' in patch) {
     const next =
       patch.config && typeof patch.config === 'object' ? patch.config : {};
@@ -951,8 +965,127 @@ function applyConnectorPatch(connector, patch) {
     preserveMissingRuntimeConfig(prev, next);
     preserveMaskedSecrets(prev, next);
     if (connector.type === 'github') githubReviewRepositories(next);
+    await preserveGithubActivityConfig(connector, { ...connector, config: next });
     connector.config = next;
   }
+  if ('name' in patch) connector.name = String(patch.name);
+  if ('enabled' in patch) connector.enabled = Boolean(patch.enabled);
+}
+
+async function preserveGithubActivityConfig(previous, connector) {
+  if (previous.type !== connector.type) githubLoginCache.delete(connector.id);
+  if (connector.type !== 'github') return;
+  const next = connector.config;
+  delete next.githubActivityAccountId;
+  if (previous.type !== 'github') return;
+  const prev = previous.config;
+  const resetDiscovery = next.prActivityDiscovery === null;
+  const source = (config) => [
+    githubApiBase(config),
+    String(config.username || '').toLowerCase(),
+  ];
+  const nextSource = source(next);
+  let sameSource = source(prev).every((value, index) => value === nextSource[index]);
+  let accountId = sameSource ? prev.githubActivityAccountId : undefined;
+  if (sameSource && prev.token !== next.token) {
+    const hasActivity = prev.prActivityDiscovery || prev.prCommentCursorTs ||
+      Object.keys(prev.prCommentCursors || {}).length || prev.seenPrCommentIds?.length;
+    sameSource = false;
+    accountId = undefined;
+    if (hasActivity && next.token && (prev.token || prev.githubActivityAccountId)) {
+      const account = await fetchGithubAccount(next);
+      let previousAccountId = prev.githubActivityAccountId;
+      if (!previousAccountId) {
+        try {
+          previousAccountId = (await fetchGithubAccount(prev)).id;
+        } catch (error) {
+          if (!resetDiscovery) {
+            throw new Error('Cannot verify the previous GitHub account. Keep its token active during rotation or explicitly reset PR activity.', { cause: error });
+          }
+        }
+      }
+      sameSource = account.id === previousAccountId;
+      accountId = account.id;
+    }
+  }
+  if (!sameSource || prev.token !== next.token) {
+    githubLoginCache.delete(connector.id);
+  }
+  // Settings forms can hold a snapshot from before the latest poll.
+  for (const key of GITHUB_ACTIVITY_CONFIG_KEYS) {
+    if (sameSource && prev[key] !== undefined) next[key] = prev[key];
+    else delete next[key];
+  }
+  const oldPrimary = `${prev.owner}/${prev.repo}`.toLowerCase();
+  const newPrimary = `${next.owner}/${next.repo}`.toLowerCase();
+  if (sameSource && oldPrimary !== newPrimary) {
+    await moveGithubActivityRepository(next, oldPrimary, newPrimary);
+  }
+  if (sameSource && prev.reviewRepositories?.length && !next.reviewRepositories?.length &&
+      next.prActivityDiscovery?.cursorTs) {
+    const activity = next.prActivityDiscovery;
+    const cursorTs = githubOldestScopedActivityCursor(prev);
+    if (cursorTs && cursorTs < activity.cursorTs) {
+      const overlapStart = new Date(Date.parse(cursorTs) - GITHUB_ACTIVITY_OVERLAP_MS).toISOString();
+      next.prActivityDiscovery = {
+        ...activity,
+        cursorTs,
+        startedAt: [activity.startedAt, overlapStart].filter(Boolean).sort()[0],
+        complete: false,
+      };
+    }
+  }
+  if (accountId) next.githubActivityAccountId = accountId;
+  if (resetDiscovery) {
+    next.prActivityDiscovery = null;
+    delete next.prCommentErrors;
+  }
+}
+
+async function moveGithubActivityRepository(config, oldPrimary, newPrimary) {
+  const cursors = { ...config.prCommentCursors };
+  const scoped = cursors[oldPrimary];
+  const legacy = scoped || config.prCommentCursorTs || config.seenPrCommentIds?.length ? {
+    ...scoped,
+    cursorTs: scoped?.cursorTs || config.prCommentCursorTs,
+    seenIds: [...new Set([...(scoped?.seenIds || []), ...(config.seenPrCommentIds || [])])],
+  } : undefined;
+  const activity = config.prActivityDiscovery;
+  const pending = activity?.pendingPrs || [];
+  delete config.prCommentCursorTs;
+  delete config.seenPrCommentIds;
+  if (legacy) cursors[oldPrimary] = legacy;
+  if (legacy || pending.some((pr) => pr.repository === oldPrimary) ||
+      config.reviewRepositories?.some((repository) => repository.trim().toLowerCase() === oldPrimary)) {
+    const oldRepo = await fetchGithubRepository(config, oldPrimary);
+    const newRepo = oldRepo && await fetchGithubRepository(config, newPrimary);
+    if (oldRepo && newRepo && oldRepo.id === newRepo.id) {
+      if (legacy) {
+        const existing = cursors[newPrimary];
+        const cursorTs = [legacy.cursorTs, existing?.cursorTs]
+          .map((value) => normalizeOptionalTimestamp(value)).filter(Boolean).sort()[0];
+        const startedAt = (!legacy.cursorTs || legacy.startedAt) &&
+          (!existing?.cursorTs || existing.startedAt)
+          ? [legacy.startedAt, existing?.startedAt]
+            .map((value) => normalizeOptionalTimestamp(value)).filter(Boolean).sort()[0]
+          : undefined;
+        cursors[newPrimary] = { cursorTs, startedAt, seenIds: [...new Set([...(legacy.seenIds || []), ...(existing?.seenIds || [])])] };
+        delete cursors[oldPrimary];
+      }
+      if (activity) {
+        const moved = pending.map((pr) => pr.repository === oldPrimary ? {
+          ...pr, repository: newPrimary, html_url: newRepo.html_url ? `${newRepo.html_url}/pull/${pr.number}` : pr.html_url,
+        } : pr);
+        config.prActivityDiscovery = { ...activity, pendingPrs: [...new Map(moved.map((pr) => [githubIssueLinkKey(pr), pr])).values()] };
+      }
+      if (config.reviewRepositories) {
+        config.reviewRepositories = [...new Set(config.reviewRepositories.map((repository) =>
+          repository.trim().toLowerCase() === oldPrimary ? newPrimary : repository
+        ))];
+      }
+    }
+  }
+  config.prCommentCursors = cursors;
 }
 
 function applyRulePatch(rule, patch) {
@@ -1579,32 +1712,36 @@ async function reconcileRoutineAutopilot(input) {
     )
       throw new Error('owned configured host required');
   }
-  const key = createHash('sha256')
-    .update(
-      JSON.stringify([
-        connector.id,
-        github.id,
-        reconciliationProjects(input)
-          .map(({ projectId, reviewTagId }) => [
-            projectId,
-            reviewTagId,
-            projects.get(projectId).id,
-          ])
-          .sort(),
-        [...input.hosts].sort(),
-        [...repositories].sort(),
-      ])
-    )
-    .digest('hex');
+  const projectScope = reconciliationProjects(input)
+    .map(({ projectId, reviewTagId }) => [
+      projectId,
+      reviewTagId,
+      projects.get(projectId).id,
+    ])
+    .sort();
+  const hostScope = [...new Set(input.hosts)].sort();
+  const scopeKey = (...scope) =>
+    createHash('sha256').update(JSON.stringify(scope)).digest('hex');
+  const primary = projectScope.find(([, , id]) => id === connector.id);
+  const legacyKey = primary
+    ? scopeKey(connector.id, github.id, primary[0], primary[1], hostScope)
+    : undefined;
+  const key =
+    (projectScope.length === 1 && legacyKey) ||
+    scopeKey(connector.id, github.id, projectScope, hostScope);
   if (reconciliationInFlight.has(key))
     throw new Error('reconciliation already running');
   reconciliationInFlight.add(key);
   try {
-    const record = ((state.autopilotReconciliations ||= {})[key] ||= {});
-    const login = await withTimeout(
-      githubLogin(github, signal),
-      15000,
-      'GitHub identity timeout'
+    const records = (state.autopilotReconciliations ||= {});
+    const legacy = legacyKey && records[legacyKey];
+    // Scope expansion needs a fresh baseline but must retain unresolved board work.
+    const record = (records[key] ||= legacy
+      ? { boardReviews: legacy.boardReviews, boardPending: legacy.boardPending }
+      : {});
+    const login = await githubLogin(
+      github,
+      AbortSignal.any([signal, AbortSignal.timeout(15000)])
     );
     const collect = (terminalReviews) =>
       collectReconciliation({
@@ -1614,7 +1751,7 @@ async function reconcileRoutineAutopilot(input) {
         signal,
         github: async (path) => {
           const response = await fetch(
-            `${(github.config.apiBase || 'https://api.github.com').replace(/\/$/, '')}${path}`,
+            `${githubApiBase(github.config)}${path}`,
             {
               headers: githubHeaders(github.config.token),
               signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
@@ -1629,11 +1766,11 @@ async function reconcileRoutineAutopilot(input) {
             repository,
             `is:open review-requested:${login}`,
             login,
-            signal
+            { signal }
           ),
         vibe: (method, path, body, project) =>
           vibeApi(
-            projects.get(project.projectId),
+            project ? projects.get(project.projectId) : connector,
             method,
             path,
             body,
@@ -2190,7 +2327,31 @@ async function enqueueRoutineRetry(routine, event, idempotencyKey, error) {
   await enqueueRetry(syntheticRule, { ...redactEvent(event), routineId: routine.id, routineIdempotencyKey: idempotencyKey }, error);
 }
 
+async function saveConnectorAfterPoll(id, change) {
+  const queued = connectorSaves.get(id);
+  if (!queued && !state.connectors.some((connector) => connector.id === id && connector.type === 'github')) {
+    await change();
+    return persistState();
+  }
+  // Keep the connector configuration stable until the poll has saved its receipt.
+  const previous = queued || pollInFlight.get(id);
+  const save = Promise.resolve(previous).catch(() => {}).then(async () => {
+    await change();
+    await persistState();
+  }).finally(() => {
+    if (connectorSaves.get(id) === save) connectorSaves.delete(id);
+  });
+  connectorSaves.set(id, save);
+  return save;
+}
+
 function pollConnector(id, manual) {
+  const saving = connectorSaves.get(id);
+  if (saving) {
+    return manual
+      ? saving.then(() => pollConnector(id, true))
+      : Promise.resolve({ ok: true, skipped: 'in-flight' });
+  }
   const existing = pollInFlight.get(id);
   if (existing) {
     // Interval ticks skip a busy connector; a manual poll awaits the live run
@@ -2369,24 +2530,45 @@ function githubHeaders(token) {
   };
 }
 
-async function githubLogin(connector, signal) {
-  const config = connector.config || {};
-  if (config.username) return String(config.username);
-  const cached = githubLoginCache.get(connector.id);
-  if (cached) return cached;
-  const apiBase = String(config.apiBase || 'https://api.github.com').replace(
-    /\/+$/,
-    ''
-  );
-  const response = await fetch(`${apiBase}/user`, {
+function githubApiBase(config) {
+  return String(config.apiBase || 'https://api.github.com').replace(/\/+$/, '');
+}
+
+async function fetchGithubRepository(config, repository) {
+  const parts = repository.split('/');
+  if (parts.length !== 2 || parts.some((part) => !/^[a-z0-9_.-]+$/i.test(part) || part === '.' || part === '..')) return null;
+  const response = await fetch(`${githubApiBase(config)}/repos/${parts.map(encodeURIComponent).join('/')}`, {
+    headers: githubHeaders(config.token),
+  });
+  if (response.status === 404 || response.status === 410) return null;
+  if (!response.ok) throw new Error(`GitHub repository identity lookup failed for ${repository}: ${response.status}`);
+  const body = await response.json();
+  if (!Number.isSafeInteger(body.id) || body.id <= 0)
+    throw new Error(`GitHub returned no repository identity for ${repository}`);
+  return body;
+}
+
+async function fetchGithubAccount(config, signal) {
+  const response = await fetch(`${githubApiBase(config)}/user`, {
     headers: githubHeaders(config.token),
     signal,
   });
   if (!response.ok) throw new Error(`GitHub /user failed: ${response.status}`);
   const body = await response.json();
-  if (!body.login) throw new Error('GitHub /user returned no login');
-  githubLoginCache.set(connector.id, body.login);
-  return body.login;
+  if (!body.login || !Number.isSafeInteger(body.id) || body.id <= 0)
+    throw new Error('GitHub /user returned no account identity');
+  return { id: body.id, login: body.login };
+}
+
+async function githubLogin(connector, signal) {
+  const config = connector.config || {};
+  if (config.username) return String(config.username);
+  const cached = githubLoginCache.get(connector.id);
+  if (cached?.config === config) return cached.login;
+  const account = await fetchGithubAccount(config, signal);
+  config.githubActivityAccountId = account.id;
+  githubLoginCache.set(connector.id, { config, login: account.login });
+  return account.login;
 }
 
 // REST issue payloads omit sub-issue links, so resolve parents via GraphQL.
@@ -2455,22 +2637,21 @@ async function githubSearchPrs(
   repository,
   qualifier,
   reviewLogin,
-  signal
+  { dateRange, onPr, signal } = {}
 ) {
   const config = connector.config;
   return searchGithubPrs({
     fetchImpl: signal
       ? (url, options) => fetch(url, { ...options, signal })
       : fetch,
-    apiBase: String(config.apiBase || 'https://api.github.com').replace(
-      /\/+$/,
-      ''
-    ),
+    apiBase: githubApiBase(config),
     headers: githubHeaders(config.token),
     repository,
     qualifier,
-    perPage: githubPerPage(config),
+    perPage: repository ? githubPerPage(config) : 100,
     reviewLogin,
+    dateRange,
+    onPr,
   });
 }
 
@@ -2751,13 +2932,18 @@ async function githubRelatedPrs(connector, login, repository, since) {
   return [...prs.values()];
 }
 
-async function githubPrComments(connector, since, repository) {
+async function githubPrComments(connector, since, repository, number) {
   const config = connector.config || {};
   const apiBase = String(config.apiBase || 'https://api.github.com').replace(
     /\/+$/,
     ''
   );
   const base = `${apiBase}/repos/${repository}`;
+  // Keep conditional GET URLs stable within each overlap window.
+  const sinceMs = Date.parse(since);
+  const readSince = number && Number.isFinite(sinceMs)
+    ? new Date(Math.floor(sinceMs / GITHUB_ACTIVITY_OVERLAP_MS) * GITHUB_ACTIVITY_OVERLAP_MS).toISOString()
+    : since;
   const fetchComments = async (endpoint) => {
     const comments = [];
     for (let page = 1; ; page += 1) {
@@ -2767,7 +2953,7 @@ async function githubPrComments(connector, since, repository) {
         sort: 'updated',
         direction: 'asc',
       });
-      if (since) params.set('since', since);
+      if (readSince) params.set('since', readSince);
       const response = await fetch(`${endpoint}?${params}`, {
         headers: githubHeaders(config.token),
       });
@@ -2786,8 +2972,8 @@ async function githubPrComments(connector, since, repository) {
     return comments;
   };
   const [issueComments, reviewComments] = await Promise.all([
-    fetchComments(`${base}/issues/comments`),
-    fetchComments(`${base}/pulls/comments`),
+    fetchComments(`${base}/issues${number ? `/${number}` : ''}/comments`),
+    fetchComments(`${base}/pulls${number ? `/${number}` : ''}/comments`),
   ]);
   return [...issueComments, ...reviewComments];
 }
@@ -2841,6 +3027,12 @@ function githubCommentPrNumber(comment) {
 
 async function pollGithubPrComments(connector, login) {
   const config = connector.config;
+  if (config.notifyPrComments === false) {
+    config.prCommentErrors = [];
+    return { processed: 0, seeded: 0 };
+  }
+  if (!config.reviewRepositories?.length)
+    return pollGithubAutomaticPrActivity(connector, login);
   const primary = `${config.owner}/${config.repo}`.toLowerCase();
   const repositories = [
     ...new Set([
@@ -2868,34 +3060,215 @@ async function pollGithubPrComments(connector, login) {
     }
   }
   config.prCommentErrors = total.errors;
+  await persistState(true);
   return total;
+}
+
+async function githubDiscoverActivityPrs(connector, login, since, pollStartedAt, onPr) {
+  const errors = [];
+  const end = Math.floor(Date.parse(pollStartedAt) / 1000);
+  const updated = Math.floor(Date.parse(since) / 1000);
+  for (const qualifier of ['involves', 'review-involves']) {
+    for (const state of ['open', 'closed']) {
+      try {
+        await githubSearchPrs(
+          connector, undefined, `is:${state} ${qualifier}:${login}`, undefined,
+          { dateRange: { field: 'updated', start: updated, end }, onPr }
+        );
+      } catch (error) {
+        errors.push({ repository: 'GitHub discovery', state, qualifier, error: errorMessage(error) });
+      }
+    }
+  }
+  return errors;
+}
+
+function githubOldestScopedActivityCursor(config) {
+  const cursors = config.prCommentCursors || {};
+  const primary = `${config.owner}/${config.repo}`.toLowerCase();
+  const repositories = config.reviewRepositories?.length
+    ? (config.reviewPrs ? [primary, ...githubReviewRepositories(config)] : [primary])
+    : Object.keys(cursors);
+  return [
+    cursors[primary]?.cursorTs || config.prCommentCursorTs,
+    ...repositories.map((repository) => cursors[repository]?.cursorTs),
+  ].map((value) => normalizeOptionalTimestamp(value)).filter(Boolean).sort()[0];
+}
+
+async function pollGithubAutomaticPrActivity(connector, login) {
+  const config = connector.config;
+  const pollStartedAt = new Date().toISOString();
+  const cursors = config.prCommentCursors || {};
+  const previousCursor = githubOldestScopedActivityCursor(config);
+  const overlapMs = GITHUB_ACTIVITY_OVERLAP_MS;
+  const startedAt = previousCursor
+    ? new Date(Date.parse(previousCursor) - overlapMs).toISOString()
+    : pollStartedAt.replace(/\.\d+Z$/, '.000Z');
+  const previous = config.prActivityDiscovery;
+  const runtime = {
+    cursorTs: previousCursor || startedAt,
+    startedAt,
+    ...previous,
+    seen: { ...previous?.seen },
+  };
+  const since = new Date(
+    Math.max(Date.parse(runtime.startedAt), Date.parse(runtime.cursorTs) - overlapMs)
+  ).toISOString();
+  const delivered = new Map();
+  const receipts = new Map();
+  const retry = new Map(
+    (runtime.pendingPrs || []).map((pr) => [githubIssueLinkKey(pr), pr])
+  );
+  let processed = 0;
+  const errors = await githubDiscoverActivityPrs(
+    connector, login, since, pollStartedAt, ({ repository, number, html_url, title }) => {
+      const pr = { repository, number, html_url, title };
+      retry.set(githubIssueLinkKey(pr), pr);
+    }
+  );
+  try {
+    const batches = await mapWithConcurrency([...retry.values()], 4, async (pr) => {
+      try {
+        const [comments, reviews] = await Promise.all([
+          githubPrComments(connector, since, pr.repository, pr.number),
+          githubPrReviews(connector, [pr], login, since, pr.repository),
+        ]);
+        return {
+          pr,
+          comments: [...comments, ...reviews.map(({ activity }) => activity)],
+        };
+      } catch (error) {
+        return { pr, error: errorMessage(error) };
+      }
+    });
+    const legacy = new Set(
+      [
+        ...(config.seenPrCommentIds || []),
+        ...Object.values(cursors).flatMap((cursor) => cursor.seenIds || []),
+      ].map(githubLegacyPrActivityKey).filter(Boolean)
+    );
+    const pending = [];
+    for (const { pr, comments, error } of batches) {
+      if (error) {
+        errors.push({ repository: pr.repository, number: pr.number, error });
+        continue;
+      }
+      const receipt = receipts.get(pr.repository) || {
+        repository: pr.repository, pullRequests: 0, events: 0,
+      };
+      receipts.set(pr.repository, receipt);
+      receipt.pullRequests += 1;
+      for (const comment of comments) {
+        const at = normalizeOptionalTimestamp(comment.created_at);
+        if (
+          !at || at < since ||
+          comment.user?.login?.toLowerCase() === login.toLowerCase()
+        ) continue;
+        const key = githubPrActivityKey(comment);
+        if (!legacy.has(key)) pending.push({ pr, comment, key, at });
+      }
+      retry.delete(githubIssueLinkKey(pr));
+    }
+    pending.sort((a, b) => a.at.localeCompare(b.at));
+    for (const { pr, comment, key, at } of pending) {
+      if (runtime.seen[key]) continue;
+      try {
+        await emitGithubPrActivity(connector, pr, comment);
+      } catch (error) {
+        errors.push({ repository: pr.repository, number: pr.number, error: errorMessage(error) });
+        retry.set(githubIssueLinkKey(pr), pr);
+        continue;
+      }
+      runtime.seen[key] = at;
+      const keys = delivered.get(pr.repository) || [];
+      keys.push(key);
+      delivered.set(pr.repository, keys);
+      receipts.get(pr.repository).events += 1;
+      processed += 1;
+    }
+  } catch (error) {
+    errors.push({ repository: 'GitHub discovery', error: errorMessage(error) });
+  }
+  runtime.pendingPrs = [...retry.values()];
+  const receipt = { ...runtime, checkedAt: pollStartedAt, complete: errors.length === 0 };
+  if (!errors.length) {
+    receipt.cursorTs = pollStartedAt;
+    const overlap = new Date(Date.parse(pollStartedAt) - overlapMs).toISOString();
+    receipt.seen = Object.fromEntries(
+      Object.entries(runtime.seen).filter(([, at]) => at >= overlap)
+    );
+  }
+  const failedRepos = new Set(errors.map((item) => item.repository));
+  receipt.repositories = [...receipts.values()].filter(
+    ({ repository }) => !failedRepos.has(repository)
+  );
+  const sharedCursors = { ...cursors };
+  for (const [repository, keys] of delivered) {
+    const scoped = githubScopedActivityState(config, repository);
+    sharedCursors[repository] = { ...scoped, seenIds: [...(scoped.seenIds || []), ...keys] };
+  }
+  try {
+    await persistState(true, {
+      connector, config,
+      values: { prActivityDiscovery: receipt, prCommentErrors: errors, prCommentCursors: sharedCursors },
+    });
+  } catch (error) {
+    if (connector.config === config) {
+      config.prCommentCursors = sharedCursors;
+      config.prActivityDiscovery = { ...runtime, checkedAt: pollStartedAt, complete: false, repositories: [] };
+      config.prCommentErrors = [...errors, { repository: 'GitHub persistence', error: errorMessage(error) }];
+    }
+    throw error;
+  }
+  return { processed, seeded: 0, errors };
+}
+
+function githubLegacyPrActivityKey(key) {
+  if (/^(?:issue|inline|review):\d+$/.test(key)) return key;
+  const match =
+    /(?:\/pulls\/\d+\/reviews\/|#pullrequestreview-|(\/pulls\/comments\/|#discussion_r)|(\/issues\/comments\/|#issuecomment-))\d+:(\d+)$/.exec(key);
+  if (!match) return null;
+  return `${match[1] ? 'inline' : match[2] ? 'issue' : 'review'}:${match[3]}`;
+}
+
+function githubPrActivityKey(comment) {
+  const kind = comment.review_state ? 'review' : comment.pull_request_url ? 'inline' : 'issue';
+  return `${kind}:${comment.id}`;
+}
+
+function githubScopedActivityState(config, repository) {
+  const primary = `${config.owner}/${config.repo}`.toLowerCase();
+  return config.prCommentCursors?.[repository] || (repository === primary
+    ? { cursorTs: config.prCommentCursorTs, seenIds: config.seenPrCommentIds }
+    : {});
 }
 
 async function pollGithubRepositoryPrComments(connector, login, repository) {
   const config = connector.config || {};
   if (config.notifyPrComments === false) return { processed: 0, seeded: 0 };
   const cursors = (config.prCommentCursors ||= {});
-  const primary = `${config.owner}/${config.repo}`.toLowerCase();
-  const runtime = (cursors[repository] ||=
-    repository === primary
-      ? { cursorTs: config.prCommentCursorTs, seenIds: config.seenPrCommentIds }
-      : {});
-  const cursor = String(runtime.cursorTs || '');
-  const seeding = !cursor && (runtime.seenIds || []).length === 0;
+  const runtime = (cursors[repository] ||= githubScopedActivityState(config, repository));
+  const auto = config.prActivityDiscovery;
+  // Automatic discovery reads individual PRs. Its cursor cannot advance a repository scan.
+  const cursor = String(runtime.cursorTs || auto?.startedAt || auto?.cursorTs || '');
+  const seeding = !cursor && (!runtime.seenIds?.length || auto === null);
   const pollStartedAt = new Date().toISOString();
   if (seeding) {
     runtime.cursorTs = pollStartedAt;
+    runtime.startedAt = pollStartedAt.replace(/\.\d+Z$/, '.000Z');
     runtime.seenIds = [];
     return { processed: 0, seeded: 0 };
   }
 
-  const seen = new Set(runtime.seenIds || []);
+  const seen = new Set((runtime.seenIds || []).map((key) => githubLegacyPrActivityKey(key) || key));
   // Search results can lag behind comment APIs. Re-read a short overlap so a
   // newly related/updated PR can appear before its comment falls behind the
   // cursor; seen IDs keep the overlap idempotent.
+  const floor = normalizeOptionalTimestamp(runtime.startedAt, !runtime.cursorTs && cursor);
+  if (floor) runtime.startedAt = floor;
   const cursorMs = Date.parse(cursor);
   const since = Number.isFinite(cursorMs)
-    ? new Date(cursorMs - 5 * 60 * 1000).toISOString()
+    ? new Date(Math.max(cursorMs - GITHUB_ACTIVITY_OVERLAP_MS, floor ? Date.parse(floor) : -Infinity)).toISOString()
     : cursor;
   const prs = await githubRelatedPrs(connector, login, repository, since);
   const prsByNumber = new Map(prs.map((pr) => [githubIssueLinkKey(pr), pr]));
@@ -2909,52 +3282,63 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
       repository
     ),
   ]);
-  const pending = [];
+  const pending = new Map();
+  const collect = (pr, comment) => {
+    if (floor) {
+      const createdAt = normalizeOptionalTimestamp(comment.created_at);
+      if (!createdAt || createdAt < floor) return;
+    }
+    const key = githubPrActivityKey(comment);
+    if (seen.has(key) || seen.has(`${comment.url || ''}:${comment.id}`)) return;
+    if (auto?.seen?.[key] || pending.has(key)) return;
+    if (comment.user?.login?.toLowerCase() === login.toLowerCase()) return;
+    pending.set(key, { pr, comment });
+  };
 
   for (const comment of comments) {
     const pr = prsByNumber.get(
       githubIssueLinkKey({ repository, number: githubCommentPrNumber(comment) })
     );
-    if (!pr) continue;
-    const key = `${comment.url || ''}:${comment.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (comment.user && comment.user.login === login) continue;
-    pending.push({ pr, comment });
+    if (pr) collect(pr, comment);
   }
   for (const { pr, activity } of reviews) {
-    const key = `${activity.url || ''}:${activity.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    pending.push({ pr, comment: activity });
+    collect(pr, activity);
   }
 
-  pending.sort((a, b) =>
+  const ordered = [...pending].sort(([, a], [, b]) =>
     String(a.comment.created_at || '').localeCompare(
       String(b.comment.created_at || '')
     )
   );
-  for (const { pr, comment } of pending) {
-    await runRules({
-      source: 'github',
-      type: 'pr_comment',
-      connectorId: connector.id,
-      repo: pr.repository,
-      number: pr.number,
-      title: pr.title,
-      pullRequestUrl: pr.html_url,
-      url: comment.html_url,
-      user: comment.user ? comment.user.login : null,
-      body: comment.body || '',
-      createdAt: comment.created_at,
-      reviewState: comment.review_state || null,
-      raw: comment,
-    });
+  try {
+    for (const [key, { pr, comment }] of ordered) {
+      await emitGithubPrActivity(connector, pr, comment);
+      seen.add(key);
+    }
+    runtime.cursorTs = pollStartedAt;
+  } finally {
+    // shortcut: retain compact IDs for exact handoffs, move receipts to indexed storage if state writes become a bottleneck.
+    runtime.seenIds = [...seen];
   }
+  return { processed: pending.size, seeded: 0 };
+}
 
-  runtime.cursorTs = pollStartedAt;
-  runtime.seenIds = Array.from(seen).slice(-2000);
-  return { processed: pending.length, seeded: 0 };
+function emitGithubPrActivity(connector, pr, comment) {
+  return runRules({
+    source: 'github',
+    type: 'pr_comment',
+    connectorId: connector.id,
+    repo: pr.repository,
+    number: pr.number,
+    title: pr.title,
+    pullRequestUrl: pr.html_url,
+    url: comment.html_url,
+    user: comment.user ? comment.user.login : null,
+    body: comment.body || '',
+    createdAt: comment.created_at,
+    reviewState: comment.review_state || null,
+    raw: comment,
+  });
 }
 
 async function pollGithub(connector, manual) {
@@ -5589,7 +5973,7 @@ async function vibeApi(
   const baseUrl = String(baseUrlOverride || config.baseUrl || '').replace(/\/+$/, '');
   for (let attempt = 0; attempt < 2; attempt += 1) {
     signal?.throwIfAborted();
-    const accessToken = await getVibeAccessToken(connector, attempt > 0);
+    const accessToken = await getVibeAccessToken(connector, attempt > 0, signal);
     signal?.throwIfAborted();
     const headers = { 'content-type': 'application/json' };
     if (accessToken) headers.authorization = `Bearer ${accessToken}`;
@@ -5682,7 +6066,8 @@ function attachVibeTag(connector, issueId, tagId) {
 // Resolve a bearer token for the remote API. Prefer `tokenUrl` — the local Vibe
 // Kanban server's /api/auth/token, which owns the refresh token and mints fresh
 // access tokens — and fall back to a static `bearerToken`.
-async function getVibeAccessToken(connector, forceRefresh) {
+async function getVibeAccessToken(connector, forceRefresh, signal) {
+  signal?.throwIfAborted();
   const config = connector.config || {};
   if (!config.tokenUrl) {
     if (config.bearerToken) return config.bearerToken;
@@ -5700,7 +6085,19 @@ async function getVibeAccessToken(connector, forceRefresh) {
     });
     vibeTokenInflight.set(connector.id, inflight);
   }
-  return inflight;
+  if (!signal) return inflight;
+  // The refresh is shared, so a caller can stop waiting without cancelling its peers.
+  let onAbort;
+  try {
+    const aborted = new Promise((_, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      signal.throwIfAborted();
+    });
+    return await Promise.race([inflight, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 async function fetchVibeAccessToken(connector) {
@@ -5768,8 +6165,39 @@ async function readJson(filePath, fallback) {
   }
 }
 
-async function persistState(strict = false) {
-  await enqueueWrite(STATE_PATH, JSON.stringify(state, null, 2), strict);
+async function persistState(strict = false, connectorUpdate) {
+  const content = JSON.stringify(state, null, 2);
+  const current = ({ connector, config }) =>
+    state.connectors.includes(connector) && connector.config === config;
+  const earlier = [...githubActivityWrites].filter(current);
+  if (!connectorUpdate && !earlier.length) {
+    await enqueueWrite(STATE_PATH, content, strict);
+    return;
+  }
+  if (connectorUpdate) githubActivityWrites.add(connectorUpdate);
+  try {
+    await enqueueWrite(STATE_PATH, () => {
+      if (connectorUpdate && !current(connectorUpdate))
+        throw new Error('Connector configuration changed while saving poll state');
+      // Apply receipts committed ahead of this write without changing the rest of its queued snapshot.
+      const updates = earlier.filter((update) => update.committed);
+      if (connectorUpdate) updates.push(connectorUpdate);
+      if (!updates.length) return content;
+      const snapshot = JSON.parse(content);
+      for (const { connector, values } of updates) {
+        const target = snapshot.connectors.find((item) => item.id === connector.id);
+        Object.assign(target.config, values);
+      }
+      return JSON.stringify(snapshot, null, 2);
+    }, strict, () => {
+      if (connectorUpdate && current(connectorUpdate)) {
+        Object.assign(connectorUpdate.config, connectorUpdate.values);
+        connectorUpdate.committed = true;
+      }
+    });
+  } finally {
+    if (connectorUpdate) githubActivityWrites.delete(connectorUpdate);
+  }
 }
 
 // Logs are written from hot poll loops; coalesce the full-file rewrites into at
@@ -5786,7 +6214,7 @@ function scheduleLogFlush() {
   if (typeof logFlushTimer.unref === 'function') logFlushTimer.unref();
 }
 
-function enqueueWrite(filePath, content, strict = false) {
+function enqueueWrite(filePath, content, strict = false, afterWrite) {
   // Keep the chain alive: one rejected write must not permanently stall every
   // future persist. Artifact dispatch claims must report failures to the caller.
   // Shadow I/O has its own queue so it cannot hold delivery's durable claim.
@@ -5795,8 +6223,9 @@ function enqueueWrite(filePath, content, strict = false) {
   const pending = queue.then(async () => {
     try {
       const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await fs.writeFile(tmpPath, content);
+      await fs.writeFile(tmpPath, typeof content === 'function' ? content() : content);
       await fs.rename(tmpPath, filePath);
+      afterWrite?.();
     } catch (error) {
       console.error(
         `[persist] write failed for ${filePath}:`,

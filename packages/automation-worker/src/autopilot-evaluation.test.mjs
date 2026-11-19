@@ -78,10 +78,15 @@ test('shadow predictions are separate from observed suppression and legacy recor
     observations: {
       legacy: { results: [{ route: 'routine_result', confidence: 0.99 }] },
       qualified: {
-        routing_preview: { eligible_events: 1, would_suppress: true },
+        routing_preview: {
+          duration_ms: 300,
+          eligible_events: 1,
+          would_suppress: true,
+        },
       },
       mixed: {
         routing_preview: {
+          duration_ms: 3000,
           eligible_events: 1,
           would_suppress: false,
           exclusions: { timeout: 1 },
@@ -103,6 +108,8 @@ test('shadow predictions are separate from observed suppression and legacy recor
     withoutPreview: 2,
     batchesWithEligibleEvents: 2,
     wouldSuppressBatches: 1,
+    p50Ms: 300,
+    p90Ms: 3000,
     excludedEventsByReason: { timeout: 1, protected_batch: 2 },
   });
   assert.equal(evaluation.estimates.avoidedAgentCost, 0);

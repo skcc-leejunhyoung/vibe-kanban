@@ -172,6 +172,9 @@ export function evaluateAutopilotRecords({
     .map((row) => row.shadow)
     .filter(Boolean);
   const previews = shadowRuns.map((row) => row.routing_preview).filter(Boolean);
+  const previewDurations = previews
+    .map((row) => row.duration_ms)
+    .filter((n) => Number.isFinite(n) && n >= 0);
   const exclusions = new Map();
   for (const preview of previews) {
     for (const [reason, count] of Object.entries(preview.exclusions || {})) {
@@ -219,6 +222,8 @@ export function evaluateAutopilotRecords({
       wouldSuppressBatches: previews.filter(
         (row) => row.would_suppress === true
       ).length,
+      p50Ms: percentile(previewDurations, 0.5),
+      p90Ms: percentile(previewDurations, 0.9),
       excludedEventsByReason: Object.fromEntries(exclusions),
     },
     classification: {
