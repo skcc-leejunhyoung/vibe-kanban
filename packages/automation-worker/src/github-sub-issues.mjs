@@ -72,23 +72,27 @@ export function githubIssueLinkRelocation(link, node) {
   return { repository: node.repository, number: node.number, url: node.url };
 }
 
-// Old repository (lowercase) -> current name, from links whose issue kept its
-// number at a new address: the repository itself was renamed or transferred,
-// so its milestones moved with it. Ambiguous old names are left out.
+// Old repository (lowercase) -> current name, only when every linked issue of
+// it now lives under one new name with its number kept: the repository itself
+// was renamed or transferred, so its milestones moved too. One issue still in
+// place, renumbered or sent elsewhere means issues moved one by one.
 export function githubRepositoryMoves(links, nodes) {
   const moves = new Map();
-  const ambiguous = new Set();
+  const unmoved = new Set();
   for (const link of links) {
     const node = nodes.get(link.github_node_id);
-    const next = githubIssueLinkRelocation(link, node);
-    if (!next || next.number !== Number(link.number)) continue;
+    if (!node) continue;
     const from = String(link.repository || '').toLowerCase();
-    const known = moves.get(from);
-    if (known && known.toLowerCase() !== next.repository.toLowerCase())
-      ambiguous.add(from);
-    else moves.set(from, next.repository);
+    const next = githubIssueLinkRelocation(link, node);
+    const to = next?.number === Number(link.number) ? next.repository : null;
+    if (
+      !to ||
+      (moves.has(from) && moves.get(from).toLowerCase() !== to.toLowerCase())
+    )
+      unmoved.add(from);
+    else moves.set(from, to);
   }
-  for (const from of ambiguous) moves.delete(from);
+  for (const from of unmoved) moves.delete(from);
   return moves;
 }
 

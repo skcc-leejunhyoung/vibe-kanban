@@ -4766,10 +4766,26 @@ async function relocateGithubIssueLinks(vibe, links, nodes, ownRepository) {
 // transferred one; otherwise milestone sync stops matching them and would
 // recreate them under the new name.
 async function relocateGithubMilestones(vibe, milestones, moves) {
-  for (const milestone of Array.isArray(milestones) ? milestones : []) {
+  const list = Array.isArray(milestones) ? milestones : [];
+  const sourceKey = (repository, number) =>
+    `${String(repository || '').toLowerCase()}#${number}`;
+  const taken = new Set(
+    list.map((item) => sourceKey(item?.source_repository, item?.source_number))
+  );
+  for (const milestone of list) {
     const from = milestone?.source_repository;
     const to = moves.get(String(from || '').toLowerCase());
     if (!to) continue;
+    // A copy already made under the new name holds the slot (unique per
+    // project); leave this one rather than fail the same PATCH every round.
+    if (taken.has(sourceKey(to, milestone.source_number))) {
+      await log('warn', 'github milestone relocation skipped', {
+        milestoneId: milestone.id,
+        from,
+        to,
+      });
+      continue;
+    }
     try {
       const response = await vibeApi(
         vibe,

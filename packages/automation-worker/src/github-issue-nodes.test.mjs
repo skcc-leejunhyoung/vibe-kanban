@@ -151,22 +151,27 @@ test('relocates only links GitHub serves from another address', () => {
   assert.equal(githubIssueLinkRelocation(link, undefined), null);
 });
 
-test('derives repository moves only from issues that kept their number', () => {
+test('derives a repository move only when all its issues moved together', () => {
   const links = [
     { github_node_id: 'A', repository: 'Example/Old', number: 1 },
     { github_node_id: 'B', repository: 'example/old', number: 2 },
     { github_node_id: 'C', repository: 'example/split', number: 3 },
     { github_node_id: 'D', repository: 'example/split', number: 4 },
     { github_node_id: 'E', repository: 'example/issue-moved', number: 5 },
+    // One issue transferred out under the same number; its siblings stayed.
+    { github_node_id: 'F', repository: 'example/stays', number: 6 },
+    { github_node_id: 'G', repository: 'example/stays', number: 7 },
   ];
   const nodes = nodesOf(
-    ['A', 'B', 'C', 'D', 'E'],
+    ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
     [
       node('A', 'example/new', 1),
       node('B', 'example/new', 2),
       node('C', 'example/one', 3),
       node('D', 'example/two', 4),
       node('E', 'example/elsewhere', 50),
+      node('F', 'example/target', 6),
+      node('G', 'example/stays', 7),
     ],
   );
   assert.deepEqual(
@@ -299,6 +304,22 @@ test('milestones follow their moved repository', async () => {
   );
   assert.equal(milestones[0].source_repository, 'example/new');
   assert.equal(milestones[1].source_repository, 'example/other');
+});
+
+test('a milestone whose new-name copy already exists is left in place', async () => {
+  const h = harness();
+  const milestones = [
+    { id: 'old', source_repository: 'example/old', source_number: 4 },
+    { id: 'copy', source_repository: 'Example/New', source_number: 4 },
+  ];
+  await h.relocateGithubMilestones(
+    {},
+    milestones,
+    new Map([['example/old', 'example/new']]),
+  );
+  assert.equal(h.calls.length, 0);
+  assert.equal(milestones[0].source_repository, 'example/old');
+  assert.equal(h.logs[0].message, 'github milestone relocation skipped');
 });
 
 test('a sync round relocates first and hands each link its node and milestone address', async () => {
