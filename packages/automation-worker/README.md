@@ -209,6 +209,25 @@ metadata, render metadata and observation timestamps. PR dispatch state, board
 content and pending/cancelled/held intentions still participate. Review-request
 discovery runs once per repository, retaining full pagination.
 
+Set `boardNoteId` to the published Drawer board's note ID to verify board
+corrections. For tracked board entries, the worker retains each changed decision
+review, including a new decision at the same head. It also checks existing open
+rows with decisions on the first observation. While a row needs attention, the
+adapter saves its `key`, `head` and `fingerprint` in
+`board-reconciliation.json` under the evidence directory and uses the original
+delegation. A checkpoint alone cannot retire these rows.
+
+Include a `boardResolutions` array in the official checkpoint evidence:
+
+- For a published correction, copy the pending `key` and `fingerprint`, set
+  `disposition` to `published`, and supply `rowSha256`, the SHA-256 of the
+  intended Markdown table row in UTF-8 after trimming surrounding whitespace.
+  The worker reads the owned Drawer note afresh and requires a unique matching
+  PR row with that hash.
+- For a hold, copy the pending `key` and `fingerprint`, set `disposition` to
+  `hold`, and supply a non-empty `reason`, `owner` and future ISO 8601
+  `recheckAt`. A new decision or elapsed deadline makes the entry due again.
+
 ### Measure before promotion
 
 Run the offline evaluator against local worker state and observations:
@@ -322,7 +341,7 @@ miss would never be re-tried.
   filters direct requested reviewers. Failed reads remain visible and are never
   published as a successful partial reconciliation.
   With `notifyPrComments` enabled (the default) and an empty repository list,
-  `involves` and `review-involves` discover open and recently updated closed
+  `involves` and `review-involves` discover recently updated open and closed
   PRs visible to the connected account. The worker reads each discovered PR's
   issue comments, inline comments and submitted reviews from its search result
   repository. New approvals and change requests can notify even with an empty
@@ -343,10 +362,12 @@ miss would never be re-tried.
   rename or transfer verified by the GitHub repository ID also moves the old
   scoped cursor and pending PRs to the new address. Automatic and explicit
   collection keep independent cursors and share delivered activity IDs per
-  repository. A newly scoped repository starts at the automatic collection's
-  initial timestamp if available. With no prior cursor, a new connection
-  seeds at its first poll. Delivery history stays in worker state and is
-  omitted from settings responses.
+  repository. Switching to automatic collection can recover from the oldest
+  scoped cursor. A newly scoped repository uses the automatic collection's
+  initial timestamp as its lower bound. With no prior cursor, a new connection
+  seeds at its first poll. Per-PR comment reads reuse URLs within a five-minute
+  bucket and filter results against the actual cursor. Delivery history stays
+  in worker state and is omitted from settings responses.
 - `vibe_kanban`: creates Vibe Kanban issues through HTTP.
 
 The `vibe_kanban` connector posts to `{baseUrl}/v1/issues` on the **remote** API.

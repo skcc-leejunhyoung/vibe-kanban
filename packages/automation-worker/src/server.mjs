@@ -312,6 +312,7 @@ const POLLABLE_TYPES = new Set(['slack', 'github', 'vibe_events']);
 // declared before `await bootstrap()` to avoid a temporal-dead-zone access.
 const githubLoginCache = new Map();
 const githubActivityWrites = new Set();
+const GITHUB_ACTIVITY_OVERLAP_MS = 5 * 60 * 1000;
 const vibeTokenCache = new Map();
 const vibeTokenInflight = new Map();
 // One in-flight poll per connector. This is used during bootstrap's initial
@@ -1013,6 +1014,20 @@ async function preserveGithubActivityConfig(previous, connector) {
   if (sameSource && oldPrimary !== newPrimary) {
     await moveGithubActivityRepository(next, oldPrimary, newPrimary);
   }
+  if (sameSource && prev.reviewRepositories?.length && !next.reviewRepositories?.length &&
+      next.prActivityDiscovery?.cursorTs) {
+    const activity = next.prActivityDiscovery;
+    const cursorTs = githubOldestScopedActivityCursor(prev);
+    if (cursorTs && cursorTs < activity.cursorTs) {
+      const overlapStart = new Date(Date.parse(cursorTs) - GITHUB_ACTIVITY_OVERLAP_MS).toISOString();
+      next.prActivityDiscovery = {
+        ...activity,
+        cursorTs,
+        startedAt: [activity.startedAt, overlapStart].filter(Boolean).sort()[0],
+        complete: false,
+      };
+    }
+  }
   if (accountId) next.githubActivityAccountId = accountId;
   if (resetDiscovery) {
     next.prActivityDiscovery = null;
@@ -1024,6 +1039,7 @@ async function moveGithubActivityRepository(config, oldPrimary, newPrimary) {
   const cursors = { ...config.prCommentCursors };
   const scoped = cursors[oldPrimary];
   const legacy = scoped || config.prCommentCursorTs || config.seenPrCommentIds?.length ? {
+    ...scoped,
     cursorTs: scoped?.cursorTs || config.prCommentCursorTs,
     seenIds: [...new Set([...(scoped?.seenIds || []), ...(config.seenPrCommentIds || [])])],
   } : undefined;
@@ -1041,7 +1057,12 @@ async function moveGithubActivityRepository(config, oldPrimary, newPrimary) {
         const existing = cursors[newPrimary];
         const cursorTs = [legacy.cursorTs, existing?.cursorTs]
           .map((value) => normalizeOptionalTimestamp(value)).filter(Boolean).sort()[0];
-        cursors[newPrimary] = { cursorTs, seenIds: [...new Set([...(legacy.seenIds || []), ...(existing?.seenIds || [])])] };
+        const startedAt = (!legacy.cursorTs || legacy.startedAt) &&
+          (!existing?.cursorTs || existing.startedAt)
+          ? [legacy.startedAt, existing?.startedAt]
+            .map((value) => normalizeOptionalTimestamp(value)).filter(Boolean).sort()[0]
+          : undefined;
+        cursors[newPrimary] = { cursorTs, startedAt, seenIds: [...new Set([...(legacy.seenIds || []), ...(existing?.seenIds || [])])] };
         delete cursors[oldPrimary];
       }
       if (activity) {
@@ -2886,6 +2907,11 @@ async function githubPrComments(connector, since, repository, number) {
     ''
   );
   const base = `${apiBase}/repos/${repository}`;
+  // Keep conditional GET URLs stable within each overlap window.
+  const sinceMs = Date.parse(since);
+  const readSince = number && Number.isFinite(sinceMs)
+    ? new Date(Math.floor(sinceMs / GITHUB_ACTIVITY_OVERLAP_MS) * GITHUB_ACTIVITY_OVERLAP_MS).toISOString()
+    : since;
   const fetchComments = async (endpoint) => {
     const comments = [];
     for (let page = 1; ; page += 1) {
@@ -2895,7 +2921,7 @@ async function githubPrComments(connector, since, repository, number) {
         sort: 'updated',
         direction: 'asc',
       });
-      if (since) params.set('since', since);
+      if (readSince) params.set('since', readSince);
       const response = await fetch(`${endpoint}?${params}`, {
         headers: githubHeaders(config.token),
       });
@@ -3011,14 +3037,11 @@ async function githubDiscoverActivityPrs(connector, login, since, pollStartedAt,
   const end = Math.floor(Date.parse(pollStartedAt) / 1000);
   const updated = Math.floor(Date.parse(since) / 1000);
   for (const qualifier of ['involves', 'review-involves']) {
-    for (const [state, field, start] of [
-      ['open', 'created', 0],
-      ['closed', 'updated', updated],
-    ]) {
+    for (const state of ['open', 'closed']) {
       try {
         await githubSearchPrs(
           connector, undefined, `is:${state} ${qualifier}:${login}`, undefined,
-          { field, start, end }, onPr
+          { field: 'updated', start: updated, end }, onPr
         );
       } catch (error) {
         errors.push({ repository: 'GitHub discovery', state, qualifier, error: errorMessage(error) });
@@ -3028,13 +3051,24 @@ async function githubDiscoverActivityPrs(connector, login, since, pollStartedAt,
   return errors;
 }
 
+function githubOldestScopedActivityCursor(config) {
+  const cursors = config.prCommentCursors || {};
+  const primary = `${config.owner}/${config.repo}`.toLowerCase();
+  const repositories = config.reviewRepositories?.length
+    ? (config.reviewPrs ? [primary, ...githubReviewRepositories(config)] : [primary])
+    : Object.keys(cursors);
+  return [
+    cursors[primary]?.cursorTs || config.prCommentCursorTs,
+    ...repositories.map((repository) => cursors[repository]?.cursorTs),
+  ].map((value) => normalizeOptionalTimestamp(value)).filter(Boolean).sort()[0];
+}
+
 async function pollGithubAutomaticPrActivity(connector, login) {
   const config = connector.config;
   const pollStartedAt = new Date().toISOString();
-  const primary = `${config.owner}/${config.repo}`.toLowerCase();
   const cursors = config.prCommentCursors || {};
-  const previousCursor = normalizeOptionalTimestamp(cursors[primary]?.cursorTs || config.prCommentCursorTs);
-  const overlapMs = 5 * 60 * 1000;
+  const previousCursor = githubOldestScopedActivityCursor(config);
+  const overlapMs = GITHUB_ACTIVITY_OVERLAP_MS;
   const startedAt = previousCursor
     ? new Date(Date.parse(previousCursor) - overlapMs).toISOString()
     : pollStartedAt.replace(/\.\d+Z$/, '.000Z');
@@ -3189,6 +3223,7 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
   const pollStartedAt = new Date().toISOString();
   if (seeding) {
     runtime.cursorTs = pollStartedAt;
+    runtime.startedAt = pollStartedAt.replace(/\.\d+Z$/, '.000Z');
     runtime.seenIds = [];
     return { processed: 0, seeded: 0 };
   }
@@ -3197,9 +3232,11 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
   // Search results can lag behind comment APIs. Re-read a short overlap so a
   // newly related/updated PR can appear before its comment falls behind the
   // cursor; seen IDs keep the overlap idempotent.
+  const floor = normalizeOptionalTimestamp(runtime.startedAt, !runtime.cursorTs && cursor);
+  if (floor) runtime.startedAt = floor;
   const cursorMs = Date.parse(cursor);
   const since = Number.isFinite(cursorMs)
-    ? new Date(cursorMs - 5 * 60 * 1000).toISOString()
+    ? new Date(Math.max(cursorMs - GITHUB_ACTIVITY_OVERLAP_MS, floor ? Date.parse(floor) : -Infinity)).toISOString()
     : cursor;
   const prs = await githubRelatedPrs(connector, login, repository, since);
   const prsByNumber = new Map(prs.map((pr) => [githubIssueLinkKey(pr), pr]));
@@ -3215,6 +3252,10 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
   ]);
   const pending = new Map();
   const collect = (pr, comment) => {
+    if (floor) {
+      const createdAt = normalizeOptionalTimestamp(comment.created_at);
+      if (!createdAt || createdAt < floor) return;
+    }
     const key = githubPrActivityKey(comment);
     if (seen.has(key) || seen.has(`${comment.url || ''}:${comment.id}`)) return;
     if (auto?.seen?.[key] || pending.has(key)) return;

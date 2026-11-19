@@ -128,6 +128,33 @@ console.log(JSON.stringify(flags));
         self.assertEqual(repr(values), before)
         body = next(value for name, value in calls if name == 'request')
         self.assertEqual(body['tracked'], [{'repository': 'synthetic/widgets', 'number': 17}, {'repository': 'synthetic/widgets', 'number': 18}, {'repository': 'synthetic/widgets', 'number': 19}])
+        self.assertEqual(body['boardPrs'], ['synthetic/widgets#17'])
+
+    def test_unresolved_board_report_is_preserved_for_delegation_and_evidence_is_forwarded(self):
+        pending = {'key': 'synthetic/widgets#17', 'head': 'b' * 40, 'fingerprint': 'c' * 64}
+        report = {'status': 'ok', 'changed': True, 'errors': [], 'fingerprint': 'a' * 64,
+                  'counts': {'issues': 1, 'prs': 1, 'hosts': 1}, 'checkedAt': '2002-03-04T00:00:00Z',
+                  'boardPending': [pending]}
+        gate, calls, values = self.fixture(report=report)
+        self.ap.update(evidence_problems=lambda body: [], parse=dt.datetime.fromisoformat)
+        self.config['boardNoteId'] = '20000000-0000-4000-8000-000000000001'
+        values['board']['rows']['17'] = {'repo': 'synthetic/widgets'}
+        proof = {'key': pending['key'], 'fingerprint': pending['fingerprint'],
+                 'disposition': 'published', 'rowSha256': 'd' * 64}
+        evidence = os.path.join(self.folder, 'agent-evidence.json')
+        with open(evidence, 'w') as stream:
+            json.dump({'status': 'ok', 'errors': [], 'boardResolutions': [proof]}, stream)
+        values[evidence] = {'status': 'ok', 'errors': [], 'boardResolutions': [proof]}
+        for key in ('a', 'b'):
+            values['schedule'][key] = {'status': 'success', 'by': 'ap checkpoint',
+                                       'evidence': evidence, 'at': '2002-03-04T00:00:00+00:00'}
+        _, result = gate(['periodic due'])
+        self.assertEqual(result['status'], 'legacy')
+        body = next(value for name, value in calls if name == 'request')
+        self.assertEqual(body['boardNoteId'], self.config['boardNoteId'])
+        self.assertIn(proof, body['boardResolutions'])
+        with open(os.path.join(self.folder, 'system-one-evidence', 'board-reconciliation.json')) as stream:
+            self.assertEqual(json.load(stream)['boardPending'], [pending])
 
 
 if __name__ == '__main__':

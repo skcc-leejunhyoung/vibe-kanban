@@ -76,6 +76,7 @@ const names = [
   "pollGithubPrComments",
   "pollGithubRepositoryPrComments",
   "githubDiscoverActivityPrs",
+  "githubOldestScopedActivityCursor",
   "pollGithubAutomaticPrActivity",
   "githubLegacyPrActivityKey",
   "githubPrActivityKey",
@@ -154,6 +155,7 @@ function harness(options = {}) {
     githubIssueSyncVibeConnectorId,
     shouldRunGithubIssueSyncRule,
     normalizeOptionalTimestamp,
+    GITHUB_ACTIVITY_OVERLAP_MS: 5 * 60 * 1000,
     githubIssuePollSince,
     selectGithubPollCandidates,
     selectGithubImportCandidates,
@@ -1082,6 +1084,49 @@ test("automatic activities keep their cursor on incomplete global discovery", as
   assert.equal(h.github.config.prActivityDiscovery.repositories.length, 0);
 });
 
+test("automatic activity skips unchanged open PRs and reuses comment URLs within one window", async () => {
+  const h = harness();
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  vm.runInContext(["githubPrComments", "githubPrReviews"].map(functionSource).join("\n"), h.context);
+  let now = Date.parse("2002-03-06T00:32:00Z");
+  h.context.Date = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+  };
+  Object.assign(h.github.config, {
+    notifyPrComments: true, reviewRepositories: [],
+    prCommentCursorTs: "2002-03-06T00:31:00Z",
+  });
+  const unchanged = Array.from({ length: 50 }, (_, index) => ({
+    ...fixture.searchItem, number: index + 100,
+    created_at: "2002-03-05T00:00:00Z", updated_at: "2002-03-05T00:00:00Z",
+  }));
+  const active = { ...fixture.searchItem, updated_at: "2002-03-06T00:31:50Z" };
+  const reads = [];
+  h.context.fetch = async (input) => {
+    const url = new URL(input);
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q");
+      const match = / (updated|created):([^ ]+)\.\.([^ ]+)$/.exec(query);
+      assert.ok(match, query);
+      const [, field, since, until] = match;
+      const items = query.includes("is:closed") || query.includes("review-involves:") ? [] :
+        [...unchanged, active].filter((row) =>
+          Date.parse(row[`${field}_at`]) >= Date.parse(since) &&
+          Date.parse(row[`${field}_at`]) <= Date.parse(until));
+      return Response.json({ total_count: items.length, items });
+    }
+    reads.push(url);
+    return Response.json([]);
+  };
+  for (let index = 0; index < 2; index++) {
+    assert.equal((await h.context.pollGithubPrComments(h.github, fixture.login)).errors.length, 0);
+    now += 60_000;
+  }
+  assert.equal(reads.length, 6);
+  assert.ok(reads.every(({ pathname }) => pathname.includes(`/${active.number}/`)));
+  assert.deepEqual(reads.slice(0, 3).map(String).sort(), reads.slice(3).map(String).sort());
+});
+
 test("retains PRs already found when a later activity search fails", async () => {
   const h = harness();
   Object.assign(h.context, await import("./github-pr-activity.mjs"));
@@ -1444,6 +1489,76 @@ test("explicit scope still reads the gap before the first automatic collection",
   });
   await h.context.pollGithubRepositoryPrComments(h.github, fixture.login, repository);
   assert.deepEqual(emitted, [event.id]);
+});
+
+test("switching to automatic recovers the older cursor of an unavailable scoped repository", async (t) => {
+  for (const previouslyAutomatic of [false, true]) {
+    await t.test(`previously automatic: ${previouslyAutomatic}`, async () => {
+      const h = harness();
+      connectorSettings(h);
+      Object.assign(h.context, await import("./github-pr-activity.mjs"));
+      const time = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+      const oldCursor = time(40);
+      const eventAt = time(35);
+      Object.assign(h.github.config, {
+        notifyPrComments: true,
+        prCommentCursors: {
+          "example/app": { cursorTs: time(2), seenIds: [] },
+          [repository]: { cursorTs: oldCursor, seenIds: [] },
+        },
+        prActivityDiscovery: previouslyAutomatic
+          ? { startedAt: time(20), cursorTs: time(10), seen: {} }
+          : undefined,
+      });
+      const emitted = [];
+      let unavailable = true;
+      Object.assign(h.context, {
+        githubRelatedPrs: async (_, __, repo) => repo === repository ? [pr] : [],
+        githubDiscoverActivityPrs: async (_, __, since, ____, onPr) => {
+          assert.ok(since <= eventAt);
+          onPr(pr);
+          return [];
+        },
+        githubPrComments: async (_, since, repo) => {
+          if (repo !== repository) return [];
+          if (unavailable) throw new Error("fixture GitHub 503");
+          return eventAt >= since ? [{ id: 304, created_at: eventAt, user: { login: "fixture-author" } }] : [];
+        },
+        runRules: async ({ raw }) => emitted.push(raw.id),
+      });
+      const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+      assert.equal((await poll()).errors.length, 1);
+      assert.equal(h.github.config.prCommentCursors[repository].cursorTs, oldCursor);
+      unavailable = false;
+      await h.context.applyConnectorPatch(h.github, { config: { ...h.github.config, reviewRepositories: [] } });
+      assert.equal((await poll()).processed, 1);
+      assert.equal(h.github.config.prActivityDiscovery.complete, true);
+      assert.deepEqual(emitted, [304]);
+    });
+  }
+});
+
+test("a new scoped repository ignores comments from before the automatic connection even if edited later", async () => {
+  const h = harness();
+  const start = new Date(Date.now() - 60_000).toISOString();
+  const old = new Date(Date.parse(start) - 60_000).toISOString();
+  Object.assign(h.github.config, {
+    notifyPrComments: true, prActivityDiscovery: { startedAt: start, cursorTs: start },
+  });
+  const comments = [old, start].map((created_at, index) => ({
+    id: index + 300, issue_url: `https://fixture.invalid/issues/${pr.number}`,
+    created_at, updated_at: start, user: { login: "fixture-author" },
+  }));
+  const emitted = [];
+  Object.assign(h.context, {
+    githubRelatedPrs: async () => [pr],
+    githubPrComments: async (_, since, repo) => repo === repository ? comments.filter((row) => row.updated_at >= since) : [],
+    runRules: async ({ raw }) => emitted.push(raw.id),
+  });
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.equal((await poll()).processed, 1);
+  assert.equal((await poll()).processed, 0);
+  assert.deepEqual(emitted, [301]);
 });
 
 test("a newly scoped repository collects a comment never read by automatic discovery", async () => {

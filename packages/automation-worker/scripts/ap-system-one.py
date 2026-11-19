@@ -39,7 +39,8 @@ def registry(ap, config):
     requests = {key: item for key, item in dispatch.get('requests', {}).items()
                 if item.get('pr') and key not in periodic_keys and item.get('session') not in periodic_sessions}
     refs = list(config.get('tracked', []))
-    entries = [{**row, 'pr': row.get('pr', key)} for key, row in board.get('rows', {}).items()] + rows(requests)
+    board_entries = [{**row, 'pr': row.get('pr', key)} for key, row in board.get('rows', {}).items()]
+    entries = board_entries + rows(requests)
     for key in ap['PENDING_KEYS']:
         entries += rows(schedule.get(key, []))
     for entry in entries:
@@ -60,15 +61,26 @@ def registry(ap, config):
     tracked = sorted({(ref['repository'].lower(), ref['number']) for ref in refs})
     scope = {key: config[key] for key in ('connectorId', 'githubConnectorId', 'projectId', 'reviewTagId', 'hosts')}
     scope.update(tracked=[{'repository': repo, 'number': number} for repo, number in tracked], registryHash=digest)
+    scope['boardPrs'] = sorted({
+        '%s#%d' % ((entry.get('repo') or entry.get('repository') or config['defaultRepository']).lower(),
+                    int(str(entry['pr']).lstrip('#')))
+        for entry in board_entries if entry.get('pr')
+    })
+    if config.get('boardNoteId'):
+        scope['boardNoteId'] = config['boardNoteId']
     scope['ignoreWorkspaces'] = sorted({task['ws'] for task in rows(tasks) if task.get('kind') == 'periodic' and task.get('ws')})
     checkpoints = [schedule.get(key, {}) for key, _ in ap['CHECKPOINTS']]
-    if all(item.get('status') == 'success' and item.get('by') == ap['CHECKPOINT_BY'] and
-           not ap['evidence_problems'](ap['load'](item.get('evidence', ''), None)) for item in checkpoints):
+    if all(item.get('status') == 'success' and item.get('by') == ap['CHECKPOINT_BY'] for item in checkpoints):
+        evidence = [ap['load'](item.get('evidence', ''), None) for item in checkpoints]
         timestamps = [ap['parse'](schedule.get(key, {}).get(field)) for key, field in ap['CHECKPOINTS']]
-        if all(timestamps):
+        if all(timestamps) and all(not ap['evidence_problems'](body) for body in evidence):
             # A newly written checkpoint cannot make an older evidence file fresh.
             timestamps += [dt.datetime.fromtimestamp(os.path.getmtime(item['evidence']), dt.timezone.utc) for item in checkpoints]
             scope['acknowledgedAt'] = min(timestamps).isoformat()
+            scope['boardResolutions'] = [
+                row for body in evidence if isinstance(body, dict)
+                for row in rows(body.get('boardResolutions')) if isinstance(row, dict)
+            ]
     return scope
 
 
@@ -89,12 +101,21 @@ def install(ap, config):
             scope = registry(ap, config)
             report = ap['api']('/api/automation/autopilot/reconcile', scope, timeout=110)
             counts = report.get('counts', {}) if isinstance(report, dict) else {}
-            if (not isinstance(report, dict) or report.get('status') != 'ok' or report.get('changed') is not False or report.get('errors') != [] or
+            if (not isinstance(report, dict) or report.get('status') != 'ok' or report.get('errors') != [] or
                 not re.fullmatch(r'[0-9a-f]{64}', report.get('fingerprint', '')) or
                 any(type(counts.get(key)) is not int or counts[key] < 0 for key in ('issues', 'prs', 'hosts')) or
                 counts.get('hosts') != len(set(scope['hosts']))):
                 return original(due, dry=False)
             folder = config.get('evidenceDirectory') or os.path.join(ap['AP'], 'system-one-evidence')
+            board_report = os.path.join(folder, 'board-reconciliation.json')
+            if isinstance(report.get('boardPending'), list) and (report['boardPending'] or os.path.exists(board_report)):
+                os.makedirs(folder, mode=0o700, exist_ok=True)
+                handle, path = tempfile.mkstemp(prefix='board-', suffix='.json', dir=folder)
+                with os.fdopen(handle, 'w') as stream:
+                    json.dump({'checkedAt': report['checkedAt'], 'boardPending': report['boardPending']}, stream)
+                os.replace(path, board_report)
+            if report.get('changed') is not False or report.get('boardPending'):
+                return original(due, dry=False)
             os.makedirs(folder, mode=0o700, exist_ok=True)
             handle, path = tempfile.mkstemp(prefix='reconcile-', suffix='.json', dir=folder)
             with os.fdopen(handle, 'w') as stream:

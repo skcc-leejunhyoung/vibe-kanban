@@ -6,6 +6,11 @@ const sorted = (rows) =>
   rows.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const sha1 = /^[0-9a-f]{40}$/i;
+const BOARD_DECISION_STATES = new Set([
+  'APPROVED',
+  'CHANGES_REQUESTED',
+  'DISMISSED',
+]);
 
 export function validateReconciliationScope(scope, repositories) {
   if (
@@ -30,6 +35,7 @@ export function validateReconciliationScope(scope, repositories) {
       scope.ignoreWorkspaces.some((id) => !uuid.test(id)))
   )
     throw new Error('invalid excluded workspace scope');
+  const trackedKeys = new Set();
   for (const pr of scope.tracked) {
     if (
       !repositories.includes(pr.repository) ||
@@ -39,15 +45,27 @@ export function validateReconciliationScope(scope, repositories) {
       throw new Error(
         'tracked PR is outside the configured repository allowlist'
       );
+    trackedKeys.add(`${pr.repository}#${pr.number}`);
   }
+  if (
+    scope.boardPrs !== undefined &&
+    (!Array.isArray(scope.boardPrs) ||
+      scope.boardPrs.length > 2000 ||
+      scope.boardPrs.some((key) => !trackedKeys.has(key)))
+  )
+    throw new Error('review board entries must be tracked PRs');
+  if (
+    scope.boardNoteId !== undefined &&
+    (typeof scope.boardNoteId !== 'string' || !uuid.test(scope.boardNoteId))
+  )
+    throw new Error('invalid review board note');
 }
 
 // A review identity participates even if its head did not change. Never infer approval.
 export function decisionReviews(reviews, head) {
   const latest = new Map();
   for (const review of reviews) {
-    if (!['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state))
-      continue;
+    if (!BOARD_DECISION_STATES.has(review.state)) continue;
     if (
       !Number.isSafeInteger(review.id) ||
       !review.user?.login ||
@@ -260,12 +278,132 @@ export async function collectReconciliation({
     heads,
     hosts,
   };
+  const boardRows = new Map();
+  if (
+    scope.boardNoteId &&
+    Array.isArray(scope.boardResolutions) &&
+    scope.boardResolutions.some((row) => row?.disposition === 'published')
+  ) {
+    try {
+      const note = await vibe('GET', `/v1/drawer_notes/${scope.boardNoteId}`);
+      if (
+        typeof note?.id === 'string' &&
+        note.id.toLowerCase() === scope.boardNoteId.toLowerCase() &&
+        !note.archived_at &&
+        typeof note.body === 'string'
+      ) {
+        for (const line of note.body.split(/\r?\n/)) {
+          const row = line.trim();
+          const match =
+            /^\|\s*\[[^\]]+\]\(https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)\)\s*\|/.exec(
+              row
+            );
+          if (!match) continue;
+          const key = `${match[1].toLowerCase()}#${Number(match[2])}`;
+          boardRows.set(
+            key,
+            boardRows.has(key)
+              ? null
+              : createHash('sha256').update(row).digest('hex')
+          );
+        }
+      }
+    } catch {
+      // A failed readback leaves the corresponding board entry pending.
+    }
+  }
   return {
     facts,
+    boardRows,
     fingerprint: sha(facts),
     requiresAgent,
     counts: { issues: issues.length, prs: heads.length, hosts: hosts.length },
   };
+}
+
+function reconcileBoardReviews(scope, record, snapshot, acknowledged, now) {
+  const boardPrs = new Set(
+    scope?.boardPrs ??
+      scope?.tracked?.map(({ repository, number }) => `${repository}#${number}`)
+  );
+  const pending = { ...record.boardPending };
+  const reviews = {};
+  const resolutions = new Map(
+    (Array.isArray(scope?.boardResolutions) ? scope.boardResolutions : [])
+      .filter(
+        (row) =>
+          row && (boardPrs.has(row.key) || Object.hasOwn(pending, row.key))
+      )
+      .map((row) => [row.key, row])
+  );
+  for (const { key, head, state, reviewEvents } of snapshot.facts?.heads ||
+    []) {
+    if (!boardPrs.has(key) && !Object.hasOwn(pending, key)) continue;
+    const decisions = reviewEvents.filter(
+      ({ head: reviewedHead, at, state }) =>
+        reviewedHead === head &&
+        Number.isFinite(Date.parse(at)) &&
+        BOARD_DECISION_STATES.has(state)
+    );
+    const fingerprint = sha([head, decisions]);
+    const previous = record.boardReviews?.[key];
+    reviews[key] = { head, fingerprint };
+    if (
+      (pending[key] && pending[key].fingerprint !== fingerprint) ||
+      (!previous && state === 'open' && decisions.length > 0) ||
+      (previous &&
+        previous.fingerprint !== fingerprint &&
+        (previous.head === head || (state === 'open' && decisions.length > 0)))
+    ) {
+      pending[key] = {
+        key,
+        head,
+        fingerprint,
+        detectedAt: new Date(now).toISOString(),
+      };
+    }
+  }
+  for (const [key, item] of Object.entries(pending)) {
+    const resolution = resolutions.get(key);
+    if (
+      resolution?.fingerprint !== item.fingerprint ||
+      !(
+        acknowledged >= Date.parse(item.detectedAt) &&
+        acknowledged <= now &&
+        now - acknowledged < 2 * 60 * 60 * 1000
+      )
+    )
+      continue;
+    if (
+      resolution.disposition === 'published' &&
+      /^[0-9a-f]{64}$/.test(resolution.rowSha256) &&
+      snapshot.boardRows?.get(key) === resolution.rowSha256
+    ) {
+      delete pending[key];
+    } else if (
+      resolution.disposition === 'hold' &&
+      typeof resolution.reason === 'string' &&
+      resolution.reason.trim() &&
+      typeof resolution.owner === 'string' &&
+      resolution.owner.trim() &&
+      typeof resolution.recheckAt === 'string' &&
+      Date.parse(resolution.recheckAt) > now
+    ) {
+      pending[key] = {
+        ...item,
+        hold: {
+          reason: resolution.reason,
+          owner: resolution.owner,
+          recheckAt: resolution.recheckAt,
+        },
+      };
+    }
+  }
+  record.boardReviews = reviews;
+  record.boardPending = pending;
+  return Object.values(pending).filter(
+    (item) => !(Date.parse(item.hold?.recheckAt) > now)
+  );
 }
 
 // Only an official, later agent checkpoint can acknowledge a changed baseline.
@@ -278,22 +416,35 @@ export async function reconcileAutopilot({
   now = Date.now,
 }) {
   const snapshot = await collect();
-  const at = new Date(now()).toISOString();
+  const checked = now();
+  const at = new Date(checked).toISOString();
   const acknowledged = Date.parse(acknowledgedAt);
   const pendingAt = Date.parse(record.pending?.at);
+  const boardPending = reconcileBoardReviews(
+    scope,
+    record,
+    snapshot,
+    acknowledged,
+    checked
+  );
   if (
+    boardPending.length === 0 &&
     record.pending?.fingerprint === snapshot.fingerprint &&
     Number.isFinite(acknowledged) &&
     acknowledged >= pendingAt &&
-    acknowledged <= now() &&
-    now() - acknowledged < 2 * 60 * 60 * 1000
+    acknowledged <= checked &&
+    checked - acknowledged < 2 * 60 * 60 * 1000
   )
     record.baseline = { fingerprint: snapshot.fingerprint, at: acknowledgedAt };
   const changed =
+    boardPending.length > 0 ||
     snapshot.requiresAgent === true ||
     record.baseline?.fingerprint !== snapshot.fingerprint;
   record.pending = {
-    at,
+    at:
+      record.pending?.fingerprint === snapshot.fingerprint
+        ? record.pending.at
+        : at,
     fingerprint: snapshot.fingerprint,
     counts: snapshot.counts,
   };
@@ -307,6 +458,7 @@ export async function reconcileAutopilot({
       ? 'Fresh facts need agent reconciliation'
       : 'Registered PRs, review discovery and host queues are unchanged',
     checkedAt: at,
+    boardPending,
     counts: snapshot.counts,
     fingerprint: snapshot.fingerprint,
   };
