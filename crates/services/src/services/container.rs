@@ -2049,6 +2049,22 @@ pub trait ContainerService {
         data: &DraftFollowUpData,
         artifact_request: Option<&super::artifact_interactions::ArtifactInteractionRef>,
     ) -> Result<(ExecutionProcess, ExecutorAction), ContainerError> {
+        // A message whose sender didn't pick its agent (automation, an artifact
+        // response, a bare CLI send) keeps the old rule: for another agent than
+        // the session's, it waits with the mismatch instead of handing off.
+        if !data.handoff {
+            let expected =
+                ExecutionProcess::latest_executor_profile_for_session(&self.db().pool, session.id)
+                    .await?
+                    .map(|profile| profile.executor.to_string())
+                    .or_else(|| session.executor.clone());
+            let actual = data.executor_config.executor.to_string();
+            if let Some(expected) = expected
+                && expected != actual
+            {
+                return Err(SessionError::ExecutorMismatch { expected, actual }.into());
+            }
+        }
         // An agent this host can't run fails here, with no turn recorded: the
         // message waits in front with the reason, never going to another one.
         #[cfg(not(feature = "qa-mode"))]

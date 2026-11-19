@@ -40,7 +40,14 @@ export type CreateTag = { tag_name: string, content: string, };
 
 export type UpdateTag = { tag_name: string | null, content: string | null, };
 
-export type DraftFollowUpData = { message: string, executor_config: ExecutorConfig, };
+export type DraftFollowUpData = { message: string, executor_config: ExecutorConfig,
+/**
+ * Its sender picked this agent: when another agent holds the session,
+ * the message runs as that agent's official handoff. Without it, such a
+ * message waits with an executor mismatch, as before handoffs could be
+ * queued.
+ */
+handoff?: boolean, };
 
 export type DraftWorkspaceData = { message: string, repos: Array<DraftWorkspaceRepo>, executor_config: ExecutorConfig | null, linked_issue: DraftWorkspaceLinkedIssue | null, attachments: Array<DraftWorkspaceAttachment>,
 /**

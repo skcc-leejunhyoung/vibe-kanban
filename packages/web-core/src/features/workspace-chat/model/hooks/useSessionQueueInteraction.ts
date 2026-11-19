@@ -190,9 +190,11 @@ export function useSessionQueueInteraction({
           'The message before this one was not sent, so it was not queued.'
         );
       }
+      // The composer shows the agent it picked: if another holds the session
+      // when the message runs, it is that agent's official handoff.
       return queueApi.queue(
         sessionId!,
-        { message, executor_config: executorConfig },
+        { message, executor_config: executorConfig, handoff: true },
         hostId
       );
     },
@@ -202,7 +204,7 @@ export function useSessionQueueInteraction({
         {
           id: `${OPTIMISTIC_QUEUED_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
           session_id: sessionId ?? '',
-          data: { message, executor_config: executorConfig },
+          data: { message, executor_config: executorConfig, handoff: true },
           queued_at: new Date().toISOString(),
           start_error: null,
         },
@@ -224,7 +226,7 @@ export function useSessionQueueInteraction({
     }) =>
       queueApi.steer(
         sessionId!,
-        { message, executor_config: executorConfig },
+        { message, executor_config: executorConfig, handoff: true },
         hostId
       ),
     onSuccess: applyStatus,
@@ -268,7 +270,10 @@ export function useSessionQueueInteraction({
       editLocally((messages) =>
         messages.map((m) =>
           m.id === messageId
-            ? { ...m, data: { message, executor_config: executorConfig } }
+            ? {
+                ...m,
+                data: { ...m.data, message, executor_config: executorConfig },
+              }
             : m
         )
       ),

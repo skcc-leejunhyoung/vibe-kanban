@@ -89,7 +89,7 @@ struct RunCodingAgentInSessionRequest {
     )]
     steer: Option<bool>,
     #[schemars(
-        description = "Executor override ('CLAUDE_CODE', 'CODEX', ...). Defaults to the session's executor."
+        description = "Executor override ('CLAUDE_CODE', 'CODEX', ...). Defaults to the session's executor. With `queue` or `steer`, another executor than the session's takes the session over by official handoff when the prompt runs; the current turn is not stopped by `queue`."
     )]
     executor: Option<String>,
     #[schemars(description = "Executor variant/preset override")]

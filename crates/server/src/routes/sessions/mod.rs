@@ -13,7 +13,6 @@ use axum::{
     routing::{delete, get, post},
 };
 use db::models::{
-    coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
     pending_execution_start::PendingExecutionStart,
     pending_rate_limit_resume::PendingRateLimitResume,
@@ -26,9 +25,7 @@ use db::models::{
 };
 use deployment::Deployment;
 use executors::{
-    actions::{
-        ExecutorAction, ExecutorActionType, coding_agent_initial::CodingAgentInitialRequest,
-    },
+    actions::ExecutorAction,
     executors::BaseCodingAgent,
     profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
@@ -371,16 +368,22 @@ pub struct ResetProcessRequest {
 /// The web UI always sends a fully-resolved config (it carries the last-used
 /// model forward), so interactive follow-ups keep the caller's config untouched.
 /// Inheritance only applies when the latest config uses the same executor.
+/// Another executor (a handoff) keeps only the session's permission policy,
+/// unless the request names one: a supervised session never becomes one
+/// that skips approvals because its agent changed.
 fn resolve_followup_executor_config(
-    requested: ExecutorConfig,
+    mut requested: ExecutorConfig,
     latest: Option<ExecutorConfig>,
 ) -> ExecutorConfig {
-    if requested.variant.is_none()
-        && !requested.has_overrides()
-        && let Some(latest) = latest
-        && latest.executor == requested.executor
-    {
-        return latest;
+    let Some(latest) = latest else {
+        return requested;
+    };
+    if latest.executor == requested.executor {
+        if requested.variant.is_none() && !requested.has_overrides() {
+            return latest;
+        }
+    } else if requested.permission_policy.is_none() {
+        requested.permission_policy = latest.permission_policy;
     }
     requested
 }
@@ -715,30 +718,39 @@ pub async fn handoff(
         ));
     }
 
-    let latest_session_info = CodingAgentTurn::find_latest_session_info(pool, session.id).await?;
-    let source_native_session_id = latest_session_info.map(|info| info.session_id);
-    let working_dir = session
-        .agent_working_dir
-        .as_ref()
-        .filter(|dir| !dir.is_empty())
-        .cloned();
+    // The session's permission policy carries over unless one is named.
+    let executor_config =
+        resolve_followup_executor_config(payload.executor_config, latest_executor_config);
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
+    // The official handoff from the agent whose session it would continue.
+    // After a handoff whose agent never started a session, handing back to
+    // the agent before it resumes that agent's session instead.
     let action = ExecutorAction::new(
-        ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest::handoff(
-            user_prompt,
-            payload.executor_config.clone(),
-            working_dir,
-            source_executor,
-            source_native_session_id,
-            session.id,
-        )),
+        coding_turn_request(pool, &session, user_prompt, &executor_config, false).await?,
         cleanup_action.map(Box::new),
     );
 
+    // As `follow_up`: a turn that started meanwhile (a queued handoff whose
+    // turn came) is not run beside, and a finishing turn's drain goes first.
     let starting = deployment.container().lock_session_start(session.id).await;
     if stops.has_changed().unwrap_or(false) {
         return Err(stopped_before_start());
+    }
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
+        return Err(ApiError::Conflict(
+            "Another turn started in this session just now; queue the message or send it again when it finishes"
+                .to_string(),
+        ));
+    }
+    if deployment
+        .queued_message_service()
+        .is_drain_held(session.id)
+    {
+        return Err(ApiError::Locked(
+            "The previous turn in this session is still finishing; queue the message to send it next"
+                .to_string(),
+        ));
     }
     let execution_process = deployment
         .container()
@@ -755,7 +767,7 @@ pub async fn handoff(
         .finish_execution_spawn(&workspace, &session, &execution_process, &action)
         .await?;
 
-    let target = payload.executor_config.executor.to_string();
+    let target = executor_config.executor.to_string();
     Session::update_executor(pool, session.id, &target).await?;
     session.executor = Some(target);
     let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
@@ -963,5 +975,34 @@ mod tests {
         let resolved =
             resolve_followup_executor_config(requested.clone(), Some(opus_plan_config()));
         assert_eq!(resolved, requested);
+    }
+
+    #[test]
+    fn handoff_keeps_the_sessions_permission_policy_unless_named() {
+        use executors::model_selector::PermissionPolicy;
+        // A supervised Codex session reserving Claude Opus from the CLI
+        // (`--executor CLAUDE_CODE --model ...`, no `--permission`).
+        let supervised = ExecutorConfig {
+            permission_policy: Some(PermissionPolicy::Supervised),
+            ..ExecutorConfig::new(BaseCodingAgent::Codex)
+        };
+        let opus = ExecutorConfig {
+            model_id: Some("claude-opus-5-5".to_string()),
+            ..ExecutorConfig::new(BaseCodingAgent::ClaudeCode)
+        };
+        let resolved = resolve_followup_executor_config(opus.clone(), Some(supervised.clone()));
+        assert_eq!(
+            resolved,
+            ExecutorConfig {
+                permission_policy: Some(PermissionPolicy::Supervised),
+                ..opus.clone()
+            }
+        );
+        let named = ExecutorConfig {
+            permission_policy: Some(PermissionPolicy::Auto),
+            ..opus
+        };
+        let resolved = resolve_followup_executor_config(named.clone(), Some(supervised));
+        assert_eq!(resolved, named);
     }
 }

@@ -70,6 +70,34 @@ describe('SessionChatBox while a follow-up send is pending', () => {
     });
   });
 
+  it('names the agent and model each queued message runs with, and why one failed', () => {
+    const html = renderToStaticMarkup(
+      <SessionChatBox
+        status="running"
+        editor={{ value: '', onChange: () => {} }}
+        renderEditor={() => null}
+        actions={{
+          onSend: () => {},
+          onQueue: () => {},
+          onCancelQueue: () => {},
+          onStop: () => {},
+          onPasteFiles: () => {},
+        }}
+        queuedMessages={[
+          {
+            id: 'handoff',
+            message: 'continue in Claude',
+            target: 'Claude Code · claude-opus-5-5',
+            startError: 'spawn failed',
+          },
+        ]}
+        session={{ sessions: [], onSelectSession: () => {} }}
+      />
+    );
+    expect(html).toContain('Claude Code · claude-opus-5-5');
+    expect(html).toContain('followUp.queuedStartFailed');
+  });
+
   it('offers stop and queue while scripts run, with send now disabled', () => {
     const html = render('running', true, false);
     expect(button(html, 'conversation.actions.stop')).toEqual({

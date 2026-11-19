@@ -20,10 +20,8 @@ use db::models::{
     workspace_repo::WorkspaceRepo,
 };
 use deployment::Deployment;
-use executors::actions::{
-    ExecutorAction, ExecutorActionType, coding_agent_follow_up::CodingAgentFollowUpRequest,
-};
-use services::services::container::ContainerService;
+use executors::actions::{ExecutorAction, ExecutorActionType};
+use services::services::container::{ContainerService, coding_turn_request};
 use tokio::time::sleep;
 
 use crate::DeploymentImpl;
@@ -148,13 +146,13 @@ async fn process_one(
     };
 
     // Resuming requires an existing agent session id to continue from.
-    let session_info = match CodingAgentTurn::find_latest_session_info(pool, session.id).await? {
-        Some(info) => info,
-        None => {
-            abandon_resume(deployment, pool, row).await;
-            return Ok(());
-        }
-    };
+    if CodingAgentTurn::find_latest_session_info(pool, session.id)
+        .await?
+        .is_none()
+    {
+        abandon_resume(deployment, pool, row).await;
+        return Ok(());
+    }
 
     // The reset is typically hours out, so the worktree may have been cleaned up
     // in the meantime. Recreate it before resuming, matching
@@ -165,23 +163,13 @@ async fn process_one(
         .ensure_container_exists(&workspace)
         .await?;
 
-    let working_dir = session
-        .agent_working_dir
-        .as_ref()
-        .filter(|d| !d.is_empty())
-        .cloned();
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
 
+    // Resumes the agent's own session; the handoff again if that agent's turn
+    // was a handoff that never started a session of its own.
     let action = ExecutorAction::new(
-        ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
-            prompt: row.resume_prompt.clone(),
-            session_id: session_info.session_id,
-            reset_to_message_id: None,
-            discard_from_message_id: session_info.discard_from_message_id,
-            executor_config,
-            working_dir,
-        }),
+        coding_turn_request(pool, &session, &row.resume_prompt, &executor_config, false).await?,
         cleanup_action.map(Box::new),
     );
 

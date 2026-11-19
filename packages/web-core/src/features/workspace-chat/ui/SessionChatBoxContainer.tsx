@@ -52,6 +52,7 @@ import { useSessionMessageEditor } from '../model/hooks/useSessionMessageEditor'
 import {
   isOptimisticQueuedId,
   QueuedAfterFailedSendError,
+  queueStatusQueryKey,
   useSessionQueueInteraction,
 } from '../model/hooks/useSessionQueueInteraction';
 import { useSessionSend } from '../model/hooks/useSessionSend';
@@ -855,14 +856,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const activeExecutor =
     latestConfig?.executor ??
     (session?.executor as BaseCodingAgent | null | undefined);
-  // A queued message for another agent (a handoff) or model names it.
-  const queuedTarget = (config: ExecutorConfig) =>
-    config.executor !== activeExecutor ||
-    (!!config.model_id && config.model_id !== latestConfig?.model_id)
-      ? [toPrettyCase(config.executor), config.model_id]
-          .filter(Boolean)
-          .join(' · ')
-      : null;
 
   // Message editor state
   const {
@@ -1034,8 +1027,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (!editingQueuedId || !localMessage.trim() || !executorConfig) return;
     const messageId = editingQueuedId;
     const message = localMessage;
-    // Editing the text never moves a message to another agent: a handoff
-    // queued for one keeps it while the composer is on another.
+    // The composer's settings at confirm apply as before, but only on the
+    // message's own agent: an edit never moves a message to another agent.
     const queuedConfig = queuedMessages.find((m) => m.id === messageId)?.data
       .executor_config;
     const config =
@@ -1647,15 +1640,37 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         prompt,
         placeholder,
         request: async () => {
-          const process = await sessionsApi.handoff(
-            sessionId,
-            { prompt, executor_config: targetConfig },
-            hostId
-          );
-          void queryClient.invalidateQueries({
-            queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
-          });
-          return process;
+          try {
+            const process = await sessionsApi.handoff(
+              sessionId,
+              { prompt, executor_config: targetConfig },
+              hostId
+            );
+            void queryClient.invalidateQueries({
+              queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
+            });
+            return process;
+          } catch (error) {
+            // 423: the previous turn is still finishing. Queued for the
+            // target, the message hands off once that turn is done.
+            if (!(error instanceof ApiError) || error.status !== 423) {
+              throw error;
+            }
+            const status = await queueApi.queue(
+              sessionId,
+              {
+                message: prompt.trim(),
+                executor_config: targetConfig,
+                handoff: true,
+              },
+              hostId
+            );
+            queryClient.setQueryData(
+              queueStatusQueryKey(sessionId, hostId),
+              status
+            );
+            return null;
+          }
         },
         onFailure: (error) => {
           void ErrorDialog.show({
@@ -2678,7 +2693,14 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           message: m.data.message,
           startError: m.start_error,
           editable: !m.artifact_request,
-          target: queuedTarget(m.data.executor_config),
+          // What it runs with: the server hands off when that agent is
+          // not the one whose session it would continue.
+          target: [
+            toPrettyCase(m.data.executor_config.executor),
+            m.data.executor_config.model_id,
+          ]
+            .filter(Boolean)
+            .join(' · '),
         }))}
       onRemoveQueued={handleRemoveQueued}
       onSteerQueued={

@@ -1510,6 +1510,7 @@ mod tests {
         let data = DraftFollowUpData {
             message: "response".into(),
             executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+            handoff: false,
         };
         let guard = LOCK.lock().await;
         save(&receipt).await.unwrap();

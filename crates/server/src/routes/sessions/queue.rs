@@ -32,6 +32,10 @@ use crate::{
 struct QueueMessageRequest {
     pub message: String,
     pub executor_config: ExecutorConfig,
+    /// The sender picked `executor_config`'s agent: if another one holds the
+    /// session when the message runs, it is that agent's official handoff.
+    #[serde(default)]
+    pub handoff: bool,
 }
 
 /// Optional `?message_id=` for `DELETE`: present cancels a single queued message,
@@ -110,6 +114,7 @@ async fn queue_message_inner(
         message: payload.message,
         executor_config: inherit_executor_config(&deployment, &session, payload.executor_config)
             .await?,
+        handoff: payload.handoff,
     };
 
     deployment
@@ -248,6 +253,7 @@ async fn steer_message(
         message: payload.message,
         executor_config: inherit_executor_config(&deployment, &session, payload.executor_config)
             .await?,
+        handoff: payload.handoff,
     };
 
     let workspace = Workspace::find_by_id(pool, session.workspace_id)
@@ -330,6 +336,9 @@ struct UpdateQueuedRequest {
     pub message_id: Uuid,
     pub message: String,
     pub executor_config: ExecutorConfig,
+    /// See [`QueueMessageRequest::handoff`]; omitted keeps the message's own.
+    #[serde(default)]
+    pub handoff: Option<bool>,
 }
 
 /// Edit a queued message in place (text + executor config), preserving its
@@ -340,9 +349,17 @@ async fn update_queued_message(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<UpdateQueuedRequest>,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
+    let handoff = payload.handoff.unwrap_or_else(|| {
+        deployment
+            .queued_message_service()
+            .get_queued(session.id)
+            .iter()
+            .any(|m| m.id == payload.message_id && m.data.handoff)
+    });
     let data = DraftFollowUpData {
         message: payload.message,
         executor_config: payload.executor_config,
+        handoff,
     };
 
     deployment

@@ -23,12 +23,10 @@ use db::models::{
 };
 use deployment::Deployment;
 use executors::{
-    actions::{
-        ExecutorAction, ExecutorActionType, coding_agent_follow_up::CodingAgentFollowUpRequest,
-    },
+    actions::{ExecutorAction, ExecutorActionType},
     profile::ExecutorConfig,
 };
-use services::services::container::ContainerService;
+use services::services::container::{ContainerService, coding_turn_request};
 use sqlx::SqlitePool;
 use tokio::time::sleep;
 use uuid::Uuid;
@@ -105,7 +103,7 @@ async fn process_one(deployment: &DeploymentImpl, row: &ScheduledResume) -> anyh
     // Recover the agent session id (for --resume / thread_fork) and the executor
     // config from the session's most recent coding-agent run, so the resume
     // continues the same conversation with the same agent/model.
-    let Some(info) = CodingAgentTurn::find_latest_session_info(pool, session.id).await? else {
+    let Some(_) = CodingAgentTurn::find_latest_session_info(pool, session.id).await? else {
         tracing::warn!(
             "scheduled_resume_watcher: no prior agent session for {}; dropping resume {}",
             session.id,
@@ -131,21 +129,9 @@ async fn process_one(deployment: &DeploymentImpl, row: &ScheduledResume) -> anyh
 
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
-    let working_dir = session
-        .agent_working_dir
-        .as_ref()
-        .filter(|d| !d.is_empty())
-        .cloned();
-
+    // As the rate-limit resume: never another agent's native session.
     let action = ExecutorAction::new(
-        ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
-            prompt: row.prompt.clone(),
-            session_id: info.session_id,
-            reset_to_message_id: None,
-            discard_from_message_id: info.discard_from_message_id,
-            executor_config,
-            working_dir,
-        }),
+        coding_turn_request(pool, &session, &row.prompt, &executor_config, false).await?,
         cleanup_action.map(Box::new),
     );
 

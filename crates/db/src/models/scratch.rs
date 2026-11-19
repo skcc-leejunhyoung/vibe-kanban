@@ -25,6 +25,13 @@ pub struct DraftFollowUpData {
     pub message: String,
     #[serde(alias = "executor_profile_id", alias = "config")]
     pub executor_config: ExecutorConfig,
+    /// Its sender picked this agent: when another agent holds the session,
+    /// the message runs as that agent's official handoff. Without it, such a
+    /// message waits with an executor mismatch, as before handoffs could be
+    /// queued.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub handoff: bool,
 }
 
 /// Saved shortcut for the preview browser.

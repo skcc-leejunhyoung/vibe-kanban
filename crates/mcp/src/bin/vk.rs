@@ -5795,6 +5795,24 @@ fn print_table(rows: &[Value]) {
     }
 }
 
+/// Queued messages (`vk session queue list`): the text and the agent/model
+/// each runs with sit in a nested `data` the table would drop.
+fn queued_rows(rows: &[Value]) -> Option<Vec<Value>> {
+    rows.iter()
+        .map(|m| {
+            let data = m.get("data").filter(|data| data.is_object())?;
+            let config = &data["executor_config"];
+            Some(json!({
+                "id": m["id"],
+                "message": data["message"],
+                "executor": config["executor"],
+                "model": config["model_id"],
+                "start_error": m["start_error"],
+            }))
+        })
+        .collect()
+}
+
 fn print_human(value: &Value) {
     match value {
         Value::Null => println!("ok"),
@@ -5822,6 +5840,7 @@ fn print_human(value: &Value) {
                 "notifications",
                 "lines",
                 "hits",
+                "messages",
             ]
             .into_iter()
             .find(|k| map.get(*k).is_some_and(|v| v.is_array()));
@@ -5837,6 +5856,8 @@ fn print_human(value: &Value) {
                 println!("{key}:");
                 if rows.is_empty() {
                     println!("  (empty)");
+                } else if let Some(queued) = queued_rows(rows) {
+                    print_table(&queued);
                 } else {
                     print_table(rows);
                 }
@@ -5969,6 +5990,23 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queued_messages_show_their_agent_and_model() {
+        let rows = queued_rows(&[json!({
+            "id": "m1",
+            "data": {
+                "message": "continue in Claude",
+                "executor_config": {"executor": "CLAUDE_CODE", "model_id": "claude-opus-5-5"},
+            },
+            "start_error": null,
+        })])
+        .unwrap();
+        assert_eq!(rows[0]["executor"], "CLAUDE_CODE");
+        assert_eq!(rows[0]["model"], "claude-opus-5-5");
+        assert_eq!(rows[0]["message"], "continue in Claude");
+        assert!(queued_rows(&[json!({"id": "other"})]).is_none());
+    }
 
     #[test]
     fn vibe_pr_bases_are_json_body_inputs_on_start_and_retry() {

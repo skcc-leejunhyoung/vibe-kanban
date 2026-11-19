@@ -112,7 +112,7 @@ export interface QueuedMessageItem {
   editable?: boolean;
   /** Why the last attempt to start it failed; the queue waits on it. */
   startError?: string | null;
-  /** Agent/model it runs with, when not the current one (a handoff). */
+  /** Agent (and model) it runs with; another agent means a handoff. */
   target?: string | null;
 }
 
@@ -1005,17 +1005,19 @@ export function SessionChatBox<TExecutor extends string = string>({
                           </span>
                           {/* Long messages are truncated to a single line with an ellipsis */}
                           <div className="flex-1 min-w-0">
-                            <div className="text-sm text-normal truncate">
-                              {queued.message}
+                            <div className="flex items-baseline gap-base">
+                              <span className="flex-1 min-w-0 text-sm text-normal truncate">
+                                {queued.message}
+                              </span>
+                              {queued.target && (
+                                <span
+                                  className="max-w-[40%] flex-shrink-0 text-xs text-low truncate"
+                                  title={queued.target}
+                                >
+                                  {queued.target}
+                                </span>
+                              )}
                             </div>
-                            {queued.target && (
-                              <div
-                                className="text-xs text-low truncate"
-                                title={queued.target}
-                              >
-                                → {queued.target}
-                              </div>
-                            )}
                             {queued.startError && (
                               <div
                                 className="flex items-center gap-half text-xs text-error"

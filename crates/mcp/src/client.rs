@@ -2038,21 +2038,23 @@ impl VkClient {
         }
         let session = self.session(session_id).await?;
         let executor_config = self.executor_config_json(&session, options).await?;
+        // An executor named by the caller is a pick: when another agent holds
+        // the session as the message runs, it is that agent's handoff. A bare
+        // message keeps waiting on a mismatch instead.
+        let body = json!({
+            "message": prompt,
+            "executor_config": executor_config,
+            "handoff": options.executor.as_deref().is_some_and(|e| !e.trim().is_empty()),
+        });
         if options.steer {
             let queue: Value = self
-                .post(
-                    &format!("/sessions/{session_id}/queue/steer"),
-                    &json!({ "message": prompt, "executor_config": executor_config }),
-                )
+                .post(&format!("/sessions/{session_id}/queue/steer"), &body)
                 .await?;
             return Ok(SendPromptOutcome::Steered { queue });
         }
         if options.queue {
             let queue: Value = self
-                .post(
-                    &format!("/sessions/{session_id}/queue"),
-                    &json!({ "message": prompt, "executor_config": executor_config }),
-                )
+                .post(&format!("/sessions/{session_id}/queue"), &body)
                 .await?;
             return Ok(SendPromptOutcome::Queued { queue });
         }

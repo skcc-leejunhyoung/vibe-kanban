@@ -186,7 +186,7 @@ impl QueuedMessageService {
         }
         // The front message's start failure is what pauses the queue: the
         // event names it so an agent can retry (`queue steer-queued`) or drop it.
-        let (size, front_message_id, start_error) = self
+        let (size, front_message_id, start_error, front_config) = self
             .queue
             .get(&session_id)
             .map(|q| {
@@ -194,9 +194,10 @@ impl QueuedMessageService {
                     q.len(),
                     q.front().map(|m| m.id),
                     q.front().and_then(|m| m.start_error.clone()),
+                    q.front().map(|m| m.data.executor_config.clone()),
                 )
             })
-            .unwrap_or((0, None, None));
+            .unwrap_or((0, None, None, None));
         crate::services::agent_journal::publish(
             "queue.changed",
             None,
@@ -207,6 +208,9 @@ impl QueuedMessageService {
                 "paused": start_error.is_some(),
                 "start_error": start_error,
                 "front_message_id": front_message_id,
+                // The agent and model the front message runs with.
+                "front_executor": front_config.as_ref().map(|c| c.executor),
+                "front_model_id": front_config.and_then(|c| c.model_id),
             }),
         );
     }
@@ -765,6 +769,7 @@ mod tests {
         DraftFollowUpData {
             message: message.to_string(),
             executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+            handoff: false,
         }
     }
 

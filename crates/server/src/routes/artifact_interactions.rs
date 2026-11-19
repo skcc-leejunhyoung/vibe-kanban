@@ -637,6 +637,7 @@ pub async fn respond(
                 serde_json::json!({ "request_id": reference.request_id, "artifact_id": receipt.interaction.artifact_id, "version": receipt.interaction.version, "response": receipt.response })
             ),
             executor_config,
+            handoff: false,
         };
         deployment
             .queued_message_service()
