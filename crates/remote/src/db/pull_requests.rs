@@ -26,7 +26,12 @@ impl PullRequestRepository {
             INNER JOIN organization_member_metadata omm
                 ON omm.organization_id = proj.organization_id
                 AND omm.user_id = $1
-            WHERE p.status != 'merged'
+            -- Closed PRs stay watched for a week in case they are reopened;
+            -- older ones would cost a REST call per sync forever.
+            WHERE (
+                p.status = 'open'
+                OR (p.status = 'closed' AND p.updated_at > NOW() - INTERVAL '7 days')
+            )
               AND p.url LIKE 'https://github.com/%'
             ORDER BY p.url
             "#,

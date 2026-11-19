@@ -139,9 +139,10 @@ async fn update_github_issue_link(
     ensure_issue_access(state.pool(), ctx.user.id, link.issue_id).await?;
 
     let mut tx = begin_tx(state.pool()).await.map_err(internal_error)?;
+    // A new address another link of the project already holds is a 409.
     let data = GithubIssueLinkRepository::update(&mut tx, id, payload)
         .await
-        .map_err(internal_error)?;
+        .map_err(|error| db_error(error, "failed to update github issue link"))?;
     let txid = get_txid(&mut *tx).await.map_err(internal_error)?;
     tx.commit().await.map_err(internal_error)?;
     Ok(Json(MutationResponse { data, txid }))

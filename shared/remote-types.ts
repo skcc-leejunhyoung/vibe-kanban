@@ -297,7 +297,13 @@ export type RegisterGitHubCredentialRequest = { token: string, };
 
 export type CreateGithubIssueLinkRequest = { id?: string, issue_id: string, repository: string, number: number, url: string, github_node_id: string | null, project_item_id: string | null, github_state: string, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description: string | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id: string | null, synced_milestone_id: string | null, synced_github_milestone_number: number | null, };
 
-export type UpdateGithubIssueLinkRequest = { project_item_id: string | null, github_state: string | null, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description?: string | null | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id?: string | null | null, synced_milestone_id?: string | null | null, synced_github_milestone_number?: number | null | null, comments_synced_after: string | null, };
+export type UpdateGithubIssueLinkRequest = { project_item_id: string | null, github_state: string | null, github_updated_at: string | null, last_synced_vibe_updated_at: string | null, synced_title: string | null, synced_description?: string | null | null, synced_vibe_status_id: string | null, synced_github_status_option_id: string | null, synced_parent_issue_id?: string | null | null, synced_milestone_id?: string | null | null, synced_github_milestone_number?: number | null | null, comments_synced_after: string | null,
+/**
+ * Current address after GitHub moved the issue (repository rename or
+ * transfer, issue transfer); the old one answers every call with a
+ * rate-limited redirect.
+ */
+repository?: string, number?: number, url?: string, };
 
 export type SortDirection = "asc" | "desc";
 

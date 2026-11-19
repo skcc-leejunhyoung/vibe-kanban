@@ -150,6 +150,9 @@ impl GithubIssueLinkRepository {
                     CASE WHEN $15 THEN $16 ELSE synced_github_milestone_number END,
                 comments_synced_after =
                     COALESCE($17, comments_synced_after),
+                repository = COALESCE($18, repository),
+                number = COALESCE($19, number),
+                url = COALESCE($20, url),
                 updated_at = NOW()
             WHERE id = $1
               AND ROW(
@@ -157,7 +160,8 @@ impl GithubIssueLinkRepository {
                   last_synced_vibe_updated_at, synced_title, synced_description,
                   synced_vibe_status_id, synced_github_status_option_id,
                   synced_parent_issue_id, synced_milestone_id,
-                  synced_github_milestone_number, comments_synced_after
+                  synced_github_milestone_number, comments_synced_after,
+                  repository, number, url
               ) IS DISTINCT FROM ROW(
                   COALESCE($2, project_item_id), COALESCE($3, github_state),
                   COALESCE($4, github_updated_at),
@@ -169,7 +173,9 @@ impl GithubIssueLinkRepository {
                   CASE WHEN $11 THEN $12 ELSE synced_parent_issue_id END,
                   CASE WHEN $13 THEN $14 ELSE synced_milestone_id END,
                   CASE WHEN $15 THEN $16 ELSE synced_github_milestone_number END,
-                  COALESCE($17, comments_synced_after)
+                  COALESCE($17, comments_synced_after),
+                  COALESCE($18, repository), COALESCE($19, number),
+                  COALESCE($20, url)
               )
             RETURNING *
             "#,
@@ -191,6 +197,9 @@ impl GithubIssueLinkRepository {
         .bind(update_synced_github_milestone_number)
         .bind(synced_github_milestone_number)
         .bind(payload.comments_synced_after)
+        .bind(payload.repository)
+        .bind(payload.number)
+        .bind(payload.url)
         .fetch_optional(&mut **tx)
         .await?;
         match updated {

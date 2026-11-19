@@ -56,7 +56,10 @@ const MAX_PULL_REQUEST_LIST_CACHE_ENTRIES: usize = 128;
 const MAX_PULL_REQUEST_DETAIL_CACHE_ENTRIES: usize = 1_024;
 const REPOSITORY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const PULL_REQUEST_CACHE_TTL: Duration = Duration::from_secs(60);
-const TRACKED_PULL_REQUEST_SYNC_TTL: Duration = Duration::from_secs(5);
+// One sync per user per window however many tabs and devices poll it (each
+// visible client asks every 5 minutes). Kept under the client interval so a
+// single client still refreshes on each tick.
+const TRACKED_PULL_REQUEST_SYNC_TTL: Duration = Duration::from_secs(4 * 60);
 const GITHUB_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn router() -> Router<AppState> {

@@ -88,6 +88,15 @@ pub struct UpdateGithubIssueLinkRequest {
     )]
     pub synced_github_milestone_number: Option<Option<i32>>,
     pub comments_synced_after: Option<DateTime<Utc>>,
+    /// Current address after GitHub moved the issue (repository rename or
+    /// transfer, issue transfer); the old one answers every call with a
+    /// rate-limited redirect.
+    #[ts(optional)]
+    pub repository: Option<String>,
+    #[ts(optional)]
+    pub number: Option<i32>,
+    #[ts(optional)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

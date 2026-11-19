@@ -16,6 +16,90 @@ export function githubIssueRepository(issue) {
     : null;
 }
 
+// Node IDs survive repository renames and transfers, so one nodes() read gives
+// each linked issue's current address and parent (100 IDs per query, cost 1).
+export const GITHUB_ISSUE_NODES_QUERY =
+  'query($ids: [ID!]!) { nodes(ids: $ids) { ... on Issue { id number url repository { nameWithOwner } parent { number repository { nameWithOwner } } } } }';
+
+// Node ID -> { repository, number, url, parent } for the IDs GitHub resolved,
+// from a full GraphQL response ({ data, errors }). `parent` uses the REST shape
+// (null = none, undefined = unknown) so callers treat it like a /parent
+// response. IDs with an error are left out (REST fallback); an error not tied
+// to one node distrusts the whole batch, since it may have blanked a parent.
+export function parseGithubIssueNodes(ids, body, apiBase) {
+  const nodes = Array.isArray(body?.data?.nodes) ? body.data.nodes : [];
+  const failed = new Set();
+  for (const error of Array.isArray(body?.errors) ? body.errors : []) {
+    const [field, index] = Array.isArray(error?.path) ? error.path : [];
+    if (field !== 'nodes' || !Number.isInteger(index)) return new Map();
+    failed.add(index);
+  }
+  const result = new Map();
+  ids.forEach((id, index) => {
+    if (failed.has(index)) return;
+    const node = nodes[index];
+    const repository = node?.repository?.nameWithOwner;
+    if (
+      node?.id !== id ||
+      typeof repository !== 'string' ||
+      !repository.includes('/') ||
+      !Number.isSafeInteger(node.number) ||
+      typeof node.url !== 'string'
+    )
+      return;
+    const parentRepository = node.parent?.repository?.nameWithOwner;
+    let parent;
+    if (node.parent === null) parent = null;
+    else if (
+      typeof parentRepository === 'string' &&
+      Number.isSafeInteger(node.parent?.number)
+    )
+      parent = {
+        number: node.parent.number,
+        repository_url: `${apiBase}/repos/${parentRepository}`,
+      };
+    result.set(id, { repository, number: node.number, url: node.url, parent });
+  });
+  return result;
+}
+
+// The address GitHub now serves a linked issue at, or null when the link is
+// current. Old addresses still work but every REST call through them pays an
+// extra rate-limited 301.
+export function githubIssueLinkRelocation(link, node) {
+  if (!node || githubIssueLinkKey(node) === githubIssueLinkKey(link))
+    return null;
+  return { repository: node.repository, number: node.number, url: node.url };
+}
+
+// Old repository (lowercase) -> current name, from links whose issue kept its
+// number at a new address: the repository itself was renamed or transferred,
+// so its milestones moved with it. Ambiguous old names are left out.
+export function githubRepositoryMoves(links, nodes) {
+  const moves = new Map();
+  const ambiguous = new Set();
+  for (const link of links) {
+    const node = nodes.get(link.github_node_id);
+    const next = githubIssueLinkRelocation(link, node);
+    if (!next || next.number !== Number(link.number)) continue;
+    const from = String(link.repository || '').toLowerCase();
+    const known = moves.get(from);
+    if (known && known.toLowerCase() !== next.repository.toLowerCase())
+      ambiguous.add(from);
+    else moves.set(from, next.repository);
+  }
+  for (const from of ambiguous) moves.delete(from);
+  return moves;
+}
+
+export function githubIssueParentKey(parent) {
+  if (!parent) return null;
+  return githubIssueLinkKey({
+    repository: githubIssueRepository(parent),
+    number: parent.number,
+  });
+}
+
 export async function fetchGithubIssueParent({
   fetchImpl,
   apiBase,

@@ -57,9 +57,14 @@ import {
 import {
   canConfirmGithubParentRemoval,
   fetchGithubIssueParent,
+  GITHUB_ISSUE_NODES_QUERY,
   githubIssueLinkKey,
+  githubIssueLinkRelocation,
+  githubIssueParentKey,
   githubIssueRepository,
   githubIssueRepositoriesShareOwner,
+  githubRepositoryMoves,
+  parseGithubIssueNodes,
   updateGithubIssueParent,
 } from './github-sub-issues.mjs';
 import {
@@ -3618,7 +3623,12 @@ async function pollGithub(connector, manual) {
   };
 }
 
-async function githubGraphql(connector, query, variables = {}) {
+async function githubGraphql(
+  connector,
+  query,
+  variables = {},
+  { fullResponse = false } = {}
+) {
   const config = connector.config || {};
   const apiBase = String(config.apiBase || 'https://api.github.com').replace(
     /\/+$/,
@@ -3639,6 +3649,9 @@ async function githubGraphql(connector, query, variables = {}) {
     );
   }
   const body = JSON.parse(text);
+  // nodes() reports each unresolvable ID as an error beside the other results;
+  // such callers take the whole { data, errors } body and judge errors.
+  if (fullResponse && body.data) return body;
   if (Array.isArray(body.errors) && body.errors.length) {
     throw new Error(`GitHub GraphQL error: ${body.errors[0].message}`);
   }
@@ -4573,6 +4586,14 @@ async function reconcileGithubIssueRules(githubConnector) {
         version,
       ])
     );
+    const githubNodes = await loadGithubIssueNodes(
+      githubConnector,
+      links.filter((link) => issues.has(link.issue_id))
+    );
+    const repositoryMoves = githubRepositoryMoves(links, githubNodes);
+    repositoryMoves.delete(ownRepository.toLowerCase());
+    await relocateGithubIssueLinks(vibe, links, githubNodes, ownRepository);
+    await relocateGithubMilestones(vibe, milestones, repositoryMoves);
     const linksByIssueId = new Map(
       links.map((candidate) => [candidate.issue_id, candidate])
     );
@@ -4608,6 +4629,11 @@ async function reconcileGithubIssueRules(githubConnector) {
             milestones,
             issueMilestones,
             commentVersion: commentVersions.get(link.issue_id),
+            githubNode: githubNodes.get(link.github_node_id),
+            // A link that could not move still matches its moved milestones.
+            milestoneRepository:
+              repositoryMoves.get(link.repository.toLowerCase()) ??
+              link.repository,
           }
         );
         synced += 1;
@@ -4632,6 +4658,137 @@ async function reconcileGithubIssueRules(githubConnector) {
   return { synced, recovered, backfilled };
 }
 
+// One GraphQL read per 100 links replaces a REST /parent call per link (a 404
+// is never conditional, so every round paid for each one) and reveals links
+// still at a moved repository's old address. Failed batches fall back to REST.
+async function loadGithubIssueNodes(github, links) {
+  const apiBase = String(
+    github.config.apiBase || 'https://api.github.com'
+  ).replace(/\/+$/, '');
+  const ids = [
+    ...new Set(
+      links
+        .map((link) => link.github_node_id)
+        .filter((id) => typeof id === 'string' && id)
+    ),
+  ];
+  const nodes = new Map();
+  for (let start = 0; start < ids.length; start += 100) {
+    const batch = ids.slice(start, start + 100);
+    try {
+      const body = await githubGraphql(
+        github,
+        GITHUB_ISSUE_NODES_QUERY,
+        { ids: batch },
+        { fullResponse: true }
+      );
+      for (const [id, node] of parseGithubIssueNodes(batch, body, apiBase))
+        nodes.set(id, node);
+    } catch (error) {
+      await log('warn', 'github issue node lookup failed', {
+        connectorId: github.id,
+        count: batch.length,
+        error: errorMessage(error),
+      });
+    }
+  }
+  return nodes;
+}
+
+// Point links at the address GitHub now serves their issue from. A link whose
+// new address another link already holds keeps its old one (the server would
+// answer 409); a failed PATCH is retried next round. Links at the connector's
+// own repository stay put: the poll still finds issues by that name, so they
+// move only after the connector's repository is updated.
+async function relocateGithubIssueLinks(vibe, links, nodes, ownRepository) {
+  const byKey = new Map(links.map((link) => [githubIssueLinkKey(link), link]));
+  const own = String(ownRepository || '').toLowerCase();
+  let heldByConnector = 0;
+  for (const link of links) {
+    const next = githubIssueLinkRelocation(
+      link,
+      nodes.get(link.github_node_id)
+    );
+    if (!next) continue;
+    if (String(link.repository || '').toLowerCase() === own) {
+      heldByConnector += 1;
+      continue;
+    }
+    const from = `${link.repository}#${link.number}`;
+    const holder = byKey.get(githubIssueLinkKey(next));
+    if (holder && holder !== link) {
+      await log('warn', 'github issue link relocation skipped', {
+        issueId: link.issue_id,
+        from,
+        to: `${next.repository}#${next.number}`,
+        heldBy: holder.issue_id,
+      });
+      continue;
+    }
+    let saved;
+    try {
+      saved = await vibeApi(
+        vibe,
+        'PATCH',
+        `/v1/github_issue_links/${encodeURIComponent(link.id)}`,
+        next
+      );
+    } catch (error) {
+      await log('warn', 'github issue link relocation failed', {
+        issueId: link.issue_id,
+        from,
+        error: errorMessage(error),
+      });
+      continue;
+    }
+    // This round uses the new address either way; a server that predates
+    // address updates ignores the fields, so the PATCH repeats each round.
+    byKey.delete(githubIssueLinkKey(link));
+    Object.assign(link, next);
+    byKey.set(githubIssueLinkKey(link), link);
+    await log('info', 'github issue link relocated', {
+      issueId: link.issue_id,
+      from,
+      to: `${link.repository}#${link.number}`,
+      persisted: Boolean(
+        saved?.data && githubIssueLinkKey(saved.data) === githubIssueLinkKey(next)
+      ),
+    });
+  }
+  if (heldByConnector)
+    await log('warn', 'github connector repository has moved', {
+      repository: ownRepository,
+      links: heldByConnector,
+    });
+}
+
+// Milestones live in their repository, so they follow a renamed or
+// transferred one; otherwise milestone sync stops matching them and would
+// recreate them under the new name.
+async function relocateGithubMilestones(vibe, milestones, moves) {
+  for (const milestone of Array.isArray(milestones) ? milestones : []) {
+    const from = milestone?.source_repository;
+    const to = moves.get(String(from || '').toLowerCase());
+    if (!to) continue;
+    try {
+      const response = await vibeApi(
+        vibe,
+        'PATCH',
+        `/v1/project_milestones/${encodeURIComponent(milestone.id)}`,
+        { source_repository: to }
+      );
+      Object.assign(milestone, response?.data || { source_repository: to });
+    } catch (error) {
+      await log('warn', 'github milestone relocation failed', {
+        milestoneId: milestone.id,
+        from,
+        to,
+        error: errorMessage(error),
+      });
+    }
+  }
+}
+
 async function reconcileGithubIssueParent({
   github,
   vibe,
@@ -4641,6 +4798,7 @@ async function reconcileGithubIssueParent({
   external,
   linksByIssueId,
   linksByExternalKey,
+  prefetchedParent,
 }) {
   const vibeParentLink = vibeIssue.parent_issue_id
     ? linksByIssueId.get(vibeIssue.parent_issue_id)
@@ -4648,12 +4806,15 @@ async function reconcileGithubIssueParent({
   if (vibeIssue.parent_issue_id && !vibeParentLink) return undefined;
 
   const requestHeaders = githubHeaders(github.config.token);
-  const githubParent = await fetchGithubIssueParent({
-    fetchImpl: fetch,
-    apiBase,
-    link,
-    headers: requestHeaders,
-  });
+  const prefetched = prefetchedParent !== undefined;
+  let githubParent = prefetched
+    ? prefetchedParent
+    : await fetchGithubIssueParent({
+        fetchImpl: fetch,
+        apiBase,
+        link,
+        headers: requestHeaders,
+      });
   if (!githubParent && link.synced_parent_issue_id) {
     const previousParentLink = linksByIssueId.get(link.synced_parent_issue_id);
     const canConfirmRemoval = await canConfirmGithubParentRemoval({
@@ -4698,6 +4859,19 @@ async function reconcileGithubIssueParent({
       )
     ) {
       return undefined;
+    }
+    if (prefetched) {
+      // The round-start batch read can be minutes old; never overwrite a
+      // GitHub-side change made since. A mismatch waits for the next round.
+      const current = await fetchGithubIssueParent({
+        fetchImpl: fetch,
+        apiBase,
+        link,
+        headers: requestHeaders,
+      });
+      if (githubIssueParentKey(current) !== githubIssueParentKey(githubParent))
+        return undefined;
+      githubParent = current;
     }
     await updateGithubIssueParent({
       fetchImpl: fetch,
@@ -4833,6 +5007,8 @@ async function reconcileGithubIssueLink(
     milestones,
     issueMilestones,
     commentVersion,
+    githubNode,
+    milestoneRepository = link.repository,
   }
 ) {
   const config = rule.config || {};
@@ -4851,7 +5027,7 @@ async function reconcileGithubIssueLink(
     github,
     vibe,
     projectId: vibe.config.projectId,
-    repository: link.repository,
+    repository: milestoneRepository,
     issueId: link.issue_id,
     githubMilestone: external.milestone,
     githubIssueUpdatedAt: external.updated_at,
@@ -4962,6 +5138,7 @@ async function reconcileGithubIssueLink(
     external,
     linksByIssueId,
     linksByExternalKey,
+    prefetchedParent: githubNode?.parent,
   });
 
   await patchGithubIssueLink(vibe, link, {
@@ -6617,6 +6794,10 @@ async function testGithubIssueReconcile() {
     h.context.findConnector = () => h.vibe;
     h.context.retryPendingGithubIssueLinks = async () => 0;
     h.context.backfillGithubIssueMapLinks = async () => 0;
+    h.context.loadGithubIssueNodes = async () => new Map();
+    h.context.githubRepositoryMoves = githubRepositoryMoves;
+    h.context.relocateGithubIssueLinks = async () => {};
+    h.context.relocateGithubMilestones = async () => {};
     h.context.githubIssueLinkKey = githubIssueLinkKey;
     h.context.shouldReconcileGithubIssueLink = shouldReconcileGithubIssueLink;
     const api = h.context.vibeApi;

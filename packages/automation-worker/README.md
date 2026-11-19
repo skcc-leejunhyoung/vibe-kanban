@@ -336,6 +336,15 @@ miss would never be re-tried.
   a restart, a seeding poll, and a manual poll), and the sync runs beside the
   poll instead of inside it; review requests, comments, and assigned issues
   are still polled every interval.
+  Each sync round reads every linked issue's current address and parent in
+  one GraphQL `nodes` query per 100 links instead of a REST `/parent` call per
+  link. Links left at an old address after a repository rename or transfer
+  (or an issue transfer) are moved to the current one, since every REST call
+  through the old address costs an extra rate-limited redirect; Vibe
+  milestones sourced from a renamed or transferred repository follow it. A
+  link whose new address another link already holds keeps the old one and is
+  logged, and links at the connector's own `owner/repo` move only after that
+  setting is updated to the new name.
   Set `reviewPrs: true` to also import open, non-draft PRs where review is
   requested from the user (Search API). Set `reviewRepositories` to an explicit
   allowlist such as `["example/app", "example/search"]`; an absent or empty
