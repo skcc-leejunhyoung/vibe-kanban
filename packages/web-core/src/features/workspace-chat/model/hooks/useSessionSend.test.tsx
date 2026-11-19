@@ -93,7 +93,7 @@ describe('useSessionSend while the previous turn finishes', () => {
     expect(result).toBeNull();
     expect(api.queueApi.queue).toHaveBeenCalledWith(
       'session-a',
-      { message: 'hi', executor_config: config },
+      { message: 'hi', executor_config: config, handoff: true },
       null
     );
     expect(

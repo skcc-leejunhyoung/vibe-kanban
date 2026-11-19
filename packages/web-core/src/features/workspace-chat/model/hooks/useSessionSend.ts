@@ -95,12 +95,17 @@ export function useSessionSend({
       } catch (e: unknown) {
         let error = e;
         // 423: the previous turn is still finishing (no turn is running).
-        // Its finish starts the queue, so the message waits there.
+        // Its finish starts the queue, so the message waits there. As every
+        // composer queue path: the agent shown is the sender's pick.
         if (e instanceof ApiError && e.status === 423) {
           try {
             const status = await queueApi.queue(
               target,
-              { message: trimmed, executor_config: executorConfig },
+              {
+                message: trimmed,
+                executor_config: executorConfig,
+                handoff: true,
+              },
               hostId
             );
             queryClient.setQueryData(
