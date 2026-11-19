@@ -896,7 +896,13 @@ function maskState(current) {
   for (const connector of copy.connectors || []) {
     const config = connector.config;
     if (!config) continue;
-    if (connector.type === 'github') delete config.githubActivityAccountId;
+    if (connector.type === 'github') {
+      delete config.githubActivityAccountId;
+      for (const cursor of Object.values(config.prCommentCursors || {})) {
+        if (cursor) delete cursor.seenIds;
+      }
+      if (config.prActivityDiscovery) delete config.prActivityDiscovery.seen;
+    }
     for (const key of SECRET_CONFIG_KEYS) {
       if (config[key]) config[key] = SECRET_MASK;
     }
@@ -2996,6 +3002,7 @@ async function pollGithubPrComments(connector, login) {
     }
   }
   config.prCommentErrors = total.errors;
+  await persistState(true);
   return total;
 }
 
@@ -3041,6 +3048,7 @@ async function pollGithubAutomaticPrActivity(connector, login) {
   const since = new Date(
     Math.max(Date.parse(runtime.startedAt), Date.parse(runtime.cursorTs) - overlapMs)
   ).toISOString();
+  const delivered = new Map();
   const receipts = new Map();
   const retry = new Map(
     (runtime.pendingPrs || []).map((pr) => [githubIssueLinkKey(pr), pr])
@@ -3106,6 +3114,9 @@ async function pollGithubAutomaticPrActivity(connector, login) {
         continue;
       }
       runtime.seen[key] = at;
+      const keys = delivered.get(pr.repository) || [];
+      keys.push(key);
+      delivered.set(pr.repository, keys);
       receipts.get(pr.repository).events += 1;
       processed += 1;
     }
@@ -3125,13 +3136,19 @@ async function pollGithubAutomaticPrActivity(connector, login) {
   receipt.repositories = [...receipts.values()].filter(
     ({ repository }) => !failedRepos.has(repository)
   );
+  const sharedCursors = { ...cursors };
+  for (const [repository, keys] of delivered) {
+    const scoped = githubScopedActivityState(config, repository);
+    sharedCursors[repository] = { ...scoped, seenIds: [...(scoped.seenIds || []), ...keys] };
+  }
   try {
     await persistState(true, {
       connector, config,
-      values: { prActivityDiscovery: receipt, prCommentErrors: errors },
+      values: { prActivityDiscovery: receipt, prCommentErrors: errors, prCommentCursors: sharedCursors },
     });
   } catch (error) {
     if (connector.config === config) {
+      config.prCommentCursors = sharedCursors;
       config.prActivityDiscovery = { ...runtime, checkedAt: pollStartedAt, complete: false, repositories: [] };
       config.prCommentErrors = [...errors, { repository: 'GitHub persistence', error: errorMessage(error) }];
     }
@@ -3153,23 +3170,22 @@ function githubPrActivityKey(comment) {
   return `${kind}:${comment.id}`;
 }
 
+function githubScopedActivityState(config, repository) {
+  const primary = `${config.owner}/${config.repo}`.toLowerCase();
+  return config.prCommentCursors?.[repository] || (repository === primary
+    ? { cursorTs: config.prCommentCursorTs, seenIds: config.seenPrCommentIds }
+    : {});
+}
+
 async function pollGithubRepositoryPrComments(connector, login, repository) {
   const config = connector.config || {};
   if (config.notifyPrComments === false) return { processed: 0, seeded: 0 };
   const cursors = (config.prCommentCursors ||= {});
-  const primary = `${config.owner}/${config.repo}`.toLowerCase();
-  const runtime = (cursors[repository] ||=
-    repository === primary
-      ? { cursorTs: config.prCommentCursorTs, seenIds: config.seenPrCommentIds }
-      : {});
+  const runtime = (cursors[repository] ||= githubScopedActivityState(config, repository));
   const auto = config.prActivityDiscovery;
-  const scopedCursor = normalizeOptionalTimestamp(runtime.cursorTs);
-  const autoCursor = normalizeOptionalTimestamp(auto?.cursorTs);
-  const autoStartedAt = normalizeOptionalTimestamp(auto?.startedAt);
-  const canResumeFromAuto = autoCursor && (!scopedCursor ||
-    (autoCursor > scopedCursor && (!autoStartedAt || scopedCursor >= autoStartedAt)));
-  const cursor = canResumeFromAuto ? autoCursor : String(runtime.cursorTs || '');
-  const seeding = !cursor && (runtime.seenIds || []).length === 0;
+  // Automatic discovery reads individual PRs. Its cursor cannot advance a repository scan.
+  const cursor = String(runtime.cursorTs || auto?.startedAt || auto?.cursorTs || '');
+  const seeding = !cursor && (!runtime.seenIds?.length || auto === null);
   const pollStartedAt = new Date().toISOString();
   if (seeding) {
     runtime.cursorTs = pollStartedAt;
@@ -3197,17 +3213,13 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
       repository
     ),
   ]);
-  const pending = [];
-  const autoWindow = autoCursor && new Date(Date.parse(autoCursor) - 5 * 60 * 1000).toISOString();
+  const pending = new Map();
   const collect = (pr, comment) => {
     const key = githubPrActivityKey(comment);
     if (seen.has(key) || seen.has(`${comment.url || ''}:${comment.id}`)) return;
-    seen.add(key);
-    const at = normalizeOptionalTimestamp(comment.created_at);
-    // The automatic receipt drops IDs before its overlap window.
-    if (auto?.seen?.[key] || (autoStartedAt && at && at >= autoStartedAt && at < autoWindow)) return;
+    if (auto?.seen?.[key] || pending.has(key)) return;
     if (comment.user?.login?.toLowerCase() === login.toLowerCase()) return;
-    pending.push({ pr, comment });
+    pending.set(key, { pr, comment });
   };
 
   for (const comment of comments) {
@@ -3220,18 +3232,22 @@ async function pollGithubRepositoryPrComments(connector, login, repository) {
     collect(pr, activity);
   }
 
-  pending.sort((a, b) =>
+  const ordered = [...pending].sort(([, a], [, b]) =>
     String(a.comment.created_at || '').localeCompare(
       String(b.comment.created_at || '')
     )
   );
-  for (const { pr, comment } of pending) {
-    await emitGithubPrActivity(connector, pr, comment);
+  try {
+    for (const [key, { pr, comment }] of ordered) {
+      await emitGithubPrActivity(connector, pr, comment);
+      seen.add(key);
+    }
+    runtime.cursorTs = pollStartedAt;
+  } finally {
+    // shortcut: retain compact IDs for exact handoffs, move receipts to indexed storage if state writes become a bottleneck.
+    runtime.seenIds = [...seen];
   }
-
-  runtime.cursorTs = pollStartedAt;
-  runtime.seenIds = Array.from(seen).slice(-2000);
-  return { processed: pending.length, seeded: 0 };
+  return { processed: pending.size, seeded: 0 };
 }
 
 function emitGithubPrActivity(connector, pr, comment) {

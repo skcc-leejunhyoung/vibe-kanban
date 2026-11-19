@@ -79,6 +79,7 @@ const names = [
   "pollGithubAutomaticPrActivity",
   "githubLegacyPrActivityKey",
   "githubPrActivityKey",
+  "githubScopedActivityState",
   "emitGithubPrActivity",
   "githubCommentPrNumber",
   "orderByParent",
@@ -1250,6 +1251,11 @@ test("connector settings saved during a poll inherit the new receipt without rep
     await h.context.applyConnectorPatch(current, { config: { ...current.config, prActivityDiscovery: null } });
     assert.equal(current.config.prActivityDiscovery, null);
     h.context.githubLoginCache.set(id, fixture.login);
+    h.context.fetch = async (url, { headers }) => {
+      assert.equal(url, "https://api.github.com/user");
+      const accountId = headers.authorization === "Bearer synthetic" ? 11 : 12;
+      return { ok: true, json: async () => ({ id: accountId, login: "fixture-login" }) };
+    };
     await h.context.applyConnectorPatch(current, {
       config: { ...current.config, token: "fixture-other-token", prActivityDiscovery: receipt },
     });
@@ -1438,6 +1444,100 @@ test("explicit scope still reads the gap before the first automatic collection",
   });
   await h.context.pollGithubRepositoryPrComments(h.github, fixture.login, repository);
   assert.deepEqual(emitted, [event.id]);
+});
+
+test("a newly scoped repository collects a comment never read by automatic discovery", async () => {
+  const h = harness();
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  const time = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const first = { ...pr, repository: "example/app" };
+  const event = {
+    id: 95, issue_url: `https://fixture.invalid/issues/${pr.number}`, created_at: time(20),
+    updated_at: time(1), user: { login: "fixture-author" },
+  };
+  Object.assign(h.github.config, {
+    notifyPrComments: true, reviewRepositories: [],
+    prActivityDiscovery: { startedAt: time(60), cursorTs: time(45), seen: {} },
+  });
+  const reads = [];
+  const emitted = [];
+  Object.assign(h.context, {
+    githubDiscoverActivityPrs: async (_, __, ___, ____, onPr) => { onPr(first); return []; },
+    githubRelatedPrs: async () => [pr],
+    githubPrComments: async (_, since, selected) => {
+      reads.push(selected);
+      return selected === repository && event.updated_at >= since ? [event] : [];
+    },
+    runRules: async ({ raw }) => emitted.push(raw.id),
+  });
+  await h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.deepEqual(reads, [first.repository]);
+  await h.context.pollGithubRepositoryPrComments(h.github, fixture.login, repository);
+  assert.deepEqual(emitted, [event.id]);
+});
+
+test("explicit activity receipts survive restart and automatic replay after 2001 events", async () => {
+  const h = harness();
+  connectorSettings(h);
+  Object.assign(h.context, await import("./github-pr-activity.mjs"));
+  vm.runInContext(functionSource("maskState"), h.context);
+  const time = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const result = Array.from({ length: 2001 }, (_, index) => ({
+    id: index + 1, issue_url: `https://fixture.invalid/issues/${pr.number}`,
+    created_at: time(20 - index / 200), user: { login: "fixture-author" },
+  }));
+  h.github.config.owner = "example";
+  h.github.config.repo = "search";
+  Object.assign(h.github.config, {
+    notifyPrComments: true,
+    prCommentCursors: { [repository]: { cursorTs: time(25), seenIds: [] } },
+    prActivityDiscovery: { startedAt: time(60), cursorTs: time(45), seen: {} },
+  });
+  const emitted = [];
+  Object.assign(h.context, {
+    githubDiscoverActivityPrs: async (_, __, ___, ____, onPr) => { onPr(pr); return []; },
+    githubRelatedPrs: async () => [pr], githubPrComments: async () => result,
+    runRules: async ({ raw }) => emitted.push(raw.id),
+  });
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.equal((await poll()).processed, 2001);
+  h.github.config = structuredClone(h.persisted.connectors[0].config);
+  assert.equal(h.github.config.prCommentCursors[repository].seenIds.length, 2001);
+  const edited = h.context.maskState(h.state).connectors[0].config;
+  assert.equal(edited.prCommentCursors[repository].seenIds, undefined);
+  await h.context.applyConnectorPatch(h.github, { config: { ...edited, reviewRepositories: [] } });
+  assert.equal((await poll()).processed, 0);
+  assert.equal(emitted.length, 2001);
+});
+
+test("a scoped delivery failure keeps successful IDs without advancing past the failed event", async () => {
+  const h = harness();
+  const cursor = new Date(Date.now() - 60_000).toISOString();
+  const events = [301, 302].map((id) => ({
+    id, issue_url: `https://fixture.invalid/issues/${pr.number}`, created_at: cursor,
+    user: { login: "fixture-author" },
+  }));
+  Object.assign(h.github.config, {
+    owner: "example", repo: "search", notifyPrComments: true,
+    prCommentCursors: { [repository]: { cursorTs: cursor, seenIds: [] } },
+  });
+  let fail = true;
+  const emitted = [];
+  Object.assign(h.context, {
+    githubRelatedPrs: async () => [pr], githubPrComments: async () => events,
+    runRules: async ({ raw }) => {
+      if (fail && raw.id === 302) throw new Error("fixture delivery failed");
+      emitted.push(raw.id);
+    },
+  });
+  const poll = () => h.context.pollGithubPrComments(h.github, fixture.login);
+  assert.equal((await poll()).errors.length, 1);
+  h.github.config = structuredClone(h.persisted.connectors[0].config);
+  assert.equal(h.github.config.prCommentCursors[repository].cursorTs, cursor);
+  assert.deepEqual(h.github.config.prCommentCursors[repository].seenIds, ["issue:301"]);
+  fail = false;
+  assert.equal((await poll()).processed, 1);
+  assert.deepEqual(emitted, [301, 302]);
 });
 
 test("activity searches bound historical PRs while request discovery remains cursor-independent", async () => {
