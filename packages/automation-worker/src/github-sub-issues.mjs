@@ -80,10 +80,8 @@ export function githubRepositoryMoves(links, nodes) {
   const moves = new Map();
   const unmoved = new Set();
   for (const link of links) {
-    const node = nodes.get(link.github_node_id);
-    if (!node) continue;
     const from = String(link.repository || '').toLowerCase();
-    const next = githubIssueLinkRelocation(link, node);
+    const next = githubIssueLinkRelocation(link, nodes.get(link.github_node_id));
     const to = next?.number === Number(link.number) ? next.repository : null;
     if (
       !to ||

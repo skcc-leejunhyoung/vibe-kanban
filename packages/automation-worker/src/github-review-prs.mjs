@@ -128,7 +128,7 @@ export async function searchGithubPrs({
       onPr?.(pr);
     }
     if (body.items.length < perPage || page * perPage >= body.total_count) {
-      if ((!repository || reviewLogin) && prs.size !== body.total_count)
+      if ((!repository || qualifier.includes('review-requested:')) && prs.size !== body.total_count)
         throw new Error(`Incomplete GitHub PR search for ${searchScope}`);
       break;
     }

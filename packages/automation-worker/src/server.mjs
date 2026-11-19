@@ -2916,9 +2916,8 @@ async function ensureGithubReviewIssueReady(connector, issueId, event) {
   }
 }
 
-// Still "Awaiting review from you" on the PR itself: open, and the account (or
-// any team, whose membership is not checked) is a requested reviewer. Drafts
-// count, as on GitHub. A missing PR (404) has left.
+// Verify direct requests on the PR. Only an account-scoped search can
+// confirm a team request when the open-PR fallback omitted it.
 async function githubPrAwaitingReview(connector, repository, number, login) {
   const config = connector.config || {};
   const apiBase = String(config.apiBase || 'https://api.github.com').replace(
@@ -2935,13 +2934,19 @@ async function githubPrAwaitingReview(connector, repository, number, login) {
       `GitHub PR review request lookup failed for ${repository}#${number}: ${response.status}`
     );
   const pr = await response.json();
-  return (
-    pr.state === 'open' &&
-    ((pr.requested_reviewers || []).some(
+  if (pr.state !== 'open') return false;
+  if (
+    (pr.requested_reviewers || []).some(
       (user) => String(user?.login).toLowerCase() === login.toLowerCase()
-    ) ||
-      (pr.requested_teams || []).length > 0)
+    )
+  ) return true;
+  if (!pr.requested_teams?.length) return false;
+  const awaiting = await githubSearchPrs(
+    connector,
+    repository,
+    `is:open draft:false review-requested:${login}`
   );
+  return awaiting.some((item) => item.number === number);
 }
 
 // Fetch a PR's head/base branch names (the issues/search payloads omit them).
@@ -4646,6 +4651,24 @@ async function reconcileGithubIssueRules(githubConnector) {
     );
     const repositoryMoves = githubRepositoryMoves(links, githubNodes);
     repositoryMoves.delete(ownRepository.toLowerCase());
+    const unverifiedMoves = new Set();
+    for (const [from, to] of repositoryMoves) {
+      try {
+        const original = await fetchGithubRepository(githubConnector.config, from);
+        const destination = await fetchGithubRepository(githubConnector.config, to);
+        if (!original || !destination) unverifiedMoves.add(from);
+        if (!original || !destination || original.id !== destination.id)
+          repositoryMoves.delete(from);
+      } catch (error) {
+        repositoryMoves.delete(from);
+        unverifiedMoves.add(from);
+        await log('warn', 'github repository move verification failed', {
+          from,
+          to,
+          error: errorMessage(error),
+        });
+      }
+    }
     // Milestones first: a move is only seen while some link still holds the
     // old name, so links wait for their repository's milestones to follow.
     const stalledMoves = await relocateGithubMilestones(
@@ -4658,7 +4681,7 @@ async function reconcileGithubIssueRules(githubConnector) {
       links,
       githubNodes,
       ownRepository,
-      stalledMoves
+      new Set([...stalledMoves, ...unverifiedMoves])
     );
     const linksByIssueId = new Map(
       links.map((candidate) => [candidate.issue_id, candidate])
@@ -6892,7 +6915,7 @@ async function testGithubIssueReconcile() {
     h.context.loadGithubIssueNodes = async () => new Map();
     h.context.githubRepositoryMoves = githubRepositoryMoves;
     h.context.relocateGithubIssueLinks = async () => {};
-    h.context.relocateGithubMilestones = async () => {};
+    h.context.relocateGithubMilestones = async () => new Set();
     h.context.githubIssueLinkKey = githubIssueLinkKey;
     h.context.shouldReconcileGithubIssueLink = shouldReconcileGithubIssueLink;
     const api = h.context.vibeApi;

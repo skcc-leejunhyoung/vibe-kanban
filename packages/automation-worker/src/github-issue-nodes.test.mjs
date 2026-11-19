@@ -47,6 +47,7 @@ function harness(overrides = {}) {
       logs.push({ level, message, details }),
     errorMessage: (error) => error.message,
     githubHeaders: () => ({ authorization: 'synthetic' }),
+    fetchGithubRepository: async () => ({ id: 1 }),
     vibeApi: async (...args) => {
       calls.push(['vibe', ...args]);
       return { data: { ...args[3] } };
@@ -71,6 +72,7 @@ function harness(overrides = {}) {
       'relocateGithubMilestones',
       'reconcileGithubIssueParent',
       'reconcileGithubIssueRules',
+      'githubPrAwaitingReview',
     ]
       .map(functionSource)
       .join('\n'),
@@ -78,6 +80,37 @@ function harness(overrides = {}) {
   );
   return context;
 }
+
+test('a missing issue node disqualifies a repository-wide move', () => {
+  const links = [
+    { github_node_id: 'A', repository: 'example/old', number: 1 },
+    { github_node_id: 'B', repository: 'example/old', number: 2 },
+  ];
+  assert.equal(githubRepositoryMoves(links, nodesOf(['A'], [
+    node('A', 'example/new', 1),
+  ])).size, 0);
+});
+
+test('team review requests count only when the account-scoped search includes the PR', async () => {
+  let requested = false;
+  const h = harness({
+    fetch: async () => ({ ok: true, json: async () => ({
+      state: 'open', requested_reviewers: [], requested_teams: [{ id: 42 }],
+    }) }),
+    githubSearchPrs: async (_connector, repository, qualifier, fallback) => {
+      assert.equal(repository, 'example/app');
+      assert.match(qualifier, /review-requested:example-user/);
+      assert.equal(fallback, undefined);
+      return requested ? [{ number: 7 }] : [];
+    },
+  });
+  const check = () => h.githubPrAwaitingReview(
+    { config: { apiBase: API } }, 'example/app', 7, 'example-user'
+  );
+  assert.equal(await check(), false);
+  requested = true;
+  assert.equal(await check(), true);
+});
 
 test('reads current address and parent per resolved node, aligned by ID', () => {
   const nodes = nodesOf(
