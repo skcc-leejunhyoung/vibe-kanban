@@ -416,6 +416,15 @@ miss would never be re-tried.
   seeds at its first poll. Per-PR comment reads reuse URLs within a five-minute
   bucket and filter results against the actual cursor. Delivery history stays
   in worker state and is omitted from settings responses.
+  Every poll also runs one GraphQL search over the account's own open PRs (the
+  same repository scope as comment activity). A non-draft PR whose current
+  head's check rollup is `FAILURE`/`ERROR` dispatches `pr.checks_failed`; one
+  that conflicts with its base (`mergeable: CONFLICTING`) dispatches
+  `pr.merge_conflict`. Each fires once per head (`prHealthHeads`, kept three
+  days after a PR leaves the search), carries the PR URL, repository and head
+  but no title, and reaches `vk_event` routines that include `pr.`. The first
+  poll only records heads that already fail. Set `watchPrHealth: false` to
+  turn it off.
 - `vibe_kanban`: creates Vibe Kanban issues through HTTP.
 
 The `vibe_kanban` connector posts to `{baseUrl}/v1/issues` on the **remote** API.

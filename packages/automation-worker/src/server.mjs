@@ -19,6 +19,9 @@ import vm from 'node:vm';
 import {
   isNotifiableReview,
   mapWithConcurrency,
+  PR_HEALTH_QUERY,
+  prHealthSearchQuery,
+  prHealthSignals,
   recentlyUpdatedPrs,
   reviewActivity,
 } from './github-pr-activity.mjs';
@@ -93,6 +96,7 @@ import {
   createCoalescer,
   retryExhaustedEvent,
   reviewRequestedEvent,
+  prHealthEvent,
   carriesRetryExhausted,
   deliversToAutopilot,
   journalEventToWorkerEvent,
@@ -856,6 +860,8 @@ const RUNTIME_CONFIG_KEYS = [
   'prCommentCursors',
   'prCommentErrors',
   'prActivityDiscovery',
+  'prHealthSeededAt',
+  'prHealthHeads',
   'tagMap',
   'githubIssueLinkBackfillSkipped',
 ];
@@ -3405,6 +3411,62 @@ function emitGithubPrActivity(connector, pr, comment) {
   });
 }
 
+// CI failures and base conflicts on the account's own open PRs, one wake per
+// head and signal (Claude Code auto-fix parity). Same repository scope as PR
+// comment activity. `prHealthHeads` remembers the head each signal last fired
+// for — not event receipts, which expire after a week and would re-wake a
+// long-failing or seeded head. A row outlives a PR's absence from the search
+// (a missed result, a scope change) by three days. The first poll only records.
+async function pollGithubPrHealth(connector, login) {
+  const rowTtlMs = 3 * 24 * 60 * 60 * 1000;
+  const config = connector.config;
+  if (config.watchPrHealth === false) return;
+  const repositories = config.reviewRepositories?.length
+    ? [
+        ...new Set([
+          `${config.owner}/${config.repo}`.toLowerCase(),
+          ...(config.reviewPrs ? githubReviewRepositories(config) : []),
+        ]),
+      ]
+    : [];
+  const data = await githubGraphql(connector, PR_HEALTH_QUERY, {
+    q: prHealthSearchQuery(login, repositories),
+  });
+  const nodes = data?.search?.nodes;
+  if (!Array.isArray(nodes)) throw new Error('GitHub PR health search returned no nodes');
+  const seeding = !config.prHealthSeededAt;
+  const heads = (config.prHealthHeads ||= {});
+  const now = Date.now();
+  for (const pr of nodes) {
+    const repository = String(pr.repository?.nameWithOwner || '').toLowerCase();
+    const prKey = `${repository}#${pr.number}`;
+    if (heads[prKey]) heads[prKey].seenAt = now;
+    for (const signal of prHealthSignals(pr)) {
+      if (heads[prKey]?.[signal] === pr.headRefOid) continue;
+      if (!seeding) {
+        const event = prHealthEvent({
+          connectorId: connector.id,
+          signal,
+          repository,
+          number: pr.number,
+          url: pr.url,
+          headSha: pr.headRefOid,
+        });
+        const key = automationEventKey(event);
+        // A crash between the hand-off and saving the row leaves only the receipt.
+        if (state.eventReceipts[key]?.status !== 'succeeded')
+          await processAutomationEvent(key, event);
+      }
+      heads[prKey] = { ...heads[prKey], [signal]: pr.headRefOid, seenAt: now };
+      await persistState();
+    }
+  }
+  for (const [prKey, row] of Object.entries(heads))
+    if (!(row.seenAt > now - rowTtlMs)) delete heads[prKey];
+  config.prHealthSeededAt ||= new Date().toISOString();
+  await persistState();
+}
+
 async function pollGithub(connector, manual) {
   const config = connector.config || {};
   if (!config.token || !config.owner || !config.repo) {
@@ -3423,6 +3485,12 @@ async function pollGithub(connector, manual) {
   await retryPendingPullRequestLinks();
   const reviewResult = await pollGithubReviews(connector, login);
   const commentResult = await pollGithubPrComments(connector, login);
+  await pollGithubPrHealth(connector, login).catch((error) =>
+    log('warn', 'github PR health poll failed', {
+      connectorId: connector.id,
+      error: errorMessage(error),
+    })
+  );
 
   // GitHub caps per_page at 100; an unclamped larger limit would make the
   // "batch shorter than perPage -> last page" check fire after page 1 and

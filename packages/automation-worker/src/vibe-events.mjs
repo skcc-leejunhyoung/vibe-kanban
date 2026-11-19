@@ -203,6 +203,42 @@ export function reviewRequestedEvent({
   };
 }
 
+const PR_HEALTH_TITLES = {
+  checks_failed:
+    'GitHub: checks failed on the head of your PR - fix it in its work session (ap send --auto ci)',
+  merge_conflict:
+    'GitHub: your PR conflicts with its base - merge the base in its work session (ap send --auto conflict)',
+};
+
+// CI failed on, or the base now conflicts with, the head of one of the
+// account's own open PRs: one `pr.` event per head so the Autopilot routine
+// hands the fix to the PR's work session. The PR title is left out, as above.
+export function prHealthEvent({ connectorId, signal, repository, number, url, headSha }) {
+  const kind = `pr.${signal}`;
+  return {
+    id: `github-${signal}:${repository}#${number}:${headSha}`,
+    source: 'automation',
+    type: 'vk_event',
+    kind,
+    autopilot: false,
+    cursor: null,
+    hostId: null,
+    hostName: 'worker',
+    workspaceId: null,
+    sessionId: null,
+    executionId: null,
+    at: new Date().toISOString(),
+    title: [kind, url, PR_HEALTH_TITLES[signal], `head ${headSha}`].join(' · '),
+    data: {
+      connector_id: connectorId ?? null,
+      repository,
+      number,
+      pr_url: url,
+      head_sha: headSha,
+    },
+  };
+}
+
 // The event (or a coalesced batch of them) already reports a retry that ran out.
 export function carriesRetryExhausted(event) {
   const isExhausted = (item) => item?.kind === 'automation.retry_exhausted';

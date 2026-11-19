@@ -9,6 +9,7 @@ import {
   eventLine,
   retryExhaustedEvent,
   reviewRequestedEvent,
+  prHealthEvent,
   deliversToAutopilot,
   journalEventToWorkerEvent,
   kindMatches,
@@ -360,4 +361,18 @@ test('a re-requested review PR matches routines subscribed to pr. events', () =>
   assert.ok(kindMatches(event.kind, ['pr.']));
   assert.equal(event.connectorId, undefined); // must not trip a routine's connector filter
   assert.match(eventLine(event), /^- worker pr\.review_requested · https:\/\/github\.com\/acme\/widgets\/pull\/7 · GitHub: Awaiting review from you again/);
+});
+
+test('own-PR CI failure and conflict events match routines subscribed to pr. events', () => {
+  for (const [signal, hint] of [['checks_failed', /checks failed/], ['merge_conflict', /conflicts with its base/]]) {
+    const event = prHealthEvent({
+      connectorId: 'github-default', signal, repository: 'acme/widgets', number: 7,
+      url: 'https://github.com/acme/widgets/pull/7', headSha: 'a'.repeat(40),
+    });
+    assert.equal(event.kind, `pr.${signal}`);
+    assert.equal(event.id, `github-${signal}:acme/widgets#7:${'a'.repeat(40)}`);
+    assert.ok(kindMatches(event.kind, ['pr.']));
+    assert.equal(event.connectorId, undefined);
+    assert.match(eventLine(event), hint);
+  }
 });

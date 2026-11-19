@@ -141,6 +141,8 @@ function harness(options = {}) {
   const context = vm.createContext({
     vm,
     randomUUID,
+    // Own-PR CI/conflict polling has its own tests (github-pr-activity.test.mjs).
+    pollGithubPrHealth: async () => {},
     URLSearchParams,
     Set,
     Map,
