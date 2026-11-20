@@ -7334,11 +7334,11 @@ done
         let _logs = SessionLogDir(session.id);
         let queue = container.queued_message_service.clone();
         let agent = Uuid::new_v4();
-        let queued = queue.enqueue(
+        queue.enqueue_from(
             session.id,
             follow_up("from an agent", BaseCodingAgent::ClaudeCode),
+            Some(agent),
         );
-        queue.set_agent_session(session.id, queued.id, Some(agent));
         let _ = container.drain_queue_if_idle(&session, &workspace).await;
         let started: Vec<Uuid> = sqlx::query_scalar(
             "SELECT execution_id FROM execution_agent_origins WHERE agent_session_id=?",

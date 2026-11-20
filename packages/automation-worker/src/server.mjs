@@ -1385,10 +1385,21 @@ async function triageFacts(connector, event, signal) {
 }
 
 // The owned-host catalog behind triage, shared for a minute per connector.
+// A failed lookup drops the shared catalog, so one aborted request or a newly
+// added host is retried on the next event instead of after a minute.
 function triageHostResolver(connector) {
   const cached = triageResolverCache.get(connector.id);
   if (cached && Date.now() - cached.at < 60000) return cached.resolve;
-  const resolve = autopilotHostResolver(connector);
+  const shared = autopilotHostResolver(connector);
+  const resolve = async (hostId, signal) => {
+    try {
+      return await shared(hostId, signal);
+    } catch (error) {
+      if (triageResolverCache.get(connector.id)?.resolve === resolve)
+        triageResolverCache.delete(connector.id);
+      throw error;
+    }
+  };
   triageResolverCache.set(connector.id, { at: Date.now(), resolve });
   return resolve;
 }
@@ -1399,10 +1410,12 @@ function triageHostResolver(connector) {
 // timeout, not one per event.
 async function autopilotSessionSet(connector, signal, fresh = false) {
   const cached = autopilotSessionCache.get(connector.id);
-  if (cached && !fresh) {
+  if (cached) {
     const age = Date.now() - cached.at;
     if (cached.error && age < 30000) throw cached.error;
-    if (cached.sessions && age < 60000) return cached.sessions;
+    // A fresh read is for a just-created Autopilot session; ten seconds of
+    // reuse keeps other agents' sessions from refetching on every event.
+    if (cached.sessions && age < (fresh ? 10000 : 60000)) return cached.sessions;
   }
   try {
     const bridges = Object.entries(connector.config?.hostBridges || {}).filter(
@@ -1480,6 +1493,7 @@ async function triageAutopilotEvent(routine, event) {
       source_machine_id: verdict.sourceMachineId,
     });
     if (outcome === 'not_frozen') {
+      // The claim holds no token to hand off: the normal path delivers it.
       recordTriage(event.id, { ...verdict, applied: false, disposal: outcome });
       return 'claimed';
     }

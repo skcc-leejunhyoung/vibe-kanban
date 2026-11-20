@@ -275,8 +275,7 @@ async fn steer_message(
             // exit handler drains by this id (not by queue position), so a
             // reorder/promote that lands before the kill fires can't divert the
             // interrupt to a different message.
-            let queued = queue.enqueue_front(session.id, data);
-            queue.set_agent_session(session.id, queued.id, agent_session);
+            let queued = queue.enqueue_front_from(session.id, data, agent_session);
 
             // Compare-and-set: only the first steer for this session owns the
             // interrupt. `mark_steering` returns false when a steer is already in
@@ -305,13 +304,11 @@ async fn steer_message(
             // would double up with that kill's pending drain. In that case just
             // queue and let the in-flight chain run it. Truly idle → run it now.
             if deployment.queued_message_service().is_steering(session.id) {
-                let queued = queue.enqueue(session.id, data);
-                queue.set_agent_session(session.id, queued.id, agent_session);
+                queue.enqueue_from(session.id, data, agent_session);
             } else {
                 // A terminal script can still be connecting its next action.
                 // The idle drain also respects that finalizer's ownership.
-                let queued = queue.enqueue_front(session.id, data);
-                queue.set_agent_session(session.id, queued.id, agent_session);
+                queue.enqueue_front_from(session.id, data, agent_session);
                 // A manual send supersedes a scheduled automatic resume.
                 let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
                 if let Err(error) = drain_idle_queue(&deployment, &session).await {

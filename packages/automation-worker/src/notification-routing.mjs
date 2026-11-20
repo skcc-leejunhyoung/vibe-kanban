@@ -291,12 +291,16 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
     // Autopilot would have: no push, the proof kept on the dispatch row.
     //   "consumed"   done;
     //   "frozen"     handed off but not yet consumed: `recover` finishes it;
-    //   "not_frozen" still a plain claim this worker holds: deliver it normally;
-    //   "lost"       the claim is gone (the alert is the user's again).
-    // An unknown handoff outcome is resolved by reading the claim back.
+    //   "uncertain"  the handoff reply was lost: left untracked, so `recover`
+    //                consumes it if it froze or dispatches it again if not;
+    //   "lost"       the claim is gone (the alert is the user's again);
+    //   "not_frozen" no claim held: deliver it normally.
+    // Only "not_frozen" may join a batch: a frozen member would make the whole
+    // batch's handoff conflict.
     async disposeByRule(routine, item, proof) {
       const current = itemsOf({ events: [item] })[0];
       if (!current?.notificationClaim?.claim_token) return "not_frozen";
+      const key = keyOf(item);
       const handoffKey = `triage:${proof.rule}:${item.notificationId}:${item.notificationRevision}`;
       const handoff = { kind: "triage", ...proof, meta: { idempotencyKey: handoffKey } };
       let frozen;
@@ -305,32 +309,22 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
           request(routine, current, "handoff", { handoff_key: handoffKey, handoff }),
         );
       } catch {
-        const page = await api(
-          routine,
-          "GET",
-          `/v1/notification-claims?lease_id=${encodeURIComponent(current.notificationClaim.lease_id)}&instance_id=${encodeURIComponent(instanceId)}`,
-        );
-        const row = page.claims?.find(
-          (claim) =>
-            claim.id === item.notificationId && claim.revision === item.notificationRevision,
-        );
-        if (!row) frozen = false;
-        else if (row.handoff_key !== handoffKey) return "not_frozen";
-        else frozen = true;
+        known.delete(key);
+        return "uncertain";
       }
       if (!frozen) {
-        known.delete(keyOf(item));
+        known.delete(key);
         return "lost";
       }
       try {
         if (!(await owned(request(routine, current, "consume", { handoff_key: handoffKey })))) {
-          known.delete(keyOf(item));
+          known.delete(key);
           return "lost";
         }
       } catch {
         return "frozen";
       }
-      known.delete(keyOf(item));
+      known.delete(key);
       return "consumed";
     },
     async completeResult(routine, item, receipt) {

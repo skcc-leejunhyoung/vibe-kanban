@@ -293,6 +293,16 @@ impl QueuedMessageService {
         self.enqueue_inner(session_id, data, false, None)
     }
 
+    /// As [`Self::enqueue`], remembering the agent session that sent it.
+    pub fn enqueue_from(
+        &self,
+        session_id: Uuid,
+        data: DraftFollowUpData,
+        agent_session: Option<Uuid>,
+    ) -> QueuedMessage {
+        self.enqueue_inner(session_id, data, false, agent_session)
+    }
+
     pub async fn enqueue_durable(
         &self,
         session_id: Uuid,
@@ -357,29 +367,21 @@ impl QueuedMessageService {
         queued
     }
 
-    /// Records the agent session that sent a queued message (see
-    /// [`QueuedMessage::agent_session`]); call it before the message can drain.
-    pub fn set_agent_session(
-        &self,
-        session_id: Uuid,
-        message_id: Uuid,
-        agent_session: Option<Uuid>,
-    ) {
-        let Some(agent_session) = agent_session else {
-            return;
-        };
-        if let Some(mut messages) = self.queue.get_mut(&session_id)
-            && let Some(message) = messages.iter_mut().find(|m| m.id == message_id)
-        {
-            message.agent_session = Some(agent_session);
-        }
-        self.changed(session_id);
-    }
-
     /// Insert a message at the front of a session's queue. Used by "send now"
     /// (steer) so the interrupting message runs before any already-queued ones.
     pub fn enqueue_front(&self, session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
-        let queued = Self::new_message(session_id, data);
+        self.enqueue_front_from(session_id, data, None)
+    }
+
+    /// As [`Self::enqueue_front`], remembering the agent session that sent it.
+    pub fn enqueue_front_from(
+        &self,
+        session_id: Uuid,
+        data: DraftFollowUpData,
+        agent_session: Option<Uuid>,
+    ) -> QueuedMessage {
+        let mut queued = Self::new_message(session_id, data);
+        queued.agent_session = agent_session;
         self.queue
             .entry(session_id)
             .or_default()
@@ -824,10 +826,8 @@ mod tests {
         let svc = QueuedMessageService::new();
         let session = Uuid::new_v4();
         let agent = Uuid::new_v4();
-        let steered = svc.enqueue_front(session, sample_data("steered"));
-        svc.set_agent_session(session, steered.id, Some(agent));
+        svc.enqueue_front_from(session, sample_data("steered"), Some(agent));
         svc.enqueue(session, sample_data("user"));
-        svc.set_agent_session(session, Uuid::new_v4(), Some(agent));
 
         let first = svc.take_next(session).unwrap();
         assert_eq!(first.agent_session, Some(agent));

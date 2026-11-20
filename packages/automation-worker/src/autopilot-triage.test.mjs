@@ -221,17 +221,17 @@ test('disposal reports where an alert ended up when a step fails', async () => {
   const frozen = await claimedAlert(pending);
   pending.failOn((path) => path.endsWith('/consume'));
   assert.equal(await pending.routing.disposeByRule(routine, frozen, proof), 'frozen');
-  // A lost handoff reply is resolved from the claim's stored key.
-  for (const [row, outcome] of [
-    [{ id: 'synthetic-alert', revision: 1, handoff_key: triageKey }, 'consumed'],
-    [{ id: 'synthetic-alert', revision: 1, handoff_key: null }, 'not_frozen'],
-    [null, 'lost'],
-  ]) {
-    const unknown = routingFixture({ claims: row ? [row] : [] });
-    const event = await claimedAlert(unknown);
-    unknown.failOn((path) => path.endsWith('/handoff'));
-    assert.equal(await unknown.routing.disposeByRule(routine, event, proof), outcome);
-  }
+  // A lost handoff reply never joins a batch: recovery decides from the claim.
+  const unfrozenRow = { id: 'synthetic-alert', revision: 1, type: 'workspace_task_completed', claim_token: 'token' };
+  const unknown = routingFixture({ claims: [unfrozenRow] });
+  const event = await claimedAlert(unknown);
+  unknown.failOn((path) => path.endsWith('/handoff'));
+  assert.equal(await unknown.routing.disposeByRule(routine, event, proof), 'uncertain');
+  unknown.failOn(() => false);
+  // Untracked now, an unfrozen claim comes back to be dispatched (and triaged) again.
+  const [again] = await unknown.routing.recover(routine);
+  assert.equal(again.notificationId, 'synthetic-alert');
+  assert.equal(again.notificationClaim.claim_token, 'token');
 });
 
 test('recovery renews and finishes consuming a frozen triage disposition', async () => {
