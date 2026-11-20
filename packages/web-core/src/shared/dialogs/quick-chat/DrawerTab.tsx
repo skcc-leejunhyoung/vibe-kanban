@@ -777,7 +777,7 @@ function NoteDetail({
         tabIndex={0}
         role="region"
         aria-label={note.title}
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto [overflow-wrap:anywhere] sm:pr-plusfifty"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto [overflow-wrap:anywhere] pr-plusfifty"
       >
         <div className="shrink-0 p-half">
           <NoteBody note={note} />
