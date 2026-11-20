@@ -1,47 +1,29 @@
-//! Fully-automated workflow for issues carrying the `vibe` tag.
+//! Fully-automated workflow for issues carrying the `vibe` tag: what the
+//! server keeps of it.
 //!
-//! This module is split into a **functional core** (pure decision logic, this
-//! file) and an **imperative shell** (the `LocalContainerService` methods that
-//! fetch state and perform side effects). Keeping the decision logic pure makes
-//! every branch of the five workflow rules exhaustively unit-testable without a
-//! database, remote client, or git worktree.
+//! The server records each run (`vibe_runs`), reports what happens to it as
+//! `vibe.*` journal events (a turn's end with the agent's `VIBE_RESULT:`
+//! self-report, a failed cleanup, a merge's or a PR's outcome), and takes the
+//! steps the automation worker asks for (`/api/automation-actions/vibe/...`):
+//! start the review, send a prompt, merge, push and open the PR, block,
+//! finish. Which step comes next — and where a project's run ends, and how
+//! many turns or merge retries a run gets — is the worker's `vibe_flow` rule
+//! (`packages/automation-worker/src/vibe-flow.mjs`), not this crate's.
 //!
-//! The workflow, driven entirely off a per-workspace [`VibePhase`] plus a
-//! per-turn agent self-report ([`VibeResult`], parsed from a `VIBE_RESULT:`
-//! sentinel line in the agent's final message):
-//!
-//! ```text
-//! CODING  ──done──►  REVIEW  ──approve──►  MERGING ──success──► (issue → In review)
-//!   │ continue ↺        │ continue ↺          │ conflict ↺ (resolve in session)
-//!   │                   │                     │ dirty base / git lock ↺ (wait, then
-//!   │                   │                     │   hand to the review session)
-//!   │ blocked           │ blocked             │ exceeded
-//!   └──────────────► BLOCKED ◄────────────────┘
-//!                       │ re-approve / manual retry after a merge failure
-//!                       └──────────► MERGING
-//! ```
-//!
-//! A review started as "review and create PR" goes on after its merge lands,
-//! still on the server and with no browser involved:
+//! What stays here: the prompts and the sentinel the agents are given and
+//! parsed by, the phases, the merge's own wait on failures that clear by
+//! themselves, and [`emit_event`].
 //!
 //! ```text
-//! MERGING ──success──► PUSHING ──pushed──► CREATING_PR ──draft PR──► DONE
-//!                         │ diverged / push failed    │ PR failed
-//!                         └────────► BLOCKED ◄────────┘
-//!                                       │ manual retry: resumes at the step that
-//!                                       └ failed, without reviewing or merging again
+//! coding ──start-review──► review ──merge──► merging ──merged──► done
+//!   ▲ send-prompt ↺          ▲ send-prompt ↺    │ send-prompt ↺      │ publish-pr
+//!   │                        │                  │ (conflict, wait)    ▼
+//!   └──── block ─────► blocked ◄──── block ─────┘          pushing → creating_pr → done
 //! ```
-//!
-//! Script failures are handled independently of phase: a failed **cleanup**
-//! script asks the same session to fix it (with the failure log pasted in); a
-//! failed **setup** script does nothing and leaves the issue In progress.
 
 use std::time::Duration;
 
-use db::models::{
-    execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus},
-    vibe_run::{VibeRun, VibeRunError},
-};
+use db::models::vibe_run::{VibeRun, VibeRunError};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use tokio::sync::Notify;
@@ -87,24 +69,26 @@ pub const PREAMBLE_REVIEW: &str = "\n\n---\n[자동 리뷰 지침]\n\
   - 자동으로 해결할 수 없는 문제가 있으면: `VIBE_RESULT: blocked`\n\
   - 아직 리뷰하거나 수정할 것이 남았으면: `VIBE_RESULT: continue`";
 
-/// Rule 3 — nudge the coding agent to keep going.
+/// `send-prompt continue`: nudge the coding agent to keep going.
 pub const PROMPT_CONTINUE: &str = "아직 끝나지 않은 작업이 남아 있어. 남은 작업을 계속 진행해줘.";
 
-/// Rule 4 — the first prompt sent to the dedicated review session.
+/// `start-review`: the first prompt sent to the dedicated review session.
 pub const PROMPT_REVIEW_A: &str =
     "지금 이 워크트리의 작업 내용 전체 코드 리뷰해줘. 제대로 동작할지도 함께 검증해줘.";
 
-/// Rule 4 — the follow-up prompt after the first review turn.
+/// `send-prompt review_followup`: after a review turn that did not approve.
 pub const PROMPT_REVIEW_B: &str = "머지 전 반드시 해결해야 하는 이슈가 있으면 해결 후 다시 \
 전체 리뷰 해줘. 이슈가 없으면 승인해줘.";
 
-/// Rule 5 — ask the session to resolve a merge conflict, then we retry.
+/// `send-prompt resolve_conflict`: ask the review session to resolve a merge
+/// conflict; the worker merges again after its turn.
 pub const PROMPT_CONFLICT: &str =
     "base 브랜치와 머지 충돌이 발생했어. base 브랜치로 rebase 해서 충돌을 모두 해결해줘.";
 
-/// Rule 5b — the merge kept failing on something outside this worktree (another
-/// checkout's uncommitted edits, a git lock) for longer than the wait allows:
-/// tell the review session why and what it may do about it.
+/// `send-prompt hand_merge_failure`: the merge kept failing on something
+/// outside this worktree (another checkout's uncommitted edits, a git lock)
+/// for longer than the wait allows: tell the review session why and what it
+/// may do about it.
 pub fn merge_handoff_prompt(detail: &str, waited_minutes: u64) -> String {
     let detail = fenced(detail);
     format!(
@@ -162,7 +146,8 @@ pub fn is_transient_git_error(message: &str) -> bool {
     .any(|needle| message.contains(needle))
 }
 
-/// Rule 1a — paste the failed cleanup script log and ask the agent to fix it.
+/// `send-prompt cleanup_fix`: paste the failed cleanup script log and ask the
+/// agent to fix it.
 pub fn cleanup_fix_prompt(log: &str) -> String {
     let log = if log.trim().is_empty() {
         "(로그가 비어 있음)"
@@ -294,80 +279,6 @@ impl VibePhase {
             _ => None,
         }
     }
-}
-
-/// Safety bounds that escalate a stuck run to `Blocked` instead of looping
-/// forever.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VibeBounds {
-    pub max_coding_turns: u32,
-    pub max_review_turns: u32,
-    pub max_merge_retries: u32,
-}
-
-impl Default for VibeBounds {
-    fn default() -> Self {
-        Self {
-            max_coding_turns: 10,
-            max_review_turns: 5,
-            max_merge_retries: 3,
-        }
-    }
-}
-
-/// Why a run is being moved to `Blocked` (for the human-facing note / logs).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockReason {
-    /// The agent itself reported it could not proceed.
-    AgentReported,
-    MaxCodingTurns,
-    MaxReviewTurns,
-    MaxMergeRetries,
-}
-
-/// The action the imperative shell must perform after a turn finalizes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VibeAction {
-    /// Leave everything as-is.
-    Nothing,
-    /// Rule 1a: a cleanup script failed — paste its log into the failing
-    /// session and ask the agent to fix it.
-    CleanupFix,
-    /// Rule 3: more coding work remains — send a "continue" follow-up. `turn`
-    /// is the new value the `coding_turns` counter should be set to.
-    ContinueCoding { turn: u32 },
-    /// Rule 4: coding is done — open a fresh review session and send the
-    /// review prompt.
-    StartReview,
-    /// Rule 4: the review session finished a turn without approving — send the
-    /// "fix-or-approve" follow-up. `turn` is the new `review_turns` value.
-    ReviewFollowup { turn: u32 },
-    /// Tag `vibe-block` and stop; needs human attention.
-    Block { reason: BlockReason },
-    /// Rule 5: approved — attempt the merge. `retry` is the current
-    /// `merge_retries` value (0 on the first attempt).
-    AttemptMerge { retry: u32 },
-}
-
-/// Everything the pure decision needs, fetched by the shell before deciding.
-#[derive(Debug, Clone)]
-pub struct FinalizeInput {
-    pub run_reason: ExecutionProcessRunReason,
-    pub status: ExecutionProcessStatus,
-    pub phase: VibePhase,
-    /// Whether the session that just finalized is the dedicated review session.
-    pub session_is_review: bool,
-    /// The sentinel parsed from the agent's final message (only meaningful for
-    /// coding-agent completions; ignored on script-failure paths).
-    pub result: VibeResult,
-    pub coding_turns: u32,
-    pub review_turns: u32,
-    pub merge_retries: u32,
-    /// The run holds a failure (`vibe_runs.last_error`): a `Blocked` run with
-    /// one stopped at the merge or in the follow-up after it, and may merge
-    /// (a no-op once merged) and follow up again.
-    pub merge_failed: bool,
-    pub bounds: VibeBounds,
 }
 
 /// The outcome of a merge attempt.
@@ -580,148 +491,6 @@ pub fn strip_result_sentinel(text: &str) -> String {
         .to_string()
 }
 
-/// The functional core: given a finalized turn, decide the single next action.
-pub fn decide_finalize_action(input: &FinalizeInput) -> VibeAction {
-    use ExecutionProcessRunReason as RR;
-    use ExecutionProcessStatus as St;
-
-    // A turn's terminal completion: its coding agent, or the cleanup script
-    // chained after it (which is what finalizes when the repo has one).
-    let terminal_success = matches!(input.status, St::Completed)
-        && matches!(input.run_reason, RR::CodingAgent | RR::CleanupScript);
-
-    // Terminal phases never act again — except that a run blocked by a failed
-    // merge merges again when its review session approves anew (someone asked
-    // it to look again). It is a fresh attempt with the full retry budget.
-    // The follow-up after the merge is the server's, not a turn's: the agent
-    // drafting the PR text finalizes in these phases and must change nothing.
-    match input.phase {
-        VibePhase::Done | VibePhase::Pushing | VibePhase::CreatingPr => {
-            return VibeAction::Nothing;
-        }
-        VibePhase::Blocked => {
-            let reapproved = input.merge_failed
-                && input.session_is_review
-                && terminal_success
-                && matches!(input.result, VibeResult::Approve);
-            return if reapproved {
-                VibeAction::AttemptMerge { retry: 0 }
-            } else {
-                VibeAction::Nothing
-            };
-        }
-        _ => {}
-    }
-
-    // Rule 1b: a failed setup script means the coding agent never ran — do
-    // nothing and leave the issue In progress for manual intervention.
-    if matches!(input.run_reason, RR::SetupScript) && matches!(input.status, St::Failed) {
-        return VibeAction::Nothing;
-    }
-
-    // Rule 1a: a failed cleanup script — ask the failing session to fix it,
-    // bounded by the active phase's turn budget.
-    if matches!(input.run_reason, RR::CleanupScript) && matches!(input.status, St::Failed) {
-        return match input.phase {
-            VibePhase::Review | VibePhase::Merging => {
-                if input.session_is_review {
-                    bounded_review(input, VibeAction::CleanupFix)
-                } else {
-                    VibeAction::Nothing
-                }
-            }
-            _ => bounded_coding(input, VibeAction::CleanupFix),
-        };
-    }
-
-    // Everything below is a state-machine transition that only fires on a
-    // successful terminal completion of a coding-agent or cleanup turn. Failed
-    // / killed coding turns, dev-server, and archive-script completions are
-    // left untouched (conservative: a human decides).
-    if !terminal_success {
-        return VibeAction::Nothing;
-    }
-
-    match input.phase {
-        VibePhase::Coding => match input.result {
-            // The coding agent's verb is "done"; tolerate a stray "approve" as
-            // a request to move into review.
-            VibeResult::Done | VibeResult::Approve => VibeAction::StartReview,
-            VibeResult::Blocked => VibeAction::Block {
-                reason: BlockReason::AgentReported,
-            },
-            VibeResult::Continue | VibeResult::None => bounded_coding(
-                input,
-                VibeAction::ContinueCoding {
-                    turn: input.coding_turns + 1,
-                },
-            ),
-        },
-        VibePhase::Review => {
-            // Only the review session advances the review; ignore late
-            // completions from the original coding session.
-            if !input.session_is_review {
-                return VibeAction::Nothing;
-            }
-            match input.result {
-                VibeResult::Approve => VibeAction::AttemptMerge { retry: 0 },
-                VibeResult::Blocked => VibeAction::Block {
-                    reason: BlockReason::AgentReported,
-                },
-                VibeResult::Done | VibeResult::Continue | VibeResult::None => bounded_review(
-                    input,
-                    VibeAction::ReviewFollowup {
-                        turn: input.review_turns + 1,
-                    },
-                ),
-            }
-        }
-        VibePhase::Merging => {
-            // A conflict-resolution turn finished in the review session; retry
-            // the merge with the current retry count — unless the agent reports
-            // it could not resolve the conflict, in which case honor that
-            // immediately instead of burning the remaining merge retries on a
-            // conflict it already gave up on.
-            if !input.session_is_review {
-                return VibeAction::Nothing;
-            }
-            if matches!(input.result, VibeResult::Blocked) {
-                return VibeAction::Block {
-                    reason: BlockReason::AgentReported,
-                };
-            }
-            VibeAction::AttemptMerge {
-                retry: input.merge_retries,
-            }
-        }
-        VibePhase::Blocked | VibePhase::Done | VibePhase::Pushing | VibePhase::CreatingPr => {
-            VibeAction::Nothing
-        }
-    }
-}
-
-/// Gate a coding-phase action on the coding-turn budget.
-fn bounded_coding(input: &FinalizeInput, action: VibeAction) -> VibeAction {
-    if input.coding_turns < input.bounds.max_coding_turns {
-        action
-    } else {
-        VibeAction::Block {
-            reason: BlockReason::MaxCodingTurns,
-        }
-    }
-}
-
-/// Gate a review-phase action on the review-turn budget.
-fn bounded_review(input: &FinalizeInput, action: VibeAction) -> VibeAction {
-    if input.review_turns < input.bounds.max_review_turns {
-        action
-    } else {
-        VibeAction::Block {
-            reason: BlockReason::MaxReviewTurns,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -853,429 +622,6 @@ mod tests {
         }
         assert_eq!(VibeResult::None.as_token(), None);
         assert_eq!(VibeResult::from_token("garbage"), VibeResult::None);
-    }
-
-    // ---- decide_finalize_action: helpers -----------------------------------
-
-    fn input() -> FinalizeInput {
-        FinalizeInput {
-            run_reason: ExecutionProcessRunReason::CodingAgent,
-            status: ExecutionProcessStatus::Completed,
-            phase: VibePhase::Coding,
-            session_is_review: false,
-            result: VibeResult::None,
-            coding_turns: 0,
-            review_turns: 0,
-            merge_retries: 0,
-            merge_failed: false,
-            bounds: VibeBounds::default(),
-        }
-    }
-
-    // ---- terminal phases ---------------------------------------------------
-
-    #[test]
-    fn blocked_and_done_never_act() {
-        for phase in [VibePhase::Blocked, VibePhase::Done] {
-            let i = FinalizeInput {
-                phase,
-                result: VibeResult::Done,
-                ..input()
-            };
-            assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
-        }
-    }
-
-    // The push / PR follow-up belongs to the server. The agent drafting the PR
-    // text ends a turn in the workspace while it runs: no sentinel, a stray
-    // one, or a failed cleanup must not send a prompt into any session.
-    #[test]
-    fn follow_up_phases_ignore_every_finalize() {
-        for phase in [VibePhase::Pushing, VibePhase::CreatingPr] {
-            for session_is_review in [false, true] {
-                for result in [
-                    VibeResult::None,
-                    VibeResult::Done,
-                    VibeResult::Approve,
-                    VibeResult::Continue,
-                    VibeResult::Blocked,
-                ] {
-                    for (run_reason, status) in [
-                        (
-                            ExecutionProcessRunReason::CodingAgent,
-                            ExecutionProcessStatus::Completed,
-                        ),
-                        (
-                            ExecutionProcessRunReason::CodingAgent,
-                            ExecutionProcessStatus::Failed,
-                        ),
-                        (
-                            ExecutionProcessRunReason::CleanupScript,
-                            ExecutionProcessStatus::Failed,
-                        ),
-                    ] {
-                        let i = FinalizeInput {
-                            phase,
-                            session_is_review,
-                            result,
-                            run_reason,
-                            status,
-                            merge_failed: true,
-                            ..input()
-                        };
-                        assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn blocked_merge_failure_merges_again_on_review_reapprove() {
-        let reapprove = FinalizeInput {
-            phase: VibePhase::Blocked,
-            session_is_review: true,
-            result: VibeResult::Approve,
-            merge_retries: 3,
-            merge_failed: true,
-            ..input()
-        };
-        // A fresh attempt: the spent budget does not carry over. A repo with a
-        // cleanup script finalizes the turn on the script's completion.
-        for run_reason in [
-            ExecutionProcessRunReason::CodingAgent,
-            ExecutionProcessRunReason::CleanupScript,
-        ] {
-            let i = FinalizeInput {
-                run_reason,
-                ..reapprove.clone()
-            };
-            assert_eq!(
-                decide_finalize_action(&i),
-                VibeAction::AttemptMerge { retry: 0 }
-            );
-        }
-        // Blocked for another reason, by another session, or without approve:
-        // still terminal.
-        for i in [
-            FinalizeInput {
-                merge_failed: false,
-                ..reapprove.clone()
-            },
-            FinalizeInput {
-                session_is_review: false,
-                ..reapprove.clone()
-            },
-            FinalizeInput {
-                result: VibeResult::Continue,
-                ..reapprove.clone()
-            },
-            FinalizeInput {
-                status: ExecutionProcessStatus::Failed,
-                ..reapprove.clone()
-            },
-        ] {
-            assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
-        }
-    }
-
-    // ---- rule 1: script failures -------------------------------------------
-
-    #[test]
-    fn setup_failure_does_nothing() {
-        let i = FinalizeInput {
-            run_reason: ExecutionProcessRunReason::SetupScript,
-            status: ExecutionProcessStatus::Failed,
-            ..input()
-        };
-        assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
-    }
-
-    #[test]
-    fn cleanup_failure_in_coding_asks_for_fix() {
-        let i = FinalizeInput {
-            run_reason: ExecutionProcessRunReason::CleanupScript,
-            status: ExecutionProcessStatus::Failed,
-            phase: VibePhase::Coding,
-            ..input()
-        };
-        assert_eq!(decide_finalize_action(&i), VibeAction::CleanupFix);
-    }
-
-    #[test]
-    fn cleanup_failure_in_review_session_asks_for_fix() {
-        let i = FinalizeInput {
-            run_reason: ExecutionProcessRunReason::CleanupScript,
-            status: ExecutionProcessStatus::Failed,
-            phase: VibePhase::Review,
-            session_is_review: true,
-            ..input()
-        };
-        assert_eq!(decide_finalize_action(&i), VibeAction::CleanupFix);
-    }
-
-    #[test]
-    fn cleanup_failure_outside_review_session_is_ignored_in_review() {
-        let i = FinalizeInput {
-            run_reason: ExecutionProcessRunReason::CleanupScript,
-            status: ExecutionProcessStatus::Failed,
-            phase: VibePhase::Review,
-            session_is_review: false,
-            ..input()
-        };
-        assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
-    }
-
-    #[test]
-    fn cleanup_failure_blocks_when_coding_budget_exhausted() {
-        let i = FinalizeInput {
-            run_reason: ExecutionProcessRunReason::CleanupScript,
-            status: ExecutionProcessStatus::Failed,
-            phase: VibePhase::Coding,
-            coding_turns: 10,
-            ..input()
-        };
-        assert_eq!(
-            decide_finalize_action(&i),
-            VibeAction::Block {
-                reason: BlockReason::MaxCodingTurns
-            }
-        );
-    }
-
-    // ---- non-driving completions -------------------------------------------
-
-    #[test]
-    fn failed_coding_turn_does_nothing() {
-        for status in [
-            ExecutionProcessStatus::Failed,
-            ExecutionProcessStatus::Killed,
-        ] {
-            let i = FinalizeInput {
-                run_reason: ExecutionProcessRunReason::CodingAgent,
-                status,
-                result: VibeResult::Done,
-                ..input()
-            };
-            assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
-        }
-    }
-
-    #[test]
-    fn dev_server_and_archive_completion_do_nothing() {
-        for rr in [
-            ExecutionProcessRunReason::DevServer,
-            ExecutionProcessRunReason::ArchiveScript,
-        ] {
-            let i = FinalizeInput {
-                run_reason: rr,
-                status: ExecutionProcessStatus::Completed,
-                result: VibeResult::Done,
-                ..input()
-            };
-            assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
-        }
-    }
-
-    // ---- rule 3: coding phase ----------------------------------------------
-
-    #[test]
-    fn coding_done_starts_review() {
-        let i = FinalizeInput {
-            result: VibeResult::Done,
-            ..input()
-        };
-        assert_eq!(decide_finalize_action(&i), VibeAction::StartReview);
-    }
-
-    #[test]
-    fn coding_blocked_blocks_with_agent_reason() {
-        let i = FinalizeInput {
-            result: VibeResult::Blocked,
-            ..input()
-        };
-        assert_eq!(
-            decide_finalize_action(&i),
-            VibeAction::Block {
-                reason: BlockReason::AgentReported
-            }
-        );
-    }
-
-    #[test]
-    fn coding_continue_sends_next_turn() {
-        let i = FinalizeInput {
-            result: VibeResult::Continue,
-            coding_turns: 2,
-            ..input()
-        };
-        assert_eq!(
-            decide_finalize_action(&i),
-            VibeAction::ContinueCoding { turn: 3 }
-        );
-    }
-
-    #[test]
-    fn coding_no_sentinel_keeps_going() {
-        let i = FinalizeInput {
-            result: VibeResult::None,
-            coding_turns: 0,
-            ..input()
-        };
-        assert_eq!(
-            decide_finalize_action(&i),
-            VibeAction::ContinueCoding { turn: 1 }
-        );
-    }
-
-    #[test]
-    fn coding_continue_blocks_at_budget() {
-        let i = FinalizeInput {
-            result: VibeResult::Continue,
-            coding_turns: 10,
-            ..input()
-        };
-        assert_eq!(
-            decide_finalize_action(&i),
-            VibeAction::Block {
-                reason: BlockReason::MaxCodingTurns
-            }
-        );
-    }
-
-    #[test]
-    fn coding_completes_via_cleanup_success() {
-        // When a cleanup script is configured, the terminal completion arrives
-        // as a CleanupScript/Completed event — the agent's sentinel still drives.
-        let i = FinalizeInput {
-            run_reason: ExecutionProcessRunReason::CleanupScript,
-            status: ExecutionProcessStatus::Completed,
-            result: VibeResult::Done,
-            ..input()
-        };
-        assert_eq!(decide_finalize_action(&i), VibeAction::StartReview);
-    }
-
-    // ---- rule 4: review phase ----------------------------------------------
-
-    #[test]
-    fn review_approve_attempts_merge() {
-        let i = FinalizeInput {
-            phase: VibePhase::Review,
-            session_is_review: true,
-            result: VibeResult::Approve,
-            ..input()
-        };
-        assert_eq!(
-            decide_finalize_action(&i),
-            VibeAction::AttemptMerge { retry: 0 }
-        );
-    }
-
-    #[test]
-    fn review_not_approved_sends_followup() {
-        for result in [VibeResult::None, VibeResult::Continue, VibeResult::Done] {
-            let i = FinalizeInput {
-                phase: VibePhase::Review,
-                session_is_review: true,
-                result,
-                review_turns: 1,
-                ..input()
-            };
-            assert_eq!(
-                decide_finalize_action(&i),
-                VibeAction::ReviewFollowup { turn: 2 }
-            );
-        }
-    }
-
-    #[test]
-    fn review_blocked_blocks() {
-        let i = FinalizeInput {
-            phase: VibePhase::Review,
-            session_is_review: true,
-            result: VibeResult::Blocked,
-            ..input()
-        };
-        assert_eq!(
-            decide_finalize_action(&i),
-            VibeAction::Block {
-                reason: BlockReason::AgentReported
-            }
-        );
-    }
-
-    #[test]
-    fn review_followup_blocks_at_budget() {
-        let i = FinalizeInput {
-            phase: VibePhase::Review,
-            session_is_review: true,
-            result: VibeResult::None,
-            review_turns: 5,
-            ..input()
-        };
-        assert_eq!(
-            decide_finalize_action(&i),
-            VibeAction::Block {
-                reason: BlockReason::MaxReviewTurns
-            }
-        );
-    }
-
-    #[test]
-    fn review_ignores_non_review_session_completion() {
-        let i = FinalizeInput {
-            phase: VibePhase::Review,
-            session_is_review: false,
-            result: VibeResult::Approve,
-            ..input()
-        };
-        assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
-    }
-
-    // ---- rule 5: merging phase ---------------------------------------------
-
-    #[test]
-    fn merging_retries_merge_after_resolution_turn() {
-        let i = FinalizeInput {
-            phase: VibePhase::Merging,
-            session_is_review: true,
-            merge_retries: 1,
-            ..input()
-        };
-        assert_eq!(
-            decide_finalize_action(&i),
-            VibeAction::AttemptMerge { retry: 1 }
-        );
-    }
-
-    #[test]
-    fn merging_ignores_non_review_session() {
-        let i = FinalizeInput {
-            phase: VibePhase::Merging,
-            session_is_review: false,
-            ..input()
-        };
-        assert_eq!(decide_finalize_action(&i), VibeAction::Nothing);
-    }
-
-    #[test]
-    fn merging_blocked_honors_agent_instead_of_retrying() {
-        // The agent gave up on the conflict mid-retry; we must block now rather
-        // than re-attempt the merge until max_merge_retries is exhausted.
-        let i = FinalizeInput {
-            phase: VibePhase::Merging,
-            session_is_review: true,
-            result: VibeResult::Blocked,
-            merge_retries: 1,
-            ..input()
-        };
-        assert_eq!(
-            decide_finalize_action(&i),
-            VibeAction::Block {
-                reason: BlockReason::AgentReported
-            }
-        );
     }
 
     fn waiting(waited_minutes: u64, wait_attempts: u32) -> MergeWaitState {

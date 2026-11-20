@@ -525,6 +525,65 @@ the same UI works from the local and remote web apps. The proxy reads:
 The master on/off toggle on that settings page flips the worker's `enabled`
 flag: when off, the worker stays up but installs no poll timers (it idles).
 
+## Vibe flow: the next step of vibe-tagged runs
+
+An issue tagged `vibe` runs coding → review → merge (→ push → draft PR) with
+no one at the keyboard. Each host only records its runs (`vibe_runs`), reports
+what happened to them, and takes the steps it is asked for; the built-in rule
+`vibe-flow` (`kind: "vibe_flow"`, `src/vibe-flow.mjs`) makes every decision.
+Changing the policy is a rule edit (`PATCH /api/rules/vibe-flow` or the
+settings page); no host is rebuilt or restarted.
+
+```json
+{
+  "id": "vibe-flow",
+  "kind": "vibe_flow",
+  "enabled": true,
+  "config": {
+    "connectorId": "vibe-default",
+    "defaultFinish": "merge",
+    "projects": { "<cloud project id>": { "finish": "pr" } },
+    "limits": { "codingTurns": 10, "reviewTurns": 5, "mergeRetries": 3 },
+    "reconcileSeconds": 180,
+    "staleMinutes": 15
+  }
+}
+```
+
+- `finish: "merge"` ends a run at its local merge (the issue goes to In
+  review). `"pr"` goes on: push the merge target and open an AI-drafted draft
+  PR (head = latest merge target, base = the repository's default target),
+  then In review. The project is the run's issue's (`task_id` → cloud issue →
+  `project_id`). "Review and Create PR from AI" asks for the PR on its own run
+  whatever the project (`pr_requested`). An open PR already on the head ends
+  with "Pull request already open" and no new PR.
+- Events (journal → `/v1/agent-events` → a `vibe_events` connector, whose
+  `kinds` must include `vibe.`): `vibe.turn_ended` (`role`, `result` =
+  the agent's `VIBE_RESULT`, process `status`, `run_reason`, turn counters),
+  `vibe.cleanup_failed`, `vibe.merge_result` (`outcome` merged |
+  skipped_open_pr | conflict | wait_expired | failed, `error`),
+  `vibe.pr_result` (`outcome` opened | already_open | failed, `pr_url`,
+  `failed_phase`). Each payload is also kept on the run as `pending` until a
+  step answers it.
+- Steps (host `POST /api/automation-actions/vibe/{workspace}/{step}`):
+  `start-review`, `send-prompt` (`kind` continue | review_followup |
+  resolve_conflict | hand_merge_failure | cleanup_fix), `merge`, `publish-pr`,
+  `block` (`reason`; tag `vibe-block` and a notification), `finish` (issue to
+  In review, "Ready for review") and `dismiss` (nothing to do). Each names
+  `expected_generation`, `expected_phase` and the `pending_id` it answers and
+  is refused with 409 once the run moved on; the idempotency key
+  `vibe:{workspace}:{generation}:{step}:{event}` makes a repeated event take
+  its step once. Agents are refused these steps whatever their access.
+- The host for an event is its `hostId` → the owner's host catalog
+  (`machine_id`) → `hostBridges`. Every `reconcileSeconds` the rule reads
+  `GET /api/automation-actions/vibe/runs` on each bridge and decides again on
+  every event still pending (a lost event, a worker restart, a dropped host),
+  and blocks a coding / review / merging run with no turn running and nothing
+  to answer for `staleMinutes`.
+- With the worker (or the rule) off, runs wait where they are — the chat
+  shows "Approved · waiting for automation" — and continue at the next
+  reconciliation once it is back.
+
 ## Routines
 
 Routines bind a schedule or Vibe event to one typed action. Schedule triggers
@@ -669,7 +728,7 @@ after three days, with hourly cleanup even when hosts are offline.
     "kinds": [
       "process.failed",
       "approval.pending",
-      "vibe.phase",
+      "vibe.",
       "workspace.status_note",
       "cloud.notification",
       "git.operation_failed",
