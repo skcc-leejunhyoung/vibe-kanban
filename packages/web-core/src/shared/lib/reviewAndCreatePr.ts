@@ -101,7 +101,10 @@ export async function runReviewAndCreatePr({
   return true;
 }
 
-/** Reconfirm blocked destinations without restarting the review or completed steps. */
+/**
+ * Retry the blocked step with the repos' current default target branches, so a
+ * base fixed in Settings takes effect; completed steps are not repeated.
+ */
 export async function retryReviewAndCreatePr(
   workspaceId: string,
   sessionId: string,
@@ -111,7 +114,6 @@ export async function retryReviewAndCreatePr(
   if (!run.pr_requested) return sessionsApi.vibeRetryMerge(sessionId, hostId);
   const bases = await choosePrBases(workspaceId, hostId, {
     afterMerge: !!run.failed_phase,
-    saved: run.pr_bases,
   });
   return bases ? sessionsApi.vibeRetryMerge(sessionId, hostId, bases) : null;
 }

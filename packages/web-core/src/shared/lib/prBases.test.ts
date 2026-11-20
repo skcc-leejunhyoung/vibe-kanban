@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { workspacesApi } from '@/shared/lib/api';
+import { repoApi, workspacesApi } from '@/shared/lib/api';
 import { BranchPickerDialog } from '@/shared/dialogs/BranchPickerDialog';
 import { choosePrBases } from './prBases';
 
 vi.mock('@/i18n/config', () => ({ default: { t: (key: string) => key } }));
+vi.mock('@/shared/lib/queryClient', () => ({
+  queryClient: { invalidateQueries: vi.fn() },
+}));
 vi.mock('@/shared/lib/api', () => ({
+  repoApi: { update: vi.fn() },
   workspacesApi: {
     get: vi.fn(),
     getRepos: vi.fn(),
@@ -49,7 +53,19 @@ beforeEach(() => {
 });
 
 describe('choosePrBases', () => {
-  it('shows the final head and missing base before review and accepts an execution-only choice', async () => {
+  it('uses a configured default target branch without asking or saving', async () => {
+    vi.mocked(workspacesApi.getPrBranchPlan).mockResolvedValue({
+      head_branch: 'feature/example',
+      base_branch: 'origin/integration',
+    });
+    expect(await choosePrBases('example-workspace')).toEqual([
+      { repo_id: repo.id, base_branch: 'origin/integration' },
+    ]);
+    expect(BranchPickerDialog.show).not.toHaveBeenCalled();
+    expect(repoApi.update).not.toHaveBeenCalled();
+  });
+
+  it('asks only when the default is missing and saves the answer as the default', async () => {
     expect(await choosePrBases('example-workspace', 'example-host')).toEqual([
       { repo_id: repo.id, base_branch: 'integration' },
     ]);
@@ -61,53 +77,35 @@ describe('choosePrBases', () => {
         mode: 'prBase',
       })
     );
-    expect(repo.default_target_branch).toBeNull();
+    expect(repoApi.update).toHaveBeenCalledWith(
+      repo.id,
+      { default_target_branch: 'integration' },
+      'example-host'
+    );
+  });
+
+  it('asks when the default equals the head', async () => {
+    vi.mocked(workspacesApi.getPrBranchPlan)
+      .mockResolvedValueOnce({
+        head_branch: 'feature/example',
+        base_branch: 'feature/example',
+      })
+      .mockResolvedValueOnce({
+        head_branch: 'feature/example',
+        base_branch: 'integration',
+      });
+    await choosePrBases('example-workspace');
+    expect(BranchPickerDialog.show).toHaveBeenCalledWith(
+      expect.objectContaining({ initialBranch: 'feature/example' })
+    );
+    expect(repoApi.update).toHaveBeenCalledTimes(1);
   });
 
   it('retains work-to-target for standalone PRs before a direct merge', async () => {
-    await choosePrBases('example-workspace', null, { afterMerge: true });
-    expect(BranchPickerDialog.show).toHaveBeenCalledWith(
-      expect.objectContaining({
-        headBranch: 'vk/work',
-        initialBranch: 'feature/example',
-      })
-    );
-  });
-
-  it('uses actual merge results for the head and a saved base for retry despite a new default', async () => {
-    vi.mocked(workspacesApi.getRepos).mockResolvedValue([
-      {
-        ...repo,
-        target_branch: 'other',
-        default_target_branch: 'another-default',
-      },
-    ] as never);
-    vi.mocked(workspacesApi.getBranchStatus).mockResolvedValue([
-      {
-        repo_id: repo.id,
-        merges: [{ type: 'direct', target_branch_name: 'feature/example' }],
-      },
-    ] as never);
-    vi.mocked(workspacesApi.getPrBranchPlan).mockResolvedValue({
-      head_branch: 'feature/example',
-      base_branch: 'another-default',
-    });
-    await choosePrBases('example-workspace', null, {
-      afterMerge: true,
-      saved: [
-        {
-          repo_id: repo.id,
-          base_branch: 'integration',
-          target_branch: 'feature/example',
-        },
-      ],
-    });
-    expect(BranchPickerDialog.show).toHaveBeenCalledWith(
-      expect.objectContaining({
-        headBranch: 'feature/example',
-        initialBranch: 'integration',
-      })
-    );
+    expect(
+      await choosePrBases('example-workspace', null, { afterMerge: true })
+    ).toEqual([{ repo_id: repo.id, base_branch: 'feature/example' }]);
+    expect(BranchPickerDialog.show).not.toHaveBeenCalled();
   });
 
   it('rejects identical branches before a caller can start review or draft text', async () => {
@@ -127,6 +125,7 @@ describe('choosePrBases', () => {
       .mockResolvedValueOnce(null);
     expect(await choosePrBases('example-workspace')).toBeNull();
     expect(BranchPickerDialog.show).toHaveBeenCalledTimes(2);
+    expect(repoApi.update).not.toHaveBeenCalled();
   });
 
   it('fails closed if the branch state cannot be read', async () => {
@@ -145,6 +144,7 @@ describe('choosePrBases', () => {
     await expect(choosePrBases('example-workspace')).rejects.toThrow(
       'head and base'
     );
+    expect(repoApi.update).not.toHaveBeenCalled();
     expect(workspacesApi.getPrBranchPlan).toHaveBeenLastCalledWith(
       'example-workspace',
       {

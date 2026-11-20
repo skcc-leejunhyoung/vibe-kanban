@@ -1,9 +1,9 @@
 {
   "prBase": {
-    "title": "{{repoName}} 的 PR base",
-    "description": "PR head（來源）：{{head}}。請選擇本次執行的接收分支。不會變更儲存庫預設值。",
-    "label": "PR base（目標）",
-    "action": "使用此 PR base",
+    "title": "設定 {{repoName}} 的預設目標分支",
+    "description": "PR head（來源）：{{head}}。此儲存庫沒有用於接收 PR 的預設目標分支，或它與 head 相同。所選分支將儲存為「設定 > 儲存庫」中的預設目標分支，之後不再詢問。",
+    "label": "預設目標分支（PR base）",
+    "action": "儲存並繼續",
     "missing": "尚未設定最終 PR base。請在審查、合併或推送前選擇。",
     "sameBranch": "PR head 與 base 必須不同。",
     "headChanged": "PR head 已變更。請重新開啟 PR base 選擇並確認後繼續。"

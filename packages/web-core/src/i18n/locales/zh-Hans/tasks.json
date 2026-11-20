@@ -1,9 +1,9 @@
 {
   "prBase": {
-    "title": "{{repoName}} 的 PR base",
-    "description": "PR head（来源）：{{head}}。请选择本次执行的接收分支。不会更改仓库默认值。",
-    "label": "PR base（目标）",
-    "action": "使用此 PR base",
+    "title": "设置 {{repoName}} 的默认目标分支",
+    "description": "PR head（来源）：{{head}}。此仓库没有用于接收 PR 的默认目标分支，或它与 head 相同。所选分支将保存为“设置 > 仓库”中的默认目标分支，之后不再询问。",
+    "label": "默认目标分支（PR base）",
+    "action": "保存并继续",
     "missing": "尚未设置最终 PR base。请在审查、合并或推送前选择。",
     "sameBranch": "PR head 与 base 必须不同。",
     "headChanged": "PR head 已更改。请重新打开 PR base 选择并确认后继续。"

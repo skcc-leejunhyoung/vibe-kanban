@@ -1,9 +1,9 @@
 {
   "prBase": {
-    "title": "PR base for {{repoName}}",
-    "description": "PR head (source): {{head}}. Choose the receiving base for this run. Repository defaults are unchanged.",
-    "label": "PR base (destination)",
-    "action": "Use this PR base",
+    "title": "Set the default target branch for {{repoName}}",
+    "description": "PR head (source): {{head}}. This repository has no default target branch to receive the PR, or it equals the head. The branch you choose is saved as the default target branch in Settings > Repositories, so you won't be asked again.",
+    "label": "Default target branch (PR base)",
+    "action": "Save and continue",
     "missing": "No final PR base is configured. Choose one before review, merge or push.",
     "sameBranch": "PR head and base must be different.",
     "headChanged": "The PR head changed. Reopen the PR base selection before continuing."

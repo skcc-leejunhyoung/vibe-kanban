@@ -253,23 +253,17 @@ describe('predictedPrHead', () => {
 });
 
 describe('retryReviewAndCreatePr', () => {
-  it('reconfirms a blocked PR and resumes only the server step', async () => {
-    const saved = [
-      {
-        repo_id: 'repo-1',
-        base_branch: 'integration',
-        target_branch: 'feature',
-      },
-    ];
+  it('retries a blocked PR with current defaults and resumes only the server step', async () => {
     vi.mocked(sessionsApi.getVibeReviewStatus).mockResolvedValue({
       pr_requested: true,
       failed_phase: 'creating_pr',
-      pr_bases: saved,
+      pr_bases: [
+        { repo_id: 'repo-1', base_branch: 'stale', target_branch: 'feature' },
+      ],
     } as never);
     await retryReviewAndCreatePr('workspace-1', 'session-1', 'host-1');
     expect(choosePrBases).toHaveBeenCalledWith('workspace-1', 'host-1', {
       afterMerge: true,
-      saved,
     });
     expect(sessionsApi.vibeRetryMerge).toHaveBeenCalledWith(
       'session-1',

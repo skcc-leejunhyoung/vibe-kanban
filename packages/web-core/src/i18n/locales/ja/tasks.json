@@ -1,9 +1,9 @@
 {
   "prBase": {
-    "title": "{{repoName}} の PR base",
-    "description": "PR head（送信元）: {{head}}。今回の実行で受け取る base を選択してください。リポジトリの既定値は変更しません。",
-    "label": "PR base（受信先）",
-    "action": "この PR base を使用",
+    "title": "{{repoName}} の既定のターゲットブランチを設定",
+    "description": "PR head（送信元）: {{head}}。このリポジトリには PR を受け取る既定のターゲットブランチがないか、head と同じです。選択したブランチは 設定 > リポジトリ の既定のターゲットブランチとして保存され、次回からは確認しません。",
+    "label": "既定のターゲットブランチ（PR base）",
+    "action": "保存して続行",
     "missing": "最終 PR base が未設定です。レビュー・マージ・push の前に選択してください。",
     "sameBranch": "PR head と base は異なる必要があります。",
     "headChanged": "PR head が変更されました。続行するには PR base の選択を開き直して確認してください。"

@@ -1,16 +1,23 @@
 import i18n from '@/i18n/config';
-import { workspacesApi } from '@/shared/lib/api';
+import { repoApi, workspacesApi } from '@/shared/lib/api';
+import { queryClient } from '@/shared/lib/queryClient';
 import { BranchPickerDialog } from '@/shared/dialogs/BranchPickerDialog';
-import type { PrBase, PrBaseSelection, RepoBranchStatus } from 'shared/types';
+import type { PrBaseSelection, RepoBranchStatus } from 'shared/types';
 
-/** Confirm every destination before starting anything; cancelling leaves all repos alone. */
+/**
+ * The PR destination for every repo, before anything starts. The configured
+ * one is used without asking; only a repo without a usable default asks, and
+ * the answer is saved as that repo's default target branch, as Settings does.
+ * Cancelling leaves all repos alone.
+ */
 export async function choosePrBases(
   workspaceId: string,
   hostId?: string | null,
-  options: { afterMerge?: boolean; repoId?: string; saved?: PrBase[] } = {}
+  options: { afterMerge?: boolean; repoId?: string } = {}
 ): Promise<PrBaseSelection[] | null> {
   const repos = await workspacesApi.getRepos(workspaceId, hostId);
   const bases: PrBaseSelection[] = [];
+  const chosen: PrBaseSelection[] = [];
   for (const repo of repos.filter(
     (r) => !options.repoId || r.id === options.repoId
   )) {
@@ -24,16 +31,18 @@ export async function choosePrBases(
       hostId
     );
     const head = plan.head_branch;
-    const initial =
-      options.saved?.find((b) => b.repo_id === repo.id)?.base_branch ??
-      plan.base_branch;
+    // The server validates a configured base before any side effect.
+    if (plan.base_branch && plan.base_branch !== head) {
+      bases.push({ repo_id: repo.id, base_branch: plan.base_branch });
+      continue;
+    }
     const base = await BranchPickerDialog.show({
       repoId: repo.id,
       hostId,
       mode: 'prBase',
       repoDisplayName: repo.display_name,
       headBranch: head,
-      initialBranch: initial,
+      initialBranch: plan.base_branch,
     });
     if (!base) return null;
     const confirmed = await workspacesApi.getPrBranchPlan(
@@ -48,10 +57,20 @@ export async function choosePrBases(
     if (confirmed.head_branch !== head) {
       throw new Error(i18n.t('tasks:prBase.headChanged'));
     }
+    chosen.push({ repo_id: repo.id, base_branch: base });
     bases.push({ repo_id: repo.id, base_branch: base });
   }
   if (!bases.length)
     throw new Error('No repositories to create pull requests for');
+  for (const { repo_id, base_branch } of chosen) {
+    await repoApi.update(
+      repo_id,
+      { default_target_branch: base_branch },
+      hostId
+    );
+  }
+  if (chosen.length)
+    void queryClient.invalidateQueries({ queryKey: ['repos'] });
   return bases;
 }
 

@@ -1,9 +1,9 @@
 {
   "prBase": {
-    "title": "Base de la PR pour {{repoName}}",
-    "description": "Head de la PR (source) : {{head}}. Choisissez la base pour cette exécution. Les valeurs du dépôt restent inchangées.",
-    "label": "Base de la PR (destination)",
-    "action": "Utiliser cette base",
+    "title": "Branche cible par défaut de {{repoName}}",
+    "description": "Head de la PR (source) : {{head}}. Ce dépôt n'a pas de branche cible par défaut pour recevoir la PR, ou elle est identique au head. La branche choisie est enregistrée comme branche cible par défaut dans Paramètres > Dépôts ; la question ne sera plus posée.",
+    "label": "Branche cible par défaut (base de la PR)",
+    "action": "Enregistrer et continuer",
     "missing": "Aucune base finale configurée. Choisissez-en une avant la revue, la fusion ou le push.",
     "sameBranch": "Head et base doivent être différents.",
     "headChanged": "Le head de la PR a changé. Rouvrez la sélection de base de la PR avant de continuer."

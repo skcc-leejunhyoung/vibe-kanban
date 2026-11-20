@@ -1,9 +1,9 @@
 {
   "prBase": {
-    "title": "Base del PR para {{repoName}}",
-    "description": "Head del PR (origen): {{head}}. Elige la base para esta ejecución. No cambia la configuración del repositorio.",
-    "label": "Base del PR (destino)",
-    "action": "Usar esta base",
+    "title": "Rama de destino predeterminada de {{repoName}}",
+    "description": "Head del PR (origen): {{head}}. Este repositorio no tiene una rama de destino predeterminada para recibir el PR, o coincide con el head. La rama elegida se guarda como rama de destino predeterminada en Configuración > Repositorios y no se volverá a preguntar.",
+    "label": "Rama de destino predeterminada (base del PR)",
+    "action": "Guardar y continuar",
     "missing": "No hay una base final. Elige una antes de revisar, fusionar o publicar.",
     "sameBranch": "Head y base deben ser diferentes.",
     "headChanged": "El head del PR ha cambiado. Vuelve a abrir la selección de base del PR antes de continuar."
