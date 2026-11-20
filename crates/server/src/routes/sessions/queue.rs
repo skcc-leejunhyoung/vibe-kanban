@@ -341,6 +341,20 @@ struct UpdateQueuedRequest {
     pub handoff: Option<bool>,
 }
 
+impl UpdateQueuedRequest {
+    fn apply(self, previous: &DraftFollowUpData) -> DraftFollowUpData {
+        let mut executor_config = self.executor_config;
+        if executor_config.permission_policy.is_none() {
+            executor_config.permission_policy = previous.executor_config.permission_policy.clone();
+        }
+        DraftFollowUpData {
+            message: self.message,
+            executor_config,
+            handoff: self.handoff.unwrap_or(previous.handoff),
+        }
+    }
+}
+
 /// Edit a queued message in place (text + executor config), preserving its
 /// queue position. If the message already drained or was cancelled this is a
 /// no-op; the returned status reflects the current queue either way.
@@ -349,22 +363,10 @@ async fn update_queued_message(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<UpdateQueuedRequest>,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
-    let handoff = payload.handoff.unwrap_or_else(|| {
-        deployment
-            .queued_message_service()
-            .get_queued(session.id)
-            .iter()
-            .any(|m| m.id == payload.message_id && m.data.handoff)
-    });
-    let data = DraftFollowUpData {
-        message: payload.message,
-        executor_config: payload.executor_config,
-        handoff,
-    };
-
+    let message_id = payload.message_id;
     deployment
         .queued_message_service()
-        .update_message(session.id, payload.message_id, data);
+        .update_message_with(session.id, message_id, |previous| payload.apply(previous));
 
     Ok(ResponseJson(ApiResponse::success(
         deployment.queued_message_service().get_status(session.id),
@@ -547,4 +549,37 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             deployment.clone(),
             load_session_middleware,
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use executors::{executors::BaseCodingAgent, model_selector::PermissionPolicy};
+
+    use super::*;
+
+    #[test]
+    fn queue_edit_preserves_omitted_permission_and_handoff() {
+        let config = ExecutorConfig::new(BaseCodingAgent::ClaudeCode);
+        let previous = DraftFollowUpData {
+            message: "before".into(),
+            executor_config: ExecutorConfig {
+                permission_policy: Some(PermissionPolicy::Supervised),
+                ..config.clone()
+            },
+            handoff: true,
+        };
+        let edited = UpdateQueuedRequest {
+            message_id: Uuid::new_v4(),
+            message: "after".into(),
+            executor_config: config,
+            handoff: None,
+        }
+        .apply(&previous);
+        assert_eq!(edited.message, "after");
+        assert_eq!(
+            edited.executor_config.permission_policy,
+            Some(PermissionPolicy::Supervised)
+        );
+        assert!(edited.handoff);
+    }
 }

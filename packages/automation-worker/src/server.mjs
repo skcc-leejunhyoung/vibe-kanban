@@ -3413,7 +3413,7 @@ function emitGithubPrActivity(connector, pr, comment) {
 
 // CI failures and base conflicts on the account's own open PRs, one wake per
 // head and signal (Claude Code auto-fix parity). Same repository scope as PR
-// comment activity. `prHealthHeads` remembers the head each signal last fired
+// comment activity. `prHealthHeads` remembers the heads each signal already fired
 // for — not event receipts, which expire after a week and would re-wake a
 // long-failing or seeded head. A row outlives a PR's absence from the search
 // (a missed result, a scope change) by three days. The first poll only records.
@@ -3442,7 +3442,9 @@ async function pollGithubPrHealth(connector, login) {
     const prKey = `${repository}#${pr.number}`;
     if (heads[prKey]) heads[prKey].seenAt = now;
     for (const signal of prHealthSignals(pr)) {
-      if (heads[prKey]?.[signal] === pr.headRefOid) continue;
+      const saved = heads[prKey]?.[signal];
+      const seen = Array.isArray(saved) ? saved : saved ? [saved] : [];
+      if (seen.includes(pr.headRefOid)) continue;
       if (!seeding) {
         const event = prHealthEvent({
           connectorId: connector.id,
@@ -3457,7 +3459,7 @@ async function pollGithubPrHealth(connector, login) {
         if (state.eventReceipts[key]?.status !== 'succeeded')
           await processAutomationEvent(key, event);
       }
-      heads[prKey] = { ...heads[prKey], [signal]: pr.headRefOid, seenAt: now };
+      heads[prKey] = { ...heads[prKey], [signal]: [...seen, pr.headRefOid], seenAt: now };
       await persistState();
     }
   }

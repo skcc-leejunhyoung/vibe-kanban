@@ -697,6 +697,27 @@ pub async fn handoff(
         Ok(()) = stops.changed() => return Err(stopped_before_start()),
     }
 
+    // As `follow_up`: a turn that started meanwhile (a queued handoff whose
+    // turn came) is not run beside, and a finishing turn's drain goes first.
+    let starting = deployment.container().lock_session_start(session.id).await;
+    if stops.has_changed().unwrap_or(false) {
+        return Err(stopped_before_start());
+    }
+    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
+        return Err(ApiError::Conflict(
+            "Another turn started in this session just now; queue the message or send it again when it finishes"
+                .to_string(),
+        ));
+    }
+    if deployment
+        .queued_message_service()
+        .is_drain_held(session.id)
+    {
+        return Err(ApiError::Locked(
+            "The previous turn in this session is still finishing; queue the message to send it next"
+                .to_string(),
+        ));
+    }
     let latest_executor_config =
         ExecutionProcess::latest_executor_config_for_session(pool, session.id).await?;
     let source_executor = latest_executor_config
@@ -731,27 +752,6 @@ pub async fn handoff(
         cleanup_action.map(Box::new),
     );
 
-    // As `follow_up`: a turn that started meanwhile (a queued handoff whose
-    // turn came) is not run beside, and a finishing turn's drain goes first.
-    let starting = deployment.container().lock_session_start(session.id).await;
-    if stops.has_changed().unwrap_or(false) {
-        return Err(stopped_before_start());
-    }
-    if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id).await? {
-        return Err(ApiError::Conflict(
-            "Another turn started in this session just now; queue the message or send it again when it finishes"
-                .to_string(),
-        ));
-    }
-    if deployment
-        .queued_message_service()
-        .is_drain_held(session.id)
-    {
-        return Err(ApiError::Locked(
-            "The previous turn in this session is still finishing; queue the message to send it next"
-                .to_string(),
-        ));
-    }
     let execution_process = deployment
         .container()
         .create_execution_record(

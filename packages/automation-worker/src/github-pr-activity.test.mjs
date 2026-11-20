@@ -258,7 +258,12 @@ test('PR health poll seeds existing failures, then wakes once per head', async (
   await h.poll();
   assert.equal(h.dispatched.length, 2, 'no second wake for the same head');
   const row = plain(h.connector.config.prHealthHeads)['acme/widgets#7'];
-  assert.deepEqual([row.checks_failed, row.merge_conflict], [next, next]);
+  assert.deepEqual([row.checks_failed, row.merge_conflict], [[HEAD, next], [next]]);
+
+  h.context.state.eventReceipts = {};
+  h.nodes = [healthPr()]; // head returns to the earlier SHA after receipt expiry
+  await h.poll();
+  assert.equal(h.dispatched.length, 2, 'the earlier head does not wake again');
 
   h.nodes = []; // gone for more than three days (closed, or out of scope): the row goes
   h.connector.config.prHealthHeads['acme/widgets#7'].seenAt -= 3 * 24 * 60 * 60 * 1000 + 1;

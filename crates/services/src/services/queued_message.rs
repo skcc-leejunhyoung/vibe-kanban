@@ -464,11 +464,20 @@ impl QueuedMessageService {
         message_id: Uuid,
         data: DraftFollowUpData,
     ) -> Option<QueuedMessage> {
+        self.update_message_with(session_id, message_id, |_| data)
+    }
+
+    pub fn update_message_with(
+        &self,
+        session_id: Uuid,
+        message_id: Uuid,
+        edit: impl FnOnce(&DraftFollowUpData) -> DraftFollowUpData,
+    ) -> Option<QueuedMessage> {
         let updated = self.queue.get_mut(&session_id).and_then(|mut q| {
             q.iter_mut()
                 .find(|m| m.id == message_id && m.artifact_request.is_none())
                 .map(|m| {
-                    m.data = data;
+                    m.data = edit(&m.data);
                     m.clone()
                 })
         });
