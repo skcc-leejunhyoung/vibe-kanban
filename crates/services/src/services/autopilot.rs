@@ -146,6 +146,76 @@ pub async fn guard(pool: &SqlitePool, execution: Uuid) -> Result<Value, sqlx::Er
     Ok(value)
 }
 
+/// Migration that started recording agent origins; older executions have none.
+const ORIGIN_TRACKING_MIGRATION: i64 = 20261120120000;
+
+/// Remembers which agent session asked for `execution`. The first record wins.
+pub async fn record_agent_origin(
+    pool: &SqlitePool,
+    execution: Uuid,
+    agent_session: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO execution_agent_origins(execution_id,agent_session_id) VALUES(?,?)",
+    )
+    .bind(execution)
+    .bind(agent_session)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Sessions of this host's Autopilot workspaces, including archived ones.
+pub async fn autopilot_sessions(pool: &SqlitePool) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar("SELECT s.id FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE w.autopilot=1 ORDER BY s.id")
+        .fetch_all(pool)
+        .await
+}
+
+/// Typed facts triage uses to tell the Autopilot's work from the user's own.
+/// A workspace's origin is its first execution's. No prompt or log content.
+pub async fn triage_facts(pool: &SqlitePool, execution: Uuid) -> Result<Value, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT e.session_id,s.workspace_id,e.run_reason, \
+        (SELECT o.agent_session_id FROM execution_agent_origins o WHERE o.execution_id=e.id) AS execution_agent_session, \
+        (SELECT o.agent_session_id FROM execution_agent_origins o WHERE o.execution_id=f.id) AS workspace_agent_session, \
+        (w.autopilot=1) AS autopilot,(w.archived=1) AS archived, \
+        (COALESCE(w.branch,'') LIKE 'review/%') AS review_branch, \
+        EXISTS(SELECT 1 FROM pull_requests p WHERE p.workspace_id=w.id) AS has_pr, \
+        EXISTS(SELECT 1 FROM vibe_runs v WHERE v.workspace_id=w.id) AS vibe_run, \
+        COALESCE(julianday(e.created_at)<julianday(m.installed_on),1) AS execution_before_tracking, \
+        COALESCE(julianday(f.created_at)<julianday(m.installed_on),1) AS workspace_before_tracking \
+        FROM execution_processes e JOIN sessions s ON s.id=e.session_id JOIN workspaces w ON w.id=s.workspace_id \
+        JOIN execution_processes f ON f.id=(SELECT x.id FROM execution_processes x JOIN sessions xs ON xs.id=x.session_id \
+            WHERE xs.workspace_id=w.id ORDER BY julianday(x.created_at),x.id LIMIT 1) \
+        LEFT JOIN _sqlx_migrations m ON m.version=? \
+        WHERE e.id=?",
+    )
+    .bind(ORIGIN_TRACKING_MIGRATION)
+    .bind(execution)
+    .fetch_optional(pool)
+    .await?;
+    let Some(row) = row else {
+        return Ok(json!({"execution_id":execution,"missing":true}));
+    };
+    let flag = |key: &str| row.get::<bool, _>(key);
+    Ok(json!({
+        "execution_id": execution,
+        "session_id": row.get::<Uuid, _>("session_id"),
+        "workspace_id": row.get::<Uuid, _>("workspace_id"),
+        "run_reason": row.get::<String, _>("run_reason"),
+        "execution_agent_session": row.get::<Option<Uuid>, _>("execution_agent_session"),
+        "workspace_agent_session": row.get::<Option<Uuid>, _>("workspace_agent_session"),
+        "autopilot": flag("autopilot"),
+        "archived": flag("archived"),
+        "review_branch": flag("review_branch"),
+        "has_pr": flag("has_pr"),
+        "vibe_run": flag("vibe_run"),
+        "execution_before_tracking": flag("execution_before_tracking"),
+        "workspace_before_tracking": flag("workspace_before_tracking"),
+    }))
+}
+
 pub async fn record(
     pool: &SqlitePool,
     execution: Uuid,
@@ -229,6 +299,60 @@ mod tests {
             .await
             .unwrap();
         (pool, workspace, session, execution)
+    }
+
+    #[tokio::test]
+    async fn triage_facts_tell_agent_dispatched_work_from_user_work() {
+        let (pool, workspace, session, execution) = fixture().await;
+        let facts = triage_facts(&pool, execution).await.unwrap();
+        assert_eq!(facts["workspace_id"], workspace.to_string());
+        assert!(facts["execution_agent_session"].is_null());
+        assert!(facts["workspace_agent_session"].is_null());
+        assert_eq!(facts["execution_before_tracking"], false);
+        assert_eq!(facts["has_pr"], false);
+        assert_eq!(facts["review_branch"], false);
+
+        let agent = Uuid::new_v4();
+        record_agent_origin(&pool, execution, agent).await.unwrap();
+        // The first record wins; a replayed request cannot rewrite it.
+        record_agent_origin(&pool, execution, Uuid::new_v4())
+            .await
+            .unwrap();
+        let later = Uuid::new_v4();
+        sqlx::query("INSERT INTO execution_processes(id,session_id,run_reason,executor_action,status,exit_code,created_at) VALUES(?,?,'codingagent','{}','completed',0,'2999-01-01T00:00:00.000000+00:00')")
+            .bind(later).bind(session).execute(&pool).await.unwrap();
+        let first = triage_facts(&pool, execution).await.unwrap();
+        assert_eq!(first["execution_agent_session"], agent.to_string());
+        let user_turn = triage_facts(&pool, later).await.unwrap();
+        assert!(user_turn["execution_agent_session"].is_null());
+        assert_eq!(user_turn["workspace_agent_session"], agent.to_string());
+
+        sqlx::query("UPDATE workspaces SET branch='review/synthetic' WHERE id=?")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE execution_processes SET created_at='2001-01-01 00:00:00' WHERE id=?")
+            .bind(execution)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let old = triage_facts(&pool, execution).await.unwrap();
+        assert_eq!(old["review_branch"], true);
+        assert_eq!(old["execution_before_tracking"], true);
+        assert_eq!(old["workspace_before_tracking"], true);
+        assert_eq!(
+            triage_facts(&pool, Uuid::new_v4()).await.unwrap()["missing"],
+            true
+        );
+
+        assert!(autopilot_sessions(&pool).await.unwrap().is_empty());
+        sqlx::query("UPDATE workspaces SET autopilot=1 WHERE id=?")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(autopilot_sessions(&pool).await.unwrap(), vec![session]);
     }
 
     #[tokio::test]

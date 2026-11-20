@@ -408,11 +408,16 @@ pub async fn follow_up(
             return Ok(ResponseJson(response));
         }
     };
+    let agent_session = crate::routes::automation::agent_session(&headers);
     let result =
         follow_up_inner(Extension(session), State(deployment), Json(payload), origin).await;
     // Spawn failures can be ambiguous after an execution record was created.
     // Keep the claim so retrying cannot send the same prompt twice.
     if let Ok(response) = &result {
+        if let Some(execution) = response.0.data() {
+            crate::routes::automation::record_agent_origin(&pool, execution.id, agent_session)
+                .await;
+        }
         crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
     }
     result

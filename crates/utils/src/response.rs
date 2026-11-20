@@ -49,6 +49,11 @@ impl<T, E> ApiResponse<T, E> {
         self.message.as_deref()
     }
 
+    /// Returns a reference to the data payload if present.
+    pub fn data(&self) -> Option<&T> {
+        self.data.as_ref()
+    }
+
     /// Consumes the response, returning the data payload if present.
     pub fn into_data(self) -> Option<T> {
         self.data

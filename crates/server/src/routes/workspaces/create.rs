@@ -784,11 +784,20 @@ pub async fn create_and_start_workspace(
         }
     };
     let agent = crate::middleware::is_agent_request(&headers);
+    let agent_session = crate::routes::automation::agent_session(&headers);
     let result =
         create_and_start_workspace_inner(State(deployment), Json(payload), origin, agent).await;
     // An error can happen after the workspace or execution record exists.
     // Keep the claim so an automatic retry cannot duplicate that side effect.
     if let Ok(response) = &result {
+        if let Some(started) = response.0.data() {
+            crate::routes::automation::record_agent_origin(
+                &pool,
+                started.execution_process.id,
+                agent_session,
+            )
+            .await;
+        }
         crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?
     }
     result

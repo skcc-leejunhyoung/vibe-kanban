@@ -141,6 +141,14 @@ pub fn router() -> Router<DeploymentImpl> {
             "/automation-actions/autopilot-results/{execution}",
             get(autopilot_guard).post(autopilot_record),
         )
+        .route(
+            "/automation-actions/triage-facts/{execution}",
+            get(triage_facts),
+        )
+        .route(
+            "/automation-actions/autopilot-sessions",
+            get(autopilot_sessions),
+        )
         .route("/automation-actions/receipts/{key}", get(action_receipt))
         .route("/automation-actions/notification", post(notification))
 }
@@ -175,6 +183,53 @@ async fn autopilot_snapshot(
         services::services::autopilot::reconciliation_snapshot(&deployment.db().pool).await?;
     snapshot["hostId"] = serde_json::json!(deployment.user_id());
     Ok(Json(snapshot))
+}
+
+async fn triage_facts(
+    axum::extract::State(deployment): axum::extract::State<DeploymentImpl>,
+    Path(execution): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let mut facts =
+        services::services::autopilot::triage_facts(&deployment.db().pool, execution).await?;
+    facts["hostId"] = serde_json::json!(deployment.user_id());
+    Ok(Json(facts))
+}
+
+async fn autopilot_sessions(
+    axum::extract::State(deployment): axum::extract::State<DeploymentImpl>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let sessions = services::services::autopilot::autopilot_sessions(&deployment.db().pool).await?;
+    Ok(Json(serde_json::json!({
+        "hostId": deployment.user_id(),
+        "sessions": sessions,
+    })))
+}
+
+/// The agent session behind a vk CLI / MCP request, if it named one.
+pub(crate) fn agent_session(headers: &HeaderMap) -> Option<Uuid> {
+    headers
+        .get(crate::middleware::agent_access::AGENT_SESSION_HEADER)?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
+}
+
+/// Remembers which agent asked for `execution`. Best effort: a failure here
+/// must not fail a prompt that already started, so it is only logged.
+pub(crate) async fn record_agent_origin(
+    pool: &SqlitePool,
+    execution: Uuid,
+    agent_session: Option<Uuid>,
+) {
+    let Some(agent_session) = agent_session else {
+        return;
+    };
+    if let Err(error) =
+        services::services::autopilot::record_agent_origin(pool, execution, agent_session).await
+    {
+        tracing::warn!(%execution, ?error, "failed to record the agent origin of an execution");
+    }
 }
 
 async fn autopilot_guard(

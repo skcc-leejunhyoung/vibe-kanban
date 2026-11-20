@@ -100,7 +100,8 @@ async fn queue_message(
             return Ok(ResponseJson(response));
         }
     };
-    let response = queue_message_inner(session, deployment, payload).await?;
+    let agent_session = crate::routes::automation::agent_session(&headers);
+    let response = queue_message_inner(session, deployment, payload, agent_session).await?;
     crate::routes::automation::complete_action(&pool, key.as_deref(), &response.0).await?;
     Ok(response)
 }
@@ -109,6 +110,7 @@ async fn queue_message_inner(
     session: Session,
     deployment: DeploymentImpl,
     payload: QueueMessageRequest,
+    agent_session: Option<Uuid>,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
     let data = DraftFollowUpData {
         message: payload.message,
@@ -119,7 +121,7 @@ async fn queue_message_inner(
 
     deployment
         .queued_message_service()
-        .enqueue_durable(session.id, data)
+        .enqueue_durable_from(session.id, data, agent_session)
         .await?;
 
     if let Err(e) = drain_idle_queue(&deployment, &session).await {

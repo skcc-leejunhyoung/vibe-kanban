@@ -198,6 +198,14 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
         const key = keyOf(event);
         const tracked = known.get(key);
         if (claiming.has(key) || tracked !== beforeRead.get(key)) continue;
+        if (row.handoff?.kind === "triage") {
+          // A rule disposition never reaches a host queue: finish consuming it.
+          await owned(
+            request(routine, event, "consume", { handoff_key: row.handoff_key }),
+          );
+          if (known.get(key) === tracked) known.delete(key);
+          continue;
+        }
         if (row.handoff_key) {
           if (!(await owned(request(routine, event, "renew-claim")))) {
             if (known.get(key) === tracked) known.delete(key);
@@ -269,6 +277,25 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
         recovered.push(event);
       }
       return recovered;
+    },
+    // Consumes a claimed alert that triage resolved without the agent, as the
+    // Autopilot would have: no push, the proof kept on the dispatch row.
+    // Returns null when it holds no claim; otherwise whether it consumed it.
+    // A frozen row left behind is consumed by `recover`; a claim that never
+    // froze returns to the user at its deadline.
+    async disposeByRule(routine, item, proof) {
+      const current = itemsOf({ events: [item] })[0];
+      if (!current?.notificationClaim?.claim_token) return null;
+      const handoffKey = `triage:${proof.rule}:${item.notificationId}:${item.notificationRevision}`;
+      const handoff = { kind: "triage", ...proof, meta: { idempotencyKey: handoffKey } };
+      const frozen = await owned(
+        request(routine, current, "handoff", { handoff_key: handoffKey, handoff }),
+      );
+      const consumed =
+        frozen &&
+        (await owned(request(routine, current, "consume", { handoff_key: handoffKey })));
+      if (consumed) known.delete(keyOf(item));
+      return consumed;
     },
     async completeResult(routine, item, receipt) {
       const response = await api(

@@ -37,6 +37,11 @@ pub struct QueuedMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub artifact_request: Option<super::artifact_interactions::ArtifactInteractionRef>,
+    /// Agent session that queued it (vk CLI / MCP), recorded on the
+    /// execution it starts so triage can tell dispatched work from the user's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub agent_session: Option<Uuid>,
 }
 
 /// Status of the queue for a session (for frontend display)
@@ -285,7 +290,7 @@ impl QueuedMessageService {
 
     /// Append a message to the back of a session's queue.
     pub fn enqueue(&self, session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
-        self.enqueue_inner(session_id, data, false)
+        self.enqueue_inner(session_id, data, false, None)
     }
 
     pub async fn enqueue_durable(
@@ -293,7 +298,17 @@ impl QueuedMessageService {
         session_id: Uuid,
         data: DraftFollowUpData,
     ) -> std::io::Result<QueuedMessage> {
-        let queued = self.enqueue_inner(session_id, data, true);
+        self.enqueue_durable_from(session_id, data, None).await
+    }
+
+    /// As [`Self::enqueue_durable`], remembering the agent session that sent it.
+    pub async fn enqueue_durable_from(
+        &self,
+        session_id: Uuid,
+        data: DraftFollowUpData,
+        agent_session: Option<Uuid>,
+    ) -> std::io::Result<QueuedMessage> {
+        let queued = self.enqueue_inner(session_id, data, true, agent_session);
         let result = self.flush(session_id).await;
         if let Err(error) = &result
             && let Some(mut messages) = self.queue.get_mut(&session_id)
@@ -311,8 +326,10 @@ impl QueuedMessageService {
         session_id: Uuid,
         data: DraftFollowUpData,
         durable: bool,
+        agent_session: Option<Uuid>,
     ) -> QueuedMessage {
-        let queued = Self::new_message(session_id, data);
+        let mut queued = Self::new_message(session_id, data);
+        queued.agent_session = agent_session;
         if durable {
             self.pending_persistence.insert(queued.id, ());
         }
@@ -705,6 +722,7 @@ impl QueuedMessageService {
             queued_at: Utc::now(),
             start_error: None,
             artifact_request: None,
+            agent_session: None,
         }
     }
 }

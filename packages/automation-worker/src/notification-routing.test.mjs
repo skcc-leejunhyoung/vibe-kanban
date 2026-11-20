@@ -707,7 +707,7 @@ test("a false condition releases a pending alert immediately, without claiming r
   const ordinary = { id: 'synthetic-notify', enabled: true, trigger: { type: 'vk_event', kinds: ['process.completed'] }, action: { type: 'notification' } };
   const autopilot = { ...ordinary, id: 'synthetic-autopilot', action: { type: 'send_prompt', input: { target: 'autopilot' } } };
   const runs = [];
-  const context = { state: { routines: [ordinary, autopilot], routineOrigins: {} }, notificationRouting: { releasePending: async () => {}, claim: async () => true }, eventMatchesRoutine, routineConditionMatches: async () => true, deliversToAutopilot, routineEventKey: () => 'synthetic-key', runRoutine: async (routine) => { runs.push(routine.id); return { status: 'succeeded' }; }, log: async () => {} };
+  const context = { state: { routines: [ordinary, autopilot], routineOrigins: {} }, notificationRouting: { releasePending: async () => {}, claim: async () => true }, eventMatchesRoutine, routineConditionMatches: async () => true, deliversToAutopilot, triageAutopilotEvent: async () => null, routineEventKey: () => 'synthetic-key', runRoutine: async (routine) => { runs.push(routine.id); return { status: 'succeeded' }; }, log: async () => {} };
   runInNewContext(source.slice(start, end) + '; globalThis.dispatch = dispatchRoutineEvent;', context);
   await context.dispatch({ id: 'synthetic-event', type: 'vk_event', kind: 'process.completed', autopilot: true });
   assert.deepEqual(runs, [ordinary.id]);

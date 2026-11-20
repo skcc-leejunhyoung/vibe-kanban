@@ -705,6 +705,7 @@ test(
     Object.assign(h.context, {
       STATE_PATH: 'synthetic-state.json',
       AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
+    AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
       process: { pid: 1 },
       console: { error() {} },
       fs: {
@@ -782,6 +783,7 @@ test('pending journal entries prevent paid replay even when the main state preda
   h.state.routineRuns.push({ idempotencyKey: key });
   Object.assign(h.context, {
     AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
+    AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
     fs: {
       readFile: async () =>
         JSON.stringify({
@@ -823,6 +825,7 @@ test('unreadable or malformed observation journals disable paid calls while pres
     const h = harness({ shadow: true });
     Object.assign(h.context, {
       AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
+    AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
       fs: {
         readFile: async () => {
           if (data instanceof Error) throw data;
@@ -856,6 +859,7 @@ test('a failed observation write does not poison either production persistence q
   Object.assign(h.context, {
     STATE_PATH: 'synthetic-state.json',
     AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
+    AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
     process: { pid: 1 },
     console: { error() {} },
     fs: {
@@ -892,6 +896,7 @@ test('new journals initialize safely and retention preserves live claims', async
   const h = harness();
   Object.assign(h.context, {
     AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
+    AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
     fs: {
       readFile: async () => {
         throw Object.assign(new Error('synthetic absent journal'), {

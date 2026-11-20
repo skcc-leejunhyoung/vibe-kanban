@@ -2145,6 +2145,7 @@ pub trait ContainerService {
         // leaves the queue alone (see `fail_execution_start`).
         let queue = self.queued_message_service();
         let hold = queue.hold_drain(session.id);
+        let agent_session = msg.agent_session;
         let mut result = self
             .start_followup_for_session(
                 session,
@@ -2153,6 +2154,13 @@ pub trait ContainerService {
                 msg.artifact_request.as_ref(),
             )
             .await;
+        if let (Ok(Some(execution)), Some(agent_session)) = (&result, agent_session)
+            && let Err(e) =
+                super::autopilot::record_agent_origin(&self.db().pool, execution.id, agent_session)
+                    .await
+        {
+            tracing::warn!("Failed to record the agent origin of a queued follow-up: {e}");
+        }
         match &result {
             Err(ContainerError::ArtifactAlreadyDispatched) => {
                 result = Ok(None);

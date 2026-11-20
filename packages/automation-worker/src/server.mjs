@@ -1,5 +1,6 @@
 import { createNotificationRouting } from './notification-routing.mjs';
 import { previewAutopilot, routeAutopilot } from './autopilot-router.mjs';
+import { RULES, TRIAGE_VERSION, createTriage, isCandidate, pruneJournal } from './autopilot-triage.mjs';
 import {
   collectReconciliation,
   reconciliationProjects,
@@ -118,6 +119,7 @@ const AUTOPILOT_OBSERVATIONS_PATH = path.join(
   DATA_DIR,
   'autopilot-observations.json'
 );
+const AUTOPILOT_TRIAGE_PATH = path.join(DATA_DIR, 'autopilot-triage.json');
 const LOG_PATH = path.join(DATA_DIR, 'logs.json');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const MAX_LOGS = 500;
@@ -148,6 +150,12 @@ const AUTOPILOT_PERIODIC_RECONCILE =
     String(AUTOPILOT_DECISIONS_ACTIVE)) === 'true' &&
   !process.argv.includes('--self-test');
 const AUTOPILOT_DECISIONS_API_KEY = process.env.AUTOPILOT_DECISIONS_API_KEY || '';
+// off | shadow (record decisions, deliver as before) | active (apply them).
+const AUTOPILOT_TRIAGE = process.argv.includes('--self-test')
+  ? 'off'
+  : ['shadow', 'active'].includes(process.env.AUTOPILOT_TRIAGE)
+    ? process.env.AUTOPILOT_TRIAGE
+    : 'off';
 // A rule that throws (e.g. the Vibe issue create failed) drops its event into a
 // retry queue instead of being lost. Each poll re-attempts due items with
 // exponential backoff up to RETRY_MAX_ATTEMPTS; after that the item is marked
@@ -452,6 +460,9 @@ let logFlushTimer = null;
 let writeQueue = Promise.resolve();
 let autopilotWriteQueue = Promise.resolve();
 let autopilotObservations = {};
+let autopilotTriageJournal = {};
+// Autopilot sessions per Vibe connector, refreshed at most once a minute.
+const autopilotSessionCache = new Map();
 let artifactChannels = createArtifactChannels({ state, persist: () => persistState(true), runRule });
 
 if (process.argv.includes('--self-test')) {
@@ -486,6 +497,8 @@ async function bootstrap() {
   ensureDefaults();
   pruneAutomationState(state);
   await restoreAutopilotObservations();
+  // The decision journal is evidence, not delivery state: an unreadable one restarts empty.
+  autopilotTriageJournal = await readJson(AUTOPILOT_TRIAGE_PATH, {}).catch(() => ({}));
   await restoreInterruptedRoutineRuns();
   artifactChannels = createArtifactChannels({ state, persist: () => persistState(true), runRule });
   for (const snapshot of Object.values(state.routineBuffers)) for (const event of snapshot.events || []) notificationRouting.restore(event);
@@ -507,6 +520,7 @@ function ensureDefaults() {
   state.routineOccurrences ||= {};
   state.routineIdempotency ||= {};
   state.routineClaims ||= {};
+  state.autopilotTriage ||= { legacy: null, disabledRules: [] };
   state.routineQueuedPrompts ||= {};
   state.routineOrigins ||= {};
   state.pendingRoutineEvents ||= [];
@@ -562,6 +576,61 @@ async function route(req, res) {
 
   if (!isAuthorized(req)) {
     sendJson(res, 401, { error: 'unauthorized' });
+    return;
+  }
+
+  if (url.pathname === '/api/autopilot/triage' && req.method === 'GET') {
+    const since = Date.parse(url.searchParams.get('since') || '') || 0;
+    const legacy = state.autopilotTriage?.legacy;
+    sendJson(res, 200, {
+      mode: AUTOPILOT_TRIAGE,
+      disabledRules: state.autopilotTriage?.disabledRules || [],
+      legacy: legacy
+        ? {
+            importedAt: legacy.importedAt,
+            executions: legacy.executions.length,
+            workspaces: legacy.workspaces.length,
+          }
+        : null,
+      entries: Object.entries(autopilotTriageJournal)
+        .filter(([, entry]) => Date.parse(entry.at) >= since)
+        .map(([id, entry]) => ({ id, ...entry })),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/autopilot/triage' && req.method === 'PUT') {
+    const input = await readBodyJson(req);
+    const uuid = /^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+    const ids = (value) =>
+      Array.isArray(value) && value.every((id) => typeof id === 'string' && uuid.test(id))
+        ? [...new Set(value.map((id) => id.toLowerCase()))]
+        : null;
+    const next = { ...state.autopilotTriage };
+    if (input?.legacy !== undefined) {
+      const executions = ids(input.legacy?.executions);
+      const workspaces = ids(input.legacy?.workspaces);
+      if (!executions || !workspaces)
+        return sendJson(res, 400, { error: 'legacy needs executions and workspaces UUID arrays' });
+      next.legacy = { importedAt: new Date().toISOString(), executions, workspaces };
+    }
+    if (input?.disabledRules !== undefined) {
+      if (
+        !Array.isArray(input.disabledRules) ||
+        !input.disabledRules.every((rule) => Object.hasOwn(RULES, rule))
+      )
+        return sendJson(res, 400, { error: 'unknown triage rule' });
+      next.disabledRules = [...new Set(input.disabledRules)];
+    }
+    state.autopilotTriage = next;
+    await persistState(true);
+    await log('info', 'autopilot triage updated', {
+      legacy: next.legacy
+        ? { executions: next.legacy.executions.length, workspaces: next.legacy.workspaces.length }
+        : null,
+      disabledRules: next.disabledRules,
+    });
+    sendJson(res, 200, { ok: true });
     return;
   }
 
@@ -913,6 +982,13 @@ function maskState(current) {
   // internal recovery state, not automation settings, so never expose them.
   delete copy.githubIssueLinkOperations;
   delete copy.pullRequestLinkOperations;
+  const legacy = copy.autopilotTriage?.legacy;
+  if (legacy)
+    copy.autopilotTriage.legacy = {
+      importedAt: legacy.importedAt,
+      executions: legacy.executions.length,
+      workspaces: legacy.workspaces.length,
+    };
   for (const connector of copy.connectors || []) {
     const config = connector.config;
     if (!config) continue;
@@ -1264,7 +1340,11 @@ async function dispatchRoutineEvent(event, onlyRoutine) {
     }
     if (event.notificationIntent === 'user_report') continue;
     if (event.autopilot && deliversToAutopilot(routine)) continue;
-    if (deliversToAutopilot(routine) && !await notificationRouting.claim(routine,event)) continue;
+    if (deliversToAutopilot(routine)) {
+      const triaged = await triageAutopilotEvent(routine, event);
+      if (triaged === 'dropped') continue;
+      if (triaged !== 'claimed' && !(await notificationRouting.claim(routine, event))) continue;
+    }
     if (routine.coalesce && event.type !== 'vk_event_batch') {
       await routineCoalescer.add(routine, event);
       continue;
@@ -1281,6 +1361,104 @@ function autopilotTarget(routine) {
   const connector = findConnector(String(action.connectorId || 'vibe-default'));
   const bridge = connector.config?.hostBridges?.[action.targetHostId];
   return { connector, bridge, hostId: action.targetHostId };
+}
+
+// Facts for one triage candidate; a cloud completion resolves to its execution first.
+async function triageFacts(connector, event, signal) {
+  const item =
+    event.kind === 'cloud.notification'
+      ? await completionNotification(connector, event, signal)
+      : event;
+  const host = await autopilotHostResolver(connector)(item.hostId, signal);
+  const facts = await host.get(
+    `/api/automation-actions/triage-facts/${encodeURIComponent(item.executionId)}`,
+    signal
+  );
+  if (
+    facts?.hostId !== host.machineId ||
+    (!facts.missing && facts.execution_id !== item.executionId)
+  )
+    throw new Error('triage facts mismatch');
+  return facts;
+}
+
+// Every Autopilot session on the bridged hosts. One unreadable host fails the
+// set: a missing session would make the Autopilot's own work look like the user's.
+async function autopilotSessionSet(connector, signal) {
+  const cached = autopilotSessionCache.get(connector.id);
+  if (cached && Date.now() - cached.at < 60000) return cached.sessions;
+  const bridges = Object.entries(connector.config?.hostBridges || {}).filter(
+    ([, bridge]) => bridge?.baseUrl
+  );
+  if (!bridges.length) throw new Error('no host bridges');
+  const sessions = new Set();
+  for (const [machineId, bridge] of bridges) {
+    const page = await vibeApi(
+      connector,
+      'GET',
+      '/api/automation-actions/autopilot-sessions',
+      undefined,
+      bridge.baseUrl,
+      undefined,
+      signal
+    );
+    if (page?.hostId !== machineId || !Array.isArray(page.sessions))
+      throw new Error('autopilot sessions mismatch');
+    for (const id of page.sessions) if (typeof id === 'string' && id) sessions.add(id);
+  }
+  autopilotSessionCache.set(connector.id, { at: Date.now(), sessions });
+  return sessions;
+}
+
+function recordTriage(id, entry) {
+  autopilotTriageJournal[id] = entry;
+  autopilotTriageJournal = pruneJournal(autopilotTriageJournal, Date.now());
+  void enqueueWrite(AUTOPILOT_TRIAGE_PATH, () => JSON.stringify(autopilotTriageJournal));
+}
+
+// Runs before an event joins an Autopilot batch. Returns 'dropped' when triage
+// handled it, 'claimed' when it already holds the alert's claim, else null.
+async function triageAutopilotEvent(routine, event) {
+  if (AUTOPILOT_TRIAGE === 'off' || !isCandidate(event)) return null;
+  const connector = findConnector(String(routine.action.connectorId || 'vibe-default'));
+  const signal = AbortSignal.timeout(5000);
+  const triage = createTriage({
+    facts: (item) => triageFacts(connector, item, signal),
+    sessions: () => autopilotSessionSet(connector, signal),
+    legacy: () => state.autopilotTriage?.legacy,
+    record: recordTriage,
+  });
+  if (AUTOPILOT_TRIAGE === 'shadow') {
+    void triage(event).catch(() => {});
+    return null;
+  }
+  const verdict = await triage(event);
+  if (
+    verdict.decision !== 'drop' ||
+    verdict.holdout ||
+    state.autopilotTriage?.disabledRules?.includes(verdict.rule)
+  )
+    return null;
+  recordTriage(event.id, { ...verdict, applied: true });
+  if (event.kind !== 'cloud.notification') return 'dropped';
+  // Not claimable means the alert is already someone else's or the user's.
+  if (!(await notificationRouting.claim(routine, event))) return 'dropped';
+  try {
+    const consumed = await notificationRouting.disposeByRule(routine, event, {
+      rule: verdict.rule,
+      version: TRIAGE_VERSION,
+      execution_id: verdict.executionId,
+      workspace_id: verdict.workspaceId,
+      source_machine_id: verdict.sourceMachineId,
+    });
+    if (consumed === null) return 'claimed';
+  } catch (error) {
+    await log('warn', 'triage could not consume an alert', {
+      routineId: routine.id,
+      error: errorMessage(error),
+    });
+  }
+  return 'dropped';
 }
 
 // Is the routine's host running an Autopilot? Cached a minute per host; the
@@ -6588,8 +6766,8 @@ function enqueueWrite(filePath, content, strict = false, afterWrite) {
   // Keep the chain alive: one rejected write must not permanently stall every
   // future persist. Artifact dispatch claims must report failures to the caller.
   // Shadow I/O has its own queue so it cannot hold delivery's durable claim.
-  const queue =
-    filePath === AUTOPILOT_OBSERVATIONS_PATH ? autopilotWriteQueue : writeQueue;
+  const shadowIo = [AUTOPILOT_OBSERVATIONS_PATH, AUTOPILOT_TRIAGE_PATH].includes(filePath);
+  const queue = shadowIo ? autopilotWriteQueue : writeQueue;
   const pending = queue.then(async () => {
     try {
       const tmpPath = `${filePath}.${process.pid}.tmp`;
@@ -6604,7 +6782,7 @@ function enqueueWrite(filePath, content, strict = false, afterWrite) {
       if (strict) throw error;
     }
   });
-  if (filePath === AUTOPILOT_OBSERVATIONS_PATH)
+  if (shadowIo)
     autopilotWriteQueue = pending.catch(() => {});
   else writeQueue = pending.catch(() => {});
   return pending;
