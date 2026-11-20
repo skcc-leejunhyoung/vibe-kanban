@@ -173,12 +173,13 @@ pub async fn autopilot_sessions(pool: &SqlitePool) -> Result<Vec<Uuid>, sqlx::Er
 }
 
 /// Typed facts triage uses to tell the Autopilot's work from the user's own.
-/// A workspace's origin is its first execution's. No prompt or log content.
+/// A workspace belongs to every agent that started any execution in it, so a
+/// resumed, chained or setup step stays with whoever dispatched the work.
+/// No prompt or log content.
 pub async fn triage_facts(pool: &SqlitePool, execution: Uuid) -> Result<Value, sqlx::Error> {
     let row = sqlx::query(
         "SELECT e.session_id,s.workspace_id,e.run_reason, \
         (SELECT o.agent_session_id FROM execution_agent_origins o WHERE o.execution_id=e.id) AS execution_agent_session, \
-        (SELECT o.agent_session_id FROM execution_agent_origins o WHERE o.execution_id=f.id) AS workspace_agent_session, \
         (w.autopilot=1) AS autopilot,(w.archived=1) AS archived, \
         (COALESCE(w.branch,'') LIKE 'review/%') AS review_branch, \
         EXISTS(SELECT 1 FROM pull_requests p WHERE p.workspace_id=w.id) AS has_pr, \
@@ -198,6 +199,15 @@ pub async fn triage_facts(pool: &SqlitePool, execution: Uuid) -> Result<Value, s
     let Some(row) = row else {
         return Ok(json!({"execution_id":execution,"missing":true}));
     };
+    let workspace: Uuid = row.get("workspace_id");
+    let workspace_agents: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT o.agent_session_id FROM execution_agent_origins o \
+         JOIN execution_processes x ON x.id=o.execution_id JOIN sessions xs ON xs.id=x.session_id \
+         WHERE xs.workspace_id=? ORDER BY o.agent_session_id",
+    )
+    .bind(workspace)
+    .fetch_all(pool)
+    .await?;
     let flag = |key: &str| row.get::<bool, _>(key);
     Ok(json!({
         "execution_id": execution,
@@ -205,7 +215,7 @@ pub async fn triage_facts(pool: &SqlitePool, execution: Uuid) -> Result<Value, s
         "workspace_id": row.get::<Uuid, _>("workspace_id"),
         "run_reason": row.get::<String, _>("run_reason"),
         "execution_agent_session": row.get::<Option<Uuid>, _>("execution_agent_session"),
-        "workspace_agent_session": row.get::<Option<Uuid>, _>("workspace_agent_session"),
+        "workspace_agent_sessions": workspace_agents,
         "autopilot": flag("autopilot"),
         "archived": flag("archived"),
         "review_branch": flag("review_branch"),
@@ -307,7 +317,7 @@ mod tests {
         let facts = triage_facts(&pool, execution).await.unwrap();
         assert_eq!(facts["workspace_id"], workspace.to_string());
         assert!(facts["execution_agent_session"].is_null());
-        assert!(facts["workspace_agent_session"].is_null());
+        assert_eq!(facts["workspace_agent_sessions"], json!([]));
         assert_eq!(facts["execution_before_tracking"], false);
         assert_eq!(facts["has_pr"], false);
         assert_eq!(facts["review_branch"], false);
@@ -325,7 +335,20 @@ mod tests {
         assert_eq!(first["execution_agent_session"], agent.to_string());
         let user_turn = triage_facts(&pool, later).await.unwrap();
         assert!(user_turn["execution_agent_session"].is_null());
-        assert_eq!(user_turn["workspace_agent_session"], agent.to_string());
+        assert_eq!(user_turn["workspace_agent_sessions"], json!([agent]));
+
+        // A setup step or resume without its own origin still belongs to the
+        // agent that started any work in the workspace.
+        let setup = Uuid::new_v4();
+        sqlx::query("INSERT INTO execution_processes(id,session_id,run_reason,executor_action,status,exit_code,created_at) VALUES(?,?,'setupscript','{}','completed',0,'1999-01-01T00:00:00.000000+00:00')")
+            .bind(setup).bind(session).execute(&pool).await.unwrap();
+        let earlier_setup = triage_facts(&pool, setup).await.unwrap();
+        assert_eq!(earlier_setup["workspace_agent_sessions"], json!([agent]));
+        sqlx::query("DELETE FROM execution_processes WHERE id=?")
+            .bind(setup)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         sqlx::query("UPDATE workspaces SET branch='review/synthetic' WHERE id=?")
             .bind(workspace)

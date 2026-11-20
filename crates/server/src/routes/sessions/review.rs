@@ -236,6 +236,23 @@ pub async fn vibe_retry_merge(
 pub async fn start_review(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<StartReviewRequest>,
+) -> Result<ResponseJson<ApiResponse<ExecutionProcess, ReviewError>>, ApiError> {
+    let pool = deployment.db().pool.clone();
+    let agent_session = crate::routes::automation::agent_session(&headers);
+    let result = start_review_inner(Extension(session), State(deployment), Json(payload)).await;
+    if let Ok(response) = &result
+        && let Some(execution) = response.0.data()
+    {
+        crate::routes::automation::record_agent_origin(&pool, execution.id, agent_session).await;
+    }
+    result
+}
+
+async fn start_review_inner(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
     Json(payload): Json<StartReviewRequest>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess, ReviewError>>, ApiError> {
     let pool = &deployment.db().pool;

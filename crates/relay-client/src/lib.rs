@@ -670,6 +670,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn agent_identity_headers_reach_the_relayed_host() {
+        // The target host records which agent session asked for an execution.
+        for name in [
+            "x-vibe-agent",
+            "x-vibe-agent-session",
+            "x-vibe-agent-command",
+        ] {
+            assert!(should_forward_request_header(&HeaderName::from_static(
+                name
+            )));
+        }
+        assert!(!should_forward_request_header(&HeaderName::from_static(
+            "host"
+        )));
+    }
+
+    #[test]
     fn account_proof_matches_the_host_verifier() {
         let signing = RelaySigningService::ephemeral();
         let public_key_b64 = BASE64_STANDARD.encode(signing.server_public_key().as_bytes());

@@ -33,7 +33,7 @@ export function decide({ facts, sessions, legacy }) {
   if (facts.has_pr) return agent('pull_request');
   const owned =
     sessions.has(facts.execution_agent_session) ||
-    sessions.has(facts.workspace_agent_session) ||
+    (facts.workspace_agent_sessions || []).some((id) => sessions.has(id)) ||
     Boolean(
       legacy &&
         (legacy.executions.has(facts.execution_id) ||
@@ -59,8 +59,14 @@ export function legacySets(saved) {
   };
 }
 
-// `facts(event)` resolves the completion and reads the host facts, `sessions()`
-// lists Autopilot sessions on every owned host. Both reject when unsure.
+// Agent sessions the facts name; one missing from a cached Autopilot list
+// may be a just-created Autopilot session.
+const namedSessions = (facts) =>
+  [facts?.execution_agent_session, ...(facts?.workspace_agent_sessions || [])].filter(Boolean);
+
+// `facts(event)` resolves the completion and reads the host facts,
+// `sessions({ fresh })` lists Autopilot sessions on every owned host (cached
+// unless `fresh`). Both reject when unsure.
 export function createTriage({ facts, sessions, legacy, record, now = Date.now }) {
   return async function triage(event) {
     const startedAt = now();
@@ -73,7 +79,10 @@ export function createTriage({ facts, sessions, legacy, record, now = Date.now }
         workspaceId: found.workspace_id || null,
         sourceMachineId: found.hostId || null,
       };
-      verdict = decide({ facts: found, sessions: known, legacy: legacySets(legacy()) });
+      const ledger = legacySets(legacy());
+      verdict = decide({ facts: found, sessions: known, legacy: ledger });
+      if (verdict.decision === 'drop' && namedSessions(found).some((id) => !known.has(id)))
+        verdict = decide({ facts: found, sessions: await sessions({ fresh: true }), legacy: ledger });
     } catch {
       verdict = { decision: 'agent', rule: null, reason: 'facts_unavailable' };
     }
@@ -86,7 +95,9 @@ export function createTriage({ facts, sessions, legacy, record, now = Date.now }
       executionId: event.executionId || null,
       ...observed,
       ...verdict,
-      holdout: verdict.decision === 'drop' && isHoldout(event.id),
+      // Per execution, so a completion and its paired alert share the outcome.
+      holdout:
+        verdict.decision === 'drop' && isHoldout(observed.executionId || event.id),
       ms: now() - startedAt,
     };
     record(event.id, entry);
@@ -108,8 +119,13 @@ export function pruneJournal(journal, nowMs, limit = 20000) {
 // carry a label. A rule is promotable after `min` labelled drops with no act.
 export function scoreTriage(entries, items, min = 300) {
   const rules = {};
+  const seen = new Set();
   for (const entry of entries) {
     if (entry.decision !== 'drop') continue;
+    // A completion and its paired alert are one execution, one label.
+    const key = `${entry.rule}:${entry.executionId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     const rule = (rules[entry.rule] ||= {
       drops: 0, applied: 0, labelled: 0, noop: 0, acted: 0, unlabelled: 0, misses: [],
     });

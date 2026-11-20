@@ -174,14 +174,15 @@ workers and routines, and the retained admission mode during rollback.
 joins an Autopilot batch. Rule `U1` skips the Autopilot for a `process.completed`
 or `process.killed` (and its `workspace_task_completed` alert) when all of these hold:
 
-- neither the execution nor its workspace's first execution was requested by an
+- neither the execution nor any execution in its workspace was requested by an
   Autopilot session;
 - the workspace has no pull request and no `review/` branch;
 - the host facts and every bridged host's Autopilot session list were read.
 
 Hosts record the agent session behind each vk CLI / MCP request that starts an
-execution (send, queue, workspace start) in `execution_agent_origins`, and
-serve the facts at `GET /api/automation-actions/triage-facts/{execution}` and
+execution (send, queue, steer, handoff, review, workspace start) in
+`execution_agent_origins`; a workspace belongs to every agent that started any
+execution in it. They serve the facts at `GET /api/automation-actions/triage-facts/{execution}` and
 `GET /api/automation-actions/autopilot-sessions`. No prompt or log text is read.
 Executions older than that migration stay on the agent path until the
 Autopilot's own ledger is imported once:
@@ -193,20 +194,24 @@ python3 scripts/ap-legacy-owned.py --ap /path/to/ap \
 ```
 
 `shadow` records every decision in `autopilot-triage.json` (14 days) and delivers
-as before. `active` applies drops: a completion is not delivered, and its claimed
-alert is frozen with the rule's proof and consumed, so the user sees what the
-Autopilot's noop would have left (no push). 5% of drops are still delivered as a
-holdout. `GET /api/autopilot/triage` returns the journal; `PUT` takes
-`{"disabledRules": ["U1"]}` or a `legacy` import. Score the journal against the
-Autopilot ledger before switching to `active`:
+as before. `active` applies only the rules listed in `enabledRules` (none by
+default; the others keep recording as in shadow). An applied drop is not
+delivered; a claimed alert is claimed before the decision, then frozen with the
+rule's proof and consumed, so the user sees what the Autopilot's noop would have
+left (no push). 5% of executions are still delivered as a holdout, marked in the
+journal; a completion and its alert share that outcome. Any triage failure keeps
+the normal delivery. `GET /api/autopilot/triage` returns the journal; `PUT` takes
+`{"enabledRules": ["U1"]}` or a `legacy` import. Score the journal against the
+Autopilot ledger before enabling a rule:
 
 ```sh
 node scripts/evaluate-autopilot-triage.mjs triage.json /path/to/inbox.json \
   --disable-via http://127.0.0.1:<port>/api/automation/autopilot/triage
 ```
 
-A rule is promotable after 300 labelled drops with no `drawer`/`sent` outcome;
-`--disable-via` switches off any rule the agent disagreed with.
+A rule is promotable after 300 labelled executions with no `drawer`/`sent`
+outcome; `--disable-via` removes any rule the agent disagreed with from
+`enabledRules`. Run it on a schedule once a rule is enabled.
 
 ### Periodic reconciliation without an agent turn
 

@@ -248,9 +248,12 @@ async fn get_queue_status(
 async fn steer_message(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
     Json(payload): Json<QueueMessageRequest>,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
     let pool = &deployment.db().pool;
+    let agent_session = crate::routes::automation::agent_session(&headers);
+    let queue = deployment.queued_message_service();
     let data = DraftFollowUpData {
         message: payload.message,
         executor_config: inherit_executor_config(&deployment, &session, payload.executor_config)
@@ -272,9 +275,8 @@ async fn steer_message(
             // exit handler drains by this id (not by queue position), so a
             // reorder/promote that lands before the kill fires can't divert the
             // interrupt to a different message.
-            let queued = deployment
-                .queued_message_service()
-                .enqueue_front(session.id, data);
+            let queued = queue.enqueue_front(session.id, data);
+            queue.set_agent_session(session.id, queued.id, agent_session);
 
             // Compare-and-set: only the first steer for this session owns the
             // interrupt. `mark_steering` returns false when a steer is already in
@@ -303,15 +305,13 @@ async fn steer_message(
             // would double up with that kill's pending drain. In that case just
             // queue and let the in-flight chain run it. Truly idle → run it now.
             if deployment.queued_message_service().is_steering(session.id) {
-                deployment
-                    .queued_message_service()
-                    .enqueue(session.id, data);
+                let queued = queue.enqueue(session.id, data);
+                queue.set_agent_session(session.id, queued.id, agent_session);
             } else {
                 // A terminal script can still be connecting its next action.
                 // The idle drain also respects that finalizer's ownership.
-                deployment
-                    .queued_message_service()
-                    .enqueue_front(session.id, data);
+                let queued = queue.enqueue_front(session.id, data);
+                queue.set_agent_session(session.id, queued.id, agent_session);
                 // A manual send supersedes a scheduled automatic resume.
                 let _ = PendingRateLimitResume::delete_by_session_id(pool, session.id).await;
                 if let Err(error) = drain_idle_queue(&deployment, &session).await {

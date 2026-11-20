@@ -357,6 +357,25 @@ impl QueuedMessageService {
         queued
     }
 
+    /// Records the agent session that sent a queued message (see
+    /// [`QueuedMessage::agent_session`]); call it before the message can drain.
+    pub fn set_agent_session(
+        &self,
+        session_id: Uuid,
+        message_id: Uuid,
+        agent_session: Option<Uuid>,
+    ) {
+        let Some(agent_session) = agent_session else {
+            return;
+        };
+        if let Some(mut messages) = self.queue.get_mut(&session_id)
+            && let Some(message) = messages.iter_mut().find(|m| m.id == message_id)
+        {
+            message.agent_session = Some(agent_session);
+        }
+        self.changed(session_id);
+    }
+
     /// Insert a message at the front of a session's queue. Used by "send now"
     /// (steer) so the interrupting message runs before any already-queued ones.
     pub fn enqueue_front(&self, session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
@@ -798,6 +817,31 @@ mod tests {
             executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
             handoff: false,
         }
+    }
+
+    #[test]
+    fn agent_session_rides_with_the_message_it_sent() {
+        let svc = QueuedMessageService::new();
+        let session = Uuid::new_v4();
+        let agent = Uuid::new_v4();
+        let steered = svc.enqueue_front(session, sample_data("steered"));
+        svc.set_agent_session(session, steered.id, Some(agent));
+        svc.enqueue(session, sample_data("user"));
+        svc.set_agent_session(session, Uuid::new_v4(), Some(agent));
+
+        let first = svc.take_next(session).unwrap();
+        assert_eq!(first.agent_session, Some(agent));
+        let restored: QueuedMessage =
+            serde_json::from_value(serde_json::to_value(&first).unwrap()).unwrap();
+        assert_eq!(restored.agent_session, Some(agent));
+        let user = svc.take_next(session).unwrap();
+        assert_eq!(user.agent_session, None);
+        assert!(
+            serde_json::to_value(&user)
+                .unwrap()
+                .get("agent_session")
+                .is_none()
+        );
     }
 
     #[test]

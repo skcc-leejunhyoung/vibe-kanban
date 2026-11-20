@@ -12,6 +12,7 @@ const hostId = '30000000-0000-4000-8000-000000000001';
 const autopilotSession = '30000000-0000-4000-8000-000000000002';
 const userExecution = '30000000-0000-4000-8000-000000000003';
 const ownedExecution = '30000000-0000-4000-8000-000000000004';
+const alertId = '30000000-0000-4000-8000-000000000005';
 const workspace = (n) => `30000000-0000-4000-8000-00000000010${n}`;
 
 function facts(execution) {
@@ -20,7 +21,7 @@ function facts(execution) {
     execution_id: execution,
     workspace_id: workspace(owned ? 2 : 1),
     execution_agent_session: owned ? autopilotSession : null,
-    workspace_agent_session: null,
+    workspace_agent_sessions: [],
     autopilot: false,
     archived: false,
     review_branch: false,
@@ -32,38 +33,68 @@ function facts(execution) {
   };
 }
 
-async function runWorker(mode) {
+const completion = (execution, cursor) => ({
+  cursor,
+  kind: 'process.completed',
+  host_id: hostId,
+  host_name: 'synthetic-host',
+  workspace_id: facts(execution).workspace_id,
+  session_id: '30000000-0000-4000-8000-000000000200',
+  execution_id: execution,
+  data: { exit_code: 0 },
+});
+const userAlert = (cursor) => ({
+  cursor,
+  kind: 'cloud.notification',
+  host_name: 'cloud',
+  workspace_id: workspace(1),
+  data: { id: alertId, type: 'workspace_task_completed', revision: 1, intent: 'raw_event' },
+});
+
+async function runWorker({ mode, events, enabledRules = [], sessionsFail = false }) {
   const directory = await mkdtemp(path.join(tmpdir(), 'synthetic-triage-worker-'));
   const deliveries = [];
+  const alertCalls = [];
   let served = false;
+  // Alerts are claimable only once the Autopilot lease is registered.
+  let leased = !events.some((event) => event.kind === 'cloud.notification');
   const remote = createServer(async (req, res) => {
     let body = '';
     for await (const part of req) body += part;
     res.setHeader('content-type', 'application/json');
     const url = new URL(req.url, 'http://synthetic');
-    const send = (value) => res.end(JSON.stringify(value));
+    const send = (value, status = 200) => {
+      res.statusCode = status;
+      res.end(JSON.stringify(value));
+    };
     if (url.pathname === '/v1/hosts')
       return send({ hosts: [{ id: hostId, machine_id: 'machine', access_role: 'owner' }] });
     if (url.pathname === '/v1/agent-events') {
-      const events = served
-        ? []
-        : [userExecution, ownedExecution].map((execution, i) => ({
-            cursor: i + 1,
-            kind: 'process.completed',
-            host_id: hostId,
-            host_name: 'synthetic-host',
-            workspace_id: facts(execution).workspace_id,
-            session_id: '30000000-0000-4000-8000-000000000200',
-            execution_id: execution,
-            data: { exit_code: 0 },
-          }));
-      served = true;
-      return send({ events, cursor: 2 });
+      const page = served || !leased ? [] : events;
+      served ||= leased;
+      return send({ events: page, cursor: served ? events.length : 0 });
+    }
+    if (url.pathname === `/v1/notifications/${alertId}`)
+      return send({
+        id: alertId,
+        revision: 1,
+        intent: 'raw_event',
+        source_key: `execution:${userExecution}:Completed`,
+        payload: { host_id: hostId, workspace_id: workspace(1) },
+      });
+    if (url.pathname.startsWith(`/v1/notifications/${alertId}/`)) {
+      const step = url.pathname.split('/').pop();
+      alertCalls.push({ step, body: JSON.parse(body || '{}') });
+      if (step === 'claim')
+        return send({ data: { claim_token: 'synthetic-claim', handoff_expires_in_ms: 600000 } });
+      return send({ data: {} });
     }
     if (url.pathname.startsWith('/api/automation-actions/triage-facts/'))
       return send(facts(url.pathname.split('/').pop()));
     if (url.pathname === '/api/automation-actions/autopilot-sessions')
-      return send({ hostId: 'machine', sessions: [autopilotSession] });
+      return sessionsFail
+        ? send({ error: 'synthetic outage' }, 500)
+        : send({ hostId: 'machine', sessions: [autopilotSession] });
     if (url.pathname === '/api/automation-actions/status')
       return send({ hostId: 'machine', busy: false, notificationProtocol: 2 });
     if (url.pathname === '/api/workspaces/autopilot')
@@ -74,8 +105,10 @@ async function runWorker(mode) {
           executor_config: { executor: 'CLAUDE_CODE' },
         },
       });
-    if (url.pathname === '/v1/autopilot-notification-leases')
+    if (url.pathname === '/v1/autopilot-notification-leases') {
+      leased = true;
       return send({ id: 'synthetic-lease', protocol: 2 });
+    }
     if (req.method === 'POST' && url.pathname.startsWith('/api/sessions/')) {
       deliveries.push(JSON.parse(body));
       return send({ success: true, data: { status: 'queued', messages: [] } });
@@ -95,6 +128,7 @@ async function runWorker(mode) {
     JSON.stringify({
       enabled: true,
       rules: [],
+      autopilotTriage: { legacy: null, enabledRules },
       connectors: [
         {
           id: 'vibe-default',
@@ -106,14 +140,23 @@ async function runWorker(mode) {
           id: 'events',
           type: 'vibe_events',
           enabled: true,
-          config: { vibeConnectorId: 'vibe-default', kinds: ['process.'], cursor: 0, pollSeconds: 1 },
+          config: {
+            vibeConnectorId: 'vibe-default',
+            kinds: ['process.', 'cloud.notification'],
+            cursor: 0,
+            pollSeconds: 1,
+          },
         },
       ],
       routines: [
         {
           id: 'synthetic-autopilot',
           enabled: true,
-          trigger: { type: 'vk_event', connectorId: 'events', kinds: ['process.completed'] },
+          trigger: {
+            type: 'vk_event',
+            connectorId: 'events',
+            kinds: ['process.completed', 'cloud.notification'],
+          },
           action: {
             type: 'send_prompt',
             connectorId: 'vibe-default',
@@ -144,7 +187,7 @@ async function runWorker(mode) {
     return { status: response.status, body: await response.json() };
   };
   const until = async (check) => {
-    for (let i = 0; i < 100; i += 1) {
+    for (let i = 0; i < 300; i += 1) {
       const value = await check().catch(() => null);
       if (value) return value;
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -161,14 +204,15 @@ async function runWorker(mode) {
     await new Promise((resolve) => remote.close(resolve));
     await rm(directory, { recursive: true, force: true });
   };
-  return { deliveries, api, until, stop };
+  return { deliveries, alertCalls, api, until, stop };
 }
 
 const decisionOf = (entries, execution) =>
   entries.find((entry) => entry.executionId === execution)?.decision;
+const completions = [completion(userExecution, 1), completion(ownedExecution, 2)];
 
-test('shadow triage records decisions and still delivers every event', { timeout: 20000 }, async () => {
-  const worker = await runWorker('shadow');
+test('shadow triage records decisions and still delivers every event', { timeout: 45000 }, async () => {
+  const worker = await runWorker({ mode: 'shadow', events: completions, enabledRules: ['U1'] });
   try {
     const { entries } = (
       await worker.until(async () => {
@@ -185,8 +229,20 @@ test('shadow triage records decisions and still delivers every event', { timeout
   }
 });
 
-test('active triage keeps the user own completion away from the Autopilot', { timeout: 20000 }, async () => {
-  const worker = await runWorker('active');
+test('active triage applies only enabled rules', { timeout: 45000 }, async () => {
+  const worker = await runWorker({ mode: 'active', events: completions });
+  try {
+    await worker.until(async () => worker.deliveries.length === 2);
+    const { body } = await worker.api();
+    assert.deepEqual(body.enabledRules, []);
+    assert.ok(body.entries.every((entry) => !entry.applied));
+  } finally {
+    await worker.stop();
+  }
+});
+
+test('active triage keeps the user own completion away from the Autopilot', { timeout: 45000 }, async () => {
+  const worker = await runWorker({ mode: 'active', events: completions, enabledRules: ['U1'] });
   try {
     await worker.until(async () => worker.deliveries.length === 1);
     const delivered = JSON.stringify(worker.deliveries);
@@ -196,16 +252,55 @@ test('active triage keeps the user own completion away from the Autopilot', { ti
     const drop = body.entries.find((entry) => entry.executionId === userExecution);
     assert.equal(drop.applied, true);
     assert.equal(body.mode, 'active');
-    // Operators can switch a rule off and import the Autopilot's old ledger.
-    assert.equal((await worker.api('PUT', { disabledRules: ['U9'] })).status, 400);
+    // Operators can switch rules and import the Autopilot's old ledger.
+    assert.equal((await worker.api('PUT', { enabledRules: ['U9'] })).status, 400);
     const update = await worker.api('PUT', {
-      disabledRules: ['U1'],
+      enabledRules: [],
       legacy: { executions: [userExecution], workspaces: [] },
     });
     assert.equal(update.status, 200);
     const after = (await worker.api()).body;
-    assert.deepEqual(after.disabledRules, ['U1']);
+    assert.deepEqual(after.enabledRules, []);
     assert.equal(after.legacy.executions, 1);
+  } finally {
+    await worker.stop();
+  }
+});
+
+test('an active drop claims the alert first, then freezes and consumes it', { timeout: 45000 }, async () => {
+  const worker = await runWorker({ mode: 'active', events: [userAlert(1)], enabledRules: ['U1'] });
+  try {
+    await worker.until(async () => worker.alertCalls.some((call) => call.step === 'consume'));
+    assert.deepEqual(
+      worker.alertCalls.map((call) => call.step),
+      ['claim', 'handoff', 'consume']
+    );
+    const handoff = worker.alertCalls[1].body;
+    assert.equal(handoff.handoff.kind, 'triage');
+    assert.equal(handoff.handoff.execution_id, userExecution);
+    assert.equal(worker.alertCalls[2].body.handoff_key, handoff.handoff_key);
+    assert.equal(worker.deliveries.length, 0);
+  } finally {
+    await worker.stop();
+  }
+});
+
+test('an unreadable Autopilot session list keeps normal delivery', { timeout: 45000 }, async () => {
+  const worker = await runWorker({
+    mode: 'active',
+    events: [...completions, userAlert(3)],
+    enabledRules: ['U1'],
+    sessionsFail: true,
+  });
+  try {
+    await worker.until(async () => worker.deliveries.length >= 1);
+    const { body } = await worker.until(async () => {
+      const result = await worker.api();
+      return result.body.entries.length === 3 ? result : null;
+    });
+    assert.ok(body.entries.every((entry) => entry.decision === 'agent' && !entry.applied));
+    assert.ok(!worker.alertCalls.some((call) => call.step === 'consume'));
+    assert.ok(worker.alertCalls.some((call) => call.step === 'claim'));
   } finally {
     await worker.stop();
   }

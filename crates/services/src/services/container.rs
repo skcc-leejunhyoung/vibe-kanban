@@ -2012,6 +2012,13 @@ pub trait ContainerService {
                 queued.artifact_request.as_ref(),
             )
             .await;
+        if let (Ok((record, _)), Some(agent_session)) = (&created, queued.agent_session)
+            && let Err(e) =
+                super::autopilot::record_agent_origin(&self.db().pool, record.id, agent_session)
+                    .await
+        {
+            tracing::warn!("Failed to record the agent origin of a queued follow-up: {e}");
+        }
         drop(starting);
         let started = match created {
             Ok((record, action)) => self

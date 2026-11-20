@@ -16,7 +16,7 @@ const userFacts = {
   execution_id: '20000000-0000-4000-8000-000000000002',
   workspace_id: '20000000-0000-4000-8000-000000000003',
   execution_agent_session: null,
-  workspace_agent_session: null,
+  workspace_agent_sessions: [],
   autopilot: false,
   archived: false,
   review_branch: false,
@@ -40,7 +40,7 @@ test('the user own completion without a pull request skips the Autopilot', () =>
 test('work the Autopilot dispatched, reviews, pull requests and unknown facts wake it', () => {
   const reasons = [
     [{ ...userFacts, execution_agent_session: autopilotSession }, 'autopilot_dispatched'],
-    [{ ...userFacts, workspace_agent_session: autopilotSession }, 'autopilot_dispatched'],
+    [{ ...userFacts, workspace_agent_sessions: ['other', autopilotSession] }, 'autopilot_dispatched'],
     [{ ...userFacts, has_pr: true }, 'pull_request'],
     [{ ...userFacts, review_branch: true }, 'review_branch'],
     [{ ...userFacts, autopilot: true }, 'autopilot_workspace'],
@@ -145,7 +145,7 @@ test('the journal keeps 14 days and at most the newest entries', () => {
   assert.deepEqual(Object.keys(pruneJournal(journal, now, 1)), ['b']);
 });
 
-function routingFixture() {
+function routingFixture({ claims = [] } = {}) {
   const calls = [];
   let fail;
   const routing = createNotificationRouting({
@@ -155,7 +155,10 @@ function routingFixture() {
       if (path === '/v1/hosts')
         return { hosts: [{ id: 'host', machine_id: 'machine', access_role: 'owner' }] };
       if (path === '/v1/autopilot-notification-leases') return { id: 'lease', protocol: 2 };
-      if (fail?.(path)) throw Object.assign(new Error('expired'), { status: 409 });
+      if (path.startsWith('/v1/notification-claims?')) return { claims };
+      const failure = fail?.(path);
+      if (failure === 'expired') throw Object.assign(new Error('expired'), { status: 409 });
+      if (failure) throw new Error('synthetic network failure');
       if (path.endsWith('/claim'))
         return { data: { claim_token: 'token', handoff_expires_in_ms: 600000 } };
       return { data: {} };
@@ -180,65 +183,110 @@ const proof = {
   workspace_id: userFacts.workspace_id,
   source_machine_id: 'machine',
 };
+const triageKey = 'triage:U1:synthetic-alert:1';
+async function claimedAlert(fixture) {
+  await fixture.routing.register(routine, ['cloud.notification'], true);
+  const event = alert();
+  assert.equal(await fixture.routing.claim(routine, event), true);
+  return event;
+}
 
 test('a triaged alert is frozen with its proof and consumed without a host queue', async () => {
-  const { routing, calls } = routingFixture();
-  await routing.register(routine, ['cloud.notification'], true);
-  const event = alert();
-  assert.equal(await routing.claim(routine, event), true);
-  assert.equal(await routing.disposeByRule(routine, event, proof), true);
-  const [handoff, consume] = calls.slice(-2);
+  const fixture = routingFixture();
+  const event = await claimedAlert(fixture);
+  assert.equal(await fixture.routing.disposeByRule(routine, event, proof), 'consumed');
+  const [handoff, consume] = fixture.calls.slice(-2);
   assert.match(handoff.path, /\/synthetic-alert\/handoff$/);
-  assert.equal(handoff.payload.handoff_key, 'triage:U1:synthetic-alert:1');
+  assert.equal(handoff.payload.handoff_key, triageKey);
   assert.equal(handoff.payload.handoff.kind, 'triage');
   assert.equal(handoff.payload.handoff.execution_id, userFacts.execution_id);
   assert.match(consume.path, /\/synthetic-alert\/consume$/);
-  assert.equal(consume.payload.handoff_key, 'triage:U1:synthetic-alert:1');
+  assert.equal(consume.payload.handoff_key, triageKey);
   assert.equal(consume.payload.claim_token, 'token');
-  assert.ok(!calls.some((call) => call.path.includes('notification-handoff')));
+  assert.ok(!fixture.calls.some((call) => call.path.includes('notification-handoff')));
 });
 
-test('an unclaimed alert is left to the normal path and an expired one to the user', async () => {
-  const { routing, calls, failOn } = routingFixture();
-  await routing.register(routine, ['cloud.notification'], true);
-  assert.equal(await routing.disposeByRule(routine, alert(), proof), null);
-  const event = alert();
-  await routing.claim(routine, event);
-  failOn((path) => path.endsWith('/consume'));
-  assert.equal(await routing.disposeByRule(routine, event, proof), false);
-  assert.ok(calls.some((call) => call.path.endsWith('/handoff')));
+test('disposal reports where an alert ended up when a step fails', async () => {
+  // No claim held: deliver it normally.
+  const idle = routingFixture();
+  await idle.routing.register(routine, ['cloud.notification'], true);
+  assert.equal(await idle.routing.disposeByRule(routine, alert(), proof), 'not_frozen');
+  // The claim expired before the handoff: the alert is the user's.
+  const expired = routingFixture();
+  const lost = await claimedAlert(expired);
+  expired.failOn((path) => path.endsWith('/handoff') && 'expired');
+  assert.equal(await expired.routing.disposeByRule(routine, lost, proof), 'lost');
+  // Consuming failed after the handoff froze: recovery finishes it.
+  const pending = routingFixture();
+  const frozen = await claimedAlert(pending);
+  pending.failOn((path) => path.endsWith('/consume'));
+  assert.equal(await pending.routing.disposeByRule(routine, frozen, proof), 'frozen');
+  // A lost handoff reply is resolved from the claim's stored key.
+  for (const [row, outcome] of [
+    [{ id: 'synthetic-alert', revision: 1, handoff_key: triageKey }, 'consumed'],
+    [{ id: 'synthetic-alert', revision: 1, handoff_key: null }, 'not_frozen'],
+    [null, 'lost'],
+  ]) {
+    const unknown = routingFixture({ claims: row ? [row] : [] });
+    const event = await claimedAlert(unknown);
+    unknown.failOn((path) => path.endsWith('/handoff'));
+    assert.equal(await unknown.routing.disposeByRule(routine, event, proof), outcome);
+  }
 });
 
-test('recovery finishes consuming a frozen triage disposition', async () => {
-  const calls = [];
-  const routing = createNotificationRouting({
-    instanceId: 'synthetic-instance',
-    api: async (_, method, path, payload) => {
-      calls.push({ method, path, payload });
-      if (path === '/v1/hosts')
-        return { hosts: [{ id: 'host', machine_id: 'machine', access_role: 'owner' }] };
-      if (path === '/v1/autopilot-notification-leases') return { id: 'lease', protocol: 2 };
-      if (path.startsWith('/v1/notification-claims?'))
-        return {
-          claims: [
-            {
-              id: 'synthetic-alert',
-              revision: 1,
-              type: 'workspace_task_completed',
-              claim_token: 'token',
-              handoff_key: 'triage:U1:synthetic-alert:1',
-              handoff: { kind: 'triage', ...proof },
-            },
-          ],
-        };
-      return { data: {} };
+test('recovery renews and finishes consuming a frozen triage disposition', async () => {
+  const frozen = {
+    id: 'synthetic-alert',
+    revision: 1,
+    type: 'workspace_task_completed',
+    claim_token: 'token',
+    handoff_key: triageKey,
+    handoff: { kind: 'triage', ...proof },
+  };
+  const fixture = routingFixture({ claims: [frozen] });
+  await fixture.routing.register(routine, ['cloud.notification'], true);
+  assert.deepEqual(await fixture.routing.recover(routine), []);
+  const steps = fixture.calls
+    .filter((call) => call.path.startsWith('/v1/notifications/'))
+    .map((call) => call.path.split('/').pop());
+  assert.deepEqual(steps, ['renew-claim', 'consume']);
+  assert.ok(!fixture.calls.some((call) => call.path.includes('/receipts/')));
+  // An unreachable server leaves it for the next recovery instead of failing it.
+  const offline = routingFixture({ claims: [frozen] });
+  await offline.routing.register(routine, ['cloud.notification'], true);
+  offline.failOn((path) => path.endsWith('/consume'));
+  assert.deepEqual(await offline.routing.recover(routine), []);
+});
+
+test('a drop naming an unknown agent session asks for a fresh Autopilot list', async () => {
+  const fresh = '20000000-0000-4000-8000-0000000000aa';
+  const asked = [];
+  const triage = createTriage({
+    facts: async () => ({ ...userFacts, execution_agent_session: fresh }),
+    sessions: async (options = {}) => {
+      asked.push(Boolean(options.fresh));
+      return options.fresh ? new Set([fresh]) : sessions;
     },
+    legacy: () => null,
+    record: () => {},
   });
-  await routing.register(routine, ['cloud.notification'], true);
-  assert.deepEqual(await routing.recover(routine), []);
-  const consume = calls.find((call) => call.path.endsWith('/consume'));
-  assert.equal(consume.payload.handoff_key, 'triage:U1:synthetic-alert:1');
-  assert.ok(!calls.some((call) => call.path.includes('/receipts/')));
+  const entry = await triage({ id: 'synthetic-event', kind: 'process.completed' });
+  assert.deepEqual(asked, [false, true]);
+  assert.equal(entry.reason, 'autopilot_dispatched');
+});
+
+test('a completion and its alert share one holdout outcome', async () => {
+  const triage = createTriage({
+    facts: async () => userFacts,
+    sessions: async () => sessions,
+    legacy: () => null,
+    record: () => {},
+  });
+  const outcomes = new Set();
+  for (const id of ['agent-event:1', 'agent-event:2', 'agent-event:3'])
+    outcomes.add((await triage({ id, kind: 'process.completed' })).holdout);
+  assert.equal(outcomes.size, 1);
+  assert.equal([...outcomes][0], isHoldout(userFacts.execution_id));
 });
 
 test('scoring counts only labelled drops and flags a rule the agent disagreed with', () => {
@@ -250,6 +298,7 @@ test('scoring counts only labelled drops and flags a rule the agent disagreed wi
     drop('pending'),
     drop('applied', { applied: true }),
     drop('holdout', { applied: true, holdout: true }),
+    { ...drop('quiet-1'), id: 'paired-alert' },
     { id: 'agent', decision: 'agent', rule: null, executionId: 'agent' },
   ];
   const items = {

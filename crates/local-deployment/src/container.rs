@@ -7325,6 +7325,39 @@ done
         data
     }
 
+    /// A message an agent queued keeps its sender on the execution it starts,
+    /// so Autopilot triage can tell the Autopilot's work from the user's.
+    #[tokio::test]
+    async fn idle_drain_records_the_agent_that_queued_the_message() {
+        let (container, session, workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        let _logs = SessionLogDir(session.id);
+        let queue = container.queued_message_service.clone();
+        let agent = Uuid::new_v4();
+        let queued = queue.enqueue(
+            session.id,
+            follow_up("from an agent", BaseCodingAgent::ClaudeCode),
+        );
+        queue.set_agent_session(session.id, queued.id, Some(agent));
+        let _ = container.drain_queue_if_idle(&session, &workspace).await;
+        let started: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT execution_id FROM execution_agent_origins WHERE agent_session_id=?",
+        )
+        .bind(agent)
+        .fetch_all(&container.db.pool)
+        .await
+        .unwrap();
+        assert_eq!(started.len(), 1, "the started execution carries its sender");
+        let facts = services::services::autopilot::triage_facts(&container.db.pool, started[0])
+            .await
+            .unwrap();
+        assert_eq!(facts["execution_agent_session"], agent.to_string());
+        assert_eq!(
+            facts["workspace_agent_sessions"],
+            serde_json::json!([agent])
+        );
+    }
+
     /// The issue's scenario: while Codex works, the next message is queued for
     /// Claude Code Opus 5.5. The running turn is left alone; when it finishes,
     /// its exit handling starts the message as the official handoff, once.

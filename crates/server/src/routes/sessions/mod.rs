@@ -662,6 +662,23 @@ fn stopped_before_start() -> ApiError {
 }
 
 pub async fn handoff(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateHandoffAttempt>,
+) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
+    let pool = deployment.db().pool.clone();
+    let agent_session = crate::routes::automation::agent_session(&headers);
+    let result = handoff_inner(Extension(session), State(deployment), Json(payload)).await;
+    if let Ok(response) = &result
+        && let Some(execution) = response.0.data()
+    {
+        crate::routes::automation::record_agent_origin(&pool, execution.id, agent_session).await;
+    }
+    result
+}
+
+async fn handoff_inner(
     Extension(mut session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateHandoffAttempt>,

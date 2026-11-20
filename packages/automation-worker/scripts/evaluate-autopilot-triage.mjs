@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Usage: evaluate-autopilot-triage.mjs <triage.json> <inbox.json> [--min N] [--disable-via URL]
 // <triage.json> is `GET /api/autopilot/triage`; <inbox.json> the Autopilot ledger.
-// With --disable-via, rules that missed are switched off through that endpoint
+// With --disable-via, rules that missed are removed from the enabled rules
 // (for example the host proxy http://127.0.0.1:<port>/api/automation/autopilot/triage).
 import { readFile } from 'node:fs/promises';
 import { scoreTriage } from '../src/autopilot-triage.mjs';
@@ -26,11 +26,11 @@ const entries = Array.isArray(triage.entries)
 const rules = scoreTriage(entries, inbox.items || {}, min);
 const missed = Object.keys(rules).filter((rule) => rules[rule].acted > 0);
 if (disableVia && missed.length) {
-  const disabledRules = [...new Set([...(triage.disabledRules || []), ...missed])];
+  const enabledRules = (triage.enabledRules || []).filter((rule) => !missed.includes(rule));
   const response = await fetch(disableVia, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ disabledRules }),
+    body: JSON.stringify({ enabledRules }),
   });
   if (!response.ok) throw new Error(`disabling ${missed.join(', ')} failed: ${response.status}`);
 }

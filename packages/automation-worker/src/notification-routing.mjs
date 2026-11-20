@@ -199,11 +199,20 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
         const tracked = known.get(key);
         if (claiming.has(key) || tracked !== beforeRead.get(key)) continue;
         if (row.handoff?.kind === "triage") {
-          // A rule disposition never reaches a host queue: finish consuming it.
-          await owned(
-            request(routine, event, "consume", { handoff_key: row.handoff_key }),
-          );
-          if (known.get(key) === tracked) known.delete(key);
+          // A rule disposition never reaches a host queue: keep the claim
+          // alive and finish consuming it; an unreachable server retries next tick.
+          try {
+            const live = await owned(request(routine, event, "renew-claim"));
+            if (
+              !live ||
+              (await owned(
+                request(routine, event, "consume", { handoff_key: row.handoff_key }),
+              ))
+            )
+              if (known.get(key) === tracked) known.delete(key);
+          } catch {
+            // Left frozen; the next recovery renews and consumes it.
+          }
           continue;
         }
         if (row.handoff_key) {
@@ -280,22 +289,49 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
     },
     // Consumes a claimed alert that triage resolved without the agent, as the
     // Autopilot would have: no push, the proof kept on the dispatch row.
-    // Returns null when it holds no claim; otherwise whether it consumed it.
-    // A frozen row left behind is consumed by `recover`; a claim that never
-    // froze returns to the user at its deadline.
+    //   "consumed"   done;
+    //   "frozen"     handed off but not yet consumed: `recover` finishes it;
+    //   "not_frozen" still a plain claim this worker holds: deliver it normally;
+    //   "lost"       the claim is gone (the alert is the user's again).
+    // An unknown handoff outcome is resolved by reading the claim back.
     async disposeByRule(routine, item, proof) {
       const current = itemsOf({ events: [item] })[0];
-      if (!current?.notificationClaim?.claim_token) return null;
+      if (!current?.notificationClaim?.claim_token) return "not_frozen";
       const handoffKey = `triage:${proof.rule}:${item.notificationId}:${item.notificationRevision}`;
       const handoff = { kind: "triage", ...proof, meta: { idempotencyKey: handoffKey } };
-      const frozen = await owned(
-        request(routine, current, "handoff", { handoff_key: handoffKey, handoff }),
-      );
-      const consumed =
-        frozen &&
-        (await owned(request(routine, current, "consume", { handoff_key: handoffKey })));
-      if (consumed) known.delete(keyOf(item));
-      return consumed;
+      let frozen;
+      try {
+        frozen = await owned(
+          request(routine, current, "handoff", { handoff_key: handoffKey, handoff }),
+        );
+      } catch {
+        const page = await api(
+          routine,
+          "GET",
+          `/v1/notification-claims?lease_id=${encodeURIComponent(current.notificationClaim.lease_id)}&instance_id=${encodeURIComponent(instanceId)}`,
+        );
+        const row = page.claims?.find(
+          (claim) =>
+            claim.id === item.notificationId && claim.revision === item.notificationRevision,
+        );
+        if (!row) frozen = false;
+        else if (row.handoff_key !== handoffKey) return "not_frozen";
+        else frozen = true;
+      }
+      if (!frozen) {
+        known.delete(keyOf(item));
+        return "lost";
+      }
+      try {
+        if (!(await owned(request(routine, current, "consume", { handoff_key: handoffKey })))) {
+          known.delete(keyOf(item));
+          return "lost";
+        }
+      } catch {
+        return "frozen";
+      }
+      known.delete(keyOf(item));
+      return "consumed";
     },
     async completeResult(routine, item, receipt) {
       const response = await api(
