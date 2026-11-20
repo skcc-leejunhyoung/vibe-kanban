@@ -229,9 +229,13 @@ export function vibeStepRequest(workspaceId, event, decision) {
   };
   if (decision.kind) body.kind = decision.kind;
   if (decision.reason) body.reason = String(decision.reason).slice(0, 2000);
+  // A step on no event (a stall block) is keyed by when the run last moved:
+  // a run blocked, approved again and stalled once more in the same
+  // generation must not get the first block's stored answer.
+  const answers = event.id || event.updated_at || 'none';
   return {
     path: `/api/automation-actions/vibe/${encodeURIComponent(workspaceId)}/${action}`,
     body,
-    key: `vibe:${workspaceId}:${body.expected_generation}:${action}:${event.id || 'none'}`,
+    key: `vibe:${workspaceId}:${body.expected_generation}:${action}:${answers}`,
   };
 }

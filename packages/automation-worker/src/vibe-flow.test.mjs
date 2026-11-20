@@ -336,6 +336,9 @@ test('a step names the state it was decided on and one key per event and step', 
   const stalled = vibeStepRequest('ws-1', { kind: 'vibe.stalled', phase: 'review', generation: 4 }, { action: 'block', reason: 'stalled' });
   assert.equal(stalled.body.pending_id, null);
   assert.equal(stalled.key, 'vibe:ws-1:4:block:none');
+  const since = vibeStepRequest('ws-1', { kind: 'vibe.stalled', phase: 'merging', generation: 4, updated_at: '2026-06-19T11:00:00Z' }, { action: 'block', reason: 'stalled' });
+  assert.equal(since.body.pending_id, null);
+  assert.equal(since.key, 'vibe:ws-1:4:block:2026-06-19T11:00:00Z');
 });
 
 // The Autopilot's catch-all routine must not wake for every vibe turn: the
@@ -585,6 +588,22 @@ test('reconciliation decides on events that never arrived and blocks runs that s
   // Not again before `reconcileSeconds` has passed.
   await world.reconcile(now + 60000);
   assert.equal(world.posts.length, 5);
+});
+
+// Blocked, approved again after its failed merge (same generation) and
+// stalled once more: the second block is a new step, not the first one's
+// stored answer.
+test('a run that stalls again in the same generation is blocked again', async () => {
+  const now = Date.parse('2026-06-19T12:00:00Z');
+  const stalled = (updated_at) => ({ workspace_id: 'ws', phase: 'merging', generation: 3, pending: null, running: false, last_error: 'repo: conflict', updated_at });
+  const world = harness({ runs: { ws: stalled('2026-06-19T11:00:00Z') } });
+  world.host.effects.block = (run) => { run.phase = 'blocked'; };
+  await world.reconcile(now);
+  world.host.runs.ws = stalled('2026-06-19T12:10:00Z');
+  await world.reconcile(now + 60 * 60000);
+  assert.deepEqual(world.posts.map(({ action }) => action), ['block', 'block']);
+  assert.notEqual(world.posts[0].key, world.posts[1].key);
+  assert.equal(world.host.runs.ws.phase, 'blocked');
 });
 
 // A step that could not be asked for stays pending on the run for the

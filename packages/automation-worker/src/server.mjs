@@ -6422,6 +6422,7 @@ async function reconcileVibeFlow(now = Date.now()) {
               kind: 'vibe.stalled',
               phase: run.phase,
               generation: run.generation,
+              updated_at: run.updated_at,
               reason,
             });
           } catch (error) {
