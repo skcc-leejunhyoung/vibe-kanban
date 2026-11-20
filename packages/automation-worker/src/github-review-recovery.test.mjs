@@ -137,6 +137,7 @@ function harness(options = {}) {
     persisted: null,
     crashSnapshot: null,
     tagCalls: 0,
+    reviewNotifications: [],
   };
   const context = vm.createContext({
     vm,
@@ -213,7 +214,11 @@ function harness(options = {}) {
       if (options.failTag) throw new Error("tag API 503");
       return "review-tag";
     },
-    attachVibeTag: async (_, id) => store.tags.add(id),
+    // Remote (issue_tags.rs): attaching `review` notifies only an issue in "To do".
+    attachVibeTag: async (_, id) => {
+      if (store.issues.get(id)?.status_id === "todo") h.reviewNotifications.push(id);
+      store.tags.add(id);
+    },
     retryPendingPullRequestLinks: async () => {},
     githubLogin: async () => fixture.login,
     reconcileGithubIssueRules: async () => ({ synced: 0 }),
@@ -269,6 +274,11 @@ function harness(options = {}) {
       }
       if (method === "POST" && endpoint === "/v1/pull_request_issues") {
         if (options.failLink) throw new Error("PR link API 503");
+        // Remote (issues.rs sync_status_from_pull_request): an open PR moves an
+        // issue to "In review" unless it already carries the review tag.
+        const linked = store.issues.get(payload.issue_id);
+        if (linked && payload.status === "open" && !store.tags.has(payload.issue_id))
+          linked.status_id = "in-review";
         if (
           !store.links.some(
             (link) =>
@@ -333,6 +343,19 @@ function harness(options = {}) {
   h.poll = () => context.pollGithubReviews(h.github, fixture.login);
   return h;
 }
+
+test("a new review PR is tagged before its PR link so it stays To do and notifies once", async () => {
+  const h = harness();
+  const result = await h.poll();
+  assert.equal(result.open[0].status, "tracked");
+  const [[id, issue]] = [...h.store.issues];
+  assert.equal(h.store.links.length, 1);
+  assert.ok(h.store.tags.has(id));
+  assert.equal(issue.status_id, "todo"); // not moved to In review before a review workspace exists
+  assert.deepEqual(h.reviewNotifications, [id]);
+  await h.poll(); // reconciliation repairs nothing and does not notify again
+  assert.deepEqual(h.reviewNotifications, [id]);
+});
 
 test("recovers a crash after the issue map commit without another issue or manual link", async () => {
   const h = harness({ crashAtMap: true });
@@ -419,11 +442,11 @@ test("failed or removed PR links are reconstructed from the actual destination a
   const h = harness({ failLink: true });
   let result = await h.poll();
   assert.equal(result.missing.length, 1);
-  assert.equal(
-    h.store.tags.size,
-    0,
-    "review-ready tag must wait for a structural PR link",
-  );
+  // The review tag goes first (it only notifies an issue still in "To do"); a
+  // failed link leaves the PR missing, so the next poll restores the link.
+  assert.equal(h.store.tags.size, 1);
+  assert.equal(h.store.links.length, 0);
+  assert.equal(h.reviewNotifications.length, 1);
   h.options.failLink = false;
   const resumed = harness({ state: structuredClone(h.state), store: h.store });
   await resumed.context.processRetryQueue({ force: true });
@@ -431,6 +454,8 @@ test("failed or removed PR links are reconstructed from the actual destination a
   assert.equal(result.missing.length, 0);
   assert.equal(resumed.store.issues.size, 1);
   assert.equal(resumed.store.links.length, 1);
+  assert.equal(resumed.reviewNotifications.length, 0); // tagged already: no second notification
+  assert.equal([...resumed.store.issues.values()][0].status_id, "todo");
   resumed.store.links = [];
   result = await resumed.poll();
   assert.equal(resumed.store.links.length, 1);

@@ -159,10 +159,11 @@ async fn notify_review_tag_added(
     };
 
     // Only notify while the review-tagged issue is still in "To do" (a review PR
-    // waiting to be picked up). A PR-link check can't be used here: the PR link
-    // is only created once a review-mode workspace exists, so it isn't present
-    // yet when the `review` tag is added. Once a review-mode workspace is created
-    // the issue moves to "In review", which this guard excludes.
+    // waiting to be picked up). Once a review-mode workspace is created the issue
+    // moves to "In review", which this guard excludes. The automation worker
+    // attaches `review` before it links the PR: linking an open PR moves an
+    // untagged issue to "In review" (`sync_status_from_pull_request`), which
+    // would suppress this notification.
     match ProjectStatusRepository::find_by_id(state.pool(), issue.status_id).await {
         Ok(Some(status)) if status.name.trim().eq_ignore_ascii_case(TODO_STATUS_NAME) => {}
         Ok(_) => return,

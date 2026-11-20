@@ -2884,23 +2884,12 @@ async function ensureGithubReviewIssueReady(connector, issueId, event) {
       extension_metadata: metadata,
     });
   }
-  const link = await findPullRequestLinkByUrl(
-    connector,
-    event.url,
-    connector.config.projectId
-  );
-  if (link?.issue_id !== issueId) {
-    await vibeApi(connector, 'POST', '/v1/pull_request_issues', {
-      issue_id: issueId,
-      url: event.url,
-      number: event.number,
-      status: 'open',
-      merged_at: null,
-      merge_commit_sha: null,
-      target_branch_name: event.baseRef,
-    });
-  }
-  // Attaching review emits the ready notification; the PR must be linked first.
+  // Tag before linking. Linking an open PR moves an untagged issue to
+  // "In review", and the review tag only notifies an issue still in "To do",
+  // so linking first suppressed every new-review notification. The link
+  // normally follows within this call; if it fails, this throws, the PR stays
+  // missing and the next poll retries the link (the tag is not re-attached).
+  // Until then the notification can arrive before the PR link exists.
   const tagId = await resolveVibeTag(
     connector,
     connector.config.projectId,
@@ -2919,6 +2908,22 @@ async function ensureGithubReviewIssueReady(connector, issueId, event) {
       delete connector.config.tagMap?.[`${connector.config.projectId}:review`];
       throw error;
     }
+  }
+  const link = await findPullRequestLinkByUrl(
+    connector,
+    event.url,
+    connector.config.projectId
+  );
+  if (link?.issue_id !== issueId) {
+    await vibeApi(connector, 'POST', '/v1/pull_request_issues', {
+      issue_id: issueId,
+      url: event.url,
+      number: event.number,
+      status: 'open',
+      merged_at: null,
+      merge_commit_sha: null,
+      target_branch_name: event.baseRef,
+    });
   }
 }
 

@@ -20,7 +20,7 @@ const importScript = serverSource.match(
 )[1];
 const evaluatedScript = Function(`return ${importScript}`)();
 
-async function waitFor(check, timeout = 8000) {
+async function waitFor(check, timeout = 8000, context = () => '') {
   const end = Date.now() + timeout;
   let lastError;
   while (Date.now() < end) {
@@ -33,7 +33,7 @@ async function waitFor(check, timeout = 8000) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(
-    `Timed out waiting for isolated worker: ${lastError?.message || 'condition not met'}`
+    `Timed out waiting for isolated worker: ${lastError?.message || 'condition not met'}${context() ? `\nloopback API errors:\n${context()}` : ''}`
   );
 }
 
@@ -149,10 +149,6 @@ test(
           });
         }
         if (url.pathname === '/v1/issue_tags' && req.method === 'POST') {
-          assert.ok(
-            links.some((link) => link.issue_id === payload.issue_id),
-            'review-ready notification must follow the PR link'
-          );
           assert.equal(
             tags.has(payload.issue_id),
             false,
@@ -165,6 +161,12 @@ test(
           url.pathname === '/v1/pull_request_issues' &&
           req.method === 'POST'
         ) {
+          // Linking an open PR moves an untagged issue to "In review" on the
+          // server, which suppresses the review-ready notification.
+          assert.ok(
+            tags.has(payload.issue_id),
+            'the review tag must precede the PR link'
+          );
           assert.equal(
             links.some(
               (link) =>
@@ -302,7 +304,7 @@ test(
           reconciliation.open.length === 2 &&
           reconciliation.missing.length === 0
         );
-      });
+      }, 8000, () => diagnostics);
       assert.equal(creates, 2);
       assert.equal(issues.size, 2);
       assert.equal(tags.size, 2);

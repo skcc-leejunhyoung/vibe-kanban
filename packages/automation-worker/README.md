@@ -354,8 +354,12 @@ miss would never be re-tried.
   assigned/created/mentioned issues also use the primary repository and its
   existing filter. Edit the list in Settings → Automation → Edit monitored
   repositories.
-  Imported PRs are tagged `review` in Vibe (the tag is created in the project if
-  missing). Branch metadata is fetched via `GET /repos/.../pulls/{n}`.
+  Imported PRs are tagged `review` in Vibe before the PR is linked: linking an
+  open PR moves an untagged issue to "In review", and the server only sends the
+  review-ready notification for an issue still in "To do". If the link fails,
+  the next poll restores it; the issue stays in "To do" until a review workspace
+  is created. The `review` tag is created in the project if missing. Branch
+  metadata is fetched via `GET /repos/.../pulls/{n}`.
   Open review requests are reconciled every poll, including the first poll and
   backfill, independently of the ordinary issue seed, cursor and bounded seen
   sets. Identity is repository + PR number; the source repository and head SHA
