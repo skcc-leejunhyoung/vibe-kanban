@@ -63,9 +63,8 @@ use services::services::{
     remote_client::RemoteClient,
     remote_sync, session_message_indexer, vibe_orchestrator,
     vibe_orchestrator::{
-        EVENT_CLEANUP_FAILED, EVENT_MERGE_RESULT, EVENT_TURN_ENDED, FinalizeInput, MergeOutcome,
-        MergeWaitState, PromptKind, VibeAction, VibeBounds, VibePhase, VibeResult,
-        decide_finalize_action, emit_event, next_merge_wait, parse_vibe_result,
+        EVENT_CLEANUP_FAILED, EVENT_MERGE_RESULT, EVENT_TURN_ENDED, MergeOutcome, MergeWaitState,
+        PromptKind, VibePhase, emit_event, next_merge_wait, parse_vibe_result,
     },
     vibe_tags,
 };
@@ -2751,11 +2750,6 @@ impl LocalContainerService {
         self.vibe_on_finalize(&failed).await;
     }
 
-    /// Entry point for the automated `vibe` workflow, called at every terminal
-    /// finalize (replacing the old immediate auto-merge). Reads the persisted
-    /// per-workspace [`VibeRun`] state and the agent's `VIBE_RESULT:` self-report,
-    /// asks the functional core ([`decide_finalize_action`]) what to do, and
-    /// performs it. Non-vibe issues are a no-op.
     /// Capture the agent's `VIBE_RESULT:` self-report at coding completion from
     /// the full in-memory message and persist it on the run for the finalize to
     /// consume. Runs only for coding-agent completions; skips before any remote
@@ -2784,15 +2778,17 @@ impl LocalContainerService {
         // exist yet; thereafter just update the token.
         match VibeRun::find_by_workspace_id(&self.db.pool, workspace_id).await {
             Ok(Some(run)) => {
-                // During review/merging, only the dedicated review session's
-                // sentinel is authoritative. A late or duplicate completion from
-                // the original coding session (also run_reason CodingAgent) must
-                // NOT overwrite the review verdict — otherwise a stale coding
-                // `done` could mask the review session's `approve` and stall the
-                // merge. Mirrors `session_is_review` in `vibe_on_finalize`.
+                // Only the run's own turns report a result (as in
+                // `vibe_on_finalize`): any while coding, the review session's
+                // after that. A late completion of the original coding session
+                // must not overwrite the review's verdict, and another
+                // session's token would sit on the run until a turn of the
+                // run's read it as its own.
                 let phase = VibePhase::from_db_str(&run.phase).unwrap_or(VibePhase::Coding);
-                if matches!(phase, VibePhase::Review | VibePhase::Merging)
-                    && run.review_session_id != Some(ctx.session.id)
+                if matches!(
+                    phase,
+                    VibePhase::Review | VibePhase::Merging | VibePhase::Blocked
+                ) && run.review_session_id != Some(ctx.session.id)
                 {
                     return;
                 }
@@ -2836,6 +2832,11 @@ impl LocalContainerService {
         }
     }
 
+    /// The `vibe` workflow's hook at every terminal finalize: a turn of the
+    /// run ended (its agent, or the cleanup chained after it), or a script
+    /// failed. The run (created here for a `vibe` issue on its first turn)
+    /// records it and reports it to the automation worker, which decides what
+    /// comes next. Non-vibe issues are a no-op.
     pub async fn vibe_on_finalize(&self, ctx: &ExecutionContext) {
         // Dev-server / archive completions never participate.
         if matches!(
@@ -2847,9 +2848,6 @@ impl LocalContainerService {
         let Some(task_id) = ctx.workspace.task_id else {
             return;
         };
-        let Some(client) = self.remote_client.clone() else {
-            return;
-        };
         let workspace_id = ctx.workspace.id;
 
         // A run row exists only for vibe issues, so its presence is the cheap
@@ -2858,6 +2856,9 @@ impl LocalContainerService {
         let vibe_run = match VibeRun::find_by_workspace_id(&self.db.pool, workspace_id).await {
             Ok(Some(r)) => r,
             Ok(None) => {
+                let Some(client) = &self.remote_client else {
+                    return;
+                };
                 match client.auto_merge_check(workspace_id).await {
                     Ok(true) => {}
                     Ok(false) => return,
@@ -2884,137 +2885,18 @@ impl LocalContainerService {
             }
         };
         let phase = VibePhase::from_db_str(&vibe_run.phase).unwrap_or(VibePhase::Coding);
-        let session_is_review = vibe_run.review_session_id == Some(ctx.session.id);
-
-        // Read the sentinel captured (untruncated) at coding completion to drive
-        // the decision. It is consumed (cleared) only AFTER the action succeeds
-        // (below), so a failed action leaves the token in place for the next
-        // finalize to retry — rather than silently losing a `done`/`approve`
-        // self-report and falling back to the wrong default on the next turn.
-        let result = vibe_run
-            .last_result
-            .as_deref()
-            .map(VibeResult::from_token)
-            .unwrap_or(VibeResult::None);
-
-        let input = FinalizeInput {
-            run_reason: ctx.execution_process.run_reason.clone(),
-            status: ctx.execution_process.status.clone(),
-            phase,
-            session_is_review,
-            result,
-            coding_turns: vibe_run.coding_turns as u32,
-            review_turns: vibe_run.review_turns as u32,
-            merge_retries: vibe_run.merge_retries as u32,
-            merge_failed: vibe_run.last_error.is_some(),
-            bounds: VibeBounds::default(),
+        // The run's turns: any while it is coding, its review session's after
+        // that. Another session's, or the PR draft's once merged, are not.
+        let runs_turn = match phase {
+            VibePhase::Coding => true,
+            VibePhase::Review | VibePhase::Merging | VibePhase::Blocked => {
+                vibe_run.review_session_id == Some(ctx.session.id)
+            }
+            VibePhase::Pushing | VibePhase::CreatingPr | VibePhase::Done => false,
         };
-        let action = decide_finalize_action(&input);
-        tracing::info!(
-            "vibe: workspace {} phase={} result={:?} -> {:?}",
-            workspace_id,
-            phase.as_str(),
-            result,
-            action
-        );
-        // From the review's approval on, the automation worker decides.
-        if matches!(action, VibeAction::AttemptMerge { .. })
-            || (session_is_review && matches!(phase, VibePhase::Merging | VibePhase::Blocked))
-        {
+        if runs_turn {
             self.vibe_report_turn(ctx, &vibe_run, phase).await;
-            return;
         }
-
-        match self
-            .vibe_execute(ctx, &client, &vibe_run, phase, action)
-            .await
-        {
-            // Action performed — now consume the sentinel so the next turn (with
-            // no fresh sentinel) falls back to the default instead of re-reading
-            // this one.
-            Ok(()) => {
-                if vibe_run.last_result.is_some() {
-                    let _ = VibeRun::set_last_result(&self.db.pool, workspace_id, None).await;
-                }
-            }
-            Err(e) => {
-                tracing::error!("vibe: failed to execute action for {}: {}", workspace_id, e);
-            }
-        }
-    }
-
-    /// Perform the decided [`VibeAction`] (the side-effecting half of the shell).
-    async fn vibe_execute(
-        &self,
-        ctx: &ExecutionContext,
-        client: &RemoteClient,
-        vibe_run: &VibeRun,
-        phase: VibePhase,
-        action: VibeAction,
-    ) -> Result<(), ContainerError> {
-        let pool = &self.db.pool;
-        let workspace_id = ctx.workspace.id;
-        let task_id = vibe_run.task_id;
-
-        match action {
-            VibeAction::Nothing => {}
-
-            VibeAction::CleanupFix => {
-                let log = self
-                    .vibe_cleanup_failure_log(ctx.execution_process.id)
-                    .await;
-                let body = vibe_orchestrator::cleanup_fix_prompt(&log);
-                let in_review = matches!(phase, VibePhase::Review | VibePhase::Merging);
-                let prompt = if in_review {
-                    let _ =
-                        VibeRun::set_review_turns(pool, workspace_id, vibe_run.review_turns + 1)
-                            .await;
-                    vibe_orchestrator::with_review_preamble(&body)
-                } else {
-                    let _ =
-                        VibeRun::set_coding_turns(pool, workspace_id, vibe_run.coding_turns + 1)
-                            .await;
-                    vibe_orchestrator::with_coding_preamble(&body)
-                };
-                self.vibe_send_followup(&ctx.workspace, &ctx.session, &prompt)
-                    .await?;
-            }
-
-            VibeAction::ContinueCoding { turn } => {
-                let _ = VibeRun::set_coding_turns(pool, workspace_id, turn as i64).await;
-                let prompt =
-                    vibe_orchestrator::with_coding_preamble(vibe_orchestrator::PROMPT_CONTINUE);
-                self.vibe_send_followup(&ctx.workspace, &ctx.session, &prompt)
-                    .await?;
-            }
-
-            VibeAction::StartReview => {
-                let prompt =
-                    vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_A);
-                self.vibe_start_review_session(&ctx.workspace, &ctx.session, &prompt, None)
-                    .await?;
-            }
-
-            VibeAction::ReviewFollowup { turn } => {
-                let _ = VibeRun::set_review_turns(pool, workspace_id, turn as i64).await;
-                let prompt =
-                    vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_B);
-                self.vibe_send_followup(&ctx.workspace, &ctx.session, &prompt)
-                    .await?;
-            }
-
-            VibeAction::Block { reason } => {
-                let _ = VibeRun::set_phase(pool, workspace_id, VibePhase::Blocked.as_str()).await;
-                self.vibe_tag(client, task_id, vibe_orchestrator::TAG_BLOCK)
-                    .await;
-                tracing::warn!("vibe: workspace {} blocked ({:?})", workspace_id, reason);
-            }
-
-            VibeAction::AttemptMerge { .. } => {
-                self.vibe_report_turn(ctx, vibe_run, phase).await;
-            }
-        }
-        Ok(())
     }
 
     /// Report a finished turn of the run (or its failed cleanup) to the
@@ -6308,6 +6190,146 @@ done
         assert_eq!(run.phase, "done");
         assert_eq!(run.merge_retries, 0);
         assert!(run.last_error.is_none());
+    }
+
+    /// A finished turn of a vibe run is reported to the automation worker with
+    /// what the agent said, and kept on the run until a step answers it. The
+    /// server takes no step of its own; turns that are not the run's (another
+    /// session during review, anything once merged) report nothing.
+    #[tokio::test]
+    async fn a_vibe_turn_is_reported_for_the_worker_to_decide() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let container = container_on(pool.clone());
+        let workspace_id = Uuid::new_v4();
+        let task_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, branch, task_id) VALUES (?, 'vk/test', ?)")
+            .bind(workspace_id)
+            .bind(task_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let session = |name: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let id = Uuid::new_v4();
+                sqlx::query("INSERT INTO sessions (id, workspace_id, name) VALUES (?, ?, ?)")
+                    .bind(id)
+                    .bind(workspace_id)
+                    .bind(name)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                id
+            }
+        };
+        let (coding, review) = (session("coding").await, session("review").await);
+        let finish = |session_id: Uuid, run_reason: &'static str, status: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let id = Uuid::new_v4();
+                sqlx::query(
+                    "INSERT INTO execution_processes (id, session_id, run_reason, status) \
+                     VALUES (?, ?, ?, ?)",
+                )
+                .bind(id)
+                .bind(session_id)
+                .bind(run_reason)
+                .bind(status)
+                .execute(&pool)
+                .await
+                .unwrap();
+                ExecutionProcess::load_context(&pool, id).await.unwrap()
+            }
+        };
+        let run = || {
+            let pool = pool.clone();
+            async move {
+                VibeRun::find_by_workspace_id(&pool, workspace_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+        };
+        VibeRun::get_or_create(&pool, workspace_id, task_id)
+            .await
+            .unwrap();
+        VibeRun::set_last_result(&pool, workspace_id, Some("continue"))
+            .await
+            .unwrap();
+
+        let ended = finish(coding, "codingagent", "completed").await;
+        container.vibe_on_finalize(&ended).await;
+        let reported = run().await;
+        // The coding turns stay as they were: counting is the step's business.
+        assert_eq!(
+            (reported.phase.as_str(), reported.coding_turns),
+            ("coding", 0)
+        );
+        assert_eq!(reported.last_result, None);
+        let event = reported.pending.unwrap().0;
+        assert_eq!(event["kind"], "vibe.turn_ended");
+        assert_eq!(event["role"], "coding");
+        assert_eq!(event["result"], "continue");
+        assert_eq!(event["status"], "completed");
+        assert_eq!(event["run_reason"], "codingagent");
+        assert_eq!(event["session_id"], coding.to_string());
+        assert_eq!(
+            event["execution_id"],
+            ended.execution_process.id.to_string()
+        );
+
+        let failed = finish(coding, "cleanupscript", "failed").await;
+        container.vibe_on_finalize(&failed).await;
+        let event = run().await.pending.unwrap().0;
+        assert_eq!(event["kind"], "vibe.cleanup_failed");
+        assert_eq!(event["result"], "none");
+
+        // Under review only the review session's turns are the run's.
+        VibeRun::begin_review(&pool, workspace_id, review, None)
+            .await
+            .unwrap();
+        container
+            .vibe_on_finalize(&finish(coding, "codingagent", "completed").await)
+            .await;
+        assert!(run().await.pending.is_none());
+        VibeRun::set_last_result(&pool, workspace_id, Some("approve"))
+            .await
+            .unwrap();
+        container
+            .vibe_on_finalize(&finish(review, "codingagent", "completed").await)
+            .await;
+        let event = run().await.pending.unwrap().0;
+        assert_eq!(
+            (&event["role"], &event["result"]),
+            (&serde_json::json!("review"), &serde_json::json!("approve"))
+        );
+        assert_eq!(event["phase"], "review");
+
+        // Once merged, no turn is the run's (the PR draft agent's included).
+        VibeRun::finish_merge(&pool, workspace_id, run().await.generation)
+            .await
+            .unwrap();
+        let answered = run().await;
+        VibeRun::take_pending(
+            &pool,
+            workspace_id,
+            answered.generation,
+            "done",
+            answered.pending_id(),
+        )
+        .await
+        .unwrap();
+        for session_id in [coding, review] {
+            container
+                .vibe_on_finalize(&finish(session_id, "codingagent", "completed").await)
+                .await;
+        }
+        assert!(run().await.pending.is_none());
     }
 
     /// "Review and create PR" merges into the target it confirmed when its

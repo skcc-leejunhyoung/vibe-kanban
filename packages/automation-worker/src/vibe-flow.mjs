@@ -82,7 +82,9 @@ const prompt = (kind) => ({ action: 'send-prompt', kind });
 export function decideVibe(event, { finish = 'merge', limits = VIBE_FLOW_DEFAULTS.limits } = {}) {
   switch (event?.kind) {
     case 'vibe.turn_ended':
-      return decideTurn(event);
+      return decideTurn(event, limits);
+    case 'vibe.cleanup_failed':
+      return decideCleanupFailure(event, limits);
     case 'vibe.merge_result':
       return decideMerge(event, finish, limits);
     // Reconciliation found the run stopped with nothing left to answer.
@@ -99,30 +101,67 @@ export function decideVibe(event, { finish = 'merge', limits = VIBE_FLOW_DEFAULT
   }
 }
 
-function decideTurn(event) {
+const AGENT_BLOCKED = 'The agent reported it cannot go on (VIBE_RESULT: blocked).';
+
+// Within the coding / review turn budget, `action`; past it, blocked.
+const withinCoding = (event, limits, action) =>
+  Number(event.coding_turns || 0) < limits.codingTurns
+    ? action
+    : block(`Coding reached its limit of ${limits.codingTurns} turns.`);
+const withinReview = (event, limits, action) =>
+  Number(event.review_turns || 0) < limits.reviewTurns
+    ? action
+    : block(`Review reached its limit of ${limits.reviewTurns} turns.`);
+
+function decideTurn(event, limits) {
   // Only a turn that ran to its end (the agent, or the cleanup chained after
   // it) moves the run; a failed, killed or setup-only turn waits for a person.
   const finished =
     event.status === 'completed' &&
     (event.run_reason === 'codingagent' || event.run_reason === 'cleanupscript');
-  if (!finished || event.role !== 'review') return null;
+  if (!finished) return null;
+  if (event.phase === 'coding') {
+    switch (event.result) {
+      // The coding agent's verb is "done"; a stray "approve" asks for review too.
+      case 'done':
+      case 'approve':
+        return { action: 'start-review' };
+      case 'blocked':
+        return block(AGENT_BLOCKED);
+      default:
+        return withinCoding(event, limits, prompt('continue'));
+    }
+  }
+  // After coding only the review session's turns move the run; a late one of
+  // the original coding session does not.
+  if (event.role !== 'review') return null;
   switch (event.phase) {
-    // Approved after a failed merge (the review was asked to look again): a
-    // new attempt with the full retry budget.
-    case 'blocked':
-      return event.last_error && event.result === 'approve' ? { action: 'merge' } : null;
     case 'review':
       if (event.result === 'approve') return { action: 'merge' };
-      return null;
+      if (event.result === 'blocked') return block(AGENT_BLOCKED);
+      return withinReview(event, limits, prompt('review_followup'));
     // The review session worked on a failed merge it was handed: merge again,
     // unless it gave up.
     case 'merging':
       if (event.result === 'blocked')
         return block('The review session could not resolve the merge failure (VIBE_RESULT: blocked).');
       return { action: 'merge' };
+    // Approved after a failed merge (the review was asked to look again): a
+    // new attempt with the full retry budget.
+    case 'blocked':
+      return event.last_error && event.result === 'approve' ? { action: 'merge' } : null;
     default:
       return null;
   }
+}
+
+// A failed cleanup script goes back to the session that ran it, with its log,
+// on the budget of the run's phase.
+function decideCleanupFailure(event, limits) {
+  if (event.phase === 'coding') return withinCoding(event, limits, prompt('cleanup_fix'));
+  if ((event.phase === 'review' || event.phase === 'merging') && event.role === 'review')
+    return withinReview(event, limits, prompt('cleanup_fix'));
+  return null;
 }
 
 function decideMerge(event, finish, limits) {

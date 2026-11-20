@@ -97,6 +97,105 @@ test('turns after the merge decide nothing', () => {
         assert.equal(decide(turn({ phase, result, role, last_error: 'x' })), null);
 });
 
+// ---- coding turns ----------------------------------------------------------
+
+const coding = (input = {}) => turn({ phase: 'coding', role: 'coding', generation: 0, ...input });
+
+test('finished coding starts the review, even through its cleanup', () => {
+  for (const result of ['done', 'approve'])
+    assert.deepEqual(decide(coding({ result })), { action: 'start-review' });
+  assert.deepEqual(decide(coding({ result: 'done', run_reason: 'cleanupscript' })), {
+    action: 'start-review',
+  });
+});
+
+test('coding goes on while work remains, within the coding budget', () => {
+  assert.deepEqual(decide(coding({ result: 'continue', coding_turns: 2 })), {
+    action: 'send-prompt',
+    kind: 'continue',
+  });
+  // No sentinel at all: keep going.
+  assert.deepEqual(decide(coding({ result: 'none', coding_turns: 0 })), {
+    action: 'send-prompt',
+    kind: 'continue',
+  });
+  const spent = decide(coding({ result: 'continue', coding_turns: 10 }));
+  assert.equal(spent.action, 'block');
+  assert.match(spent.reason, /limit of 10 turns/);
+});
+
+test('an agent that reports blocked is blocked, in coding and in review', () => {
+  for (const event of [coding({ result: 'blocked' }), turn({ result: 'blocked' })]) {
+    const decision = decide(event);
+    assert.equal(decision.action, 'block');
+    assert.match(decision.reason, /VIBE_RESULT: blocked/);
+  }
+});
+
+test('a failed or killed coding turn, a failed setup and other scripts decide nothing', () => {
+  for (const status of ['failed', 'killed'])
+    assert.equal(decide(coding({ result: 'done', status })), null);
+  assert.equal(decide(coding({ run_reason: 'setupscript', status: 'failed' })), null);
+  for (const run_reason of ['devserver', 'archivescript'])
+    assert.equal(decide(coding({ result: 'done', run_reason })), null);
+});
+
+test('blocked and finished runs never act on a coding session', () => {
+  for (const phase of ['blocked', 'done'])
+    assert.equal(decide(coding({ phase, result: 'done' })), null);
+});
+
+// ---- review turns ----------------------------------------------------------
+
+test('a review that did not approve is asked again, within the review budget', () => {
+  for (const result of ['none', 'continue', 'done'])
+    assert.deepEqual(decide(turn({ result, review_turns: 1 })), {
+      action: 'send-prompt',
+      kind: 'review_followup',
+    });
+  const spent = decide(turn({ result: 'none', review_turns: 5 }));
+  assert.equal(spent.action, 'block');
+  assert.match(spent.reason, /limit of 5 turns/);
+});
+
+// ---- failed cleanup --------------------------------------------------------
+
+const cleanup = (input = {}) => ({
+  id: 'cleanup-1',
+  kind: 'vibe.cleanup_failed',
+  phase: 'coding',
+  generation: 0,
+  role: 'coding',
+  status: 'failed',
+  run_reason: 'cleanupscript',
+  coding_turns: 0,
+  review_turns: 0,
+  merge_retries: 0,
+  ...input,
+});
+
+test('a failed cleanup goes back to its session with the log, on its phase budget', () => {
+  assert.deepEqual(decide(cleanup()), { action: 'send-prompt', kind: 'cleanup_fix' });
+  for (const phase of ['review', 'merging'])
+    assert.deepEqual(decide(cleanup({ phase, role: 'review' })), {
+      action: 'send-prompt',
+      kind: 'cleanup_fix',
+    });
+  // Another session's cleanup during review is not the run's.
+  assert.equal(decide(cleanup({ phase: 'review', role: 'coding' })), null);
+  assert.match(decide(cleanup({ coding_turns: 10 })).reason, /limit of 10 turns/);
+  assert.match(decide(cleanup({ phase: 'review', role: 'review', review_turns: 5 })).reason, /limit of 5 turns/);
+  for (const phase of ['blocked', 'done', 'pushing', 'creating_pr'])
+    assert.equal(decide(cleanup({ phase, role: 'review' })), null);
+});
+
+test('turn limits come from the rule settings', () => {
+  const tight = { ...limits, codingTurns: 2, reviewTurns: 1 };
+  assert.equal(decideVibe(coding({ result: 'continue', coding_turns: 2 }), { limits: tight }).action, 'block');
+  assert.equal(decideVibe(turn({ result: 'none', review_turns: 1 }), { limits: tight }).action, 'block');
+  assert.equal(decideVibe(cleanup({ coding_turns: 2 }), { limits: tight }).action, 'block');
+});
+
 // ---- the merge's outcome ---------------------------------------------------
 
 test('a landed merge finishes at the merge, or goes on to the PR where the project ends there', () => {
@@ -373,6 +472,36 @@ test('an approval merges, and the landed merge finishes or opens the PR by the i
       pending_id: 'merged-1',
     });
   }
+});
+
+test('coding turns go on, then start the review in the session that reported done', async () => {
+  const world = harness({
+    runs: {
+      ws: {
+        workspace_id: 'ws',
+        phase: 'coding',
+        generation: 0,
+        pending: coding({ id: 'turn-1', result: 'continue', session_id: 'coding-session' }),
+      },
+    },
+  });
+  world.host.effects['send-prompt'] = (run) => {
+    run.pending = coding({ id: 'turn-2', result: 'done', coding_turns: 1, session_id: 'coding-session' });
+  };
+  world.host.effects['start-review'] = (run) => {
+    run.phase = 'review';
+    run.generation = 1;
+  };
+  await world.deliver('ws', world.host.runs.ws.pending);
+  await world.deliver('ws', world.host.runs.ws.pending);
+  assert.deepEqual(
+    world.posts.map(({ action, body }) => [action, body.kind ?? null, body.pending_id]),
+    [
+      ['send-prompt', 'continue', 'turn-1'],
+      ['start-review', null, 'turn-2'],
+    ]
+  );
+  assert.equal(world.host.runs.ws.phase, 'review');
 });
 
 test('the same event twice takes its step once; an old one is refused and let go', async () => {
