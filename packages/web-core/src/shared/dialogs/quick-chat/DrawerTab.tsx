@@ -769,12 +769,15 @@ function NoteDetail({
         )}
       </div>
 
+      {/* The right gutter keeps the edge-aligned comment actions (resolve,
+          reopen, resolve all) out of the ~15px macOS overlay scrollbar, which
+          would otherwise swallow their clicks. */}
       <div
         ref={scrollRef}
         tabIndex={0}
         role="region"
         aria-label={note.title}
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto [overflow-wrap:anywhere]"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto [overflow-wrap:anywhere] sm:pr-plusfifty"
       >
         <div className="shrink-0 p-half">
           <NoteBody note={note} />
