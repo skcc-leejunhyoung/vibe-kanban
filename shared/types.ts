@@ -680,9 +680,10 @@ export type StartReviewRequest = { executor_config: ExecutorConfig, additional_p
 
 export type VibeReviewRequest = { executor_config: ExecutorConfig | null,
 /**
- * "Review and create PR": once the review's merge lands, the server
- * pushes the target branch and opens an AI-drafted draft PR. Nothing
- * after this request depends on the caller staying connected.
+ * "Review and create PR": once the review approves, the automation
+ * worker has this host merge, push the target branch and open an
+ * AI-drafted draft PR. Nothing after this request depends on the caller
+ * staying connected (a host without the worker stops at the approval).
  */
 create_pr: boolean, pr_bases?: Array<PrBaseSelection>, };
 

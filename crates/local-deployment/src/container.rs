@@ -2932,6 +2932,7 @@ impl LocalContainerService {
         if let Err(e) = emit_event(
             pool,
             workspace_id,
+            vibe_run.generation,
             kind,
             Some(ctx.session.id),
             Some(ctx.execution_process.id),
@@ -3139,6 +3140,7 @@ impl LocalContainerService {
         if let Err(e) = emit_event(
             &self.db.pool,
             workspace_id,
+            vibe_run.generation,
             EVENT_MERGE_RESULT,
             vibe_run.review_session_id,
             None,
@@ -3183,6 +3185,11 @@ impl LocalContainerService {
             }
         }
         tracing::warn!("vibe: workspace {} blocked: {}", workspace_id, reason);
+        // Archived is put away by someone already: the tag says it, nobody is
+        // to be called back to it.
+        if workspace.archived {
+            return;
+        }
         let source_key = format!(
             "vibe-blocked:{workspace_id}:{}",
             run.updated_at.timestamp_micros()
@@ -3341,8 +3348,8 @@ impl LocalContainerService {
         prompt: &str,
     ) -> Result<(), ContainerError> {
         // No profile means we cannot spawn anything; surface it as an error so
-        // the finalize keeps `last_result` intact (rather than consuming it on a
-        // false success) and the orphan watcher can later escalate this run.
+        // the step fails, its event goes back counted, and the worker blocks
+        // the run once the step keeps failing.
         let Some(executor_config) = self.vibe_executor_config(session.id).await else {
             return Err(ContainerError::Other(anyhow!(
                 "vibe: no executor profile for session {}, cannot send follow-up",
@@ -3365,8 +3372,8 @@ impl LocalContainerService {
         Ok(())
     }
 
-    /// Rule 4: open a fresh review session in the same workspace and send the
-    /// review prompt. Records the review session on the run only after the
+    /// `start-review`: open a fresh review session in the same workspace and
+    /// send the review prompt. Records the review session on the run only after the
     /// execution actually starts, so a spawn failure doesn't strand the run in
     /// the `review` phase pointing at a session that never ran.
     async fn vibe_start_review_session(
@@ -3379,15 +3386,20 @@ impl LocalContainerService {
         let (review_session, executor_config) = self
             .vibe_create_review_session(workspace, session, executor_config)
             .await?;
-        self.vibe_spawn_review_agent(workspace, &review_session, prompt, executor_config)
-            .await?;
+        if let Err(e) = self
+            .vibe_spawn_review_agent(workspace, &review_session, prompt, executor_config)
+            .await
+        {
+            // The step is tried again: leave no empty review session per try.
+            let _ = Session::delete(&self.db.pool, review_session.id).await;
+            return Err(e);
+        }
 
         // Record the review session only AFTER the execution actually started:
-        // the `?` above propagates a spawn failure before any phase change, so
-        // the run stays in its prior `coding` phase and the next finalize retries
-        // StartReview — instead of being stranded in `review` pointing at a
-        // session that never ran (previously recoverable only by the 15-minute
-        // orphan watcher).
+        // a spawn failure returns before any phase change, so the run stays in
+        // `coding` and the worker's `start-review` is tried again — instead of
+        // the run being stranded in `review` pointing at a session that never
+        // ran.
         VibeRun::begin_review(&self.db.pool, workspace.id, review_session.id, None)
             .await
             .map_err(|e| ContainerError::Other(anyhow!("vibe begin_review failed: {e}")))?;
@@ -3464,8 +3476,8 @@ impl LocalContainerService {
         Ok(())
     }
 
-    /// Rule 5: fast-forward merge each qualifying repo into its target branch,
-    /// classifying the outcome for [`decide_after_merge`]. Remote-only targets
+    /// Fast-forward merge each qualifying repo into its target branch,
+    /// classifying the outcome for [`Self::vibe_attempt_merge`]. Remote-only targets
     /// are first materialized as local tracking branches, matching manual Merge.
     /// Skips repos with an open PR or an already-recorded direct merge.
     /// Returns the outcome, a short human-readable detail of what went wrong
@@ -4695,8 +4707,8 @@ impl ContainerService for LocalContainerService {
             };
             (run, 0)
         } else {
-            // The caller saw a due wait; a finalize may have merged or blocked
-            // the run since.
+            // The caller saw a due wait; a step may have merged or blocked the
+            // run since.
             if run.phase != VibePhase::Merging.as_str() || run.merge_retry_at.is_none() {
                 return Ok(());
             }
@@ -4751,40 +4763,34 @@ impl ContainerService for LocalContainerService {
                 })
                 .await?;
                 let in_review = run.phase != VibePhase::Coding.as_str();
-                let coding_turn =
-                    || VibeRun::set_coding_turns(pool, workspace_id, run.coding_turns + 1);
-                let review_turn =
-                    || VibeRun::set_review_turns(pool, workspace_id, run.review_turns + 1);
-                let merge_retry = || {
-                    VibeRun::set_merge_retries(
-                        pool,
-                        workspace_id,
-                        run.generation,
-                        run.merge_retries + 1,
-                    )
-                };
-                let prompt = match kind {
-                    PromptKind::Continue => {
-                        let _ = coding_turn().await;
-                        vibe_orchestrator::with_coding_preamble(vibe_orchestrator::PROMPT_CONTINUE)
-                    }
-                    PromptKind::ReviewFollowup => {
-                        let _ = review_turn().await;
-                        vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_B)
-                    }
-                    PromptKind::ResolveConflict => {
-                        let _ = merge_retry().await;
-                        vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_CONFLICT)
-                    }
-                    PromptKind::HandMergeFailure => {
-                        let _ = merge_retry().await;
+                // Each prompt spends a turn of its phase, or a merge retry.
+                enum Spends {
+                    CodingTurn,
+                    ReviewTurn,
+                    MergeRetry,
+                }
+                let (prompt, spends) = match kind {
+                    PromptKind::Continue => (
+                        vibe_orchestrator::with_coding_preamble(vibe_orchestrator::PROMPT_CONTINUE),
+                        Spends::CodingTurn,
+                    ),
+                    PromptKind::ReviewFollowup => (
+                        vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_B),
+                        Spends::ReviewTurn,
+                    ),
+                    PromptKind::ResolveConflict => (
+                        vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_CONFLICT),
+                        Spends::MergeRetry,
+                    ),
+                    PromptKind::HandMergeFailure => (
                         vibe_orchestrator::with_review_preamble(
                             &vibe_orchestrator::merge_handoff_prompt(
                                 run.last_error.as_deref().unwrap_or_default(),
                                 waited_minutes,
                             ),
-                        )
-                    }
+                        ),
+                        Spends::MergeRetry,
+                    ),
                     PromptKind::CleanupFix => {
                         let log = match execution {
                             Some(id) => self.vibe_cleanup_failure_log(id).await,
@@ -4792,15 +4798,38 @@ impl ContainerService for LocalContainerService {
                         };
                         let body = vibe_orchestrator::cleanup_fix_prompt(&log);
                         if in_review {
-                            let _ = review_turn().await;
-                            vibe_orchestrator::with_review_preamble(&body)
+                            (
+                                vibe_orchestrator::with_review_preamble(&body),
+                                Spends::ReviewTurn,
+                            )
                         } else {
-                            let _ = coding_turn().await;
-                            vibe_orchestrator::with_coding_preamble(&body)
+                            (
+                                vibe_orchestrator::with_coding_preamble(&body),
+                                Spends::CodingTurn,
+                            )
                         }
                     }
                 };
                 self.vibe_send_followup(workspace, &target, &prompt).await?;
+                // Counted once the prompt went out: a send that failed (and is
+                // tried again) spends nothing.
+                let _ = match spends {
+                    Spends::CodingTurn => {
+                        VibeRun::set_coding_turns(pool, workspace_id, run.coding_turns + 1).await
+                    }
+                    Spends::ReviewTurn => {
+                        VibeRun::set_review_turns(pool, workspace_id, run.review_turns + 1).await
+                    }
+                    Spends::MergeRetry => {
+                        VibeRun::set_merge_retries(
+                            pool,
+                            workspace_id,
+                            run.generation,
+                            run.merge_retries + 1,
+                        )
+                        .await
+                    }
+                };
             }
             VibeStep::Merge { retry } => self.vibe_attempt_merge(workspace, run, retry).await?,
             VibeStep::Block { reason } => self.vibe_block(workspace, run, &reason).await,

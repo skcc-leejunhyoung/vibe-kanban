@@ -531,8 +531,10 @@ An issue tagged `vibe` runs coding → review → merge (→ push → draft PR) 
 no one at the keyboard. Each host only records its runs (`vibe_runs`), reports
 what happened to them, and takes the steps it is asked for; the built-in rule
 `vibe-flow` (`kind: "vibe_flow"`, `src/vibe-flow.mjs`) makes every decision.
-Changing the policy is a rule edit (`PATCH /api/rules/vibe-flow` or the
-settings page); no host is rebuilt or restarted.
+Changing the policy is a rule edit (Settings → Automation, rule type "Vibe
+flow", or `PATCH /api/rules/vibe-flow`); no host is rebuilt or restarted.
+The rule is a default one: deleting it brings it back enabled at the next
+start, so turn it off with `enabled: false` instead.
 
 ```json
 {
@@ -543,7 +545,7 @@ settings page); no host is rebuilt or restarted.
     "connectorId": "vibe-default",
     "defaultFinish": "merge",
     "projects": { "<cloud project id>": { "finish": "pr" } },
-    "limits": { "codingTurns": 10, "reviewTurns": 5, "mergeRetries": 3 },
+    "limits": { "codingTurns": 10, "reviewTurns": 5, "mergeRetries": 3, "stepFailures": 3 },
     "reconcileSeconds": 180,
     "staleMinutes": 15
   }
@@ -580,9 +582,19 @@ settings page); no host is rebuilt or restarted.
   every event still pending (a lost event, a worker restart, a dropped host),
   and blocks a coding / review / merging run with no turn running and nothing
   to answer for `staleMinutes`.
+- A step the host fails (a vanished session, an agent that cannot start)
+  puts its event back counted; the next reconciliation tries it again, and
+  at `stepFailures` the run is blocked with the error. Failed or unbridged
+  attempts never go to the retry queue (so they do not raise
+  `automation.retry_exhausted`), and the event path does not wait on a host.
+- A run in an archived workspace takes no step that starts work there
+  (review, prompt, merge, PR): it is blocked, without a notification.
 - With the worker (or the rule) off, runs wait where they are — the chat
-  shows "Approved · waiting for automation" — and continue at the next
+  shows "Approved · waiting for automation to merge" or "Waiting for
+  automation to take the next step" — and continue at the next
   reconciliation once it is back.
+- The `vibe.*` events above reach a routine only when its trigger names them
+  (`kinds`); one that lists `vibe.` wakes on every turn, merge and PR.
 
 ## Routines
 

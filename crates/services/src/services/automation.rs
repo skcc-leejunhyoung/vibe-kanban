@@ -68,6 +68,16 @@ pub async fn abandon_action(pool: &SqlitePool, key: &str) -> Result<(), sqlx::Er
     Ok(())
 }
 
+/// Forget an action's receipt whatever its state: it answered before the
+/// work it stands for failed, and must not answer the next try.
+pub async fn forget_action(pool: &SqlitePool, key: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM automation_action_receipts WHERE idempotency_key = ?")
+        .bind(key)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn action_receipt(pool: &SqlitePool, key: &str) -> Result<Value, sqlx::Error> {
     let row = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
         "SELECT receipt.action, receipt.status, receipt.response, handoff.message \
@@ -402,6 +412,12 @@ mod tests {
             begin_action(&pool, "key", "start_workspace").await.unwrap(),
             ActionReceipt::Succeeded(_)
         ));
+        // One whose work failed after it answered is forgotten outright.
+        forget_action(&pool, "key").await.unwrap();
+        assert_eq!(
+            begin_action(&pool, "key", "start_workspace").await.unwrap(),
+            ActionReceipt::Claimed
+        );
     }
 
     #[tokio::test]

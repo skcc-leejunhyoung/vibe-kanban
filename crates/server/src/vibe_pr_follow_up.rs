@@ -231,6 +231,7 @@ async fn advance<S: FollowUpSteps>(
                         vibe_orchestrator::emit_event(
                             pool,
                             workspace_id,
+                            run.generation,
                             EVENT_PR_RESULT,
                             run.review_session_id,
                             None,
@@ -270,6 +271,7 @@ pub(crate) async fn block(
     vibe_orchestrator::emit_event(
         pool,
         run.workspace_id,
+        run.generation,
         EVENT_PR_RESULT,
         run.review_session_id,
         None,

@@ -1002,7 +1002,7 @@ const COMMANDS: &[Cmd] = &[
             keyed(
                 opt(
                     "create-pr",
-                    "After the merge, the server pushes the target branch and opens an AI-drafted draft PR",
+                    "Once the review approves, the automation worker has the host merge, push the target branch and open an AI-drafted draft PR",
                     Where::Body,
                     Kind::Flag,
                 ),

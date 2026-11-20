@@ -32,9 +32,9 @@ use uuid::Uuid;
 
 use super::agent_journal;
 
-/// Rung when a run enters `pushing` (its merge landed, or a blocked follow-up
-/// is retried), so the server's PR follow-up starts on it at once instead of
-/// on its next poll.
+/// Rung when a run enters `pushing` (the worker's `publish-pr`, or a retry of
+/// a blocked follow-up), so the server's PR follow-up starts on it at once
+/// instead of on its next poll.
 pub static PR_FOLLOW_UP: Notify = Notify::const_new();
 
 /// The cloud tags this workflow applies. `vibe` opts an issue into the
@@ -361,16 +361,21 @@ pub const EVENT_PR_RESULT: &str = "vibe.pr_result";
 /// Publish a `vibe.*` event about the workspace's run and keep it as the
 /// decision the worker owes the run. The payload carries the run as it stands
 /// now (phase, generation, counters) plus `fields`; its `id` is what the
-/// answering action names. No run, no event.
+/// answering action names. `generation` is the run's the outcome belongs to:
+/// once a newer review took the run over (or there is no run), no event.
 pub async fn emit_event(
     pool: &SqlitePool,
     workspace_id: Uuid,
+    generation: i64,
     kind: &str,
     session_id: Option<Uuid>,
     execution_id: Option<Uuid>,
     fields: Value,
 ) -> Result<(), VibeRunError> {
-    let Some(run) = VibeRun::find_by_workspace_id(pool, workspace_id).await? else {
+    let Some(run) = VibeRun::find_by_workspace_id(pool, workspace_id)
+        .await?
+        .filter(|run| run.generation == generation)
+    else {
         return Ok(());
     };
     let mut data = json!({
@@ -391,8 +396,9 @@ pub async fn emit_event(
     if let (Value::Object(data), Value::Object(fields)) = (&mut data, fields) {
         data.extend(fields);
     }
-    VibeRun::set_pending(pool, workspace_id, &data).await?;
-    agent_journal::publish(kind, Some(workspace_id), session_id, execution_id, data);
+    if VibeRun::set_pending(pool, workspace_id, generation, &data).await? {
+        agent_journal::publish(kind, Some(workspace_id), session_id, execution_id, data);
+    }
     Ok(())
 }
 
@@ -758,15 +764,36 @@ mod tests {
             .unwrap();
         let since = agent_journal::list(0, &[], 1).cursor;
         // No run, no event.
-        emit_event(&pool, workspace, EVENT_MERGE_RESULT, None, None, json!({}))
-            .await
-            .unwrap();
-        VibeRun::get_or_create(&pool, workspace, Uuid::new_v4())
-            .await
-            .unwrap();
         emit_event(
             &pool,
             workspace,
+            0,
+            EVENT_MERGE_RESULT,
+            None,
+            None,
+            json!({}),
+        )
+        .await
+        .unwrap();
+        VibeRun::get_or_create(&pool, workspace, Uuid::new_v4())
+            .await
+            .unwrap();
+        // The outcome of a generation the run has left: no event either.
+        emit_event(
+            &pool,
+            workspace,
+            7,
+            EVENT_MERGE_RESULT,
+            None,
+            None,
+            json!({}),
+        )
+        .await
+        .unwrap();
+        emit_event(
+            &pool,
+            workspace,
+            0,
             EVENT_MERGE_RESULT,
             None,
             None,

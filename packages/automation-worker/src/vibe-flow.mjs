@@ -18,7 +18,9 @@ export const VIBE_FLOW_DEFAULTS = {
   defaultFinish: 'merge',
   // Per cloud project id: { finish }.
   projects: {},
-  limits: { codingTurns: 10, reviewTurns: 5, mergeRetries: 3 },
+  // `stepFailures`: a step the host keeps failing (a vanished session, an
+  // agent that cannot start) is tried this many times, then the run blocks.
+  limits: { codingTurns: 10, reviewTurns: 5, mergeRetries: 3, stepFailures: 3 },
   // How often every host's runs are read again, for events that never came.
   reconcileSeconds: 180,
   // A run with no turn running and nothing to do for this long is blocked.
@@ -50,6 +52,7 @@ export function vibeFlowSettings(config = {}) {
       codingTurns: count(limits.codingTurns, defaults.limits.codingTurns),
       reviewTurns: count(limits.reviewTurns, defaults.limits.reviewTurns),
       mergeRetries: count(limits.mergeRetries, defaults.limits.mergeRetries),
+      stepFailures: Math.max(1, count(limits.stepFailures, defaults.limits.stepFailures)),
     },
     reconcileSeconds: Math.max(30, Number(config.reconcileSeconds) || defaults.reconcileSeconds),
     staleMinutes: Math.max(1, Number(config.staleMinutes) || defaults.staleMinutes),
@@ -80,6 +83,12 @@ const prompt = (kind) => ({ action: 'send-prompt', kind });
 // `null` when nothing is to be done. `finish` is where the run's project ends
 // (`merge` | `pr`); `limits` bound turns and merge retries.
 export function decideVibe(event, { finish = 'merge', limits = VIBE_FLOW_DEFAULTS.limits } = {}) {
+  // The host failed the step this event called for, again and again.
+  const failures = Number(event?.failed_attempts || 0);
+  if (failures >= (limits.stepFailures ?? VIBE_FLOW_DEFAULTS.limits.stepFailures))
+    return block(
+      `The ${event.failed_step || 'next'} step failed ${failures} times: ${event.failure || 'unknown error'}`
+    );
   switch (event?.kind) {
     case 'vibe.turn_ended':
       return decideTurn(event, limits);
@@ -182,13 +191,24 @@ function decideMerge(event, finish, limits) {
   return null;
 }
 
+export const ARCHIVED_REASON = 'The workspace was archived while its vibe run was under way.';
+const STARTS_WORK = ['start-review', 'send-prompt', 'merge', 'publish-pr'];
+
+// An archived workspace takes no step that starts work in it: a run that
+// still needs one is blocked instead.
+export function forArchivedWorkspace(decision) {
+  return decision && STARTS_WORK.includes(decision.action) ? block(ARCHIVED_REASON) : decision;
+}
+
 // A run in a working phase with nothing running and nothing left to answer
 // for `staleMinutes` stopped moving (a restart, a step that could not
-// start): blocked for a person. A merge waiting for its next scheduled try,
-// and a push / PR step (the host watches its own), are not stalled.
+// start): blocked for a person; one in an archived workspace at once. A merge
+// waiting for its next scheduled try, and a push / PR step (the host watches
+// its own), are not stalled.
 export function stalledReason(run, { staleMinutes }, now = Date.now()) {
   if (!['coding', 'review', 'merging'].includes(run?.phase)) return null;
-  if (run.running || run.archived) return null;
+  if (run.running) return null;
+  if (run.archived) return ARCHIVED_REASON;
   // A scheduled merge retry is activity to come: stale only once overdue.
   const last = Math.max(
     ...[run.updated_at, run.last_activity_at, run.merge_retry_at].map(

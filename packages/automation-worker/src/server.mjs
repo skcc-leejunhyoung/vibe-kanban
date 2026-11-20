@@ -109,6 +109,7 @@ import {
   VIBE_FLOW_KINDS,
   decideVibe,
   finishFor,
+  forArchivedWorkspace,
   needsFinish,
   stalledReason,
   vibeFlowSettings,
@@ -6243,6 +6244,7 @@ const vibeFlowTimeout = () => AbortSignal.timeout(VIBE_FLOW_TIMEOUT_MS);
 const vibeFlowHostCatalogs = new Map();
 const vibeFlowProjects = new Map();
 const vibeFlowReconciledAt = new Map();
+const vibeFlowBridgeErrors = new Map();
 let vibeFlowReconciling = false;
 
 // The bridge of the host an event came from: cloud host id → its machine id
@@ -6294,13 +6296,14 @@ function vibeFlowConnector(settings) {
 // Decide on one run's pending event and ask its host for the step. `null`
 // when there was nothing to do; a refused step (409: the run moved on, a
 // turn is running) is not an error — the newer state has its own event.
-async function driveVibeRun(rule, connector, baseUrl, workspaceId, event) {
+async function driveVibeRun(rule, connector, baseUrl, workspaceId, event, { archived = false } = {}) {
   const settings = vibeFlowSettings(rule.config);
   const finish = needsFinish(event)
     ? finishFor(settings, await vibeFlowProject(connector, event.task_id))
     : settings.defaultFinish;
-  const decision = decideVibe(event, { finish, limits: settings.limits }) ||
+  let decision = decideVibe(event, { finish, limits: settings.limits }) ||
     (event.id ? { action: 'dismiss' } : null);
+  if (archived) decision = forArchivedWorkspace(decision);
   if (!decision) return null;
   const request = vibeStepRequest(workspaceId, event, decision);
   try {
@@ -6331,13 +6334,27 @@ async function driveVibeRun(rule, connector, baseUrl, workspaceId, event) {
   return decision;
 }
 
+// Never throws: a step that could not be asked for (the host unreachable or
+// not bridged, its own failure) stays pending on the run, where the
+// reconciliation decides on it again — not in the retry queue, whose
+// exhaustion would wake the Autopilot.
 async function handleVibeFlowEvent(rule, event) {
   if (event.source !== 'vibe' || !VIBE_FLOW_KINDS.includes(event.kind)) return;
   if (!event.workspaceId || !event.data?.id) return;
   const connector = vibeFlowConnector(vibeFlowSettings(rule.config));
   if (!connector) return;
-  const baseUrl = await vibeFlowBridge(connector, event.hostId);
-  return driveVibeRun(rule, connector, baseUrl, event.workspaceId, event.data);
+  try {
+    const baseUrl = await vibeFlowBridge(connector, event.hostId);
+    return await driveVibeRun(rule, connector, baseUrl, event.workspaceId, event.data);
+  } catch (error) {
+    await log('warn', 'vibe flow: event left to reconciliation', {
+      ruleId: rule.id,
+      workspaceId: event.workspaceId,
+      event: event.kind,
+      error: errorMessage(error),
+    });
+    return null;
+  }
 }
 
 // Every `reconcileSeconds`, per enabled rule: read each bridged host's runs,
@@ -6363,12 +6380,20 @@ async function reconcileVibeFlow(now = Date.now()) {
             connector, 'GET', '/api/automation-actions/vibe/runs',
             undefined, bridge.baseUrl, undefined, vibeFlowTimeout()
           ))?.runs;
+          if (vibeFlowBridgeErrors.delete(machineId))
+            await log('info', 'vibe flow: host reachable again', { ruleId: rule.id, machineId });
         } catch (error) {
-          await log('warn', 'vibe flow: reading runs failed', { ruleId: rule.id, machineId, error: errorMessage(error) });
+          // A host asleep for hours logs once, not every few minutes.
+          const message = errorMessage(error);
+          if (vibeFlowBridgeErrors.get(machineId) !== message) {
+            vibeFlowBridgeErrors.set(machineId, message);
+            await log('warn', 'vibe flow: reading runs failed', { ruleId: rule.id, machineId, error: message });
+          }
           continue;
         }
         for (const run of runs || []) {
-          if (run.running || run.archived) continue;
+          if (run.running) continue;
+          const archived = Boolean(run.archived);
           try {
             // An event the run has moved past (it changed phase or generation
             // without a step answering it) can never be acted on: let it go.
@@ -6386,7 +6411,7 @@ async function reconcileVibeFlow(now = Date.now()) {
             }
             if (run.pending) {
               const decided = await driveVibeRun(
-                rule, connector, bridge.baseUrl, run.workspace_id, run.pending
+                rule, connector, bridge.baseUrl, run.workspace_id, run.pending, { archived }
               );
               // Acted on, or refused: the run moved on.
               if (decided?.action !== 'dismiss') continue;
@@ -6416,7 +6441,12 @@ async function reconcileVibeFlow(now = Date.now()) {
 }
 
 async function runRule(rule, event, conditionOnly = false, hostBinding = event) {
-  if (rule.kind === 'vibe_flow') return conditionOnly ? undefined : handleVibeFlowEvent(rule, event);
+  // Not awaited: a slow host must not hold up the events behind this one
+  // (the reconciliation covers whatever this attempt leaves undone).
+  if (rule.kind === 'vibe_flow') {
+    if (!conditionOnly) handleVibeFlowEvent(rule, event);
+    return;
+  }
   if (!shouldRunGithubIssueSyncRule(rule, event)) return;
   const source =
     event.source === 'github' && event.type === 'pr'

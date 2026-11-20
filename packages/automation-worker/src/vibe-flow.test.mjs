@@ -4,9 +4,11 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { eventMatchesRoutine } from './routines.mjs';
 import {
+  ARCHIVED_REASON,
   VIBE_FLOW_DEFAULTS,
   decideVibe,
   finishFor,
+  forArchivedWorkspace,
   needsFinish,
   stalledReason,
   vibeFlowSettings,
@@ -258,6 +260,29 @@ test('an opened or already open PR finishes the run; a failed one blocks with it
   });
 });
 
+// ---- a step the host keeps failing ------------------------------------------
+
+// The old watcher blocked a run whose next step could not start; the event
+// of a failed step comes back counted, and the run blocks at the limit.
+test('a step that keeps failing on the host blocks the run with its error', () => {
+  const failing = coding({ result: 'continue', failed_attempts: 2, failed_step: 'send-prompt', failure: 'no executor profile' });
+  assert.deepEqual(decide(failing), { action: 'send-prompt', kind: 'continue' });
+  const spent = decide({ ...failing, failed_attempts: 3 });
+  assert.equal(spent.action, 'block');
+  assert.match(spent.reason, /send-prompt step failed 3 times: no executor profile/);
+  assert.equal(decideVibe({ ...failing, failed_attempts: 1 }, { limits: { ...limits, stepFailures: 1 } }).action, 'block');
+  assert.equal(vibeFlowSettings({ limits: { stepFailures: 0 } }).limits.stepFailures, 1);
+});
+
+test('an archived workspace takes no step that starts work in it', () => {
+  for (const action of ['start-review', 'send-prompt', 'merge', 'publish-pr'])
+    assert.deepEqual(forArchivedWorkspace({ action, kind: 'continue' }), { action: 'block', reason: ARCHIVED_REASON });
+  for (const action of ['finish', 'dismiss'])
+    assert.deepEqual(forArchivedWorkspace({ action }), { action });
+  assert.deepEqual(forArchivedWorkspace({ action: 'block', reason: 'x' }), { action: 'block', reason: 'x' });
+  assert.equal(forArchivedWorkspace(null), null);
+});
+
 // ---- settings, staleness, requests -----------------------------------------
 
 test('settings fill in defaults and map projects to their finish', () => {
@@ -270,7 +295,7 @@ test('settings fill in defaults and map projects to their finish', () => {
   assert.equal(finishFor(settings, 'project-odd'), 'merge');
   assert.equal(finishFor(settings, 'project-unlisted'), 'merge');
   assert.equal(finishFor(settings, null), 'merge');
-  assert.deepEqual(settings.limits, { codingTurns: 10, reviewTurns: 2, mergeRetries: 3 });
+  assert.deepEqual(settings.limits, { codingTurns: 10, reviewTurns: 2, mergeRetries: 3, stepFailures: 3 });
   assert.equal(vibeFlowSettings({ defaultFinish: 'pr' }).defaultFinish, 'pr');
 });
 
@@ -285,7 +310,9 @@ test('a run is stalled only when nothing ran or was scheduled for the stale wind
   // A long turn that finished a minute ago.
   assert.equal(stalledReason(run({ updated_at: '2026-06-19T10:00:00Z', last_activity_at: '2026-06-19T11:59:00Z' }), settings, now), null);
   assert.equal(stalledReason(run({ running: true, updated_at: '2026-06-19T10:00:00Z' }), settings, now), null);
-  assert.equal(stalledReason(run({ archived: true }), settings, now), null);
+  // An archived workspace's run is blocked at once, not after the window.
+  assert.equal(stalledReason(run({ archived: true, updated_at: '2026-06-19T11:59:00Z' }), settings, now), ARCHIVED_REASON);
+  assert.equal(stalledReason(run({ archived: true, phase: 'done' }), settings, now), null);
   // A merge waiting for its next try is not stalled until the try is overdue.
   assert.equal(stalledReason(run({ phase: 'merging', merge_retry_at: '2026-06-19T12:05:00Z' }), settings, now), null);
   assert.ok(stalledReason(run({ phase: 'merging', updated_at: '2026-06-19T11:00:00Z', merge_retry_at: '2026-06-19T11:40:00Z' }), settings, now));
@@ -365,6 +392,8 @@ function harness({ projects = {}, runs = {} } = {}) {
     assert.ok(step, path);
     const [, workspaceId, action] = step;
     if (meta?.idempotencyKey && receipts.has(meta.idempotencyKey)) return receipts.get(meta.idempotencyKey);
+    if (host.fail?.[action])
+      throw Object.assign(new Error(`Vibe POST failed: 500 ${host.fail[action]}`), { status: 500 });
     const run = host.runs[workspaceId];
     if (
       !run ||
@@ -421,6 +450,7 @@ function harness({ projects = {}, runs = {} } = {}) {
       'const vibeFlowHostCatalogs = new Map();',
       'const vibeFlowProjects = new Map();',
       'const vibeFlowReconciledAt = new Map();',
+      'const vibeFlowBridgeErrors = new Map();',
       'let vibeFlowReconciling = false;',
       ...[
         'vibeFlowBridge',
@@ -440,8 +470,8 @@ function harness({ projects = {}, runs = {} } = {}) {
     posts,
     logs,
     // An event as the `vibe_events` connector hands it to the rules.
-    deliver: (workspaceId, data) =>
-      context.handle(rule, { source: 'vibe', kind: data.kind, hostId: 'cloud-host', workspaceId, data }),
+    deliver: (workspaceId, data, hostId = 'cloud-host') =>
+      context.handle(rule, { source: 'vibe', kind: data.kind, hostId, workspaceId, data }),
     reconcile: (now) => context.reconcile(now),
   };
 }
@@ -555,4 +585,48 @@ test('reconciliation decides on events that never arrived and blocks runs that s
   // Not again before `reconcileSeconds` has passed.
   await world.reconcile(now + 60000);
   assert.equal(world.posts.length, 5);
+});
+
+// A step that could not be asked for stays pending on the run for the
+// reconciliation: no error reaches the retry queue (whose exhaustion would
+// wake the Autopilot) and nothing waits on it.
+test('an unbridged host, or a host that fails the step, leaves the event to reconciliation', async () => {
+  const approve = turn({ id: 'approve-1', result: 'approve' });
+  const world = harness({ runs: { ws: { workspace_id: 'ws', phase: 'review', generation: 2, pending: approve } } });
+  assert.equal(await world.deliver('ws', approve, 'unbridged-host'), null);
+  world.host.fail = { merge: 'pool timed out' };
+  assert.equal(await world.deliver('ws', approve), null);
+  assert.equal(world.posts.length, 0);
+  const warnings = world.logs.filter((entry) => entry.message === 'vibe flow: event left to reconciliation');
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0].error, /no configured bridge/);
+  assert.match(warnings[1].error, /pool timed out/);
+});
+
+test('a run whose issue the cloud does not know finishes at the default', async () => {
+  const world = harness({ projects: {}, runs: { ws: { workspace_id: 'ws', phase: 'done', generation: 2, pending: merged({ task_id: 'unknown-task' }) } } });
+  await world.deliver('ws', world.host.runs.ws.pending);
+  assert.deepEqual(world.posts.map((post) => post.action), ['finish']);
+});
+
+test('reconciliation blocks the runs of archived workspaces instead of starting work there', async () => {
+  const now = Date.parse('2026-06-19T12:00:00Z');
+  const world = harness({
+    projects: { 'task-done': 'project-plain' },
+    runs: {
+      approved: { workspace_id: 'approved', phase: 'review', generation: 1, archived: true, running: false, pending: turn({ id: 'a1', result: 'approve', generation: 1 }), updated_at: '2026-06-19T11:59:00Z' },
+      coding: { workspace_id: 'coding', phase: 'coding', generation: 0, archived: true, running: false, pending: null, updated_at: '2026-06-19T11:59:00Z' },
+      // The merge landed before it was archived: finishing starts no work.
+      landed: { workspace_id: 'landed', phase: 'done', generation: 1, archived: true, running: false, pending: merged({ id: 'm1', generation: 1, task_id: 'task-done' }) },
+    },
+  });
+  await world.reconcile(now);
+  assert.deepEqual(
+    world.posts.map(({ workspaceId, action, body }) => [workspaceId, action, body.pending_id, body.reason ?? null]),
+    [
+      ['approved', 'block', 'a1', ARCHIVED_REASON],
+      ['coding', 'block', null, ARCHIVED_REASON],
+      ['landed', 'finish', 'm1', null],
+    ]
+  );
 });

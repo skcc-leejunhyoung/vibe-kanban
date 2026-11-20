@@ -51,9 +51,16 @@ export function vibeRunBanner(
   // The run reported something the automation worker has not acted on yet:
   // it moves again once the worker takes the next step.
   if (status.pending_kind) {
+    // An approval the worker merges on: the review's, or one given again
+    // after a failed merge. (A coding turn's stray "approve" starts a review.)
+    const mergesOnApproval =
+      status.phase === 'review' ||
+      status.phase === 'merging' ||
+      (status.phase === 'blocked' && !!detail);
     if (
       status.pending_kind === 'vibe.turn_ended' &&
-      status.pending_outcome === 'approve'
+      status.pending_outcome === 'approve' &&
+      mergesOnApproval
     ) {
       return banner('progress', 'conversation.vibeRun.approvedWaiting');
     }

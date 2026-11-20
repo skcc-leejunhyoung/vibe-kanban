@@ -46,8 +46,9 @@ pub struct VibeRun {
     pub merge_wait_attempts: i64,
     /// When the waiting merge is tried again.
     pub merge_retry_at: Option<DateTime<Utc>>,
-    /// "Review and create PR": once the merge lands the server pushes the
-    /// target branch (`pushing`) and opens a draft PR (`creating_pr`).
+    /// The run goes on to a PR after its merge: asked for by "Review and
+    /// create PR", or set when the worker's `publish-pr` starts the push
+    /// (`pushing`) and the draft PR (`creating_pr`).
     pub pr_requested: bool,
     /// Agent config the PR text is drafted with, as the `ExecutorConfig` JSON
     /// recorded when the review began; read it with
@@ -174,7 +175,7 @@ impl VibeRun {
     }
 
     /// All runs not in a terminal phase (`blocked`/`done`). Used by the
-    /// orphan-recovery watcher to detect runs that may have stalled.
+    /// watcher to find merges whose scheduled retry is due.
     pub async fn find_non_terminal(pool: &SqlitePool) -> Result<Vec<Self>, VibeRunError> {
         let rows = sqlx::query_as::<_, Self>(&format!(
             "SELECT {} FROM vibe_runs WHERE phase NOT IN ('blocked', 'done')",
@@ -204,21 +205,25 @@ impl VibeRun {
     }
 
     /// Record `event` (a `vibe.*` payload with an `id`) as the decision the
-    /// worker owes this run. A newer event replaces an unanswered one.
+    /// worker owes this run, if the run is still at `generation`: an outcome
+    /// of a run a newer review took over is nobody's to decide on. A newer
+    /// event replaces an unanswered one. `updated_at` keeps meaning when the
+    /// run entered its phase.
     pub async fn set_pending(
         pool: &SqlitePool,
         workspace_id: Uuid,
+        generation: i64,
         event: &serde_json::Value,
-    ) -> Result<(), VibeRunError> {
-        sqlx::query(
-            "UPDATE vibe_runs SET pending = ?, updated_at = datetime('now','subsec') \
-             WHERE workspace_id = ?",
+    ) -> Result<bool, VibeRunError> {
+        let done = sqlx::query(
+            "UPDATE vibe_runs SET pending = ? WHERE workspace_id = ? AND generation = ?",
         )
         .bind(Json(event))
         .bind(workspace_id)
+        .bind(generation)
         .execute(pool)
         .await?;
-        Ok(())
+        Ok(done.rows_affected() > 0)
     }
 
     /// Take the decision an action answers: the run must still stand at
@@ -741,8 +746,23 @@ mod tests {
         let generation = run(&pool, id).await.generation;
         let first = serde_json::json!({ "id": "first", "kind": "vibe.turn_ended" });
         let second = serde_json::json!({ "id": "second", "kind": "vibe.turn_ended" });
-        VibeRun::set_pending(&pool, id, &first).await.unwrap();
-        VibeRun::set_pending(&pool, id, &second).await.unwrap();
+        assert!(
+            VibeRun::set_pending(&pool, id, generation, &first)
+                .await
+                .unwrap()
+        );
+        assert!(
+            VibeRun::set_pending(&pool, id, generation, &second)
+                .await
+                .unwrap()
+        );
+        assert_eq!(run(&pool, id).await.pending_id(), Some("second"));
+        // An outcome of an older generation does not land.
+        assert!(
+            !VibeRun::set_pending(&pool, id, generation - 1, &first)
+                .await
+                .unwrap()
+        );
         assert_eq!(run(&pool, id).await.pending_id(), Some("second"));
 
         for (generation, phase, pending) in [
@@ -794,7 +814,10 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        VibeRun::set_pending(&pool, id, &first).await.unwrap();
+        let generation = run(&pool, id).await.generation;
+        VibeRun::set_pending(&pool, id, generation, &first)
+            .await
+            .unwrap();
         assert_eq!(VibeRun::find_for_automation(&pool).await.unwrap().len(), 1);
     }
 

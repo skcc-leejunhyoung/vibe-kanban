@@ -57,8 +57,12 @@ async fn tick(deployment: &DeploymentImpl) -> anyhow::Result<()> {
 async fn retry_due_merges(deployment: &DeploymentImpl, now: DateTime<Utc>) -> anyhow::Result<()> {
     let pool = &deployment.db().pool;
     for run in VibeRun::find_non_terminal(pool).await? {
+        // An event the worker has not answered yet (the review session spoke
+        // up during the wait) goes first: a retry would start a new
+        // generation and drop it.
         let due = run.phase == VibePhase::Merging.as_str()
-            && run.merge_retry_at.is_some_and(|at| at <= now);
+            && run.merge_retry_at.is_some_and(|at| at <= now)
+            && run.pending.is_none();
         if !due
             || ExecutionProcess::has_running_non_dev_server_processes_for_workspace(
                 pool,
@@ -72,7 +76,7 @@ async fn retry_due_merges(deployment: &DeploymentImpl, now: DateTime<Utc>) -> an
             continue;
         };
         // Archiving abandons the wait: a retry would merge or un-archive it.
-        // The worker's reconciliation blocks it once the retry is overdue.
+        // The worker's reconciliation blocks the archived run.
         if workspace.archived {
             continue;
         }

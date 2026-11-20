@@ -69,6 +69,8 @@ interface RuleDraft {
   enabled: boolean;
   kind: string;
   config: Record<string, unknown>;
+  /** The config as edited for kinds configured as JSON (`vibe_flow`). */
+  configText: string;
   script: string;
   isNew: boolean;
 }
@@ -935,6 +937,7 @@ export function AutomationSettingsSection() {
       enabled: r.enabled,
       kind: r.kind ?? 'script',
       config: (r.config ?? {}) as Record<string, unknown>,
+      configText: JSON.stringify(r.config ?? {}, null, 2),
       script: r.script,
       isNew: false,
     });
@@ -946,6 +949,7 @@ export function AutomationSettingsSection() {
       enabled: true,
       kind: 'script',
       config: {},
+      configText: '{}',
       script:
         'async function handle(event, ctx) {\n  ctx.log("info", "event received", { event });\n}',
       isNew: true,
@@ -953,6 +957,20 @@ export function AutomationSettingsSection() {
 
   const saveRule = () => {
     if (!rule) return;
+    let config = rule.config;
+    if (rule.kind === 'vibe_flow') {
+      try {
+        config = rule.configText.trim() ? JSON.parse(rule.configText) : {};
+      } catch {
+        setError(
+          t(
+            'settings.automation.errors.invalidJson',
+            'Config is not valid JSON.'
+          )
+        );
+        return;
+      }
+    }
     run(
       async () => {
         const next = await machineClient.saveAutomationRule({
@@ -960,7 +978,7 @@ export function AutomationSettingsSection() {
           name: rule.name.trim() || rule.id.trim(),
           enabled: rule.enabled,
           kind: rule.kind,
-          config: rule.config,
+          config,
           script: rule.script,
         });
         setRule(null);
@@ -1922,6 +1940,7 @@ export function AutomationSettingsSection() {
                   { value: 'script', label: 'Action rule' },
                   { value: 'condition', label: 'Routine condition' },
                   { value: 'github_issue_sync', label: 'GitHub issue sync' },
+                  { value: 'vibe_flow', label: 'Vibe flow' },
                 ]}
                 onChange={(kind) => setRule({ ...rule, kind })}
               />
@@ -1933,6 +1952,17 @@ export function AutomationSettingsSection() {
                 value={rule.config}
                 onChange={(config) => setRule({ ...rule, config })}
               />
+            ) : rule.kind === 'vibe_flow' ? (
+              <SettingsField
+                label={t('settings.automation.fields.config', 'Config (JSON)')}
+              >
+                <SettingsTextarea
+                  value={rule.configText}
+                  onChange={(v) => setRule({ ...rule, configText: v })}
+                  rows={12}
+                  monospace
+                />
+              </SettingsField>
             ) : (
               <SettingsField
                 label={t('settings.automation.fields.script', 'Rule script')}

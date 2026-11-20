@@ -15,6 +15,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::HeaderMap,
+    middleware::from_fn,
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
@@ -35,14 +36,16 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::automation::{ActionClaim, claim_action, complete_action};
-use crate::{DeploymentImpl, error::ApiError};
+use crate::{DeploymentImpl, error::ApiError, middleware::finish_after_disconnect};
 
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .route("/automation-actions/vibe/runs", get(list_runs))
+        // A step runs to its end even when the worker stops waiting: half a
+        // step (its event taken, nothing done) would leave the run stranded.
         .route(
             "/automation-actions/vibe/{workspace_id}/{action}",
-            post(act),
+            post(act).layer(from_fn(finish_after_disconnect)),
         )
 }
 
@@ -133,7 +136,7 @@ async fn act(
         ActionClaim::Execute(key) => key,
         ActionClaim::Replay(response) => return Ok(Json(response)),
     };
-    match take_step(&deployment, workspace_id, &action, &request).await {
+    match take_step(&deployment, workspace_id, &action, &request, key.as_deref()).await {
         Ok(response) => {
             complete_action(pool, key.as_deref(), &response).await?;
             Ok(Json(response))
@@ -248,6 +251,7 @@ async fn take_step(
     workspace_id: Uuid,
     action: &str,
     request: &StepRequest,
+    key: Option<&str>,
 ) -> Result<Value, ApiError> {
     let pool = &deployment.db().pool;
     let workspace = Workspace::find_by_id(pool, workspace_id)
@@ -304,6 +308,7 @@ async fn take_step(
         // now, and report its outcome as an event.
         Step::Run(VibeStep::Merge { retry }) => {
             let (deployment, workspace, run) = (deployment.clone(), workspace.clone(), run.clone());
+            let (action, key) = (action.to_string(), key.map(str::to_string));
             tokio::spawn(async move {
                 let pool = &deployment.db().pool;
                 if let Err(e) = deployment
@@ -312,7 +317,12 @@ async fn take_step(
                     .await
                 {
                     tracing::error!("vibe: merge of {} failed: {}", workspace.id, e);
-                    restore(pool, &run).await;
+                    // The request already answered "taken": its receipt must
+                    // not answer the next try with that.
+                    if let Some(key) = key {
+                        let _ = services::services::automation::forget_action(pool, &key).await;
+                    }
+                    restore(pool, &run, &action, &e.to_string()).await;
                 }
             });
             Ok(())
@@ -324,7 +334,7 @@ async fn take_step(
             .map_err(ApiError::from),
     };
     if let Err(error) = done {
-        restore(pool, &run).await;
+        restore(pool, &run, action, &error.to_string()).await;
         return Err(error);
     }
     tracing::info!(
@@ -337,11 +347,15 @@ async fn take_step(
     Ok(json!({ "ok": true, "action": action, "workspace_id": workspace_id }))
 }
 
-/// A step that failed to start changed nothing: its event waits again for
-/// the worker's next look.
-async fn restore(pool: &SqlitePool, run: &VibeRun) {
-    if let Some(pending) = &run.pending
-        && let Err(e) = VibeRun::restore_pending(pool, run.workspace_id, &pending.0).await
+/// A step that failed puts its event back for the worker's next look, with
+/// the failure counted: the worker blocks the run once a step keeps failing
+/// (a vanished session, an agent that cannot start).
+async fn restore(pool: &SqlitePool, run: &VibeRun, action: &str, error: &str) {
+    let Some(pending) = &run.pending else {
+        return;
+    };
+    if let Err(e) =
+        VibeRun::restore_pending(pool, run.workspace_id, &failed(&pending.0, action, error)).await
     {
         tracing::warn!(
             "vibe: putting back the event of {} failed: {}",
@@ -349,6 +363,16 @@ async fn restore(pool: &SqlitePool, run: &VibeRun) {
             e
         );
     }
+}
+
+/// `event` after one more failed `action` step on it.
+fn failed(event: &Value, action: &str, error: &str) -> Value {
+    let mut event = event.clone();
+    let attempts = event["failed_attempts"].as_u64().unwrap_or(0) + 1;
+    event["failed_attempts"] = attempts.into();
+    event["failed_step"] = action.into();
+    event["failure"] = error.chars().take(500).collect::<String>().into();
+    event
 }
 
 /// Push the merge target and open an AI-drafted draft PR, as "Review and
@@ -390,6 +414,7 @@ async fn publish_pr(
         vibe_orchestrator::emit_event(
             pool,
             workspace.id,
+            run.generation,
             EVENT_PR_RESULT,
             run.review_session_id,
             None,
@@ -492,6 +517,21 @@ mod tests {
             Ok(Step::Run(VibeStep::StartReview { .. }))
         ));
         assert!(refused(step_for("start-review", &none, &run("review"))));
+    }
+
+    // The worker blocks a run on a step that keeps failing: each failure is
+    // counted on the event it answered, which keeps its id for the next try.
+    #[test]
+    fn a_failed_step_is_counted_on_its_event() {
+        let event = json!({ "id": "e1", "kind": "vibe.turn_ended" });
+        let once = failed(&event, "send-prompt", "no executor profile");
+        let twice = failed(&once, "send-prompt", &"x".repeat(900));
+        assert_eq!(once["id"], "e1");
+        assert_eq!(once["failed_attempts"], 1);
+        assert_eq!(once["failed_step"], "send-prompt");
+        assert_eq!(once["failure"], "no executor profile");
+        assert_eq!(twice["failed_attempts"], 2);
+        assert_eq!(twice["failure"].as_str().unwrap().len(), 500);
     }
 
     #[test]

@@ -24,20 +24,31 @@ const show = (overrides: Partial<VibeReviewStatus>) =>
 describe('vibeRunBanner', () => {
   it('shows a run waiting for the automation worker, an approval first', () => {
     // Approved; the worker has not started the merge yet (or is down).
-    for (const phase of ['review', 'blocked']) {
-      expect(
-        show({
-          phase,
-          pr_requested: false,
-          pending_kind: 'vibe.turn_ended',
-          pending_outcome: 'approve',
-        })
-      ).toMatchObject({
+    const approved = (phase: string, last_error: string | null = null) =>
+      show({
+        phase,
+        last_error,
+        pr_requested: false,
+        pending_kind: 'vibe.turn_ended',
+        pending_outcome: 'approve',
+      });
+    for (const shown of [
+      approved('review'),
+      approved('merging'),
+      approved('blocked', 'repo: merge conflict'),
+    ]) {
+      expect(shown).toMatchObject({
         tone: 'progress',
         messageKey: 'conversation.vibeRun.approvedWaiting',
         canRetry: false,
       });
     }
+    // A coding turn's "approve" starts a review, not a merge.
+    expect(approved('coding')).toMatchObject({
+      messageKey: 'conversation.vibeRun.automationWaiting',
+    });
+    // Blocked by its review: nothing merges on a new approval.
+    expect(approved('blocked')).toBeNull();
     // Merged, and the worker is yet to finish it or open its PR.
     expect(
       show({
