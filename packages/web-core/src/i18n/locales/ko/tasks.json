@@ -482,8 +482,10 @@
       "noLinkedIssue": "리뷰는 이슈에 연결된 워크스페이스에서만 시작할 수 있습니다."
     },
     "vibeRun": {
-      "reviewing": "리뷰 중입니다. 승인되면 서버가 머지, 타깃 브랜치 push, draft PR 생성까지 이어서 진행합니다. 이 화면을 닫아도 됩니다.",
+      "reviewing": "리뷰 중입니다. 승인되면 자동화가 머지, 타깃 브랜치 push, draft PR 생성까지 이어서 진행합니다. 이 화면을 닫아도 됩니다.",
       "merging": "타깃 브랜치로 머지 중…",
+      "approvedWaiting": "승인됨 · 자동화 대기 중",
+      "automationWaiting": "자동화 대기 중 · 다음 단계를 기다립니다",
       "mergeWaiting": "머지 대기 중 · 자동으로 다시 시도합니다",
       "pushing": "타깃 브랜치 push 중…",
       "creatingPr": "PR 작성 중… (AI 초안 → draft PR)",

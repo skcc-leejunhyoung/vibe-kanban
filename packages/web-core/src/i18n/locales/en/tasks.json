@@ -163,8 +163,10 @@
       "noLinkedIssue": "Review can only be started on a workspace linked to an issue."
     },
     "vibeRun": {
-      "reviewing": "Reviewing. Once it approves, the server merges, pushes the target branch and opens the draft PR by itself — you can leave this page.",
+      "reviewing": "Reviewing. Once it approves, automation merges, pushes the target branch and opens the draft PR — you can leave this page.",
       "merging": "Merging into the target branch…",
+      "approvedWaiting": "Approved · waiting for automation to merge",
+      "automationWaiting": "Waiting for automation to take the next step",
       "mergeWaiting": "The merge is waiting and will be tried again",
       "pushing": "Pushing the target branch…",
       "creatingPr": "Drafting and opening the pull request…",

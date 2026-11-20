@@ -33,9 +33,21 @@ describe('vibeRunMoved', () => {
 });
 
 describe('vibeRunPollMs', () => {
-  const at = (phase: string | null, last_error: string | null = null) => ({
+  const at = (
+    phase: string | null,
+    last_error: string | null = null,
+    pending_kind: string | null = null
+  ) => ({
     phase,
     last_error,
+    pending_kind,
+  });
+
+  // The worker may be down for long: no faster than a review.
+  it('reads a run waiting for the automation worker every few seconds', () => {
+    for (const phase of ['review', 'done', 'coding']) {
+      expect(vibeRunPollMs(at(phase, null, 'vibe.turn_ended'))).toBe(15_000);
+    }
   });
 
   it('reads the steps the server takes by itself every few seconds', () => {

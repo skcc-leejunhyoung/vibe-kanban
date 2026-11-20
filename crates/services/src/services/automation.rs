@@ -57,6 +57,17 @@ pub async fn complete_action<T: serde::Serialize>(
     Ok(())
 }
 
+/// Forget a claimed action that did nothing, so the same request may run.
+pub async fn abandon_action(pool: &SqlitePool, key: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "DELETE FROM automation_action_receipts WHERE idempotency_key = ? AND status = 'running'",
+    )
+    .bind(key)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn action_receipt(pool: &SqlitePool, key: &str) -> Result<Value, sqlx::Error> {
     let row = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
         "SELECT receipt.action, receipt.status, receipt.response, handoff.message \
@@ -377,6 +388,20 @@ mod tests {
             begin_action(&pool, "key", "start_workspace").await.unwrap(),
             ActionReceipt::Running
         );
+        // An action that did nothing gives its key back; a finished one keeps it.
+        abandon_action(&pool, "key").await.unwrap();
+        assert_eq!(
+            begin_action(&pool, "key", "start_workspace").await.unwrap(),
+            ActionReceipt::Claimed
+        );
+        complete_action(&pool, "key", &serde_json::json!({}))
+            .await
+            .unwrap();
+        abandon_action(&pool, "key").await.unwrap();
+        assert!(matches!(
+            begin_action(&pool, "key", "start_workspace").await.unwrap(),
+            ActionReceipt::Succeeded(_)
+        ));
     }
 
     #[tokio::test]

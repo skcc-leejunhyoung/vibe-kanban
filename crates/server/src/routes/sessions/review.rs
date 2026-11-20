@@ -94,6 +94,12 @@ pub struct VibeReviewStatus {
     pub pr_bases: Option<Vec<PrBase>>,
     /// When the run last changed (entered its phase).
     pub updated_at: Option<DateTime<Utc>>,
+    /// The `vibe.*` event the automation worker has not acted on yet
+    /// (`vibe.turn_ended`, `vibe.merge_result`, ...): the run waits for it.
+    pub pending_kind: Option<String>,
+    /// That event's verdict: the turn's `VIBE_RESULT` (`approve`, ...) or the
+    /// merge's or PR's outcome (`merged`, `opened`, ...).
+    pub pending_outcome: Option<String>,
 }
 
 impl From<Option<VibeRun>> for VibeReviewStatus {
@@ -107,8 +113,19 @@ impl From<Option<VibeRun>> for VibeReviewStatus {
                 failed_phase: None,
                 pr_bases: None,
                 updated_at: None,
+                pending_kind: None,
+                pending_outcome: None,
             };
         };
+        let pending = run.pending.as_ref().map(|pending| &pending.0);
+        let field = |name: &str| {
+            pending
+                .and_then(|pending| pending.get(name))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        };
+        let pending_kind = field("kind");
+        let pending_outcome = field("outcome").or_else(|| field("result"));
         Self {
             phase: Some(run.phase),
             last_error: run.last_error,
@@ -117,6 +134,8 @@ impl From<Option<VibeRun>> for VibeReviewStatus {
             failed_phase: run.failed_phase,
             pr_bases: run.pr_bases.map(|bases| bases.0),
             updated_at: Some(run.updated_at),
+            pending_kind,
+            pending_outcome,
         }
     }
 }
@@ -484,6 +503,7 @@ mod tests {
             pr_executor_config: None,
             pr_bases: None,
             failed_phase: None,
+            pending: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

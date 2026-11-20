@@ -721,7 +721,17 @@ failed_phase: string | null, pr_bases?: Array<PrBase>,
 /**
  * When the run last changed (entered its phase).
  */
-updated_at: string | null, };
+updated_at: string | null,
+/**
+ * The `vibe.*` event the automation worker has not acted on yet
+ * (`vibe.turn_ended`, `vibe.merge_result`, ...): the run waits for it.
+ */
+pending_kind: string | null,
+/**
+ * That event's verdict: the turn's `VIBE_RESULT` (`approve`, ...) or the
+ * merge's or PR's outcome (`merged`, `opened`, ...).
+ */
+pending_outcome: string | null, };
 
 export type OpenEditorRequest = { editor_type: string | null, file_path: string | null, repo_id?: string,
 /**

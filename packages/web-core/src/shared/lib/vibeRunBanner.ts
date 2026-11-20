@@ -34,9 +34,9 @@ function banner(
 
 /**
  * What to show for the workspace's vibe run, from the server's state alone:
- * the server drives the review → merge → push → PR workflow, and this only
- * says where it stands. `null` shows nothing — a run that is coding or under
- * a plain review speaks for itself in the conversation.
+ * the automation worker drives the review → merge → push → PR workflow, and
+ * this only says where it stands. `null` shows nothing — a run that is coding
+ * or under a plain review speaks for itself in the conversation.
  */
 export function vibeRunBanner(
   status: VibeReviewStatus | null | undefined,
@@ -47,6 +47,22 @@ export function vibeRunBanner(
   const settledRecently =
     !!status.updated_at &&
     now - Date.parse(status.updated_at) < SETTLED_VISIBLE_MS;
+
+  // The run reported something the automation worker has not acted on yet:
+  // it moves again once the worker takes the next step.
+  if (status.pending_kind) {
+    if (
+      status.pending_kind === 'vibe.turn_ended' &&
+      status.pending_outcome === 'approve'
+    ) {
+      return banner('progress', 'conversation.vibeRun.approvedWaiting');
+    }
+    if (status.phase !== 'blocked') {
+      return banner('progress', 'conversation.vibeRun.automationWaiting', {
+        detail,
+      });
+    }
+  }
 
   switch (status.phase) {
     case 'review':

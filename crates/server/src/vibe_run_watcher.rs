@@ -138,6 +138,11 @@ async fn block_orphaned_runs(
     let latest_execution_activity = latest_execution_activity_by_workspace(pool).await?;
 
     for run in runs {
+        // An event the automation worker has not answered yet: the run waits
+        // for it, however long it is down.
+        if run.pending.is_some() {
+            continue;
+        }
         let is_active = active_workspaces.contains(&run.workspace_id);
         // A scheduled merge retry is activity to come: not stale until it is
         // overdue (the retry above keeps failing to run).
@@ -168,15 +173,7 @@ async fn block_orphaned_runs(
                 "The server made no progress in this step for {STALE_AFTER_MINUTES} minutes \
                  (it may have restarted). Retry to resume."
             );
-            if let Err(e) = VibeRun::block_follow_up(
-                pool,
-                run.workspace_id,
-                &run.phase,
-                run.generation,
-                &reason,
-            )
-            .await
-            {
+            if let Err(e) = vibe_pr_follow_up::block(pool, &run, &run.phase, &reason).await {
                 tracing::error!(
                     "vibe: blocking stalled follow-up failed for {}: {}",
                     run.workspace_id,

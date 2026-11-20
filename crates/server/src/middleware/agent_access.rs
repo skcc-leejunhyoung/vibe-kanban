@@ -165,6 +165,9 @@ fn is_forbidden(method: &Method, path: &str) -> bool {
         || path.ends_with("/editor/open")
         || path.ends_with("/open-editor")
         || path.starts_with("/automation/test-event")
+        // The steps of a vibe run (merge, push, PR, ...) are the automation
+        // worker's: an agent working in the run must not take them itself.
+        || path.starts_with("/automation-actions/vibe/")
         || path.starts_with("/invitations/")
     {
         return true;
@@ -725,9 +728,21 @@ mod tests {
             (Method::GET, "/api/terminal/ws"),
             (Method::GET, "/api/preview/3000/index.html"),
             (Method::POST, "/api/open-remote-editor/workspace"),
+            // Even with `automation_write` on: a vibe run's merge and PR are
+            // the automation worker's steps, never its own agent's.
+            (Method::POST, "/api/automation-actions/vibe/abc/merge"),
+            (Method::POST, "/api/automation-actions/vibe/abc/publish-pr"),
+            (
+                Method::POST,
+                "/api/host/11111111-1111-1111-1111-111111111111/automation-actions/vibe/abc/merge",
+            ),
         ] {
             assert_eq!(gated(method, path), Decision::Forbidden, "{path}");
         }
+        assert_eq!(
+            gated(Method::GET, "/api/automation-actions/vibe/runs"),
+            Decision::Allow
+        );
         assert_eq!(
             gated(Method::GET, "/api/relay-auth/client/hosts"),
             Decision::Allow

@@ -42,6 +42,7 @@ pub mod spec_intake;
 pub mod ssh_session;
 pub mod tags;
 pub mod terminal;
+pub mod vibe_actions;
 pub mod web_push;
 pub mod webrtc;
 pub mod workspaces;
@@ -53,6 +54,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .merge(agent_usage::router())
         .merge(agent_memory_sync::router())
         .merge(automation::router())
+        .merge(vibe_actions::router())
         .merge(drawer_artifacts::router())
         .merge(containers::router(&deployment))
         .merge(workspaces::router(&deployment))

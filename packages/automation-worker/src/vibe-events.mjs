@@ -7,6 +7,11 @@ export const DEFAULT_KINDS = [
   'approval.',
   'workspace.status_note',
   'vibe.phase',
+  // What the `vibe_flow` rule decides a vibe run's next step on.
+  'vibe.turn_ended',
+  'vibe.cleanup_failed',
+  'vibe.merge_result',
+  'vibe.pr_result',
   'cloud.notification',
   'drawer.',
   // Decisions the UI would put in front of the user: a git/PR dialog (pull

@@ -711,6 +711,11 @@ mod tests {
         VibeRun::finish_merge(&f.pool, f.workspace.id, run.generation)
             .await
             .unwrap();
+        assert!(
+            VibeRun::begin_follow_up(&f.pool, f.workspace.id, run.generation, None)
+                .await
+                .unwrap()
+        );
         VibeRun::block_follow_up(
             &f.pool,
             f.workspace.id,

@@ -59,6 +59,10 @@ pub struct VibeRun {
     /// The follow-up phase (`pushing` / `creating_pr`) a blocked run stopped
     /// in, where a retry resumes. `None` for every other block.
     pub failed_phase: Option<String>,
+    /// The latest `vibe.*` event the automation worker has not acted on yet
+    /// (its payload, with an `id` the answering action names). The worker
+    /// decides the next step; nothing in the server does.
+    pub pending: Option<Json<serde_json::Value>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -120,7 +124,7 @@ impl VibeRun {
     const COLUMNS: &'static str = "workspace_id, task_id, phase, generation, review_session_id, \
          coding_turns, review_turns, merge_retries, last_result, last_error, merge_wait_since, \
          merge_wait_attempts, merge_retry_at, pr_requested, pr_executor_config, pr_bases, failed_phase, \
-         created_at, updated_at";
+         pending, created_at, updated_at";
 
     /// Fetch-or-initialize the run row for a workspace. New rows start in the
     /// `coding` phase. Idempotent: an existing row is returned unchanged.
@@ -181,6 +185,83 @@ impl VibeRun {
         Ok(rows)
     }
 
+    /// What the automation worker reconciles: every run still under way, and
+    /// any run with an event it has not acted on.
+    pub async fn find_for_automation(pool: &SqlitePool) -> Result<Vec<Self>, VibeRunError> {
+        let rows = sqlx::query_as::<_, Self>(&format!(
+            "SELECT {} FROM vibe_runs \
+             WHERE phase NOT IN ('blocked', 'done') OR pending IS NOT NULL",
+            Self::COLUMNS
+        ))
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// The id of the event awaiting a decision, if any.
+    pub fn pending_id(&self) -> Option<&str> {
+        self.pending.as_ref()?.0.get("id")?.as_str()
+    }
+
+    /// Record `event` (a `vibe.*` payload with an `id`) as the decision the
+    /// worker owes this run. A newer event replaces an unanswered one.
+    pub async fn set_pending(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        event: &serde_json::Value,
+    ) -> Result<(), VibeRunError> {
+        sqlx::query(
+            "UPDATE vibe_runs SET pending = ?, updated_at = datetime('now','subsec') \
+             WHERE workspace_id = ?",
+        )
+        .bind(Json(event))
+        .bind(workspace_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Take the decision an action answers: the run must still stand at
+    /// `generation` and `phase` with event `pending_id` unanswered (`None`:
+    /// with nothing unanswered). `false` leaves the run alone: the action
+    /// came late, or for another run's state.
+    pub async fn take_pending(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        generation: i64,
+        phase: &str,
+        pending_id: Option<&str>,
+    ) -> Result<bool, VibeRunError> {
+        let done = sqlx::query(
+            "UPDATE vibe_runs SET pending = NULL \
+             WHERE workspace_id = ? AND generation = ? AND phase = ? \
+               AND ((? IS NULL AND pending IS NULL) OR json_extract(pending, '$.id') = ?)",
+        )
+        .bind(workspace_id)
+        .bind(generation)
+        .bind(phase)
+        .bind(pending_id)
+        .bind(pending_id)
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Put back a decision whose action failed before it changed anything, so
+    /// the worker's reconciliation asks again; a newer event wins.
+    pub async fn restore_pending(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        event: &serde_json::Value,
+    ) -> Result<(), VibeRunError> {
+        sqlx::query("UPDATE vibe_runs SET pending = ? WHERE workspace_id = ? AND pending IS NULL")
+            .bind(Json(event))
+            .bind(workspace_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     /// Runs whose merge landed and whose push / PR follow-up is still owed.
     pub async fn find_in_follow_up(pool: &SqlitePool) -> Result<Vec<Self>, VibeRunError> {
         let rows = sqlx::query_as::<_, Self>(&format!(
@@ -230,7 +311,7 @@ impl VibeRun {
                  last_result = NULL, last_error = NULL, merge_wait_since = NULL, \
                  merge_wait_attempts = 0, merge_retry_at = NULL, \
                  pr_requested = ?, pr_executor_config = ?, pr_bases = ?, failed_phase = NULL, \
-                 updated_at = datetime('now','subsec') \
+                 pending = NULL, updated_at = datetime('now','subsec') \
              WHERE workspace_id = ?",
         )
         .bind(review_session_id)
@@ -345,8 +426,9 @@ impl VibeRun {
         Ok(done.rows_affected() > 0)
     }
 
-    /// The merge landed, with the failure and any wait cleared: done, or on to
-    /// `pushing` when the run was asked for a PR.
+    /// The merge landed, with the failure and any wait cleared. What comes
+    /// after it (the issue to In review, or the push and the PR) is the
+    /// automation worker's call.
     pub async fn finish_merge(
         pool: &SqlitePool,
         workspace_id: Uuid,
@@ -354,12 +436,36 @@ impl VibeRun {
     ) -> Result<bool, VibeRunError> {
         let done = sqlx::query(
             "UPDATE vibe_runs \
-             SET phase = CASE WHEN pr_requested THEN 'pushing' ELSE 'done' END, \
+             SET phase = 'done', \
                  last_error = NULL, merge_wait_since = NULL, \
                  merge_wait_attempts = 0, merge_retry_at = NULL, failed_phase = NULL, \
                  updated_at = datetime('now','subsec') \
              WHERE workspace_id = ? AND generation = ?",
         )
+        .bind(workspace_id)
+        .bind(generation)
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Start the push / PR follow-up of a merged run at `generation`. A run
+    /// started as "review and create PR" keeps the bases it confirmed then;
+    /// any other takes `bases`. `false` when the run moved on meanwhile.
+    pub async fn begin_follow_up(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        generation: i64,
+        bases: Option<&[PrBase]>,
+    ) -> Result<bool, VibeRunError> {
+        let _generation = Self::lock_generation(workspace_id).await;
+        let done = sqlx::query(
+            "UPDATE vibe_runs SET phase = 'pushing', pr_requested = 1, \
+                 pr_bases = COALESCE(pr_bases, ?), last_error = NULL, failed_phase = NULL, \
+                 updated_at = datetime('now','subsec') \
+             WHERE workspace_id = ? AND generation = ? AND phase = 'done'",
+        )
+        .bind(bases.map(Json))
         .bind(workspace_id)
         .bind(generation)
         .execute(pool)
@@ -427,7 +533,7 @@ impl VibeRun {
             "UPDATE vibe_runs SET phase = COALESCE(failed_phase, 'merging'), \
                  pr_bases = CASE WHEN ? THEN ? ELSE pr_bases END, \
                  generation = generation + 1, last_error = NULL, failed_phase = NULL, \
-                 merge_retry_at = NULL, updated_at = datetime('now','subsec') \
+                 merge_retry_at = NULL, pending = NULL, updated_at = datetime('now','subsec') \
              WHERE workspace_id = ? AND generation = ? AND phase = ? \
                  AND phase IN ('blocked', 'merging') AND last_error IS NOT NULL \
                  AND review_session_id IS NOT NULL",
@@ -563,51 +669,133 @@ mod tests {
         assert_eq!(run(&pool, id).await.generation, blocked.generation + 1);
     }
 
-    /// The merge of a "review and create PR" run is not its end: it goes on to
-    /// the push, with the agent config the PR is to be drafted with. A plain
-    /// review ends at its merge, as before.
+    /// A merge ends at `done` whatever the run asked for: whether the push and
+    /// the PR follow is the worker's call, and its start keeps the bases the
+    /// run confirmed (a run that confirmed none takes the given ones).
     #[tokio::test]
-    async fn a_merge_ends_the_run_unless_a_pr_was_asked_for() {
+    async fn a_merge_ends_at_done_and_the_follow_up_starts_only_when_asked() {
         let (pool, plain) = run_in_review(None).await;
         VibeRun::finish_merge(&pool, plain, run(&pool, plain).await.generation)
             .await
             .unwrap();
         let done = run(&pool, plain).await;
         assert_eq!(done.phase, "done");
-        assert!(!done.pr_requested && done.pr_executor_config.is_none());
+        assert!(!done.pr_requested && done.pr_bases.is_none());
 
-        let request = PrRequest {
-            executor_config: Some(ExecutorConfig::new(BaseCodingAgent::ClaudeCode)),
-            bases: vec![],
-        };
-        let (pool, with_pr) = run_in_review(Some(&request)).await;
-        VibeRun::finish_merge(&pool, with_pr, run(&pool, with_pr).await.generation)
-            .await
-            .unwrap();
-        let pushing = run(&pool, with_pr).await;
+        let given = vec![PrBase {
+            repo_id: Uuid::nil(),
+            base_branch: "main".into(),
+            target_branch: "feature/example".into(),
+        }];
+        // A stale generation, or a run not merged yet, does not move.
+        assert!(
+            !VibeRun::begin_follow_up(&pool, plain, done.generation + 1, Some(&given))
+                .await
+                .unwrap()
+        );
+        assert!(
+            VibeRun::begin_follow_up(&pool, plain, done.generation, Some(&given))
+                .await
+                .unwrap()
+        );
+        let pushing = run(&pool, plain).await;
         assert_eq!(pushing.phase, "pushing");
         assert!(pushing.pr_requested);
+        assert_eq!(pushing.pr_bases.unwrap().0, given);
+        assert_eq!(VibeRun::find_in_follow_up(&pool).await.unwrap().len(), 1);
+
+        let confirmed = vec![PrBase {
+            base_branch: "integration".into(),
+            ..given[0].clone()
+        }];
+        let request = PrRequest {
+            executor_config: Some(ExecutorConfig::new(BaseCodingAgent::ClaudeCode)),
+            bases: confirmed.clone(),
+        };
+        let (pool, with_pr) = run_in_review(Some(&request)).await;
+        let generation = run(&pool, with_pr).await.generation;
+        VibeRun::finish_merge(&pool, with_pr, generation)
+            .await
+            .unwrap();
+        assert_eq!(run(&pool, with_pr).await.phase, "done");
+        assert!(
+            VibeRun::begin_follow_up(&pool, with_pr, generation, Some(&given))
+                .await
+                .unwrap()
+        );
+        let pushing = run(&pool, with_pr).await;
+        assert_eq!(pushing.pr_bases.as_ref().unwrap().0, confirmed);
         assert_eq!(
             pushing.pr_draft_config().map(|config| config.executor),
             Some(BaseCodingAgent::ClaudeCode)
         );
-        assert_eq!(
-            VibeRun::find_in_follow_up(&pool).await.unwrap().len(),
-            1,
-            "the follow-up finds it by its phase"
+    }
+
+    /// An action answers one event: a late or repeated answer, or one for
+    /// another generation or phase, leaves the run alone. A newer event
+    /// replaces an unanswered one, and a failed action puts its event back
+    /// only when nothing newer arrived.
+    #[tokio::test]
+    async fn an_action_takes_only_the_event_it_answers() {
+        let (pool, id) = run_in_review(None).await;
+        let generation = run(&pool, id).await.generation;
+        let first = serde_json::json!({ "id": "first", "kind": "vibe.turn_ended" });
+        let second = serde_json::json!({ "id": "second", "kind": "vibe.turn_ended" });
+        VibeRun::set_pending(&pool, id, &first).await.unwrap();
+        VibeRun::set_pending(&pool, id, &second).await.unwrap();
+        assert_eq!(run(&pool, id).await.pending_id(), Some("second"));
+
+        for (generation, phase, pending) in [
+            (generation, "review", Some("first")),
+            (generation, "review", None),
+            (generation + 1, "review", Some("second")),
+            (generation, "merging", Some("second")),
+        ] {
+            assert!(
+                !VibeRun::take_pending(&pool, id, generation, phase, pending)
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(
+            VibeRun::take_pending(&pool, id, generation, "review", Some("second"))
+                .await
+                .unwrap()
+        );
+        assert!(run(&pool, id).await.pending.is_none());
+        assert!(
+            !VibeRun::take_pending(&pool, id, generation, "review", Some("second"))
+                .await
+                .unwrap()
+        );
+        // With nothing unanswered, an action that names no event may run.
+        assert!(
+            VibeRun::take_pending(&pool, id, generation, "review", None)
+                .await
+                .unwrap()
         );
 
-        // The next review of the workspace is a plain one again.
-        let session = run(&pool, with_pr).await.review_session_id.unwrap();
-        VibeRun::begin_review(&pool, with_pr, session, None)
+        VibeRun::restore_pending(&pool, id, &second).await.unwrap();
+        assert_eq!(run(&pool, id).await.pending_id(), Some("second"));
+        VibeRun::restore_pending(&pool, id, &first).await.unwrap();
+        assert_eq!(run(&pool, id).await.pending_id(), Some("second"));
+
+        // A new review starts with nothing owed.
+        let session = run(&pool, id).await.review_session_id.unwrap();
+        VibeRun::begin_review(&pool, id, session, None)
             .await
             .unwrap();
-        VibeRun::finish_merge(&pool, with_pr, run(&pool, with_pr).await.generation)
-            .await
-            .unwrap();
-        let done = run(&pool, with_pr).await;
-        assert_eq!(done.phase, "done");
-        assert!(!done.pr_requested && done.pr_executor_config.is_none());
+        assert!(run(&pool, id).await.pending.is_none());
+        assert_eq!(VibeRun::find_for_automation(&pool).await.unwrap().len(), 1);
+        VibeRun::set_phase(&pool, id, "done").await.unwrap();
+        assert!(
+            VibeRun::find_for_automation(&pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        VibeRun::set_pending(&pool, id, &first).await.unwrap();
+        assert_eq!(VibeRun::find_for_automation(&pool).await.unwrap().len(), 1);
     }
 
     /// A recorded config that no longer parses (an executor or a policy was
@@ -669,9 +857,13 @@ mod tests {
         );
         assert_eq!(run(&pool, id).await.phase, "review");
 
-        VibeRun::finish_merge(&pool, id, run(&pool, id).await.generation)
-            .await
-            .unwrap();
+        let generation = run(&pool, id).await.generation;
+        VibeRun::finish_merge(&pool, id, generation).await.unwrap();
+        assert!(
+            VibeRun::begin_follow_up(&pool, id, generation, Some(&[]))
+                .await
+                .unwrap()
+        );
         assert!(
             VibeRun::block_follow_up(
                 &pool,
@@ -747,7 +939,9 @@ mod tests {
     #[tokio::test]
     async fn concurrent_retries_cannot_replace_the_winners_bases_or_claim_a_later_failure() {
         let (pool, id) = run_in_review(Some(&PrRequest::default())).await;
-        VibeRun::finish_merge(&pool, id, run(&pool, id).await.generation)
+        let generation = run(&pool, id).await.generation;
+        VibeRun::finish_merge(&pool, id, generation).await.unwrap();
+        VibeRun::begin_follow_up(&pool, id, generation, Some(&[]))
             .await
             .unwrap();
         let pushing = run(&pool, id).await;

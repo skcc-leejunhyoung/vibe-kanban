@@ -38,9 +38,17 @@
 
 use std::time::Duration;
 
-use db::models::execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus};
+use db::models::{
+    execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus},
+    vibe_run::{VibeRun, VibeRunError},
+};
+use serde_json::{Value, json};
+use sqlx::SqlitePool;
 use tokio::sync::Notify;
 use utils::log_msg::LogMsg;
+use uuid::Uuid;
+
+use super::agent_journal;
 
 /// Rung when a run enters `pushing` (its merge landed, or a blocked follow-up
 /// is retried), so the server's PR follow-up starts on it at once instead of
@@ -362,11 +370,14 @@ pub struct FinalizeInput {
     pub bounds: VibeBounds,
 }
 
-/// The outcome of a merge attempt, fed to [`decide_after_merge`].
+/// The outcome of a merge attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeOutcome {
     /// At least one repo merged and none failed.
     Success,
+    /// Nothing merged because every repo with work has an open PR: the PR is
+    /// the review artifact (a deliberate skip, not a failure).
+    SkippedOpenPr,
     /// A repo could not be fast-forward merged because the base diverged, or a
     /// rebase reported conflicts — resolvable by the agent.
     Conflict,
@@ -387,10 +398,9 @@ pub const MERGE_WAIT_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// turn may commit), up to this.
 pub const MERGE_WAIT_LIMIT_BUSY: Duration = Duration::from_secs(3 * 60 * 60);
 
-/// The merge-retry bookkeeping [`decide_after_merge`] needs.
+/// Where a merge waiting on a failure that may clear by itself stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct MergeRetryState {
-    pub merge_retries: u32,
+pub struct MergeWaitState {
     /// Time since the first failure of the current wait; `None` if not waiting.
     pub waited: Option<Duration>,
     /// Retries already made in the current wait.
@@ -412,23 +422,101 @@ pub fn merge_retry_delay(attempt: u32, base_busy: bool) -> Duration {
     Duration::from_secs(60 * minutes)
 }
 
-/// What to do once a merge attempt returns.
+/// The merge action's own wait on a [`MergeOutcome::DirtyBase`] or
+/// [`MergeOutcome::Transient`] failure: the next try (the new attempt count
+/// and the delay before it), or `None` once the wait is over and the failure
+/// is reported as the merge's outcome.
+pub fn next_merge_wait(state: &MergeWaitState) -> Option<(u32, Duration)> {
+    let limit = if state.base_busy {
+        MERGE_WAIT_LIMIT_BUSY
+    } else {
+        MERGE_WAIT_LIMIT
+    };
+    (state.waited.unwrap_or_default() < limit).then(|| {
+        (
+            state.wait_attempts + 1,
+            merge_retry_delay(state.wait_attempts, state.base_busy),
+        )
+    })
+}
+
+/// `vibe.*` events the automation worker decides the next step on. Each is
+/// also kept on the run (`vibe_runs.pending`) until an action answers it.
+pub const EVENT_TURN_ENDED: &str = "vibe.turn_ended";
+pub const EVENT_CLEANUP_FAILED: &str = "vibe.cleanup_failed";
+pub const EVENT_MERGE_RESULT: &str = "vibe.merge_result";
+pub const EVENT_PR_RESULT: &str = "vibe.pr_result";
+
+/// Publish a `vibe.*` event about the workspace's run and keep it as the
+/// decision the worker owes the run. The payload carries the run as it stands
+/// now (phase, generation, counters) plus `fields`; its `id` is what the
+/// answering action names. No run, no event.
+pub async fn emit_event(
+    pool: &SqlitePool,
+    workspace_id: Uuid,
+    kind: &str,
+    session_id: Option<Uuid>,
+    execution_id: Option<Uuid>,
+    fields: Value,
+) -> Result<(), VibeRunError> {
+    let Some(run) = VibeRun::find_by_workspace_id(pool, workspace_id).await? else {
+        return Ok(());
+    };
+    let mut data = json!({
+        "id": Uuid::new_v4(),
+        "kind": kind,
+        "task_id": run.task_id,
+        "phase": run.phase,
+        "generation": run.generation,
+        "coding_turns": run.coding_turns,
+        "review_turns": run.review_turns,
+        "merge_retries": run.merge_retries,
+        "pr_requested": run.pr_requested,
+        "last_error": run.last_error,
+        "failed_phase": run.failed_phase,
+        "session_id": session_id,
+        "execution_id": execution_id,
+    });
+    if let (Value::Object(data), Value::Object(fields)) = (&mut data, fields) {
+        data.extend(fields);
+    }
+    VibeRun::set_pending(pool, workspace_id, &data).await?;
+    agent_journal::publish(kind, Some(workspace_id), session_id, execution_id, data);
+    Ok(())
+}
+
+/// The prompts the worker can have a run's session sent (`send-prompt`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PostMergeAction {
-    /// Merge landed — move the issue to In review (phase → Done).
-    MarkInReview,
-    /// Conflict — ask the session to rebase/resolve, then retry. `retry` is the
-    /// new `merge_retries` value.
-    ResolveConflict { retry: u32 },
-    /// A failure that may clear by itself — stay in `merging` and try again
-    /// after `delay`. `attempt` is the new count of retries in this wait.
-    Wait { attempt: u32, delay: Duration },
-    /// Waited long enough — give the failure to the review session, which may
-    /// re-approve (merge again) or report blocked. `retry` is the new
-    /// `merge_retries` value.
-    HandToAgent { retry: u32 },
-    /// Give up on auto-merge — mark the issue for human review and block.
-    Escalate,
+pub enum PromptKind {
+    /// More coding work remains (the coding session; a coding turn).
+    Continue,
+    /// The review did not approve yet (the review session; a review turn).
+    ReviewFollowup,
+    /// The merge hit a conflict (the review session; a merge retry).
+    ResolveConflict,
+    /// The merge kept failing past its wait (the review session; a merge retry).
+    HandMergeFailure,
+    /// A cleanup script failed (its session; a turn of the run's phase).
+    CleanupFix,
+}
+
+impl PromptKind {
+    pub fn parse(kind: &str) -> Option<Self> {
+        Some(match kind {
+            "continue" => Self::Continue,
+            "review_followup" => Self::ReviewFollowup,
+            "resolve_conflict" => Self::ResolveConflict,
+            "hand_merge_failure" => Self::HandMergeFailure,
+            "cleanup_fix" => Self::CleanupFix,
+            _ => return None,
+        })
+    }
+
+    /// Sent into the session whose turn the event reported, not the review
+    /// session of the run.
+    pub fn to_turn_session(self) -> bool {
+        matches!(self, Self::Continue | Self::CleanupFix)
+    }
 }
 
 /// Parse the `VIBE_RESULT:` sentinel from an agent's final message.
@@ -609,40 +697,6 @@ pub fn decide_finalize_action(input: &FinalizeInput) -> VibeAction {
         VibePhase::Blocked | VibePhase::Done | VibePhase::Pushing | VibePhase::CreatingPr => {
             VibeAction::Nothing
         }
-    }
-}
-
-/// Decide what to do once a merge attempt returns (rule 5). Conflicts and
-/// hand-offs after a long wait share the `max_merge_retries` budget.
-pub fn decide_after_merge(
-    outcome: MergeOutcome,
-    state: &MergeRetryState,
-    bounds: &VibeBounds,
-) -> PostMergeAction {
-    let next = state.merge_retries + 1;
-    let within_budget = next <= bounds.max_merge_retries;
-    match outcome {
-        MergeOutcome::Success => PostMergeAction::MarkInReview,
-        MergeOutcome::Conflict if within_budget => PostMergeAction::ResolveConflict { retry: next },
-        MergeOutcome::DirtyBase | MergeOutcome::Transient => {
-            let waited = state.waited.unwrap_or_default();
-            let limit = if state.base_busy {
-                MERGE_WAIT_LIMIT_BUSY
-            } else {
-                MERGE_WAIT_LIMIT
-            };
-            if waited < limit {
-                PostMergeAction::Wait {
-                    attempt: state.wait_attempts + 1,
-                    delay: merge_retry_delay(state.wait_attempts, state.base_busy),
-                }
-            } else if within_budget {
-                PostMergeAction::HandToAgent { retry: next }
-            } else {
-                PostMergeAction::Escalate
-            }
-        }
-        MergeOutcome::Conflict | MergeOutcome::OtherFailure => PostMergeAction::Escalate,
     }
 }
 
@@ -1224,8 +1278,8 @@ mod tests {
         );
     }
 
-    fn waiting(waited_minutes: u64, wait_attempts: u32) -> MergeRetryState {
-        MergeRetryState {
+    fn waiting(waited_minutes: u64, wait_attempts: u32) -> MergeWaitState {
+        MergeWaitState {
             waited: Some(Duration::from_secs(60 * waited_minutes)),
             wait_attempts,
             ..Default::default()
@@ -1233,59 +1287,30 @@ mod tests {
     }
 
     // Another checkout's uncommitted edits (or a git lock) usually clear on
-    // their own: wait with backoff instead of blocking, and never send an
-    // agent to clean them up.
+    // their own: the merge waits with backoff instead of reporting a failure,
+    // and never sends an agent to clean them up.
     #[test]
-    fn dirty_base_and_transient_failures_wait_with_backoff() {
-        let b = VibeBounds::default();
-        for outcome in [MergeOutcome::DirtyBase, MergeOutcome::Transient] {
-            assert_eq!(
-                decide_after_merge(outcome, &MergeRetryState::default(), &b),
-                PostMergeAction::Wait {
-                    attempt: 1,
-                    delay: Duration::from_secs(60)
-                }
-            );
-            let delays: Vec<u64> = (0..6)
-                .map(
-                    |n| match decide_after_merge(outcome, &waiting(n, n as u32), &b) {
-                        PostMergeAction::Wait { attempt, delay } => {
-                            assert_eq!(attempt, n as u32 + 1);
-                            delay.as_secs() / 60
-                        }
-                        other => panic!("expected Wait, got {other:?}"),
-                    },
-                )
-                .collect();
-            assert_eq!(delays, vec![1, 2, 5, 10, 10, 10]);
-        }
+    fn a_failure_that_may_clear_waits_with_backoff() {
+        assert_eq!(
+            next_merge_wait(&MergeWaitState::default()),
+            Some((1, Duration::from_secs(60)))
+        );
+        let delays: Vec<u64> = (0..6)
+            .map(|n| {
+                let (attempt, delay) = next_merge_wait(&waiting(n, n as u32)).unwrap();
+                assert_eq!(attempt, n as u32 + 1);
+                delay.as_secs() / 60
+            })
+            .collect();
+        assert_eq!(delays, vec![1, 2, 5, 10, 10, 10]);
     }
 
+    // Past the wait limit the failure is the merge's outcome, for the worker
+    // to hand to the review session or to block on.
     #[test]
-    fn dirty_base_hands_to_the_agent_after_the_wait_limit() {
-        let b = VibeBounds::default();
-        assert_eq!(
-            decide_after_merge(MergeOutcome::DirtyBase, &waiting(30, 5), &b),
-            PostMergeAction::HandToAgent { retry: 1 }
-        );
-        // Hand-offs share the merge-retry budget with conflicts.
-        let spent = MergeRetryState {
-            merge_retries: b.max_merge_retries,
-            ..waiting(30, 5)
-        };
-        assert_eq!(
-            decide_after_merge(MergeOutcome::DirtyBase, &spent, &b),
-            PostMergeAction::Escalate
-        );
-        // Within the wait the budget does not matter: waiting costs nothing.
-        let spent_but_waiting = MergeRetryState {
-            merge_retries: b.max_merge_retries,
-            ..waiting(29, 4)
-        };
-        assert!(matches!(
-            decide_after_merge(MergeOutcome::Transient, &spent_but_waiting, &b),
-            PostMergeAction::Wait { .. }
-        ));
+    fn the_wait_ends_at_its_limit() {
+        assert!(next_merge_wait(&waiting(29, 4)).is_some());
+        assert_eq!(next_merge_wait(&waiting(30, 5)), None);
     }
 
     // The real case: an in-place session kept the base checkout dirty for 19
@@ -1293,26 +1318,16 @@ mod tests {
     // past the usual limit, up to the busy limit.
     #[test]
     fn busy_base_checkout_keeps_waiting_and_polls_every_minute() {
-        let b = VibeBounds::default();
-        let busy = MergeRetryState {
+        let busy = MergeWaitState {
             base_busy: true,
             ..waiting(90, 12)
         };
-        assert_eq!(
-            decide_after_merge(MergeOutcome::DirtyBase, &busy, &b),
-            PostMergeAction::Wait {
-                attempt: 13,
-                delay: Duration::from_secs(60)
-            }
-        );
-        let too_long = MergeRetryState {
+        assert_eq!(next_merge_wait(&busy), Some((13, Duration::from_secs(60))));
+        let too_long = MergeWaitState {
             waited: Some(MERGE_WAIT_LIMIT_BUSY),
             ..busy
         };
-        assert_eq!(
-            decide_after_merge(MergeOutcome::DirtyBase, &too_long, &b),
-            PostMergeAction::HandToAgent { retry: 1 }
-        );
+        assert_eq!(next_merge_wait(&too_long), None);
     }
 
     #[test]
@@ -1379,51 +1394,76 @@ mod tests {
         assert!(c.contains(&format!("retry-merge {id}")));
     }
 
-    // ---- decide_after_merge ------------------------------------------------
+    // The worker learns of an event from the journal, and the run keeps it
+    // until a step answers it, so a lost event is found again.
+    #[tokio::test]
+    async fn an_event_is_published_and_kept_on_the_run() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let workspace = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, branch) VALUES (?, 'vk/test')")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let since = agent_journal::list(0, &[], 1).cursor;
+        // No run, no event.
+        emit_event(&pool, workspace, EVENT_MERGE_RESULT, None, None, json!({}))
+            .await
+            .unwrap();
+        VibeRun::get_or_create(&pool, workspace, Uuid::new_v4())
+            .await
+            .unwrap();
+        emit_event(
+            &pool,
+            workspace,
+            EVENT_MERGE_RESULT,
+            None,
+            None,
+            json!({ "outcome": "conflict", "error": "repo: merge conflict" }),
+        )
+        .await
+        .unwrap();
 
-    fn retries(merge_retries: u32) -> MergeRetryState {
-        MergeRetryState {
-            merge_retries,
-            ..Default::default()
+        let kept = VibeRun::find_by_workspace_id(&pool, workspace)
+            .await
+            .unwrap()
+            .unwrap()
+            .pending
+            .unwrap()
+            .0;
+        assert_eq!(kept["kind"], EVENT_MERGE_RESULT);
+        assert_eq!(kept["outcome"], "conflict");
+        assert_eq!(kept["phase"], "coding");
+        assert_eq!(kept["generation"], 0);
+        assert!(kept["id"].as_str().is_some());
+        let published: Vec<_> = agent_journal::list(since, &["vibe.".to_string()], 100)
+            .events
+            .into_iter()
+            .filter(|event| event.workspace_id == Some(workspace))
+            .collect();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].kind, EVENT_MERGE_RESULT);
+        assert_eq!(published[0].data, kept);
+    }
+
+    #[test]
+    fn prompt_kinds_parse_and_name_their_session() {
+        for (kind, parsed, to_turn) in [
+            ("continue", PromptKind::Continue, true),
+            ("review_followup", PromptKind::ReviewFollowup, false),
+            ("resolve_conflict", PromptKind::ResolveConflict, false),
+            ("hand_merge_failure", PromptKind::HandMergeFailure, false),
+            ("cleanup_fix", PromptKind::CleanupFix, true),
+        ] {
+            assert_eq!(PromptKind::parse(kind), Some(parsed));
+            assert_eq!(parsed.to_turn_session(), to_turn);
         }
-    }
-
-    #[test]
-    fn merge_success_marks_in_review() {
-        assert_eq!(
-            decide_after_merge(MergeOutcome::Success, &retries(0), &VibeBounds::default()),
-            PostMergeAction::MarkInReview
-        );
-    }
-
-    #[test]
-    fn merge_conflict_asks_to_resolve_then_escalates() {
-        let b = VibeBounds::default();
-        assert_eq!(
-            decide_after_merge(MergeOutcome::Conflict, &retries(0), &b),
-            PostMergeAction::ResolveConflict { retry: 1 }
-        );
-        assert_eq!(
-            decide_after_merge(MergeOutcome::Conflict, &retries(2), &b),
-            PostMergeAction::ResolveConflict { retry: 3 }
-        );
-        // 4th attempt exceeds max_merge_retries (3).
-        assert_eq!(
-            decide_after_merge(MergeOutcome::Conflict, &retries(3), &b),
-            PostMergeAction::Escalate
-        );
-    }
-
-    #[test]
-    fn merge_other_failure_escalates_immediately() {
-        assert_eq!(
-            decide_after_merge(
-                MergeOutcome::OtherFailure,
-                &waiting(0, 0),
-                &VibeBounds::default()
-            ),
-            PostMergeAction::Escalate
-        );
+        assert_eq!(PromptKind::parse("merge"), None);
     }
 
     // ---- prompt helpers ----------------------------------------------------

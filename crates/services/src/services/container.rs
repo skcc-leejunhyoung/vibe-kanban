@@ -23,7 +23,7 @@ use db::{
         repo::Repo,
         scratch::DraftFollowUpData,
         session::{CreateSession, Session, SessionError},
-        vibe_run::PrRequest,
+        vibe_run::{PrRequest, VibeRun},
         workspace::{Workspace, WorkspaceError},
         workspace_repo::WorkspaceRepo,
     },
@@ -261,6 +261,31 @@ pub struct PreparedWorkspaceStart {
     pub main_action: ExecutorAction,
     /// All-parallel setup mode: setup-script rows to spawn alongside the agent.
     pub parallel_setups: Vec<(ExecutionProcess, ExecutorAction)>,
+}
+
+/// One step of a `vibe` run, as the automation worker decided it.
+#[derive(Debug, Clone)]
+pub enum VibeStep {
+    /// Open a review session next to `source_session` and send it the review
+    /// prompt; the run moves to `review`.
+    StartReview { source_session: Uuid },
+    /// Send `kind`'s prompt. `session` and `execution` are the turn the event
+    /// reported; `waited_minutes` how long a merge waited before giving up.
+    SendPrompt {
+        kind: super::vibe_orchestrator::PromptKind,
+        session: Option<Uuid>,
+        execution: Option<Uuid>,
+        waited_minutes: u64,
+    },
+    /// Merge the approved run with `retry` merge retries spent; its outcome is
+    /// a `vibe.merge_result` event.
+    Merge { retry: u32 },
+    /// Stop the run for a person: `blocked`, the `vibe-block` tag and a
+    /// notification (a failed merge also comments on the issue).
+    Block { reason: String },
+    /// The run reached its end: its issue goes to In review and the user is
+    /// told.
+    Finish,
 }
 
 #[async_trait]
@@ -1203,6 +1228,16 @@ pub trait ContainerService {
         executor_config: Option<ExecutorConfig>,
         pr: Option<PrRequest>,
     ) -> Result<Session, ContainerError>;
+
+    /// Take one step of a `vibe` run the automation worker asked for. The
+    /// caller checked the run against the request and took the event it
+    /// answers; `run` is the run as it was then.
+    async fn vibe_step(
+        &self,
+        workspace: &Workspace,
+        run: &VibeRun,
+        step: VibeStep,
+    ) -> Result<(), ContainerError>;
 
     /// Try the merge of a `vibe` run again: a waiting merge whose retry is due
     /// (`fresh = false`), or a manual retry of a blocked or waiting run, which

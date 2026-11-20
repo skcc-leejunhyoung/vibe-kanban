@@ -12,6 +12,8 @@ function status(overrides: Partial<VibeReviewStatus>): VibeReviewStatus {
     pr_requested: true,
     failed_phase: null,
     updated_at: '2026-11-12T11:55:00Z',
+    pending_kind: null,
+    pending_outcome: null,
     ...overrides,
   };
 }
@@ -20,6 +22,59 @@ const show = (overrides: Partial<VibeReviewStatus>) =>
   vibeRunBanner(status(overrides), NOW);
 
 describe('vibeRunBanner', () => {
+  it('shows a run waiting for the automation worker, an approval first', () => {
+    // Approved; the worker has not started the merge yet (or is down).
+    for (const phase of ['review', 'blocked']) {
+      expect(
+        show({
+          phase,
+          pr_requested: false,
+          pending_kind: 'vibe.turn_ended',
+          pending_outcome: 'approve',
+        })
+      ).toMatchObject({
+        tone: 'progress',
+        messageKey: 'conversation.vibeRun.approvedWaiting',
+        canRetry: false,
+      });
+    }
+    // Merged, and the worker is yet to finish it or open its PR.
+    expect(
+      show({
+        phase: 'done',
+        pr_requested: false,
+        pending_kind: 'vibe.merge_result',
+        pending_outcome: 'merged',
+      })
+    ).toMatchObject({ messageKey: 'conversation.vibeRun.automationWaiting' });
+    // A merge failure waits for the worker to hand it on, with its reason.
+    expect(
+      show({
+        phase: 'merging',
+        last_error: 'repo: merge conflict',
+        pending_kind: 'vibe.merge_result',
+        pending_outcome: 'conflict',
+      })
+    ).toMatchObject({
+      messageKey: 'conversation.vibeRun.automationWaiting',
+      detail: 'repo: merge conflict',
+      canRetry: false,
+    });
+    // A blocked step keeps its own banner and retry while the worker tags it.
+    expect(
+      show({
+        phase: 'blocked',
+        failed_phase: 'pushing',
+        last_error: 'diverged',
+        pending_kind: 'vibe.pr_result',
+        pending_outcome: 'failed',
+      })
+    ).toMatchObject({
+      messageKey: 'conversation.vibeRun.pushFailed',
+      canRetry: true,
+    });
+  });
+
   it('shows each step of a review-and-create-PR run as the server reports it', () => {
     const steps = ['review', 'merging', 'pushing', 'creating_pr'].map((phase) =>
       show({ phase })

@@ -32,9 +32,14 @@ const BACKUP_POLL_MS = 60_000;
 
 /** How soon to read the run again, by how soon it can move. */
 export function vibeRunPollMs(
-  status: Pick<VibeReviewStatus, 'phase' | 'last_error'> | undefined
+  status:
+    | Pick<VibeReviewStatus, 'phase' | 'last_error' | 'pending_kind'>
+    | undefined
 ): number {
   const phase = status?.phase;
+  // Waiting for the automation worker's next step: seconds while it runs,
+  // as long as it is down otherwise.
+  if (status?.pending_kind) return REVIEW_POLL_MS;
   // A merge held up by a failure waits minutes to hours: for its next
   // scheduled try, or for the review session to sort the failure out.
   if (phase === 'merging' && status?.last_error) return REVIEW_POLL_MS;

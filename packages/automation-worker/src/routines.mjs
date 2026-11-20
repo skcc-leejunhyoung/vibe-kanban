@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { COALESCE_DEFAULTS, kindMatches, sanitizeNotificationEvent } from './vibe-events.mjs';
+import { VIBE_FLOW_KINDS } from './vibe-flow.mjs';
 
 const CRON_PARTS = [
   [0, 59],
@@ -244,6 +245,9 @@ export function eventMatchesRoutine(routine, event) {
     return false;
   if (routine.trigger.type === 'vk_event') {
     const { kinds, hosts, connectorId } = routine.trigger;
+    // A vibe run's own events are for the `vibe_flow` rule: a routine hears
+    // them only when its trigger names them.
+    if (VIBE_FLOW_KINDS.includes(event.kind) && !kinds?.length) return false;
     if (!kindMatches(event.kind, kinds)) return false;
     if (hosts?.length && !hosts.includes(event.hostId) && !hosts.includes(event.hostName))
       return false;

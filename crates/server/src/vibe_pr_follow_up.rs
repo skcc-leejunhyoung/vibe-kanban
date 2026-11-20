@@ -1,12 +1,13 @@
-//! The server's half of "review and create PR" after the merge.
+//! The `publish-pr` step of a `vibe` run: push and draft PR after the merge.
 //!
-//! A review started with `create_pr` leaves its run in `pushing` once the merge
-//! lands. From there this module pushes each repo's target branch, has the
+//! The automation worker's `publish-pr` (or a retry) leaves a merged run in
+//! `pushing`. From there this module pushes each repo's target branch, has the
 //! agent draft a PR title and body, and opens the draft PR — the steps a
 //! browser tab used to drive, which stalled whenever that tab was closed,
 //! reloaded or suspended. The phase lives in `vibe_runs`, so a run a restart
 //! interrupted is picked up again at startup, and a step that fails blocks the
-//! run with its reason and the phase a retry resumes in.
+//! run with its reason and the phase a retry resumes in. Either way the
+//! outcome is a `vibe.pr_result` event for the worker.
 
 use std::{
     collections::HashSet,
@@ -34,7 +35,7 @@ use serde_json::{Value, json};
 use services::services::{
     agent_journal,
     container::ContainerService,
-    vibe_orchestrator::{PR_FOLLOW_UP, VibePhase},
+    vibe_orchestrator::{self, EVENT_PR_RESULT, PR_FOLLOW_UP, VibePhase},
     vibe_pr_bases,
 };
 use sqlx::SqlitePool;
@@ -80,14 +81,6 @@ pub(crate) trait FollowUpSteps: Send + Sync + 'static {
         workspace: &Workspace,
         run: &VibeRun,
     ) -> impl Future<Output = Result<Vec<PrOutcome>, String>> + Send;
-
-    /// The step `run.phase` failed and blocked the run.
-    fn blocked(
-        &self,
-        workspace: &Workspace,
-        run: &VibeRun,
-        reason: &str,
-    ) -> impl Future<Output = ()> + Send;
 
     /// The follow-up is done, with these outcomes.
     fn finished(
@@ -235,6 +228,15 @@ async fn advance<S: FollowUpSteps>(
                             prs
                         );
                         steps.finished(&workspace, &run, &prs).await;
+                        vibe_orchestrator::emit_event(
+                            pool,
+                            workspace_id,
+                            EVENT_PR_RESULT,
+                            run.review_session_id,
+                            None,
+                            pr_result(&prs),
+                        )
+                        .await?;
                     }
                     return Ok(());
                 }
@@ -243,17 +245,56 @@ async fn advance<S: FollowUpSteps>(
             _ => return Ok(()),
         };
         let failure = cap(&failure);
-        if VibeRun::block_follow_up(pool, workspace_id, from, run.generation, &failure).await? {
-            tracing::warn!(
-                "vibe: workspace {} blocked in {}: {}",
-                workspace_id,
-                from,
-                failure
-            );
-            steps.blocked(&workspace, &run, &failure).await;
-        }
+        block(pool, &run, from, &failure).await?;
         return Ok(());
     }
+}
+
+/// Stop the follow-up of `run` at its step `from` and report why. `false`
+/// when the run had moved on and was left alone.
+pub(crate) async fn block(
+    pool: &SqlitePool,
+    run: &VibeRun,
+    from: &str,
+    reason: &str,
+) -> Result<bool, VibeRunError> {
+    if !VibeRun::block_follow_up(pool, run.workspace_id, from, run.generation, reason).await? {
+        return Ok(false);
+    }
+    tracing::warn!(
+        "vibe: workspace {} blocked in {}: {}",
+        run.workspace_id,
+        from,
+        reason
+    );
+    vibe_orchestrator::emit_event(
+        pool,
+        run.workspace_id,
+        EVENT_PR_RESULT,
+        run.review_session_id,
+        None,
+        json!({ "outcome": "failed", "failed_phase": from, "error": reason }),
+    )
+    .await?;
+    Ok(true)
+}
+
+/// The `vibe.pr_result` of a finished follow-up: `opened` when it opened a PR,
+/// `already_open` when every head already had one.
+fn pr_result(prs: &[PrOutcome]) -> Value {
+    let urls: Vec<&str> = prs
+        .iter()
+        .filter_map(|pr| match pr {
+            PrOutcome::Opened(url) => Some(url.as_str()),
+            PrOutcome::AlreadyOpen(_) => None,
+        })
+        .collect();
+    let outcome = if urls.is_empty() && !prs.is_empty() {
+        "already_open"
+    } else {
+        "opened"
+    };
+    json!({ "outcome": outcome, "pr_url": urls.first(), "pr_urls": urls })
 }
 
 /// Keep `last_error`, the notification and the journal event small.
@@ -674,15 +715,6 @@ impl FollowUpSteps for Live {
         Ok(outcomes)
     }
 
-    async fn blocked(&self, workspace: &Workspace, run: &VibeRun, reason: &str) {
-        let title = if run.phase == VibePhase::Pushing.as_str() {
-            "Target push failed"
-        } else {
-            "PR creation failed"
-        };
-        self.notify(workspace, run, title, reason).await;
-    }
-
     async fn finished(&self, workspace: &Workspace, run: &VibeRun, prs: &[PrOutcome]) {
         if let Some((title, detail)) = finished_notice(prs) {
             self.notify(workspace, run, title, &detail).await;
@@ -931,10 +963,6 @@ mod tests {
             scripted.unwrap_or_else(|| Ok(vec![PrOutcome::Opened(PR_URL.to_string())]))
         }
 
-        async fn blocked(&self, _: &Workspace, run: &VibeRun, reason: &str) {
-            self.note(format!("blocked in {}: {reason}", run.phase));
-        }
-
         async fn finished(&self, _: &Workspace, _: &VibeRun, prs: &[PrOutcome]) {
             let told = finished_notice(prs).map(|(_, detail)| detail);
             self.note(format!("finished: {}", told.unwrap_or_default()));
@@ -1013,6 +1041,11 @@ mod tests {
         assert_eq!(done.phase, "done");
         assert!(done.last_error.is_none() && done.failed_phase.is_none());
         assert_eq!(steps.take_log(), ["push", "pr", FINISHED]);
+        // The worker hears of the PR, and finishes the run from there.
+        let reported = done.pending.as_ref().unwrap().0.clone();
+        assert_eq!(reported["kind"], "vibe.pr_result");
+        assert_eq!(reported["outcome"], "opened");
+        assert_eq!(reported["pr_url"], PR_URL);
         // The review that approved it is still the run's review.
         assert_eq!(
             (done.review_session_id, done.review_turns),
@@ -1041,9 +1074,23 @@ mod tests {
         assert_eq!(blocked.phase, "blocked");
         assert_eq!(blocked.last_error.as_deref(), Some(reason));
         assert_eq!(blocked.failed_phase.as_deref(), Some("pushing"));
-        // No PR for a target that was not pushed, and the user was told why.
-        let told = format!("blocked in pushing: {reason}");
-        assert_eq!(steps.take_log(), ["push", told.as_str()]);
+        // No PR for a target that was not pushed, and the worker hears why.
+        assert_eq!(steps.take_log(), ["push"]);
+        let reported = blocked.pending.as_ref().unwrap().0.clone();
+        assert_eq!(
+            (
+                &reported["kind"],
+                &reported["outcome"],
+                &reported["failed_phase"],
+                &reported["error"]
+            ),
+            (
+                &json!("vibe.pr_result"),
+                &json!("failed"),
+                &json!("pushing"),
+                &json!(reason)
+            )
+        );
         // Blocked stays blocked until someone retries.
         pass(&pool, &steps).await;
         assert!(steps.take_log().is_empty());
@@ -1091,8 +1138,11 @@ mod tests {
         assert_eq!(blocked.phase, "blocked");
         assert_eq!(blocked.last_error.as_deref(), Some(reason));
         assert_eq!(blocked.failed_phase.as_deref(), Some("creating_pr"));
-        let told = format!("blocked in creating_pr: {reason}");
-        assert_eq!(steps.take_log(), ["push", "pr", told.as_str()]);
+        assert_eq!(steps.take_log(), ["push", "pr"]);
+        assert_eq!(
+            blocked.pending.as_ref().unwrap().0["failed_phase"],
+            "creating_pr"
+        );
 
         assert!(
             VibeRun::retry(&pool, &run(&pool, workspace).await, None)
@@ -1410,6 +1460,19 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn the_worker_hears_whether_a_pr_was_opened_or_already_open() {
+        let opened = pr_result(&[
+            PrOutcome::AlreadyOpen(3),
+            PrOutcome::Opened(PR_URL.to_string()),
+        ]);
+        assert_eq!(opened["outcome"], "opened");
+        assert_eq!(opened["pr_url"], PR_URL);
+        let kept = pr_result(&[PrOutcome::AlreadyOpen(7)]);
+        assert_eq!(kept["outcome"], "already_open");
+        assert!(kept["pr_url"].is_null());
     }
 
     // Every finished run says what became of the PR: the browser-driven flow
