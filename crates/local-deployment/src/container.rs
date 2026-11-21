@@ -4708,8 +4708,12 @@ impl ContainerService for LocalContainerService {
             (run, 0)
         } else {
             // The caller saw a due wait; a step may have merged or blocked the
-            // run since.
-            if run.phase != VibePhase::Merging.as_str() || run.merge_retry_at.is_none() {
+            // run since, or the review session reported a turn the worker has
+            // not answered yet (a retry would start a new generation and drop it).
+            if run.phase != VibePhase::Merging.as_str()
+                || run.merge_retry_at.is_none()
+                || run.pending.is_some()
+            {
                 return Ok(());
             }
             if !VibeRun::retry(pool, &run, None)

@@ -29,7 +29,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use services::services::{
     container::{ContainerService, VibeStep},
-    vibe_orchestrator::{self, EVENT_PR_RESULT, PR_FOLLOW_UP, PromptKind, VibePhase},
+    vibe_orchestrator::{
+        self, EVENT_PR_RESULT, EVENT_TURN_ENDED, PR_FOLLOW_UP, PromptKind, VibePhase,
+    },
     vibe_pr_bases,
 };
 use sqlx::SqlitePool;
@@ -203,10 +205,18 @@ fn step_for(action: &str, request: &StepRequest, run: &VibeRun) -> Result<Step, 
             }
         }
         "merge" => {
+            // Outside a merge under way, only the review session's own
+            // "approve" opens one: the host does not take a rule's word for it.
+            let review_approved = pending.is_some_and(|pending| {
+                pending.get("kind").and_then(Value::as_str) == Some(EVENT_TURN_ENDED)
+                    && pending.get("role").and_then(Value::as_str) == Some("review")
+                    && pending.get("result").and_then(Value::as_str) == Some("approve")
+            });
             let approved = run.review_session_id.is_some()
                 && match phase {
-                    Some(VibePhase::Review | VibePhase::Merging) => true,
-                    Some(VibePhase::Blocked) => run.last_error.is_some(),
+                    Some(VibePhase::Merging) => true,
+                    Some(VibePhase::Review) => review_approved,
+                    Some(VibePhase::Blocked) => run.last_error.is_some() && review_approved,
                     _ => false,
                 };
             if !approved {
@@ -287,6 +297,16 @@ async fn take_step(
                 "{action}: a turn is running in the workspace"
             )));
         }
+    } else if action == "block"
+        && request.pending_id.is_none()
+        // A block that answers no event is the worker's stall block, read from
+        // a snapshot: a turn started since then is activity, not a stall.
+        && ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace_id)
+            .await?
+    {
+        return Err(ApiError::Conflict(
+            "block: a turn is running in the workspace".into(),
+        ));
     }
     if !VibeRun::take_pending(
         pool,
@@ -474,25 +494,54 @@ mod tests {
     #[test]
     fn a_step_fits_only_the_run_state_it_is_for() {
         let none = request(None);
+        let turn = |phase: &str, kind: &str, role: &str, result: &str| VibeRun {
+            pending: Some(sqlx::types::Json(
+                json!({ "id": "e", "kind": kind, "role": role, "result": result }),
+            )),
+            ..run(phase)
+        };
+        // Only the review session's own "approve" opens a merge.
         assert!(matches!(
-            step_for("merge", &none, &run("review")),
+            step_for(
+                "merge",
+                &none,
+                &turn("review", EVENT_TURN_ENDED, "review", "approve")
+            ),
             Ok(Step::Run(VibeStep::Merge { retry: 0 }))
         ));
+        assert!(refused(step_for("merge", &none, &run("review"))));
+        for (kind, role, result) in [
+            (EVENT_TURN_ENDED, "review", "continue"),
+            (EVENT_TURN_ENDED, "coding", "approve"),
+            ("vibe.cleanup_failed", "review", "approve"),
+        ] {
+            let run = turn("review", kind, role, result);
+            assert!(
+                refused(step_for("merge", &none, &run)),
+                "{kind} {role} {result}"
+            );
+        }
         // A merge under way keeps the retries it spent.
         assert!(matches!(
             step_for("merge", &none, &run("merging")),
             Ok(Step::Run(VibeStep::Merge { retry: 2 }))
         ));
-        // A blocked run merges again only after a failed merge.
-        assert!(refused(step_for("merge", &none, &run("blocked"))));
+        // A blocked run merges again only on a new approval after a failed merge.
+        let approved = turn("blocked", EVENT_TURN_ENDED, "review", "approve");
+        assert!(refused(step_for("merge", &none, &approved)));
         let failed = VibeRun {
             last_error: Some("repo: merge conflict".into()),
-            ..run("blocked")
+            ..approved
         };
         assert!(matches!(
             step_for("merge", &none, &failed),
             Ok(Step::Run(VibeStep::Merge { retry: 0 }))
         ));
+        let unapproved = VibeRun {
+            last_error: Some("repo: merge conflict".into()),
+            ..run("blocked")
+        };
+        assert!(refused(step_for("merge", &none, &unapproved)));
         for phase in ["coding", "done", "pushing"] {
             assert!(refused(step_for("merge", &none, &run(phase))), "{phase}");
         }

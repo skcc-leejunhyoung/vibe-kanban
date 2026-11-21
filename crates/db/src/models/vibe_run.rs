@@ -527,7 +527,8 @@ impl VibeRun {
     }
 
     /// Claim one retry and its destinations together. A competing request must
-    /// neither replace the winner's bases nor resume an already claimed step.
+    /// neither replace the winner's bases nor resume an already claimed step,
+    /// and a caller that saw no pending event does not drop one that arrived since.
     pub async fn retry(
         pool: &SqlitePool,
         expected: &Self,
@@ -541,13 +542,14 @@ impl VibeRun {
                  merge_retry_at = NULL, pending = NULL, updated_at = datetime('now','subsec') \
              WHERE workspace_id = ? AND generation = ? AND phase = ? \
                  AND phase IN ('blocked', 'merging') AND last_error IS NOT NULL \
-                 AND review_session_id IS NOT NULL",
+                 AND review_session_id IS NOT NULL AND (? OR pending IS NULL)",
         )
         .bind(bases.is_some())
         .bind(bases.map(Json))
         .bind(expected.workspace_id)
         .bind(expected.generation)
         .bind(&expected.phase)
+        .bind(expected.pending.is_some())
         .execute(pool)
         .await?;
         Ok(done.rows_affected() > 0)
@@ -655,6 +657,17 @@ mod tests {
         .await
         .unwrap();
         let blocked = run(&pool, id).await;
+        // An event that arrived after the caller looked is not dropped by its
+        // retry; one the caller saw is answered by it.
+        let event = serde_json::json!({ "id": "e" });
+        assert!(
+            VibeRun::set_pending(&pool, id, blocked.generation, &event)
+                .await
+                .unwrap()
+        );
+        assert!(!VibeRun::retry(&pool, &blocked, None).await.unwrap());
+        let blocked = run(&pool, id).await;
+        assert!(blocked.pending.is_some());
         let held = VibeRun::lock_generation(id).await;
         let retry = VibeRun::retry(&pool, &blocked, None);
         tokio::pin!(retry);
