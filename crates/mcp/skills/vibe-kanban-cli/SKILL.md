@@ -139,7 +139,7 @@ coding-agent run that died with a server restart, resume it with `vk session sen
 `coding|review|merging|pushing|creating_pr|blocked|done`, `last_error`, `failed_phase`),
 `vibe.turn_ended|cleanup_failed|merge_result|pr_result` (a `vibe` run's turn, failed cleanup,
 merge outcome or PR outcome; the automation worker's `vibe_flow` rule decides the next step from
-them and the host takes it — an agent cannot: `/api/automation-actions/vibe/*` is refused to agents),
+them and the host takes it — not you: `/api/automation-actions/vibe/*` is refused to agent requests),
 `queue.changed` (`size`, `paused`, `start_error`, `front_message_id`), `resume.fired`,
 `session.rate_limited` (`reason`, `resets_at`, `auto_resume`, `resume_at`),
 `session.waiting_on_blockers|blockers_resolved` (`task_id`, `blockers`),

@@ -575,7 +575,8 @@ start, so turn it off with `enabled: false` instead.
   `expected_generation`, `expected_phase` and the `pending_id` it answers and
   is refused with 409 once the run moved on; the idempotency key
   `vibe:{workspace}:{generation}:{step}:{event}` makes a repeated event take
-  its step once. Agents are refused these steps whatever their access.
+  its step once. Agent requests (the `vk` CLI, MCP) are refused these steps
+  whatever their access settings.
 - The host for an event is its `hostId` → the owner's host catalog
   (`machine_id`) → `hostBridges`. Every `reconcileSeconds` the rule reads
   `GET /api/automation-actions/vibe/runs` on each bridge and decides again on

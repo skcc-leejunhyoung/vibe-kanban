@@ -97,7 +97,7 @@ pub async fn validate_base(
     })?;
     if !exists {
         return Err(format!(
-            "PR base '{base}' does not exist on remote '{}'. Fetch and select a PR base that exists on this remote, then retry.",
+            "PR base '{base}' does not exist on remote '{}'. Select a PR base that exists on this remote (pr_bases) or fix the repository default target branch, then retry.",
             base_remote.name
         ));
     }
