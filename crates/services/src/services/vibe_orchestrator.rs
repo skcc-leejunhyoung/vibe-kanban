@@ -15,11 +15,14 @@
 //! themselves, and [`emit_event`].
 //!
 //! ```text
-//! coding ──start-review──► review ──merge──► merging ──merged──► done
-//!   ▲ send-prompt ↺          ▲ send-prompt ↺    │ send-prompt ↺      │ publish-pr
-//!   │                        │                  │ (conflict, wait)    ▼
-//!   └──── block ─────► blocked ◄──── block ─────┘          pushing → creating_pr → done
+//! coding ─done─► plan_review ─done─► review ──merge──► merging ──merged──► done
+//!   ▲ continue ↺   │ continue ↺        ▲ followup ↺       │ conflict / wait ↺  │ publish-pr
+//!   │              ▼                   │                  │                    ▼
+//!   └─ limits ─► blocked ◄──── limits ─┴──────────────────┘   pushing → creating_pr → done
 //! ```
+//!
+//! Agents never stop a run themselves (no `VIBE_RESULT: blocked`): what a
+//! person should decide is taken as recommended and written to the Drawer.
 
 use std::time::Duration;
 
@@ -49,14 +52,17 @@ pub const TAG_APPROVE: &str = "vibe-approve";
 /// line of its turn so the backend can drive the state machine.
 pub const SENTINEL: &str = "VIBE_RESULT:";
 
-/// Instruction appended to every **coding** turn (initial + continue + cleanup
-/// fix). Tells the agent to self-drive and emit the `VIBE_RESULT:` sentinel.
+/// Instruction appended to every **coding** turn (initial + continue + plan
+/// review + cleanup fix). Tells the agent to self-drive, leave the decisions a
+/// person should know about in the Drawer, and emit the `VIBE_RESULT:`
+/// sentinel. A run never stops on the agent's word: there is no `blocked`.
 pub const PREAMBLE_CODING: &str = "\n\n---\n[자동 워크플로우 지침]\n\
 - 진행 중 사용자에게 선택지를 묻지 말고, 항상 가장 합리적인 추천 방향으로 스스로 결정해 진행해라.\n\
+- 사용자가 결정해야 할 사항(모호한 요구사항, 여러 방법 중 선택, 범위·호환성·비용 판단 등)이 생겨도 멈추지 말고 추천 방향으로 진행하되, 그 결정을 Drawer 문서로 남겨라: `vk drawer create --title \"<이슈 제목>: 결정 사항\" --label \"확인 필요\" --notify --file -`에 마크다운 본문(무엇을 정했는지, 고른 방향과 이유, 다른 선택지, 바꾸려면 할 일)을 표준 입력으로 넘긴다. 한 턴의 결정은 한 문서로 묶어라.\n\
+- 추천대로 진행해도 할 수 없는 부분(권한, 외부 시스템 등)이 있으면 할 수 있는 데까지 끝내고, 못 한 부분과 이유를 같은 방법으로 Drawer 문서로 남겨라.\n\
 - 이 턴의 마지막 메시지는 그대로 git 커밋 메시지로 사용된다. 그러니 마지막 메시지는 `type(scope): 요약` 한 줄 제목 + (필요하면) 빈 줄 뒤 짧은 본문 형태의 커밋 메시지로 작성해라. 마크다운 헤더(##)·체크리스트·이모지·파일 나열·장문 보고는 넣지 마라. 사용자에게 길게 설명할 내용이 있으면 이 마지막 턴이 아니라 그 전 턴에 남겨라.\n\
 - 이 턴을 마칠 때 반드시 위 커밋 메시지 다음, 메시지의 마지막 줄에 다음 중 하나만 정확히 출력해라:\n\
-  - 이 이슈의 모든 작업을 완결적으로 끝냈으면: `VIBE_RESULT: done`\n\
-  - 추천대로 모두 진행해도 더 이상 불가능하면: `VIBE_RESULT: blocked`\n\
+  - 이 이슈의 모든 작업을 완결적으로 끝냈으면(할 수 없는 부분은 Drawer 문서로 남긴 뒤): `VIBE_RESULT: done`\n\
   - 아직 끝나지 않은 작업이 남았으면: `VIBE_RESULT: continue`";
 
 /// Instruction appended to every **review** turn (review A/B + conflict + a
@@ -64,13 +70,24 @@ pub const PREAMBLE_CODING: &str = "\n\n---\n[자동 워크플로우 지침]\n\
 pub const PREAMBLE_REVIEW: &str = "\n\n---\n[자동 리뷰 지침]\n\
 - 리뷰·수정은 현재 작업 워크트리 안에서 수행해라. base 체크아웃의 미커밋 파일은 열람·stage·commit·stash·restore·삭제하지 마. 해당 변경으로 머지가 막히면 백엔드가 기다렸다가 다시 시도한다.\n\
 - 진행 중 사용자에게 선택지를 묻지 말고, 항상 가장 합리적인 추천 방향으로 스스로 결정해 진행해라.\n\
+- 사용자가 결정해야 할 문제나 자동으로 해결할 수 없는 문제가 있으면 멈추지 말고 추천 방향으로 처리하되, 그 내용을 Drawer 문서로 남겨라: `vk drawer create --title \"<이슈 제목>: 리뷰 결정 사항\" --label \"확인 필요\" --notify --file -`에 마크다운 본문(무엇이 문제인지, 고른 방향과 이유, 다른 선택지, 바꾸려면 할 일)을 표준 입력으로 넘긴다.\n\
 - 이 턴을 마칠 때 반드시 메시지의 마지막 줄에 다음 중 하나만 정확히 출력해라:\n\
   - 머지 전 반드시 고쳐야 할 이슈가 없으면(승인): `VIBE_RESULT: approve`\n\
-  - 자동으로 해결할 수 없는 문제가 있으면: `VIBE_RESULT: blocked`\n\
   - 아직 리뷰하거나 수정할 것이 남았으면: `VIBE_RESULT: continue`";
 
 /// `send-prompt continue`: nudge the coding agent to keep going.
 pub const PROMPT_CONTINUE: &str = "아직 끝나지 않은 작업이 남아 있어. 남은 작업을 계속 진행해줘.";
+
+/// `send-prompt plan_review`: the check a coding run's `done` gets before its
+/// review — the user's own words, then where the plan is.
+pub fn plan_review_prompt(task_id: uuid::Uuid) -> String {
+    format!(
+        "기획에 맞게 빠짐없이 구현했는지 꼼꼼하게 확인해줘.\n\n\
+         기획은 이 워크스페이스에 연결된 이슈의 내용이다(`vk issue get {task_id}`로 다시 볼 수 있다). \
+         빠졌거나 기획과 다르게 구현된 부분이 있으면 고쳐라. 모두 기획대로 구현됐으면 `VIBE_RESULT: done`, \
+         아직 고칠 것이 남았으면 `VIBE_RESULT: continue`로 마쳐라."
+    )
+}
 
 /// `start-review`: the first prompt sent to the dedicated review session.
 pub const PROMPT_REVIEW_A: &str =
@@ -97,7 +114,7 @@ pub fn merge_handoff_prompt(detail: &str, waited_minutes: u64) -> String {
          할 수 있는 일:\n\
          - 상황을 확인한 뒤 다시 머지를 시도하려면 `VIBE_RESULT: approve`. 막는 변경이 그대로면 백엔드가 다시 기다렸다가 재시도한다.\n\
          - 이 워크트리 브랜치 쪽에서 고칠 수 있는 문제면 고친 뒤 `VIBE_RESULT: approve`.\n\
-         - 사람이 정리해야 하는 상황이면 `VIBE_RESULT: blocked`.\n\
+         - 사람이 정리해야 하는 상황이면 무엇을 정리해야 하는지 Drawer 문서(`vk drawer create --title \"<이슈 제목>: 머지 막힘\" --label \"확인 필요\" --notify --file -`)로 남긴 뒤 `VIBE_RESULT: approve`. 재시도 한도를 넘으면 자동화가 멈춘다.\n\
          금지: base 체크아웃(위에 적힌 경로)의 파일을 commit·stash·restore·checkout·삭제하지 마. 그 변경은 다른 세션이나 사람의 작업이다. \
          상태 확인은 `git status`·`git log` 같은 읽기 명령만 써라."
     )
@@ -407,6 +424,9 @@ pub async fn emit_event(
 pub enum PromptKind {
     /// More coding work remains (the coding session; a coding turn).
     Continue,
+    /// The coding agent reported done: check the work against the plan
+    /// before the review (the coding session; a coding turn).
+    PlanReview,
     /// The review did not approve yet (the review session; a review turn).
     ReviewFollowup,
     /// The merge hit a conflict (the review session; a merge retry).
@@ -418,21 +438,37 @@ pub enum PromptKind {
 }
 
 impl PromptKind {
+    const ALL: [Self; 6] = [
+        Self::Continue,
+        Self::PlanReview,
+        Self::ReviewFollowup,
+        Self::ResolveConflict,
+        Self::HandMergeFailure,
+        Self::CleanupFix,
+    ];
+
+    /// The name the worker asks for it by, and the turn it starts reports.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::PlanReview => "plan_review",
+            Self::ReviewFollowup => "review_followup",
+            Self::ResolveConflict => "resolve_conflict",
+            Self::HandMergeFailure => "hand_merge_failure",
+            Self::CleanupFix => "cleanup_fix",
+        }
+    }
+
     pub fn parse(kind: &str) -> Option<Self> {
-        Some(match kind {
-            "continue" => Self::Continue,
-            "review_followup" => Self::ReviewFollowup,
-            "resolve_conflict" => Self::ResolveConflict,
-            "hand_merge_failure" => Self::HandMergeFailure,
-            "cleanup_fix" => Self::CleanupFix,
-            _ => return None,
-        })
+        Self::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == kind)
     }
 
     /// Sent into the session whose turn the event reported, not the review
     /// session of the run.
     pub fn to_turn_session(self) -> bool {
-        matches!(self, Self::Continue | Self::CleanupFix)
+        matches!(self, Self::Continue | Self::PlanReview | Self::CleanupFix)
     }
 }
 
@@ -725,7 +761,10 @@ mod tests {
         assert!(p.contains("vk.rs"));
         assert!(p.contains("in-place sessions there: 'chat' session s1"));
         assert!(p.contains("`VIBE_RESULT: approve`"));
-        assert!(p.contains("`VIBE_RESULT: blocked`"));
+        // What a person must sort out goes to the Drawer; the run is not
+        // stopped on the agent's word.
+        assert!(p.contains("vk drawer create"));
+        assert!(!p.contains("blocked"));
         assert!(p.contains("commit·stash·restore·checkout·삭제하지 마"));
     }
 
@@ -828,12 +867,14 @@ mod tests {
     fn prompt_kinds_parse_and_name_their_session() {
         for (kind, parsed, to_turn) in [
             ("continue", PromptKind::Continue, true),
+            ("plan_review", PromptKind::PlanReview, true),
             ("review_followup", PromptKind::ReviewFollowup, false),
             ("resolve_conflict", PromptKind::ResolveConflict, false),
             ("hand_merge_failure", PromptKind::HandMergeFailure, false),
             ("cleanup_fix", PromptKind::CleanupFix, true),
         ] {
             assert_eq!(PromptKind::parse(kind), Some(parsed));
+            assert_eq!(parsed.as_str(), kind);
             assert_eq!(parsed.to_turn_session(), to_turn);
         }
         assert_eq!(PromptKind::parse("merge"), None);
@@ -847,6 +888,31 @@ mod tests {
         assert!(p.starts_with(PROMPT_CONTINUE));
         assert!(p.contains("VIBE_RESULT: done"));
         assert!(p.contains("VIBE_RESULT: continue"));
+    }
+
+    // No agent stops a run itself: a decision a person should make is taken
+    // as recommended and written to the Drawer, with a notification.
+    #[test]
+    fn no_preamble_offers_blocked_and_both_send_decisions_to_the_drawer() {
+        for preamble in [PREAMBLE_CODING, PREAMBLE_REVIEW] {
+            assert!(!preamble.contains("VIBE_RESULT: blocked"), "{preamble}");
+            assert!(preamble.contains("vk drawer create"), "{preamble}");
+            assert!(preamble.contains("--notify"), "{preamble}");
+            assert!(preamble.contains("추천 방향으로"), "{preamble}");
+        }
+        assert!(PREAMBLE_REVIEW.contains("VIBE_RESULT: approve"));
+        assert!(PREAMBLE_REVIEW.contains("VIBE_RESULT: continue"));
+    }
+
+    #[test]
+    fn the_plan_review_asks_in_the_users_words_and_names_the_plan() {
+        let task = uuid::Uuid::nil();
+        let p = with_coding_preamble(&plan_review_prompt(task));
+        assert!(p.starts_with("기획에 맞게 빠짐없이 구현했는지 꼼꼼하게 확인해줘."));
+        assert!(p.contains(&format!("vk issue get {task}")));
+        assert!(p.contains("VIBE_RESULT: done"));
+        assert!(p.contains("VIBE_RESULT: continue"));
+        assert!(p.ends_with(PREAMBLE_CODING));
     }
 
     #[test]

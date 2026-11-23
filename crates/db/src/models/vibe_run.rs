@@ -64,6 +64,10 @@ pub struct VibeRun {
     /// (its payload, with an `id` the answering action names). The worker
     /// decides the next step; nothing in the server does.
     pub pending: Option<Json<serde_json::Value>>,
+    /// The kind of the prompt the worker last sent into the run, until the
+    /// turn it started is reported (`plan_review`, ...); `None` for a turn
+    /// nobody prompted.
+    pub last_prompt: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -125,7 +129,7 @@ impl VibeRun {
     const COLUMNS: &'static str = "workspace_id, task_id, phase, generation, review_session_id, \
          coding_turns, review_turns, merge_retries, last_result, last_error, merge_wait_since, \
          merge_wait_attempts, merge_retry_at, pr_requested, pr_executor_config, pr_bases, failed_phase, \
-         pending, created_at, updated_at";
+         pending, last_prompt, created_at, updated_at";
 
     /// Fetch-or-initialize the run row for a workspace. New rows start in the
     /// `coding` phase. Idempotent: an existing row is returned unchanged.
@@ -316,7 +320,7 @@ impl VibeRun {
                  last_result = NULL, last_error = NULL, merge_wait_since = NULL, \
                  merge_wait_attempts = 0, merge_retry_at = NULL, \
                  pr_requested = ?, pr_executor_config = ?, pr_bases = ?, failed_phase = NULL, \
-                 pending = NULL, updated_at = datetime('now','subsec') \
+                 pending = NULL, last_prompt = NULL, updated_at = datetime('now','subsec') \
              WHERE workspace_id = ?",
         )
         .bind(review_session_id)
@@ -556,6 +560,21 @@ impl VibeRun {
     }
 
     /// Record (or clear, with `None`) the agent's latest sentinel token.
+    /// Record (or clear, with `None`) the kind of the prompt just sent into
+    /// the run; the turn it started reports it.
+    pub async fn set_last_prompt(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        last_prompt: Option<&str>,
+    ) -> Result<(), VibeRunError> {
+        sqlx::query("UPDATE vibe_runs SET last_prompt = ? WHERE workspace_id = ?")
+            .bind(last_prompt)
+            .bind(workspace_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_last_result(
         pool: &SqlitePool,
         workspace_id: Uuid,

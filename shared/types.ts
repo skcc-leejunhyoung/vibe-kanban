@@ -683,7 +683,7 @@ export type VibeReviewRequest = { executor_config: ExecutorConfig | null,
  * "Review and create PR": once the review approves, the automation
  * worker has this host merge, push the target branch and open an
  * AI-drafted draft PR. Nothing after this request depends on the caller
- * staying connected (a host without the worker stops at the approval).
+ * staying connected (without the worker a run waits after each turn).
  */
 create_pr: boolean, pr_bases?: Array<PrBaseSelection>, };
 

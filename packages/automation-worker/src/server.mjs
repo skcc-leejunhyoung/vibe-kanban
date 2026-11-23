@@ -6304,7 +6304,7 @@ async function driveVibeRun(rule, connector, baseUrl, workspaceId, event, { arch
   const finish = needsFinish(event)
     ? finishFor(settings, await vibeFlowProject(connector, event.task_id))
     : settings.defaultFinish;
-  let decision = decideVibe(event, { finish, limits: settings.limits }) ||
+  let decision = decideVibe(event, { finish, limits: settings.limits, planReview: settings.planReview }) ||
     (event.id ? { action: 'dismiss' } : null);
   if (archived) decision = forArchivedWorkspace(decision);
   if (!decision) return null;

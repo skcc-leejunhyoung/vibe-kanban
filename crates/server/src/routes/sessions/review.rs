@@ -505,6 +505,7 @@ mod tests {
             pr_bases: None,
             failed_phase: None,
             pending: None,
+            last_prompt: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

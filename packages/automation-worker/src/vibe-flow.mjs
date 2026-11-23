@@ -21,6 +21,9 @@ export const VIBE_FLOW_DEFAULTS = {
   // `stepFailures`: a step the host keeps failing (a vanished session, an
   // agent that cannot start) is tried this many times, then the run blocks.
   limits: { codingTurns: 10, reviewTurns: 5, mergeRetries: 3, stepFailures: 3 },
+  // A coding `done` is first checked against the plan (the issue) in the
+  // coding session; only a `done` that answers that check goes to review.
+  planReview: true,
   // How often every host's runs are read again, for events that never came.
   reconcileSeconds: 180,
   // A run with no turn running and nothing to do for this long is blocked.
@@ -54,6 +57,7 @@ export function vibeFlowSettings(config = {}) {
       mergeRetries: count(limits.mergeRetries, defaults.limits.mergeRetries),
       stepFailures: Math.max(1, count(limits.stepFailures, defaults.limits.stepFailures)),
     },
+    planReview: config.planReview !== false,
     reconcileSeconds: Math.max(30, Number(config.reconcileSeconds) || defaults.reconcileSeconds),
     staleMinutes: Math.max(1, Number(config.staleMinutes) || defaults.staleMinutes),
   };
@@ -82,7 +86,10 @@ const prompt = (kind) => ({ action: 'send-prompt', kind });
 // counters, plus what happened) calls for: `{ action, kind?, reason? }`, or
 // `null` when nothing is to be done. `finish` is where the run's project ends
 // (`merge` | `pr`); `limits` bound turns and merge retries.
-export function decideVibe(event, { finish = 'merge', limits = VIBE_FLOW_DEFAULTS.limits } = {}) {
+export function decideVibe(
+  event,
+  { finish = 'merge', limits = VIBE_FLOW_DEFAULTS.limits, planReview = true } = {}
+) {
   // The host failed the step this event called for, again and again.
   const failures = Number(event?.failed_attempts || 0);
   if (failures >= (limits.stepFailures ?? VIBE_FLOW_DEFAULTS.limits.stepFailures))
@@ -91,7 +98,7 @@ export function decideVibe(event, { finish = 'merge', limits = VIBE_FLOW_DEFAULT
     );
   switch (event?.kind) {
     case 'vibe.turn_ended':
-      return decideTurn(event, limits);
+      return decideTurn(event, limits, planReview);
     case 'vibe.cleanup_failed':
       return decideCleanupFailure(event, limits);
     case 'vibe.merge_result':
@@ -110,7 +117,6 @@ export function decideVibe(event, { finish = 'merge', limits = VIBE_FLOW_DEFAULT
   }
 }
 
-const AGENT_BLOCKED = 'The agent reported it cannot go on (VIBE_RESULT: blocked).';
 
 // Within the coding / review turn budget, `action`; past it, blocked.
 const withinCoding = (event, limits, action) =>
@@ -122,7 +128,11 @@ const withinReview = (event, limits, action) =>
     ? action
     : block(`Review reached its limit of ${limits.reviewTurns} turns.`);
 
-function decideTurn(event, limits) {
+// The agents are no longer offered `blocked`: what a person should decide
+// goes to the Drawer and the work goes on. A `blocked` still coming from an
+// agent (an older prompt in its context) is taken as "not finished yet"; the
+// turn and retry limits are what stop a run.
+function decideTurn(event, limits, planReview) {
   // Only a turn that ran to its end (the agent, or the cleanup chained after
   // it) moves the run; a failed, killed or setup-only turn waits for a person.
   const finished =
@@ -130,16 +140,17 @@ function decideTurn(event, limits) {
     (event.run_reason === 'codingagent' || event.run_reason === 'cleanupscript');
   if (!finished) return null;
   if (event.phase === 'coding') {
-    switch (event.result) {
-      // The coding agent's verb is "done"; a stray "approve" asks for review too.
-      case 'done':
-      case 'approve':
-        return { action: 'start-review' };
-      case 'blocked':
-        return block(AGENT_BLOCKED);
-      default:
-        return withinCoding(event, limits, prompt('continue'));
+    // The coding agent's verb is "done"; a stray "approve" asks for review too.
+    if (event.result === 'done' || event.result === 'approve') {
+      // A `done` answering the plan check goes to review. Any other is checked
+      // against the plan first — while the coding budget lasts: a finished
+      // run is never blocked for want of a check.
+      const checked = event.prompt === 'plan_review';
+      return planReview && !checked && Number(event.coding_turns || 0) < limits.codingTurns
+        ? prompt('plan_review')
+        : { action: 'start-review' };
     }
+    return withinCoding(event, limits, prompt('continue'));
   }
   // After coding only the review session's turns move the run; a late one of
   // the original coding session does not.
@@ -147,13 +158,10 @@ function decideTurn(event, limits) {
   switch (event.phase) {
     case 'review':
       if (event.result === 'approve') return { action: 'merge' };
-      if (event.result === 'blocked') return block(AGENT_BLOCKED);
       return withinReview(event, limits, prompt('review_followup'));
-    // The review session worked on a failed merge it was handed: merge again,
-    // unless it gave up.
+    // The review session worked on a failed merge it was handed: merge again
+    // (the merge retry budget bounds it).
     case 'merging':
-      if (event.result === 'blocked')
-        return block('The review session could not resolve the merge failure (VIBE_RESULT: blocked).');
       return { action: 'merge' };
     // Approved after a failed merge (the review was asked to look again): a
     // new attempt with the full retry budget.

@@ -557,12 +557,25 @@ start, so turn it off with `enabled: false` instead.
     "defaultFinish": "merge",
     "projects": { "<cloud project id>": { "finish": "pr" } },
     "limits": { "codingTurns": 10, "reviewTurns": 5, "mergeRetries": 3, "stepFailures": 3 },
+    "planReview": true,
     "reconcileSeconds": 180,
     "staleMinutes": 15
   }
 }
 ```
 
+- A coding `done` is checked against the plan before the review: the coding
+  session gets "기획에 맞게 빠짐없이 구현했는지 꼼꼼하게 확인해줘" (plus where the
+  issue is) as a coding turn, and only a `done` answering that check
+  (`prompt: "plan_review"` on its `vibe.turn_ended`) starts the review; a
+  `continue` goes on coding and its next `done` is checked again. With the
+  coding budget spent the run goes straight to review; `planReview: false`
+  skips the check.
+- Agents are not offered `VIBE_RESULT: blocked`: a decision a person should
+  make is taken as recommended and written to the Drawer (`vk drawer create
+  … --label "확인 필요" --notify`), and the work goes on. A `blocked` an agent
+  still prints counts as "not finished"; only the limits above (and a step
+  the host keeps failing, or a stalled run) block a run.
 - `finish: "merge"` ends a run at its local merge (the issue goes to In
   review). `"pr"` goes on: push the merge target and open an AI-drafted draft
   PR (head = latest merge target, base = the repository's default target),
@@ -572,14 +585,15 @@ start, so turn it off with `enabled: false` instead.
   with "Pull request already open" and no new PR.
 - Events (journal → `/v1/agent-events` → a `vibe_events` connector, whose
   `kinds` must include `vibe.`): `vibe.turn_ended` (`role`, `result` =
-  the agent's `VIBE_RESULT`, process `status`, `run_reason`, turn counters),
+  the agent's `VIBE_RESULT`, `prompt` = the worker's prompt that started the
+  turn, process `status`, `run_reason`, turn counters),
   `vibe.cleanup_failed`, `vibe.merge_result` (`outcome` merged |
   skipped_open_pr | conflict | wait_expired | failed, `error`),
   `vibe.pr_result` (`outcome` opened | already_open | failed, `pr_url`,
   `failed_phase`). Each payload is also kept on the run as `pending` until a
   step answers it.
 - Steps (host `POST /api/automation-actions/vibe/{workspace}/{step}`):
-  `start-review`, `send-prompt` (`kind` continue | review_followup |
+  `start-review`, `send-prompt` (`kind` continue | plan_review | review_followup |
   resolve_conflict | hand_merge_failure | cleanup_fix), `merge`, `publish-pr`,
   `block` (`reason`; tag `vibe-block` and a notification), `finish` (issue to
   In review, "Ready for review") and `dismiss` (nothing to do). Each names

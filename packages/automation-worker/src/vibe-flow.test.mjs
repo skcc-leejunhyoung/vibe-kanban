@@ -81,12 +81,11 @@ test('a blocked run merges again only when its review re-approves a failed merge
     assert.equal(decide({ ...reapprove, ...other }), null, JSON.stringify(other));
 });
 
-test('a review turn on a failed merge merges again unless it gave up', () => {
+test('a review turn on a failed merge merges again, the retry budget bounding it', () => {
   assert.deepEqual(decide(turn({ phase: 'merging', merge_retries: 1 })), { action: 'merge' });
   assert.deepEqual(decide(turn({ phase: 'merging', result: 'done' })), { action: 'merge' });
-  // The agent gave up on the conflict: block now rather than burning the
-  // remaining merge retries on it.
-  assert.equal(decide(turn({ phase: 'merging', result: 'blocked', merge_retries: 1 })).action, 'block');
+  // An agent no longer stops the run: a stray "blocked" merges again too.
+  assert.deepEqual(decide(turn({ phase: 'merging', result: 'blocked', merge_retries: 1 })), { action: 'merge' });
   assert.equal(decide(turn({ phase: 'merging', role: 'coding' })), null);
 });
 
@@ -103,12 +102,40 @@ test('turns after the merge decide nothing', () => {
 
 const coding = (input = {}) => turn({ phase: 'coding', role: 'coding', generation: 0, ...input });
 
-test('finished coding starts the review, even through its cleanup', () => {
+// "기획에 맞게 빠짐없이 구현했는지 꼼꼼하게 확인해줘" comes between a coding
+// `done` and the review; only a `done` answering it goes on to review.
+test('finished coding is checked against the plan first, even through its cleanup', () => {
   for (const result of ['done', 'approve'])
-    assert.deepEqual(decide(coding({ result })), { action: 'start-review' });
+    assert.deepEqual(decide(coding({ result })), { action: 'send-prompt', kind: 'plan_review' });
   assert.deepEqual(decide(coding({ result: 'done', run_reason: 'cleanupscript' })), {
+    action: 'send-prompt',
+    kind: 'plan_review',
+  });
+});
+
+test('a done that answers the plan check starts the review; gaps it found go on coding', () => {
+  const checked = (input) => coding({ prompt: 'plan_review', ...input });
+  assert.deepEqual(decide(checked({ result: 'done' })), { action: 'start-review' });
+  assert.deepEqual(decide(checked({ result: 'done', run_reason: 'cleanupscript' })), {
     action: 'start-review',
   });
+  // Gaps found and still being fixed: coding goes on, and its next `done`
+  // is checked again.
+  assert.deepEqual(decide(checked({ result: 'continue' })), { action: 'send-prompt', kind: 'continue' });
+  assert.deepEqual(decide(coding({ prompt: 'continue', result: 'done' })), {
+    action: 'send-prompt',
+    kind: 'plan_review',
+  });
+});
+
+test('the plan check spends a coding turn, never blocks a finished run, and can be off', () => {
+  // The budget is spent: straight to review rather than a check it cannot afford.
+  assert.deepEqual(decide(coding({ result: 'done', coding_turns: 10 })), { action: 'start-review' });
+  assert.deepEqual(decideVibe(coding({ result: 'done' }), { limits, planReview: false }), {
+    action: 'start-review',
+  });
+  assert.equal(vibeFlowSettings({}).planReview, true);
+  assert.equal(vibeFlowSettings({ planReview: false }).planReview, false);
 });
 
 test('coding goes on while work remains, within the coding budget', () => {
@@ -126,12 +153,13 @@ test('coding goes on while work remains, within the coding budget', () => {
   assert.match(spent.reason, /limit of 10 turns/);
 });
 
-test('an agent that reports blocked is blocked, in coding and in review', () => {
-  for (const event of [coding({ result: 'blocked' }), turn({ result: 'blocked' })]) {
-    const decision = decide(event);
-    assert.equal(decision.action, 'block');
-    assert.match(decision.reason, /VIBE_RESULT: blocked/);
-  }
+// Agents are no longer offered "blocked" (decisions go to the Drawer); one
+// still saying it is taken as not finished, within the same budgets.
+test('an agent that says blocked does not stop the run', () => {
+  assert.deepEqual(decide(coding({ result: 'blocked' })), { action: 'send-prompt', kind: 'continue' });
+  assert.deepEqual(decide(turn({ result: 'blocked' })), { action: 'send-prompt', kind: 'review_followup' });
+  assert.equal(decide(coding({ result: 'blocked', coding_turns: 10 })).action, 'block');
+  assert.equal(decide(turn({ result: 'blocked', review_turns: 5 })).action, 'block');
 });
 
 test('a failed or killed coding turn, a failed setup and other scripts decide nothing', () => {
@@ -518,20 +546,25 @@ test('coding turns go on, then start the review in the session that reported don
       },
     },
   });
+  // The host reports each prompted turn with the prompt that started it.
+  const next = [
+    coding({ id: 'turn-2', result: 'done', coding_turns: 1, prompt: 'continue', session_id: 'coding-session' }),
+    coding({ id: 'turn-3', result: 'done', coding_turns: 2, prompt: 'plan_review', session_id: 'coding-session' }),
+  ];
   world.host.effects['send-prompt'] = (run) => {
-    run.pending = coding({ id: 'turn-2', result: 'done', coding_turns: 1, session_id: 'coding-session' });
+    run.pending = next.shift();
   };
   world.host.effects['start-review'] = (run) => {
     run.phase = 'review';
     run.generation = 1;
   };
-  await world.deliver('ws', world.host.runs.ws.pending);
-  await world.deliver('ws', world.host.runs.ws.pending);
+  for (let turns = 0; turns < 3; turns++) await world.deliver('ws', world.host.runs.ws.pending);
   assert.deepEqual(
     world.posts.map(({ action, body }) => [action, body.kind ?? null, body.pending_id]),
     [
       ['send-prompt', 'continue', 'turn-1'],
-      ['start-review', null, 'turn-2'],
+      ['send-prompt', 'plan_review', 'turn-2'],
+      ['start-review', null, 'turn-3'],
     ]
   );
   assert.equal(world.host.runs.ws.phase, 'review');

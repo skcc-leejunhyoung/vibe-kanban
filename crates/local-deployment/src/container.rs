@@ -2925,9 +2925,15 @@ impl LocalContainerService {
             "result": vibe_run.last_result.as_deref().unwrap_or("none"),
             "status": ctx.execution_process.status,
             "run_reason": ctx.execution_process.run_reason,
+            // Which of the worker's prompts started this turn (`plan_review`,
+            // ...); null for one nobody prompted.
+            "prompt": vibe_run.last_prompt,
         });
         if vibe_run.last_result.is_some() {
             let _ = VibeRun::set_last_result(pool, workspace_id, None).await;
+        }
+        if vibe_run.last_prompt.is_some() {
+            let _ = VibeRun::set_last_prompt(pool, workspace_id, None).await;
         }
         if let Err(e) = emit_event(
             pool,
@@ -4778,6 +4784,12 @@ impl ContainerService for LocalContainerService {
                         vibe_orchestrator::with_coding_preamble(vibe_orchestrator::PROMPT_CONTINUE),
                         Spends::CodingTurn,
                     ),
+                    PromptKind::PlanReview => (
+                        vibe_orchestrator::with_coding_preamble(
+                            &vibe_orchestrator::plan_review_prompt(run.task_id),
+                        ),
+                        Spends::CodingTurn,
+                    ),
                     PromptKind::ReviewFollowup => (
                         vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_B),
                         Spends::ReviewTurn,
@@ -4814,7 +4826,13 @@ impl ContainerService for LocalContainerService {
                         }
                     }
                 };
-                self.vibe_send_followup(workspace, &target, &prompt).await?;
+                // Marked before the send: the turn it starts reports it, however
+                // soon it ends. A send that failed leaves no mark.
+                let _ = VibeRun::set_last_prompt(pool, workspace_id, Some(kind.as_str())).await;
+                if let Err(e) = self.vibe_send_followup(workspace, &target, &prompt).await {
+                    let _ = VibeRun::set_last_prompt(pool, workspace_id, None).await;
+                    return Err(e);
+                }
                 // Counted once the prompt went out: a send that failed (and is
                 // tried again) spends nothing.
                 let _ = match spends {
@@ -6315,6 +6333,29 @@ done
             event["execution_id"],
             ended.execution_process.id.to_string()
         );
+        // Nobody prompted the first turn.
+        assert!(event["prompt"].is_null());
+
+        // A turn the worker's plan review started says so, once.
+        VibeRun::set_last_prompt(&pool, workspace_id, Some("plan_review"))
+            .await
+            .unwrap();
+        VibeRun::set_last_result(&pool, workspace_id, Some("done"))
+            .await
+            .unwrap();
+        container
+            .vibe_on_finalize(&finish(coding, "codingagent", "completed").await)
+            .await;
+        let checked = run().await;
+        let event = checked.pending.unwrap().0;
+        assert_eq!(
+            (&event["result"], &event["prompt"]),
+            (
+                &serde_json::json!("done"),
+                &serde_json::json!("plan_review")
+            )
+        );
+        assert_eq!(checked.last_prompt, None);
 
         let failed = finish(coding, "cleanupscript", "failed").await;
         container.vibe_on_finalize(&failed).await;

@@ -189,8 +189,8 @@ fn step_for(action: &str, request: &StepRequest, run: &VibeRun) -> Result<Step, 
         "send-prompt" => {
             let Some(kind) = request.kind.as_deref().and_then(PromptKind::parse) else {
                 return Err(ApiError::BadRequest(
-                    "send-prompt needs a kind: continue, review_followup, resolve_conflict, \
-                     hand_merge_failure or cleanup_fix"
+                    "send-prompt needs a kind: continue, plan_review, review_followup, \
+                     resolve_conflict, hand_merge_failure or cleanup_fix"
                         .into(),
                 ));
             };
@@ -470,6 +470,7 @@ mod tests {
             pr_bases: None,
             failed_phase: None,
             pending: None,
+            last_prompt: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
