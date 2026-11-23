@@ -5,6 +5,7 @@ import {
   GithubBudgetLow,
   checkGithubBudget,
   collectReconciliation,
+  conditionalGithub,
   reconciliationProjects,
   validateReconciliationScope,
 } from './autopilot-reconcile.mjs';
@@ -165,6 +166,8 @@ const AUTOPILOT_PERIODIC_RECONCILE =
 const AUTOPILOT_DECISIONS_API_KEY = process.env.AUTOPILOT_DECISIONS_API_KEY || '';
 // GitHub REST calls a periodic reconciliation leaves for everything else (~550 per run).
 const AUTOPILOT_GITHUB_RESERVE = Number(process.env.AUTOPILOT_GITHUB_RESERVE || 1500);
+// ETag-validated GitHub bodies the periodic reconciliation re-reads, per URL.
+const githubConditionalCache = new Map();
 // off | shadow (record decisions, deliver as before) | active (apply them).
 const AUTOPILOT_TRIAGE = process.argv.includes('--self-test')
   ? 'off'
@@ -2057,6 +2060,10 @@ async function reconcileRoutineAutopilot(input) {
       github,
       AbortSignal.any([signal, AbortSignal.timeout(15000)])
     );
+    const readGithub = conditionalGithub({
+      fetch,
+      cache: githubConditionalCache,
+    });
     const collect = (terminalReviews) =>
       collectReconciliation({
         scope: input,
@@ -2064,7 +2071,7 @@ async function reconcileRoutineAutopilot(input) {
         terminalReviews,
         signal,
         github: async (path) => {
-          const response = await fetch(
+          const { response, body } = await readGithub(
             `${githubApiBase(github.config)}${path}`,
             {
               headers: githubHeaders(github.config.token),
@@ -2074,8 +2081,9 @@ async function reconcileRoutineAutopilot(input) {
           const remaining = response.headers.get('x-ratelimit-remaining');
           if (remaining !== null)
             checkGithubBudget(Number(remaining), AUTOPILOT_GITHUB_RESERVE);
-          if (!response.ok) throw new Error('GitHub reconciliation failed');
-          return response.json();
+          if (body === undefined)
+            throw new Error('GitHub reconciliation failed');
+          return body;
         },
         discover: async (repository) =>
           githubSearchPrs(

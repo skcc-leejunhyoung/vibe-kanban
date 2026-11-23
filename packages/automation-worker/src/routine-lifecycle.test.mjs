@@ -19,6 +19,7 @@ import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
 import {
   checkGithubBudget,
   collectReconciliation,
+  conditionalGithub,
   reconciliationProjects,
   validateReconciliationScope
 } from './autopilot-reconcile.mjs';
@@ -378,6 +379,8 @@ test(
       githubApiBase: () => baseUrl,
       githubHeaders: () => ({}),
       checkGithubBudget,
+      conditionalGithub,
+      githubConditionalCache: new Map(),
       AUTOPILOT_GITHUB_RESERVE: 1500,
       persistState: async () => {},
       fetch: async (url) => {

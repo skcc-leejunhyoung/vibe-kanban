@@ -32,6 +32,30 @@ export function checkGithubBudget(remaining, reserve) {
     throw new GithubBudgetLow(remaining, reserve);
 }
 
+// Conditional GETs: GitHub answers an unchanged resource with 304, which does
+// not count against the REST rate limit, so a quiet run costs almost nothing.
+export function conditionalGithub({ fetch, cache, limit = 5000 }) {
+  return async (url, init = {}) => {
+    const cached = cache.get(url);
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        ...init.headers,
+        ...(cached && { 'if-none-match': cached.etag }),
+      },
+    });
+    if (response.status === 304 && cached)
+      return { response, body: cached.body };
+    if (!response.ok) return { response };
+    const body = await response.json();
+    const etag = response.headers.get('etag');
+    // ponytail: whole-cache reset at `limit`; LRU if tracked PRs ever outgrow it.
+    if (cache.size >= limit) cache.clear();
+    if (etag) cache.set(url, { etag, body });
+    return { response, body };
+  };
+}
+
 export const reconciliationProjects = (scope) =>
   scope.projects === undefined ? [scope] : scope.projects;
 

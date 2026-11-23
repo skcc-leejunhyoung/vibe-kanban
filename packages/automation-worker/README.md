@@ -266,12 +266,14 @@ cleared, even after an official
 checkpoint acknowledges otherwise unchanged facts. Hosts that report pending
 resumes without this evidence retain agent delegation.
 
-A run costs roughly 550 GitHub REST calls, and the account's 5,000 per hour are
-shared with `gh` and every other automation. The worker reads the free
-`/rate_limit` first and every response's `x-ratelimit-remaining`; below
-`AUTOPILOT_GITHUB_RESERVE` it stops and answers `status: deferred`. The adapter
-then neither checkpoints nor delegates that cycle (a delegated agent would spend
-the same budget) and retries on the next gate.
+GitHub reads are conditional: the worker keeps each response's ETag and sends
+`If-None-Match`, and GitHub answers an unchanged PR or review page with 304, which
+does not count against the account's 5,000 REST calls per hour (shared with `gh`
+and every other automation). A run therefore pays only for what changed; the first
+run after a worker restart reads everything (roughly 550 calls). As a safety net
+the worker also reads the free `/rate_limit` first and every response's
+`x-ratelimit-remaining`; below `AUTOPILOT_GITHUB_RESERVE` it stops and answers
+`status: deferred`, and the adapter neither checkpoints nor delegates that cycle.
 
 Both periodic checks and completion events enter the same router. Unchanged
 facts are handled by code, with no Decisions request or agent admission. A new
