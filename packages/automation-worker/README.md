@@ -441,6 +441,11 @@ start, so turn it off with `enabled: false` instead.
   `project_id`). "Review and Create PR from AI" asks for the PR on its own run
   whatever the project (`pr_requested`). An open PR already on the head ends
   with "Pull request already open" and no new PR.
+- A run that ends in a PR merges only where the PR can come from: its `merge`
+  step carries `pr: true`, and the host checks the PR destination first. A
+  workspace that targets the PR base itself is blocked before the merge, with
+  nothing merged; change its target branch to a feature branch and Retry
+  (which checks again).
 - Events (journal → `/v1/agent-events` → a `vibe_events` connector, whose
   `kinds` must include `vibe.`): `vibe.turn_ended` (`role`, `result` =
   the agent's `VIBE_RESULT`, `prompt` = the worker's prompt that started the
@@ -452,7 +457,7 @@ start, so turn it off with `enabled: false` instead.
   step answers it.
 - Steps (host `POST /api/automation-actions/vibe/{workspace}/{step}`):
   `start-review`, `send-prompt` (`kind` continue | plan_review | review_followup |
-  resolve_conflict | hand_merge_failure | cleanup_fix), `merge`, `publish-pr`,
+  resolve_conflict | hand_merge_failure | cleanup_fix), `merge` (`pr`), `publish-pr`,
   `block` (`reason`; tag `vibe-block` and a notification), `finish` (issue to
   In review, "Ready for review") and `dismiss` (nothing to do). Each names
   `expected_generation`, `expected_phase` and the `pending_id` it answers and

@@ -506,6 +506,31 @@ impl VibeRun {
         Ok(done.rows_affected() > 0)
     }
 
+    /// A merge that was to end in a pull request was not started: the PR could
+    /// not come from where it would merge (a workspace that targets the PR
+    /// base itself). Blocked with `last_error`, and marked as a PR run so that
+    /// Retry checks the destination again before it merges. `false` when the
+    /// run moved on.
+    pub async fn block_pr_merge(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        generation: i64,
+        last_error: &str,
+    ) -> Result<bool, VibeRunError> {
+        let _generation = Self::lock_generation(workspace_id).await;
+        let done = sqlx::query(
+            "UPDATE vibe_runs SET phase = 'blocked', last_error = ?, pr_requested = 1, \
+                 failed_phase = NULL, updated_at = datetime('now','subsec') \
+             WHERE workspace_id = ? AND generation = ?",
+        )
+        .bind(last_error)
+        .bind(workspace_id)
+        .bind(generation)
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     /// The follow-up step `from` failed: blocked, remembering the step and why.
     /// `false` when the run is no longer in `from` and was left alone.
     pub async fn block_follow_up(
@@ -632,6 +657,35 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
+    }
+
+    // A PR run whose destination was refused before its merge can be retried
+    // (it has an error and a review), and Retry knows it is a PR run.
+    #[tokio::test]
+    async fn a_pr_merge_refused_before_merging_is_a_retryable_pr_run() {
+        let (pool, id) = run_in_review(None).await;
+        let reviewed = run(&pool, id).await;
+        assert!(
+            !VibeRun::block_pr_merge(&pool, id, reviewed.generation - 1, "stale")
+                .await
+                .unwrap()
+        );
+        assert!(
+            VibeRun::block_pr_merge(&pool, id, reviewed.generation, "synthetic head is base")
+                .await
+                .unwrap()
+        );
+        let blocked = run(&pool, id).await;
+        assert_eq!(blocked.phase, "blocked");
+        assert_eq!(
+            blocked.last_error.as_deref(),
+            Some("synthetic head is base")
+        );
+        assert!(blocked.pr_requested && blocked.pr_bases.is_none());
+        assert_eq!(blocked.failed_phase, None);
+        // Retry merges again (no failed follow-up step to resume).
+        assert!(VibeRun::retry(&pool, &blocked, None).await.unwrap());
+        assert_eq!(run(&pool, id).await.phase, "merging");
     }
 
     #[tokio::test]

@@ -70,13 +70,16 @@ export function finishFor(settings, projectId) {
 
 const LANDED = ['merged', 'skipped_open_pr'];
 
-// The decision on `event` depends on the project's finish only for a merge
-// that landed in a run nobody asked a PR of.
+// The decision on `event` depends on the project's finish, in a run nobody
+// asked a PR of, for a merge that landed and for a review turn that may start
+// one (a PR run's merge has its destination checked first).
 export function needsFinish(event) {
+  if (event?.pr_requested) return false;
+  if (event?.kind === 'vibe.merge_result') return LANDED.includes(event.outcome);
   return (
-    event?.kind === 'vibe.merge_result' &&
-    LANDED.includes(event.outcome) &&
-    !event.pr_requested
+    event?.kind === 'vibe.turn_ended' &&
+    event.role === 'review' &&
+    (event.phase === 'merging' || event.result === 'approve')
   );
 }
 
@@ -98,8 +101,15 @@ export function decideVibe(
       `The ${event.failed_step || 'next'} step failed ${failures} times: ${event.failure || 'unknown error'}`
     );
   switch (event?.kind) {
-    case 'vibe.turn_ended':
-      return decideTurn(event, limits, planReview);
+    case 'vibe.turn_ended': {
+      const decision = decideTurn(event, limits, planReview);
+      // A run that ends in a PR merges only where the PR can come from: the
+      // host checks that before merging, and blocks instead of merging into
+      // the PR base itself (a workspace started on `develop`).
+      return decision?.action === 'merge' && (finish === 'pr' || event.pr_requested)
+        ? { ...decision, pr: true }
+        : decision;
+    }
     case 'vibe.cleanup_failed':
       return decideCleanupFailure(event, limits);
     case 'vibe.merge_result':
@@ -242,6 +252,7 @@ export function vibeStepRequest(workspaceId, event, decision) {
     pending_id: event.id ?? null,
   };
   if (decision.kind) body.kind = decision.kind;
+  if (decision.pr) body.pr = true;
   if (decision.reason) body.reason = String(decision.reason).slice(0, 2000);
   // A step on no event (a stall block) is keyed by when the run last moved:
   // a run blocked, approved again and stalled once more in the same

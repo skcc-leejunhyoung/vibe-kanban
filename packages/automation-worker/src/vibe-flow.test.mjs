@@ -257,7 +257,38 @@ test('a landed merge finishes at the merge, or goes on to the PR where the proje
   assert.ok(needsFinish(merged()));
   assert.ok(!needsFinish(merged({ pr_requested: true })));
   assert.ok(!needsFinish(merged({ outcome: 'conflict' })));
-  assert.ok(!needsFinish(turn({ result: 'approve' })));
+  // A review turn that may start a merge needs it too; others do not.
+  assert.ok(needsFinish(turn({ result: 'approve' })));
+  assert.ok(needsFinish(turn({ phase: 'merging', result: 'none' })));
+  assert.ok(!needsFinish(turn({ result: 'continue' })));
+  assert.ok(!needsFinish(turn({ result: 'approve', role: 'coding', phase: 'coding' })));
+  assert.ok(!needsFinish(turn({ result: 'approve', pr_requested: true })));
+});
+
+// A run that ends in a PR must not merge into the PR base itself: its merge
+// says so, and the host checks the destination before merging.
+test('a merge in a run that ends in a PR asks the host to check where the PR comes from', () => {
+  assert.deepEqual(decide(turn({ result: 'approve' }), 'pr'), { action: 'merge', pr: true });
+  assert.deepEqual(decide(turn({ result: 'approve' }), 'merge'), { action: 'merge' });
+  assert.deepEqual(decide(turn({ result: 'approve', pr_requested: true }), 'merge'), {
+    action: 'merge',
+    pr: true,
+  });
+  assert.deepEqual(decide(turn({ phase: 'merging' }), 'pr'), { action: 'merge', pr: true });
+  assert.deepEqual(decide(turn({ phase: 'blocked', last_error: 'x', result: 'approve' }), 'pr'), {
+    action: 'merge',
+    pr: true,
+  });
+  // Not a merge: no flag.
+  assert.deepEqual(decide(turn({ result: 'continue' }), 'pr'), {
+    action: 'send-prompt',
+    kind: 'review_followup',
+  });
+  const event = turn({ id: 'abc', result: 'approve' });
+  const request = vibeStepRequest('ws-1', event, { action: 'merge', pr: true });
+  assert.equal(request.body.pr, true);
+  assert.equal(request.key, 'vibe:ws-1:2:merge:abc');
+  assert.equal(vibeStepRequest('ws-1', event, { action: 'merge' }).body.pr, undefined);
 });
 
 test('a conflict goes to the review session until the retry budget is spent', () => {

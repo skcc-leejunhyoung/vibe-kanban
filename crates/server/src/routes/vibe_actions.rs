@@ -125,6 +125,10 @@ struct StepRequest {
     /// `block`: why, for the notification.
     #[serde(default)]
     reason: Option<String>,
+    /// `merge`: the run is to end in a pull request, so where it merges must
+    /// be where a PR can come from.
+    #[serde(default)]
+    pr: bool,
 }
 
 async fn act(
@@ -321,6 +325,53 @@ async fn take_step(
         return Err(ApiError::Conflict("the run moved on".into()));
     }
 
+    if matches!(step, Step::Run(VibeStep::Merge { .. })) && request.pr && run.pr_bases.is_none() {
+        // A workspace that targets the PR base itself (`develop`) would merge
+        // into it and then have no PR to open: blocked before the merge. The
+        // run becomes a PR run, whose Retry checks this again before merging.
+        if let Err(reason) =
+            vibe_pr_bases::resolve(pool, deployment.git(), &workspace, None, None, false).await
+        {
+            let reason = format!(
+                "Not merged: this run ends in a pull request, and {reason} \
+                 If the workspace targets the PR base itself, change its target branch \
+                 to a feature branch, then retry."
+            );
+            if VibeRun::block_pr_merge(pool, workspace_id, run.generation, &reason)
+                .await
+                .map_err(run_error)?
+            {
+                // Told as a block, not as the merge failure an earlier error
+                // on the run would make it look like.
+                let snapshot = VibeRun {
+                    last_error: None,
+                    ..run.clone()
+                };
+                deployment
+                    .container()
+                    .vibe_step(
+                        &workspace,
+                        &snapshot,
+                        VibeStep::Block {
+                            reason: reason.clone(),
+                        },
+                    )
+                    .await?;
+            }
+            tracing::info!(
+                "vibe: workspace {} blocked before its merge: {}",
+                workspace_id,
+                reason
+            );
+            return Ok(json!({
+                "ok": true,
+                "action": "block",
+                "workspace_id": workspace_id,
+                "reason": reason,
+            }));
+        }
+    }
+
     let done = match step {
         Step::Dismiss => Ok(()),
         Step::PublishPr => publish_pr(deployment, &workspace, &run).await,
@@ -483,7 +534,22 @@ mod tests {
             pending_id: None,
             kind: kind.map(str::to_string),
             reason: None,
+            pr: false,
         }
+    }
+
+    // A worker that predates the flag asks for a plain merge; a newer one
+    // says when the run ends in a PR.
+    #[test]
+    fn a_merge_is_a_pr_merge_only_when_the_worker_says_so() {
+        let body = |extra: &str| {
+            serde_json::from_str::<StepRequest>(&format!(
+                r#"{{"expected_generation":1,"expected_phase":"review"{extra}}}"#
+            ))
+            .unwrap()
+        };
+        assert!(!body("").pr);
+        assert!(body(r#","pr":true"#).pr);
     }
 
     fn refused(result: Result<Step, ApiError>) -> bool {
