@@ -278,6 +278,13 @@ console.log(JSON.stringify(flags));
             self.assertEqual(result['status'], 'legacy')
             self.assertEqual(calls[-1], ('gate', False))
 
+    def test_low_github_budget_defers_without_delegating(self):
+        gate, calls, _ = self.fixture(report={'status': 'deferred', 'reason': 'github_budget_low', 'remaining': 10})
+        rest, result = gate(['periodic due'])
+        self.assertEqual((rest, result['status'], result['reason']), (['other'], 'deferred', 'github_budget_low'))
+        self.assertNotIn(('gate', False), calls)
+        self.assertFalse(any(call[0] == 'checkpoint' for call in calls))
+
     def test_board_keys_are_registered_and_pending_states_are_preserved(self):
         gate, calls, values = self.fixture()
         values['board']['rows']['17'] = {'status': 'cancelled', 'repo': 'synthetic/widgets'}

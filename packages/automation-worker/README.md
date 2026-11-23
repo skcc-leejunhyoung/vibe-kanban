@@ -40,6 +40,7 @@ settings page rather than calling the API directly.
 | `AUTOPILOT_DECISIONS_SHADOW`  | `false`      | Set exactly `true` to record advisory Decisions classifications alongside Autopilot delivery.                |
 | `AUTOPILOT_DECISIONS_ACTIVE`  | `false`      | Enable opt-in active Routine routing.                                                                        |
 | `AUTOPILOT_PERIODIC_RECONCILE` | _(unset)_    | Override the periodic reconciliation API switch. Defaults to the active flag for existing deployments.        |
+| `AUTOPILOT_GITHUB_RESERVE` | `1500` | GitHub REST calls a periodic reconciliation leaves unspent for `gh` and other automations; below it the run is deferred. |
 | `AUTOPILOT_DECISIONS_API_KEY` | _(unset)_    | Server-only OpenAI API key for Decisions classification; separate API billing applies.                       |
 
 ### Autopilot Decisions shadow mode
@@ -264,6 +265,13 @@ in comparisons. Due resumes in any workspace always require an agent check until
 cleared, even after an official
 checkpoint acknowledges otherwise unchanged facts. Hosts that report pending
 resumes without this evidence retain agent delegation.
+
+A run costs roughly 550 GitHub REST calls, and the account's 5,000 per hour are
+shared with `gh` and every other automation. The worker reads the free
+`/rate_limit` first and every response's `x-ratelimit-remaining`; below
+`AUTOPILOT_GITHUB_RESERVE` it stops and answers `status: deferred`. The adapter
+then neither checkpoints nor delegates that cycle (a delegated agent would spend
+the same budget) and retries on the next gate.
 
 Both periodic checks and completion events enter the same router. Unchanged
 facts are handled by code, with no Decisions request or agent admission. A new

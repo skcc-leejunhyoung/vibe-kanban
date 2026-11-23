@@ -2,6 +2,8 @@ import { createNotificationRouting } from './notification-routing.mjs';
 import { previewAutopilot, routeAutopilot } from './autopilot-router.mjs';
 import { RULES, TRIAGE_VERSION, createTriage, isCandidate, pruneJournal } from './autopilot-triage.mjs';
 import {
+  GithubBudgetLow,
+  checkGithubBudget,
   collectReconciliation,
   reconciliationProjects,
   validateReconciliationScope,
@@ -161,6 +163,8 @@ const AUTOPILOT_PERIODIC_RECONCILE =
     String(AUTOPILOT_DECISIONS_ACTIVE)) === 'true' &&
   !process.argv.includes('--self-test');
 const AUTOPILOT_DECISIONS_API_KEY = process.env.AUTOPILOT_DECISIONS_API_KEY || '';
+// GitHub REST calls a periodic reconciliation leaves for everything else (~550 per run).
+const AUTOPILOT_GITHUB_RESERVE = Number(process.env.AUTOPILOT_GITHUB_RESERVE || 1500);
 // off | shadow (record decisions, deliver as before) | active (apply them).
 const AUTOPILOT_TRIAGE = process.argv.includes('--self-test')
   ? 'off'
@@ -664,6 +668,18 @@ async function route(req, res) {
     try {
       sendJson(res, 200, await reconcileRoutineAutopilot(input));
     } catch (error) {
+      if (error instanceof GithubBudgetLow) {
+        log('warn', 'autopilot reconciliation deferred', {
+          remaining: error.remaining,
+          reserve: error.reserve,
+        });
+        return sendJson(res, 200, {
+          status: 'deferred',
+          reason: 'github_budget_low',
+          remaining: error.remaining,
+          reserve: error.reserve,
+        });
+      }
       log('warn', 'autopilot reconciliation failed', {
         error: errorMessage(error),
       });
@@ -2026,6 +2042,17 @@ async function reconcileRoutineAutopilot(input) {
     const record = (records[key] ||= legacy
       ? { boardReviews: legacy.boardReviews, boardPending: legacy.boardPending }
       : {});
+    // `/rate_limit` itself is free; an unreadable budget leaves the per-response check.
+    const budget = await fetch(`${githubApiBase(github.config)}/rate_limit`, {
+      headers: githubHeaders(github.config.token),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
+    })
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null);
+    checkGithubBudget(
+      budget?.resources?.core?.remaining,
+      AUTOPILOT_GITHUB_RESERVE
+    );
     const login = await githubLogin(
       github,
       AbortSignal.any([signal, AbortSignal.timeout(15000)])
@@ -2044,6 +2071,9 @@ async function reconcileRoutineAutopilot(input) {
               signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
             }
           );
+          const remaining = response.headers.get('x-ratelimit-remaining');
+          if (remaining !== null)
+            checkGithubBudget(Number(remaining), AUTOPILOT_GITHUB_RESERVE);
           if (!response.ok) throw new Error('GitHub reconciliation failed');
           return response.json();
         },

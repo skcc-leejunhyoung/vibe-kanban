@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import {
+  GithubBudgetLow,
+  checkGithubBudget,
   collectReconciliation,
   decisionReviews,
   reconcileAutopilot,
@@ -709,4 +711,12 @@ test('a same-head re-request (Awaiting review from you) changes facts and makes 
   assert.notEqual(requested.fingerprint, first.fingerprint);
   assert.equal(requested.boardPending[0].key, 'synthetic/widgets#7');
   assert.equal(requested.boardPending[0].head, head);
+});
+
+test('reconciliation never spends the last reserved GitHub calls', () => {
+  assert.throws(() => checkGithubBudget(1499, 1500), GithubBudgetLow);
+  assert.doesNotThrow(() => checkGithubBudget(1500, 1500));
+  // An unknown budget leaves the decision to the next response header.
+  assert.doesNotThrow(() => checkGithubBudget(undefined, 1500));
+  assert.doesNotThrow(() => checkGithubBudget(Number.NaN, 1500));
 });

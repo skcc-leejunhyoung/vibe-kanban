@@ -179,6 +179,12 @@ def install(ap, config):
         request = {**scope, 'acknowledgedAt': reviewed_at.isoformat(),
                    'boardResolutions': [row for row in rows(evidence.get('boardResolutions')) if isinstance(row, dict)]}
         report = ap['api']('/api/automation/autopilot/reconcile', request, timeout=110)
+        if isinstance(report, dict) and report.get('status') == 'deferred':
+            # The GitHub budget is below the reserve; a delegated agent would spend
+            # the same account's budget, so this cycle neither checks nor delegates.
+            rest, _ = original(due, dry=True)
+            return (rest, {'status': 'deferred', 'source': 'code', 'reason': report.get('reason'),
+                           'remaining': report.get('remaining')}), None
         if not isinstance(report, dict) or report.get('status') != 'ok':
             return None, 'source_unavailable'
         counts = report.get('counts', {})

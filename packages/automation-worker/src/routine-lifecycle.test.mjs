@@ -17,6 +17,7 @@ import { previewAutopilot, routeAutopilot } from './autopilot-router.mjs';
 import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
 
 import {
+  checkGithubBudget,
   collectReconciliation,
   reconciliationProjects,
   validateReconciliationScope
@@ -374,9 +375,15 @@ test(
       githubReviewRepositories: () => ['synthetic/widgets'],
       githubLogin: async () => 'synthetic-reviewer',
       githubSearchPrs: async () => [],
+      githubApiBase: () => baseUrl,
+      githubHeaders: () => ({}),
+      checkGithubBudget,
+      AUTOPILOT_GITHUB_RESERVE: 1500,
       persistState: async () => {},
       fetch: async (url) => {
         const path = new URL(url).pathname;
+        if (path === '/rate_limit')
+          return Response.json({ resources: { core: { remaining: 5000 } } });
         if (path === '/token') {
           tokenReads++;
           tokenRequested.resolve();
