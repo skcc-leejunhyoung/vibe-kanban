@@ -556,7 +556,7 @@ start, so turn it off with `enabled: false` instead.
     "connectorId": "vibe-default",
     "defaultFinish": "merge",
     "projects": { "<cloud project id>": { "finish": "pr" } },
-    "limits": { "codingTurns": 10, "reviewTurns": 5, "mergeRetries": 3, "stepFailures": 3 },
+    "limits": { "codingTurns": 20, "reviewTurns": 5, "mergeRetries": 3, "stepFailures": 3 },
     "planReview": true,
     "reconcileSeconds": 180,
     "staleMinutes": 15
@@ -565,12 +565,14 @@ start, so turn it off with `enabled: false` instead.
 ```
 
 - A coding `done` is checked against the plan before the review: the coding
-  session gets "기획에 맞게 빠짐없이 구현했는지 꼼꼼하게 확인해줘" (plus where the
-  issue is) as a coding turn, and only a `done` answering that check
-  (`prompt: "plan_review"` on its `vibe.turn_ended`) starts the review; a
-  `continue` goes on coding and its next `done` is checked again. With the
-  coding budget spent the run goes straight to review; `planReview: false`
-  skips the check.
+  session gets the host's `@plan-review` prompt template (Settings → Tags;
+  "기획에 맞게 빠짐없이 구현했는지 꼼꼼하게 확인해줘" when the host has none),
+  where the issue is, and a strict verdict: any gap found is `continue` even
+  when fixed in the same turn, and the check runs again; only a check that
+  found nothing (`done` with `prompt: "plan_review"` on its
+  `vibe.turn_ended`) starts the review. Each check is a coding turn. With the
+  coding budget spent a `done` goes straight to review (a check's `continue`
+  blocks like any other); `planReview: false` skips the check.
 - Agents are not offered `VIBE_RESULT: blocked`: a decision a person should
   make is taken as recommended and written to the Drawer (`vk drawer create
   … --label "확인 필요" --notify`), and the work goes on. A `blocked` an agent

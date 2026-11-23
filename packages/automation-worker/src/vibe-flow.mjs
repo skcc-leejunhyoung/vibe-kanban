@@ -20,9 +20,10 @@ export const VIBE_FLOW_DEFAULTS = {
   projects: {},
   // `stepFailures`: a step the host keeps failing (a vanished session, an
   // agent that cannot start) is tried this many times, then the run blocks.
-  limits: { codingTurns: 10, reviewTurns: 5, mergeRetries: 3, stepFailures: 3 },
+  // `codingTurns` covers the plan checks too (each is a coding turn).
+  limits: { codingTurns: 20, reviewTurns: 5, mergeRetries: 3, stepFailures: 3 },
   // A coding `done` is first checked against the plan (the issue) in the
-  // coding session; only a `done` that answers that check goes to review.
+  // coding session; only a check that found nothing to fix goes to review.
   planReview: true,
   // How often every host's runs are read again, for events that never came.
   reconcileSeconds: 180,
@@ -140,17 +141,19 @@ function decideTurn(event, limits, planReview) {
     (event.run_reason === 'codingagent' || event.run_reason === 'cleanupscript');
   if (!finished) return null;
   if (event.phase === 'coding') {
+    const checked = event.prompt === 'plan_review';
     // The coding agent's verb is "done"; a stray "approve" asks for review too.
     if (event.result === 'done' || event.result === 'approve') {
-      // A `done` answering the plan check goes to review. Any other is checked
-      // against the plan first — while the coding budget lasts: a finished
-      // run is never blocked for want of a check.
-      const checked = event.prompt === 'plan_review';
+      // A plan check that found nothing to fix goes to review. Any other
+      // `done` is checked against the plan first — while the coding budget
+      // lasts: a finished run is never blocked for want of a check.
       return planReview && !checked && Number(event.coding_turns || 0) < limits.codingTurns
         ? prompt('plan_review')
         : { action: 'start-review' };
     }
-    return withinCoding(event, limits, prompt('continue'));
+    // A plan check that found something (fixed or not) is checked again
+    // until it finds nothing; any other unfinished turn just goes on.
+    return withinCoding(event, limits, prompt(planReview && checked ? 'plan_review' : 'continue'));
   }
   // After coding only the review session's turns move the run; a late one of
   // the original coding session does not.

@@ -78,14 +78,28 @@ pub const PREAMBLE_REVIEW: &str = "\n\n---\n[자동 리뷰 지침]\n\
 /// `send-prompt continue`: nudge the coding agent to keep going.
 pub const PROMPT_CONTINUE: &str = "아직 끝나지 않은 작업이 남아 있어. 남은 작업을 계속 진행해줘.";
 
+/// The host's prompt template (`@plan-review`, Settings → Tags) whose text
+/// asks for the plan check; [`PLAN_REVIEW_REQUEST`] when it is missing or empty.
+pub const PLAN_REVIEW_TEMPLATE: &str = "plan-review";
+pub const PLAN_REVIEW_REQUEST: &str = "기획에 맞게 빠짐없이 구현했는지 꼼꼼하게 확인해줘";
+
 /// `send-prompt plan_review`: the check a coding run's `done` gets before its
-/// review — the user's own words, then where the plan is.
-pub fn plan_review_prompt(task_id: uuid::Uuid) -> String {
+/// review — the user's own request (`template`), where the plan is, and a
+/// strict verdict: only a check that found nothing to fix is `done`, so every
+/// fix is checked again.
+pub fn plan_review_prompt(template: Option<&str>, task_id: uuid::Uuid) -> String {
+    let request = template
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or(PLAN_REVIEW_REQUEST);
     format!(
-        "기획에 맞게 빠짐없이 구현했는지 꼼꼼하게 확인해줘.\n\n\
+        "{request}\n\n\
          기획은 이 워크스페이스에 연결된 이슈의 내용이다(`vk issue get {task_id}`로 다시 볼 수 있다). \
-         빠졌거나 기획과 다르게 구현된 부분이 있으면 고쳐라. 모두 기획대로 구현됐으면 `VIBE_RESULT: done`, \
-         아직 고칠 것이 남았으면 `VIBE_RESULT: continue`로 마쳐라."
+         빠졌거나 기획과 다르게 구현된 부분이 있으면 고쳐라.\n\
+         이 턴은 아래 지침의 done/continue 기준 대신 다음 기준으로 마쳐라:\n\
+         - 이번 점검에서 빠졌거나 기획과 다른 부분을 하나라도 찾았으면, 이번 턴에 모두 고쳤더라도 `VIBE_RESULT: continue`. 고친 부분까지 처음부터 다시 점검한다.\n\
+         - 고칠 것을 하나도 찾지 못했을 때만 `VIBE_RESULT: done`.\n\
+         - 할 수 없어서 Drawer 문서로 남긴 부분은 빠진 것으로 치지 않는다."
     )
 }
 
@@ -905,13 +919,20 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_review_asks_in_the_users_words_and_names_the_plan() {
+    fn the_plan_review_asks_in_the_template_words_and_passes_only_a_clean_check() {
         let task = uuid::Uuid::nil();
-        let p = with_coding_preamble(&plan_review_prompt(task));
-        assert!(p.starts_with("기획에 맞게 빠짐없이 구현했는지 꼼꼼하게 확인해줘."));
+        // The host's `@plan-review` template is the request; without one (or
+        // an empty one), the same words built in.
+        let custom = plan_review_prompt(Some("  Check it against the plan. \n"), task);
+        assert!(custom.starts_with("Check it against the plan.\n\n"));
+        for template in [None, Some(""), Some("   ")] {
+            assert!(plan_review_prompt(template, task).starts_with(PLAN_REVIEW_REQUEST));
+        }
+        let p = with_coding_preamble(&plan_review_prompt(None, task));
         assert!(p.contains(&format!("vk issue get {task}")));
-        assert!(p.contains("VIBE_RESULT: done"));
-        assert!(p.contains("VIBE_RESULT: continue"));
+        // A gap found is `continue` even when fixed in the same turn.
+        assert!(p.contains("이번 턴에 모두 고쳤더라도 `VIBE_RESULT: continue`"));
+        assert!(p.contains("고칠 것을 하나도 찾지 못했을 때만 `VIBE_RESULT: done`"));
         assert!(p.ends_with(PREAMBLE_CODING));
     }
 

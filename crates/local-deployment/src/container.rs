@@ -24,6 +24,7 @@ use db::{
         repo::Repo,
         session::{CreateSession, Session},
         session_message_index::SessionMessageIndex,
+        tag::Tag,
         vibe_run::{MergeWait, PrRequest, VibeRun},
         workspace::Workspace,
         workspace_repo::{RepoWithTargetBranch, WorkspaceRepo},
@@ -4784,12 +4785,24 @@ impl ContainerService for LocalContainerService {
                         vibe_orchestrator::with_coding_preamble(vibe_orchestrator::PROMPT_CONTINUE),
                         Spends::CodingTurn,
                     ),
-                    PromptKind::PlanReview => (
-                        vibe_orchestrator::with_coding_preamble(
-                            &vibe_orchestrator::plan_review_prompt(run.task_id),
-                        ),
-                        Spends::CodingTurn,
-                    ),
+                    PromptKind::PlanReview => {
+                        // The request is this host's `@plan-review` template.
+                        let template = Tag::find_all(pool)
+                            .await
+                            .unwrap_or_default()
+                            .into_iter()
+                            .find(|tag| tag.tag_name == vibe_orchestrator::PLAN_REVIEW_TEMPLATE)
+                            .map(|tag| tag.content);
+                        (
+                            vibe_orchestrator::with_coding_preamble(
+                                &vibe_orchestrator::plan_review_prompt(
+                                    template.as_deref(),
+                                    run.task_id,
+                                ),
+                            ),
+                            Spends::CodingTurn,
+                        )
+                    }
                     PromptKind::ReviewFollowup => (
                         vibe_orchestrator::with_review_preamble(vibe_orchestrator::PROMPT_REVIEW_B),
                         Spends::ReviewTurn,

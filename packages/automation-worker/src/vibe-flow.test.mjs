@@ -113,24 +113,35 @@ test('finished coding is checked against the plan first, even through its cleanu
   });
 });
 
-test('a done that answers the plan check starts the review; gaps it found go on coding', () => {
+test('only a plan check that found nothing starts the review; one that found gaps checks again', () => {
   const checked = (input) => coding({ prompt: 'plan_review', ...input });
   assert.deepEqual(decide(checked({ result: 'done' })), { action: 'start-review' });
   assert.deepEqual(decide(checked({ result: 'done', run_reason: 'cleanupscript' })), {
     action: 'start-review',
   });
-  // Gaps found and still being fixed: coding goes on, and its next `done`
-  // is checked again.
-  assert.deepEqual(decide(checked({ result: 'continue' })), { action: 'send-prompt', kind: 'continue' });
+  // Gaps found (fixed in that turn or not): the check runs again, within the
+  // coding budget.
+  assert.deepEqual(decide(checked({ result: 'continue' })), { action: 'send-prompt', kind: 'plan_review' });
+  assert.match(decide(checked({ result: 'continue', coding_turns: 20 })).reason, /limit of 20 turns/);
+  // Any other unfinished turn just goes on; its next `done` is checked.
+  assert.deepEqual(decide(coding({ prompt: 'continue', result: 'continue' })), {
+    action: 'send-prompt',
+    kind: 'continue',
+  });
   assert.deepEqual(decide(coding({ prompt: 'continue', result: 'done' })), {
     action: 'send-prompt',
     kind: 'plan_review',
+  });
+  // With the check turned off mid-run, a check's `continue` is plain coding.
+  assert.deepEqual(decideVibe(checked({ result: 'continue' }), { limits, planReview: false }), {
+    action: 'send-prompt',
+    kind: 'continue',
   });
 });
 
 test('the plan check spends a coding turn, never blocks a finished run, and can be off', () => {
   // The budget is spent: straight to review rather than a check it cannot afford.
-  assert.deepEqual(decide(coding({ result: 'done', coding_turns: 10 })), { action: 'start-review' });
+  assert.deepEqual(decide(coding({ result: 'done', coding_turns: 20 })), { action: 'start-review' });
   assert.deepEqual(decideVibe(coding({ result: 'done' }), { limits, planReview: false }), {
     action: 'start-review',
   });
@@ -148,9 +159,9 @@ test('coding goes on while work remains, within the coding budget', () => {
     action: 'send-prompt',
     kind: 'continue',
   });
-  const spent = decide(coding({ result: 'continue', coding_turns: 10 }));
+  const spent = decide(coding({ result: 'continue', coding_turns: 20 }));
   assert.equal(spent.action, 'block');
-  assert.match(spent.reason, /limit of 10 turns/);
+  assert.match(spent.reason, /limit of 20 turns/);
 });
 
 // Agents are no longer offered "blocked" (decisions go to the Drawer); one
@@ -158,7 +169,7 @@ test('coding goes on while work remains, within the coding budget', () => {
 test('an agent that says blocked does not stop the run', () => {
   assert.deepEqual(decide(coding({ result: 'blocked' })), { action: 'send-prompt', kind: 'continue' });
   assert.deepEqual(decide(turn({ result: 'blocked' })), { action: 'send-prompt', kind: 'review_followup' });
-  assert.equal(decide(coding({ result: 'blocked', coding_turns: 10 })).action, 'block');
+  assert.equal(decide(coding({ result: 'blocked', coding_turns: 20 })).action, 'block');
   assert.equal(decide(turn({ result: 'blocked', review_turns: 5 })).action, 'block');
 });
 
@@ -213,7 +224,7 @@ test('a failed cleanup goes back to its session with the log, on its phase budge
     });
   // Another session's cleanup during review is not the run's.
   assert.equal(decide(cleanup({ phase: 'review', role: 'coding' })), null);
-  assert.match(decide(cleanup({ coding_turns: 10 })).reason, /limit of 10 turns/);
+  assert.match(decide(cleanup({ coding_turns: 20 })).reason, /limit of 20 turns/);
   assert.match(decide(cleanup({ phase: 'review', role: 'review', review_turns: 5 })).reason, /limit of 5 turns/);
   for (const phase of ['blocked', 'done', 'pushing', 'creating_pr'])
     assert.equal(decide(cleanup({ phase, role: 'review' })), null);
@@ -323,7 +334,7 @@ test('settings fill in defaults and map projects to their finish', () => {
   assert.equal(finishFor(settings, 'project-odd'), 'merge');
   assert.equal(finishFor(settings, 'project-unlisted'), 'merge');
   assert.equal(finishFor(settings, null), 'merge');
-  assert.deepEqual(settings.limits, { codingTurns: 10, reviewTurns: 2, mergeRetries: 3, stepFailures: 3 });
+  assert.deepEqual(settings.limits, { codingTurns: 20, reviewTurns: 2, mergeRetries: 3, stepFailures: 3 });
   assert.equal(vibeFlowSettings({ defaultFinish: 'pr' }).defaultFinish, 'pr');
 });
 
@@ -546,10 +557,12 @@ test('coding turns go on, then start the review in the session that reported don
       },
     },
   });
-  // The host reports each prompted turn with the prompt that started it.
+  // The host reports each prompted turn with the prompt that started it. The
+  // first check finds (and fixes) a gap; the second finds nothing.
   const next = [
     coding({ id: 'turn-2', result: 'done', coding_turns: 1, prompt: 'continue', session_id: 'coding-session' }),
-    coding({ id: 'turn-3', result: 'done', coding_turns: 2, prompt: 'plan_review', session_id: 'coding-session' }),
+    coding({ id: 'turn-3', result: 'continue', coding_turns: 2, prompt: 'plan_review', session_id: 'coding-session' }),
+    coding({ id: 'turn-4', result: 'done', coding_turns: 3, prompt: 'plan_review', session_id: 'coding-session' }),
   ];
   world.host.effects['send-prompt'] = (run) => {
     run.pending = next.shift();
@@ -558,13 +571,14 @@ test('coding turns go on, then start the review in the session that reported don
     run.phase = 'review';
     run.generation = 1;
   };
-  for (let turns = 0; turns < 3; turns++) await world.deliver('ws', world.host.runs.ws.pending);
+  for (let turns = 0; turns < 4; turns++) await world.deliver('ws', world.host.runs.ws.pending);
   assert.deepEqual(
     world.posts.map(({ action, body }) => [action, body.kind ?? null, body.pending_id]),
     [
       ['send-prompt', 'continue', 'turn-1'],
       ['send-prompt', 'plan_review', 'turn-2'],
-      ['start-review', null, 'turn-3'],
+      ['send-prompt', 'plan_review', 'turn-3'],
+      ['start-review', null, 'turn-4'],
     ]
   );
   assert.equal(world.host.runs.ws.phase, 'review');
