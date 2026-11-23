@@ -227,7 +227,13 @@ python3 packages/automation-worker/scripts/ap-system-one.py --ap /path/to/ap --c
 
 The private JSON configuration needs `enabled`, `connectorId`,
 `githubConnectorId`, `hosts` (configured native machine IDs), `defaultRepository`
-and optional `tracked` entries containing `repository` and `number`. Set
+and optional `tracked` entries containing `repository` and `number`.
+`readRepositories` lists repositories whose tracked or linked PRs the worker may
+read without discovering review requests there (another repository on the
+board, or an old name GitHub redirects); `repositoryAliases` maps such an old
+name to the current one when comparing board findings. The periodic prompt
+states the exact coverage (projects, `discoveryRepositories` or
+`defaultRepository`, hosts) the agent must confirm before recording it. Set
 `projectId` and `reviewTagId` for one project, or set `projects` to the full list
 of `{connectorId, projectId, reviewTagId}` entries. Each project requires an
 enabled Vibe connector scoped to that project. The top-level `connectorId`

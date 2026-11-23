@@ -300,6 +300,38 @@ test('incomplete reads and out-of-scope PRs cannot advance the baseline', async 
   );
 });
 
+test('read-only repositories admit tracked and renamed PRs without widening discovery', async () => {
+  const extra = { ...scope, readRepositories: ['synthetic/old-name', 'synthetic/other'] };
+  // Without the extra list both refs are outside the allowlist.
+  for (const repository of ['synthetic/old-name', 'synthetic/other'])
+    assert.throws(() =>
+      validateReconciliationScope(
+        { ...scope, tracked: [...scope.tracked, { repository, number: 7 }] },
+        ['synthetic/widgets']
+      )
+    );
+  for (const readRepositories of ['synthetic/other', ['Not A Repo'], Array(17).fill('a/b')])
+    assert.throws(() =>
+      validateReconciliationScope({ ...scope, readRepositories }, ['synthetic/widgets'])
+    );
+  const h = fixture();
+  h.scope = {
+    ...extra,
+    tracked: [
+      ...scope.tracked,
+      { repository: 'synthetic/old-name', number: 7 },
+      { repository: 'synthetic/other', number: 9 },
+    ],
+  };
+  // GitHub redirects the old name: both names read as one PR.
+  h.identity = (path) => (path.includes('/pulls/7') ? 7 : Number(path.split('/').at(-1)));
+  const snapshot = await h.collect();
+  assert.equal(h.discoverCalls, 1, 'discovery stays on the allowlist');
+  assert.deepEqual(snapshot.facts.coverage.repositories, ['synthetic/widgets']);
+  assert.ok(h.reads.includes('/repos/synthetic/other/pulls/9'));
+  assert.ok(h.reads.includes('/repos/synthetic/old-name/pulls/7'));
+});
+
 test('overdue resumes keep the agent route even after acknowledgement of unchanged facts', async () => {
   const h = fixture();
   const dueAt = Date.parse('2002-03-07T00:00:00Z');

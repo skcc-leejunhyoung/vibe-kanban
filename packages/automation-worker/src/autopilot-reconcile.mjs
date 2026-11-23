@@ -17,6 +17,22 @@ const BOARD_DECISION_STATES = new Set([
 export const reconciliationProjects = (scope) =>
   scope.projects === undefined ? [scope] : scope.projects;
 
+const REPOSITORY = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/;
+
+// Repositories whose tracked and linked PRs may be read: the review-discovery
+// allowlist plus the scope's read-only extras (another repository a board row
+// tracks, or an old name GitHub redirects). Discovery stays on the allowlist.
+export function readableRepositories(scope, repositories) {
+  const extra = scope.readRepositories ?? [];
+  if (
+    !Array.isArray(extra) ||
+    extra.length > 16 ||
+    extra.some((repository) => typeof repository !== 'string' || !REPOSITORY.test(repository))
+  )
+    throw new Error('invalid read-only repositories');
+  return [...new Set([...repositories, ...extra])];
+}
+
 async function readBatches(items, read, signal) {
   const result = [];
   for (let i = 0; i < items.length; i += SOURCE_READ_CONCURRENCY) {
@@ -76,10 +92,11 @@ export function validateReconciliationScope(scope, repositories) {
       scope.ignoreWorkspaces.some((id) => !uuid.test(id)))
   )
     throw new Error('invalid excluded workspace scope');
+  const readable = readableRepositories(scope, repositories);
   const trackedKeys = new Set();
   for (const pr of scope.tracked) {
     if (
-      !repositories.includes(pr.repository) ||
+      !readable.includes(pr.repository) ||
       !Number.isSafeInteger(pr.number) ||
       pr.number < 1
     )
@@ -157,6 +174,7 @@ export async function collectReconciliation({
   signal,
 }) {
   validateReconciliationScope(scope, repositories);
+  const readable = readableRepositories(scope, repositories);
   const prs = new Map(
     scope.tracked.map((pr) => [`${pr.repository}#${pr.number}`, pr])
   );
@@ -243,7 +261,7 @@ export async function collectReconciliation({
               );
             if (
               !match ||
-              !repositories.includes(match[1].toLowerCase()) ||
+              !readable.includes(match[1].toLowerCase()) ||
               !Number.isSafeInteger(Number(match[2])) ||
               Number(match[2]) < 1
             )

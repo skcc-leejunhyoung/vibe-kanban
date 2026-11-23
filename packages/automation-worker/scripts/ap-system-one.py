@@ -63,6 +63,10 @@ def registry(ap, config):
     digest = hashlib.sha256(json.dumps(semantic_registry(stable), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     tracked = sorted({(ref['repository'].lower(), ref['number']) for ref in refs})
     scope = {key: config[key] for key in ('connectorId', 'githubConnectorId', 'hosts')}
+    # Tracked PRs outside review discovery (another repository, an old name
+    # GitHub redirects) are read by the worker but never discovered there.
+    if config.get('readRepositories'):
+        scope['readRepositories'] = sorted({repo.lower() for repo in config['readRepositories']})
     if 'projects' in config:
         scope['projects'] = config['projects']
     else:
@@ -114,7 +118,8 @@ def matches_coverage(scope, coverage):
     expected_projects = project_pairs(scope.get('projects', [scope]))
     return (expected_projects is not None and project_pairs(coverage['projects']) == expected_projects and
             set(coverage['hosts']) == set(scope['hosts']) and
-            all(ref['repository'] in coverage['repositories'] for ref in scope['tracked']))
+            all(ref['repository'] in coverage['repositories'] or ref['repository'] in scope.get('readRepositories', [])
+                for ref in scope['tracked']))
 
 
 def identity_recheck_due(ap, reviewed_at):
@@ -193,10 +198,12 @@ def install(ap, config):
             return None, 'unverified_board'
         if 'board_followups_due' in ap and ap['board_followups_due'](ap['load'](ap['BOARD'], {}), ap['now']()):
             return None, 'board_followup_due'
-        tracked = {(pr['repository'], pr['number']) for pr in scope['tracked']}
+        aliases = {old.lower(): new.lower() for old, new in (config.get('repositoryAliases') or {}).items()}
+        canonical = lambda repo: aliases.get(repo.lower(), repo.lower())
+        tracked = {(canonical(pr['repository']), pr['number']) for pr in scope['tracked']}
         for finding in findings:
             match = PR_URL.fullmatch(finding.get('pr_url', ''))
-            if not match or (match[1].lower(), int(match[2])) not in tracked:
+            if not match or (canonical(match[1]), int(match[2])) not in tracked:
                 return None, 'unverified_board'
         try:
             ap['verify_board_coverage'](evidence, {})
@@ -240,11 +247,16 @@ def install(ap, config):
     if 'periodic_prompt' in ap:
         original_prompt = ap['periodic_prompt']
 
+        projects = config.get('projects') or [{'projectId': config.get('projectId'), 'reviewTagId': config.get('reviewTagId')}]
+        expected = json.dumps({'projects': [{'projectId': row['projectId'], 'reviewTagId': row['reviewTagId']} for row in projects],
+                               'repositories': config.get('discoveryRepositories') or [config.get('defaultRepository')],
+                               'hosts': config['hosts']}, ensure_ascii=False, separators=(',', ':'))
+
         def periodic_prompt():
             return (original_prompt() +
-                    ' System One 검증용으로 공식 증거에 coverage를 기록한다. ' +
-                    'projects는 실제 대조한 {projectId, reviewTagId} 항목 목록, repositories는 전체 발견을 완료한 owner/repo 목록, ' +
-                    'hosts는 확인한 네이티브 machine ID 목록이다. 세 범위를 모두 공식 조회로 확인한 경우에만 coverage를 추가한다. ' +
+                    ' System One 검증용으로 공식 증거에 coverage를 기록한다. 이번 대조 범위는 ' + expected + '이다. ' +
+                    'projects의 각 프로젝트 review 태그 이슈, repositories의 review 요청 발견, hosts의 각 호스트 공간·실행·queue를 ' +
+                    '모두 공식 조회로 확인한 경우에만 이 값을 그대로 coverage로 기록한다. 하나라도 못 했으면 coverage를 넣지 않는다. ' +
                     '증거 디렉터리의 board-reconciliation.json에 대기 항목이 있으면 각 key와 fingerprint를 확인하고, '
                     '게시 검증 시 disposition=published와 rowSha256을, 보류 시 disposition=hold와 reason, owner, recheckAt을 boardResolutions에 기록한다.')
 

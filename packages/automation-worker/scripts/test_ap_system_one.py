@@ -194,6 +194,37 @@ console.log(JSON.stringify(flags));
         self.assertEqual(fallback['system_one_fallback'], 'scope_audit_due')
         self.assertFalse(any(name == 'request' for name, _ in calls))
 
+    def test_read_only_and_renamed_repositories_reach_checkpoint(self):
+        gate, calls, values = self.fixture()
+        values['schedule']['pending_admissions'].append({'pr': 7, 'repo': 'synthetic/old-name'})
+        values['schedule']['pending_admissions'].append({'pr': 9, 'repo': 'synthetic/other'})
+        evidence = values[values['schedule']['a']['evidence']]
+        evidence['board_findings'] = [{'pr_url': 'https://github.com/synthetic/widgets/pull/7'}]
+        # Outside the agent's discovery coverage and not declared readable: unproven.
+        self.assertEqual(gate(['periodic due'])[1]['system_one_fallback'], 'scope_mismatch')
+        calls.clear()
+        self.config.update(readRepositories=['synthetic/Other', 'synthetic/old-name'],
+                           repositoryAliases={'synthetic/old-name': 'synthetic/widgets'})
+        _, handled = gate(['periodic due'])
+        self.assertEqual(handled['status'], 'handled')
+        request = next(body for name, body in calls if name == 'request')
+        self.assertEqual(request['readRepositories'], ['synthetic/old-name', 'synthetic/other'])
+        # A finding under a name no alias maps cannot be verified.
+        evidence['board_findings'] = [{'pr_url': 'https://github.com/synthetic/unknown/pull/7'}]
+        self.assertEqual(gate(['periodic due'])[1]['system_one_fallback'], 'unverified_board')
+
+    def test_periodic_prompt_names_the_exact_scope_to_record(self):
+        namespace = {'calls': []}
+        exec("def periodic_gate(due, dry=False):\n return due, None\ndef periodic_prompt():\n return 'base.'", namespace)
+        config = {'connectorId': 'synthetic-vibe', 'githubConnectorId': 'synthetic-github', 'hosts': ['synthetic-machine'],
+                  'defaultRepository': 'synthetic/widgets',
+                  'projects': [{'connectorId': 'synthetic-vibe', 'projectId': 'synthetic-project', 'reviewTagId': 'synthetic-tag'}]}
+        adapter.install(namespace, config)
+        prompt = namespace['periodic_prompt']()
+        self.assertTrue(prompt.startswith('base.'))
+        self.assertIn('{"projects":[{"projectId":"synthetic-project","reviewTagId":"synthetic-tag"}],'
+                      '"repositories":["synthetic/widgets"],"hosts":["synthetic-machine"]}', prompt)
+
     def test_board_drift_cannot_be_checkpointed_even_when_worker_is_quiet(self):
         gate, calls, _ = self.fixture()
         def verify(*args):
