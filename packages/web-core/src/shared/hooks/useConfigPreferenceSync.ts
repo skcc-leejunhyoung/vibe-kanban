@@ -342,7 +342,6 @@ export function useConfigPreferenceSync(
   // other (see the single-batched-save note above).
   useEffect(() => {
     if (!enabled || config == null || seededRef.current) return;
-    seededRef.current = true;
 
     const promote: Partial<Config> = {};
     let hasPromote = false;
@@ -364,6 +363,9 @@ export function useConfigPreferenceSync(
         spec.applyToStore(configValue);
       }
     });
+    // Only now: each applyToStore above notifies flush, which would otherwise
+    // read the not-yet-applied stores and save their stale values.
+    seededRef.current = true;
     if (hasPromote) void saveRef.current(promote);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, config]);
