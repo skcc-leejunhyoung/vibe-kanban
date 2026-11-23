@@ -8,8 +8,9 @@ const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const sha1 = /^[0-9a-f]{40}$/i;
 const SOURCE_READ_CONCURRENCY = 8;
 const TERMINAL_REVIEW_AUDIT_MS = 2 * 60 * 60 * 1000;
-// Bump when the PR facts shape changes so cached terminal facts are re-read.
-const PR_FACTS_VERSION = 2;
+// Expired terminal audits re-read per run, oldest first; the rest wait for a
+// later run so a burst of expiries cannot push a run past its deadline.
+const TERMINAL_REFRESH_LIMIT = 60;
 const BOARD_DECISION_STATES = new Set([
   'APPROVED',
   'CHANGES_REQUESTED',
@@ -328,23 +329,38 @@ export async function collectReconciliation({
     else identities.set(id, { ...reference, aliases: [] });
   }
   const audited = {};
+  const fresh = (entry) =>
+    now() - entry.auditedAt >= 0 &&
+    now() - entry.auditedAt < TERMINAL_REVIEW_AUDIT_MS;
+  const refresh = new Set(
+    [...identities.values()]
+      .map(({ before, version }) => [before, terminalReviews[before.id], version])
+      .filter(
+        ([before, previous, version]) =>
+          before.state === 'closed' &&
+          previous?.version === version &&
+          !fresh(previous)
+      )
+      .sort(([, a], [, b]) => (a.auditedAt || 0) - (b.auditedAt || 0))
+      .slice(0, TERMINAL_REFRESH_LIMIT)
+      .map(([before]) => before.id)
+  );
   const heads = await readBatches(
     [...identities.values()],
     async ({ key, aliases, path, before, version }) => {
       // A re-request changes this even when the head and reviews do not.
       const awaitingReview = [key, ...aliases].some((ref) => awaiting.has(ref));
       const previous = terminalReviews[before.id];
-      const age = now() - previous?.auditedAt;
       // Always refresh identity, head and state; reopening must invalidate the audit immediately.
       if (
         before.state === 'closed' &&
         previous?.version === version &&
-        previous.factsVersion === PR_FACTS_VERSION &&
-        age >= 0 &&
-        age < TERMINAL_REVIEW_AUDIT_MS
+        !refresh.has(before.id)
       ) {
         audited[before.id] = previous;
-        return { ...previous.facts, key, aliases, awaitingReview };
+        // Facts cached before `updated_at` left the comparison drop it here.
+        const { updated_at: _, ...facts } = previous.facts;
+        return { ...facts, key, aliases, awaitingReview };
       }
       const reviews = [];
       for (let page = 1; ; page++) {
@@ -384,12 +400,7 @@ export async function collectReconciliation({
         reviews: decisionReviews(reviews, before.head.sha),
       };
       if (before.state === 'closed')
-        audited[before.id] = {
-          version,
-          factsVersion: PR_FACTS_VERSION,
-          auditedAt: now(),
-          facts,
-        };
+        audited[before.id] = { version, auditedAt: now(), facts };
       return facts;
     },
     signal
