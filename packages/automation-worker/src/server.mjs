@@ -663,7 +663,10 @@ async function route(req, res) {
     const input = await readBodyJson(req);
     try {
       sendJson(res, 200, await reconcileRoutineAutopilot(input));
-    } catch {
+    } catch (error) {
+      log('warn', 'autopilot reconciliation failed', {
+        error: errorMessage(error),
+      });
       sendJson(res, 503, {
         status: 'error',
         changed: true,
