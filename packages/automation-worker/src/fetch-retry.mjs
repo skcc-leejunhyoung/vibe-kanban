@@ -95,10 +95,11 @@ export function withGithubConditionalGet(
     );
     // Errors (rate limit, 5xx) keep the old entry: a later 304 against it is
     // still correct, and dropping it would make the next read a paid one.
+    // Replayed bodies keep the live response's headers (rate-limit budget).
     if (response.status === 304 && cached) {
       cache.delete(key);
       cache.set(key, cached);
-      return new Response(cached.body, { status: 200 });
+      return new Response(cached.body, { status: 200, headers: response.headers });
     }
     const etag = response.status === 200 && response.headers?.get('etag');
     if (!etag) return response;
@@ -106,6 +107,6 @@ export function withGithubConditionalGet(
     cache.delete(key);
     cache.set(key, { etag, body });
     if (cache.size > maxEntries) cache.delete(cache.keys().next().value);
-    return new Response(body, { status: 200 });
+    return new Response(body, { status: 200, headers: response.headers });
   };
 }

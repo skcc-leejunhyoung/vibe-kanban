@@ -17,7 +17,6 @@ import { createNotificationRouting } from './notification-routing.mjs';
 import {
   checkGithubBudget,
   collectReconciliation,
-  conditionalGithub,
   reconcileAutopilot,
   reconciliationProjects,
   validateReconciliationScope
@@ -325,8 +324,6 @@ test(
       githubApiBase: () => baseUrl,
       githubHeaders: () => ({}),
       checkGithubBudget,
-      conditionalGithub,
-      githubConditionalCache: new Map(),
       AUTOPILOT_GITHUB_RESERVE: 1500,
       persistState: async () => {},
       fetch: async (url) => {

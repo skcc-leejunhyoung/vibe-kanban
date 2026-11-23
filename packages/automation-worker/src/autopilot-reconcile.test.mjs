@@ -5,7 +5,6 @@ import {
   GithubBudgetLow,
   checkGithubBudget,
   collectReconciliation,
-  conditionalGithub,
   decisionReviews,
   reconcileAutopilot,
   validateReconciliationScope,
@@ -711,28 +710,4 @@ test('reconciliation never spends the last reserved GitHub calls', () => {
   // An unknown budget leaves the decision to the next response header.
   assert.doesNotThrow(() => checkGithubBudget(undefined, 1500));
   assert.doesNotThrow(() => checkGithubBudget(Number.NaN, 1500));
-});
-
-test('an unchanged GitHub resource is re-read conditionally and served from cache', async () => {
-  const sent = [];
-  const replies = [
-    new Response(JSON.stringify({ v: 1 }), { headers: { etag: '"one"' } }),
-    new Response(null, { status: 304 }),
-    new Response(JSON.stringify({ v: 2 }), { headers: { etag: '"two"' } }),
-    new Response('missing', { status: 404 }),
-  ];
-  const read = conditionalGithub({
-    fetch: async (url, init) => {
-      sent.push(init.headers['if-none-match']);
-      return replies.shift();
-    },
-    cache: new Map(),
-  });
-  assert.deepEqual((await read('https://x/pr/1', { headers: {} })).body, { v: 1 });
-  assert.deepEqual((await read('https://x/pr/1', { headers: {} })).body, { v: 1 });
-  assert.deepEqual((await read('https://x/pr/1', { headers: {} })).body, { v: 2 });
-  const missing = await read('https://x/pr/1', { headers: {} });
-  assert.equal(missing.body, undefined);
-  assert.equal(missing.response.status, 404);
-  assert.deepEqual(sent, [undefined, '"one"', '"one"', '"two"']);
 });

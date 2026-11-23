@@ -136,11 +136,12 @@ cleared, even after an official
 checkpoint acknowledges otherwise unchanged facts. Hosts that report pending
 resumes without this evidence retain agent delegation.
 
-GitHub reads are conditional: the worker keeps each response's ETag and sends
-`If-None-Match`, and GitHub answers an unchanged PR or review page with 304, which
-does not count against the account's 5,000 REST calls per hour (shared with `gh`
-and every other automation). A run therefore pays only for what changed; the first
-run after a worker restart reads everything (roughly 550 calls). As a safety net
+GitHub reads are conditional: every worker GitHub GET goes through one in-memory
+ETag cache (4,000 entries, enough for a run's ~750 PR and review reads plus the
+issue and PR syncs), and GitHub answers an unchanged resource with 304, which does
+not count against the account's 5,000 REST calls per hour (shared with `gh` and
+every other automation). A run therefore pays only for what changed; the first run
+after a worker restart reads everything (roughly 550 calls). As a safety net
 the worker also reads the free `/rate_limit` first and every response's
 `x-ratelimit-remaining`; below `AUTOPILOT_GITHUB_RESERVE` it stops and answers
 `status: deferred`, and the adapter neither checkpoints nor delegates that cycle.
