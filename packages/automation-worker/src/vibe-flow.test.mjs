@@ -575,6 +575,8 @@ test('an approval merges, and the landed merge finishes or opens the PR by the i
       world.posts.map((post) => post.action),
       ['merge', last]
     );
+    // Only a project that ends in a PR asks the host to check where it merges.
+    assert.equal(world.posts[0].body.pr, last === 'publish-pr' ? true : undefined);
     assert.deepEqual(JSON.parse(JSON.stringify(world.posts[1].body)), {
       expected_generation: 2,
       expected_phase: 'done',

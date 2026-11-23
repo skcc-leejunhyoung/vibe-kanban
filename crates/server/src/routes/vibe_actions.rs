@@ -333,9 +333,8 @@ async fn take_step(
             vibe_pr_bases::resolve(pool, deployment.git(), &workspace, None, None, false).await
         {
             let reason = format!(
-                "Not merged: this run ends in a pull request, and {reason} \
-                 If the workspace targets the PR base itself, change its target branch \
-                 to a feature branch, then retry."
+                "Not merged: this run ends in a pull request, so it was stopped before \
+                 its merge. {reason}"
             );
             if VibeRun::block_pr_merge(pool, workspace_id, run.generation, &reason)
                 .await

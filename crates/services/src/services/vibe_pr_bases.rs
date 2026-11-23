@@ -83,7 +83,7 @@ pub async fn validate_base(
         && normalized_repo_key(&push_remote.url) == normalized_repo_key(&base_remote.url)
     {
         return Err(format!(
-            "PR head and base are both '{head}'. Select a different PR base (pr_bases) or fix the repository default target branch, then retry."
+            "PR head and base are both '{head}'. Select a different PR base (pr_bases), fix the repository default target branch, or, before anything is merged, change the workspace target branch to a work branch (or start the workspace from a GitHub-linked branch) so the PR opens from it, then retry."
         ));
     }
     let (git, path, remote_url) = (git.clone(), path.to_path_buf(), base_remote.url.clone());
@@ -581,6 +581,59 @@ mod tests {
             .unwrap();
         assert_eq!(
             pr_head(&merges, "vk/work", "other", true, true),
+            "feature/example"
+        );
+    }
+
+    /// A run that ends in a PR, whose workspace targets the repository's own PR
+    /// base: the check the host makes before it merges refuses it with how to
+    /// fix it, and nothing is merged, recorded or started.
+    #[tokio::test]
+    async fn a_target_that_is_the_pr_base_is_refused_before_any_merge_with_the_fixes() {
+        let f = Fixture::new().await;
+        sqlx::query("UPDATE repos SET default_target_branch = 'feature/example'")
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        let tips = || {
+            ["feature/example", "integration", "vk/work"].map(|branch| {
+                let out = Command::new("git")
+                    .current_dir(&f.repo.path)
+                    .args(["rev-parse", branch])
+                    .output()
+                    .unwrap();
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            })
+        };
+        let before = tips();
+        // The worker's merge asks exactly this: no selection, nothing saved,
+        // before the merge.
+        let error = f.resolve(None, None, false).await.unwrap_err();
+        assert!(
+            error.contains("PR head and base are both 'feature/example'"),
+            "{error}"
+        );
+        assert!(error.contains("work branch"), "{error}");
+        assert!(error.contains("GitHub-linked branch"), "{error}");
+        assert_eq!(tips(), before);
+        assert!(
+            Merge::find_by_workspace_id(&f.pool, f.workspace.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            VibeRun::find_non_terminal(&f.pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // Once the target is a work branch, the same check lets the merge go.
+        WorkspaceRepo::update_target_branch(&f.pool, f.workspace.id, f.repo.id, "other")
+            .await
+            .unwrap();
+        assert_eq!(
+            f.resolve(None, None, false).await.unwrap()[0].base_branch,
             "feature/example"
         );
     }
