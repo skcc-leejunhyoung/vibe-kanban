@@ -13,6 +13,7 @@ import sys
 import tempfile
 
 PR_URL = re.compile(r'https://github\.com/([^/]+/[^/]+)/pull/(\d+)')
+UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', re.I)
 AGENT_AUDIT_INTERVAL = dt.timedelta(hours=2)
 
 
@@ -80,6 +81,15 @@ def registry(ap, config):
     if config.get('boardNoteId'):
         scope['boardNoteId'] = config['boardNoteId']
     scope['ignoreWorkspaces'] = sorted({task['ws'] for task in rows(tasks) if task.get('kind') == 'periodic' and task.get('ws')})
+    # Host facts cover only the review sessions this registry tracks; other
+    # workspaces change with the user's own work.
+    sessions = {row.get('session') for row in rows(requests)}
+    reviews = ap['load'](os.path.join(ap['AP'], 'pr-reviews.json'), {})
+    sessions |= {row.get('session_id') for row in rows(reviews.get('reviews') if isinstance(reviews, dict) else None)
+                 if isinstance(row, dict)}
+    for key in ap['PENDING_KEYS']:
+        sessions |= {row.get('session_id') for row in rows(schedule.get(key, [])) if isinstance(row, dict)}
+    scope['watchSessions'] = sorted(str(s).lower() for s in sessions if isinstance(s, str) and UUID.fullmatch(s))
     return scope
 
 

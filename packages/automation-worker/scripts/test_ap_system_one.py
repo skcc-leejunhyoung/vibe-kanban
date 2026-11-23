@@ -68,6 +68,19 @@ class PeriodicTests(unittest.TestCase):
         values['dispatch']['requests']['synthetic-review'] = {'pr': 18, 'repo': 'synthetic/widgets', 'status': 'queued'}
         self.assertIn({'repository': 'synthetic/widgets', 'number': 18}, adapter.registry(self.ap, self.config)['tracked'])
 
+    def test_host_facts_watch_only_registered_review_sessions(self):
+        _, _, values = self.fixture()
+        review, pending = '10000000-0000-4000-8000-0000000000AA', '10000000-0000-4000-8000-0000000000bb'
+        values['deleg']['tasks']['synthetic-periodic'] = {'kind': 'periodic', 'session': '10000000-0000-4000-8000-0000000000cc'}
+        values['dispatch']['requests']['delegate:synthetic-periodic'] = {'session': '10000000-0000-4000-8000-0000000000cc', 'pr': 17}
+        values['dispatch']['requests']['synthetic-review'] = {'session': review, 'pr': 18, 'repo': 'synthetic/widgets'}
+        values['dispatch']['requests']['synthetic-note'] = {'session': '10000000-0000-4000-8000-0000000000dd'}
+        values['schedule']['pending_admissions'] = [{'pr': 19, 'session_id': pending}, {'pr': 20, 'session_id': 'not-a-session'}]
+        self.assertEqual(adapter.registry(self.ap, self.config)['watchSessions'], [review.lower(), pending])
+        ledger = '10000000-0000-4000-8000-0000000000ee'   # 리뷰 장부에만 남은 세션
+        values[os.path.join(self.folder, 'pr-reviews.json')] = {'reviews': {'synthetic/widgets#21': {'session_id': ledger}}}
+        self.assertEqual(adapter.registry(self.ap, self.config)['watchSessions'], [review.lower(), pending, ledger])
+
     def test_one_agent_checkpoint_establishes_a_quiet_baseline(self):
         _, _, values = self.fixture()
         self.config['projectId'] = '20000000-0000-4000-8000-000000000001'

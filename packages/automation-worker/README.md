@@ -255,8 +255,13 @@ current heads and all decision reviews, plus every session's queue/execution and
 resume facts on each configured owned host. Host snapshots contain hashes and
 typed facts, never queue text. Autopilot/ephemeral workspaces and the adapter's
 periodic delegation workspaces are excluded from self-triggering comparisons.
-Resume identities, execution times and content hashes participate in comparisons.
-Due resumes always require an agent check until cleared, even after an official
+The adapter sends `watchSessions`, the review sessions its schedule and dispatch
+ledger reference; only workspaces holding one of them enter the comparison, so the
+user's own work does not count as a change. Activity timestamps (workspace,
+execution, issue and PR `updated_at`) are left out; statuses, queues, heads and
+reviews are compared. Resume identities, due times and content hashes participate
+in comparisons. Due resumes in any workspace always require an agent check until
+cleared, even after an official
 checkpoint acknowledges otherwise unchanged facts. Hosts that report pending
 resumes without this evidence retain agent delegation.
 

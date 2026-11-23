@@ -8,6 +8,8 @@ const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const sha1 = /^[0-9a-f]{40}$/i;
 const SOURCE_READ_CONCURRENCY = 8;
 const TERMINAL_REVIEW_AUDIT_MS = 2 * 60 * 60 * 1000;
+// Bump when the PR facts shape changes so cached terminal facts are re-read.
+const PR_FACTS_VERSION = 2;
 const BOARD_DECISION_STATES = new Set([
   'APPROVED',
   'CHANGES_REQUESTED',
@@ -47,6 +49,18 @@ async function readBatches(items, read, signal) {
   }
   return result;
 }
+
+// Activity timestamps move with every log line or comment; status, queue and
+// resumes are the facts the Autopilot reconciles.
+const hostFacts = ({ updated_at, sessions, ...workspace }) => ({
+  ...workspace,
+  sessions: (sessions || []).map(({ executions, ...session }) => ({
+    ...session,
+    executions: (executions || []).map(
+      ({ updated_at: _, ...execution }) => execution
+    ),
+  })),
+});
 
 function prVersion(pr) {
   if (
@@ -92,6 +106,13 @@ export function validateReconciliationScope(scope, repositories) {
       scope.ignoreWorkspaces.some((id) => !uuid.test(id)))
   )
     throw new Error('invalid excluded workspace scope');
+  if (
+    scope.watchSessions !== undefined &&
+    (!Array.isArray(scope.watchSessions) ||
+      scope.watchSessions.length > 5000 ||
+      scope.watchSessions.some((id) => !uuid.test(id)))
+  )
+    throw new Error('invalid watched session scope');
   const readable = readableRepositories(scope, repositories);
   const trackedKeys = new Set();
   for (const pr of scope.tracked) {
@@ -276,7 +297,6 @@ export async function collectReconciliation({
           return {
             id: issue.id,
             status_id: issue.status_id,
-            updated_at: issue.updated_at,
             completed_at: issue.completed_at,
             prs: urls.sort(),
           };
@@ -319,6 +339,7 @@ export async function collectReconciliation({
       if (
         before.state === 'closed' &&
         previous?.version === version &&
+        previous.factsVersion === PR_FACTS_VERSION &&
         age >= 0 &&
         age < TERMINAL_REVIEW_AUDIT_MS
       ) {
@@ -344,7 +365,6 @@ export async function collectReconciliation({
         head: before.head.sha,
         state: before.state,
         draft: before.draft,
-        updated_at: before.updated_at,
         awaitingReview,
         reviewEvents: sorted(
           reviews.map((review) => {
@@ -364,13 +384,22 @@ export async function collectReconciliation({
         reviews: decisionReviews(reviews, before.head.sha),
       };
       if (before.state === 'closed')
-        audited[before.id] = { version, auditedAt: now(), facts };
+        audited[before.id] = {
+          version,
+          factsVersion: PR_FACTS_VERSION,
+          auditedAt: now(),
+          facts,
+        };
       return facts;
     },
     signal
   );
   const hosts = [];
   let requiresAgent = false;
+  // Registered review sessions; other workspaces still count for due resumes.
+  const watched =
+    scope.watchSessions &&
+    new Set(scope.watchSessions.map((id) => id.toLowerCase()));
   for (const machineId of [...new Set(scope.hosts)].sort()) {
     signal?.throwIfAborted();
     const snapshot = await host(machineId);
@@ -407,7 +436,17 @@ export async function collectReconciliation({
     }
     hosts.push({
       machineId,
-      workspaces: sorted(workspaces),
+      workspaces: sorted(
+        workspaces
+          .filter(
+            (row) =>
+              !watched ||
+              (row.sessions || []).some((session) =>
+                watched.has(String(session.id).toLowerCase())
+              )
+          )
+          .map(hostFacts)
+      ),
     });
   }
   signal?.throwIfAborted();

@@ -40,7 +40,7 @@ function fixture() {
               head: { sha: h.heads?.shift() || h.head || head },
               state: h.state || 'open',
               draft: false,
-              updated_at: '2002-03-04T00:00:00Z',
+              updated_at: h.prUpdatedAt || '2002-03-04T00:00:00Z',
             };
       },
       vibe: async (method, path, body, project) => {
@@ -65,7 +65,7 @@ function fixture() {
                 id: `30000000-0000-4000-8000-${String(body.offset + index).padStart(12, '0')}`,
                 project_id: project.projectId,
                 status_id: reviewTagId,
-                updated_at: '2002-03-04T00:00:00Z',
+                updated_at: h.issueUpdatedAt || '2002-03-04T00:00:00Z',
               })
             ),
           };
@@ -388,6 +388,71 @@ test('overdue resumes keep the agent route even after acknowledgement of unchang
   );
 });
 
+test('activity timestamps and unregistered workspaces leave the facts unchanged', async () => {
+  const h = fixture();
+  const review = '40000000-0000-4000-8000-000000000010';
+  const other = '40000000-0000-4000-8000-000000000011';
+  h.scope = { ...scope, watchSessions: [review.toUpperCase()] };
+  h.now = Date.parse('2002-03-07T00:00:00Z');
+  const workspace = (id, session, status, at, extra = {}) => ({
+    id,
+    archived: false,
+    updated_at: at,
+    pending_starts: 0,
+    sessions: [
+      {
+        id: session,
+        queue_hash: 'q',
+        pending_resumes: 0,
+        resumes: [],
+        executions: [{ id: session, status, dropped: false, updated_at: at }],
+        ...extra,
+      },
+    ],
+  });
+  const ids = (n) => `40000000-0000-4000-8000-00000000002${n}`;
+  h.workspaces = [
+    workspace(ids(0), review, 'completed', '2002-03-06T00:00:00Z'),
+    workspace(ids(1), other, 'running', '2002-03-06T00:00:00Z'),
+  ];
+  const first = await h.collect();
+  assert.deepEqual(
+    first.facts.hosts[0].workspaces.map(({ id }) => id),
+    [ids(0)]
+  );
+  h.workspaces = [
+    workspace(ids(0), review, 'completed', '2002-03-06T09:00:00Z'),
+    workspace(ids(1), other, 'completed', '2002-03-06T09:00:00Z'),
+    workspace(ids(2), ids(3), 'running', '2002-03-06T09:00:00Z'),
+  ];
+  h.issueUpdatedAt = '2002-03-06T09:00:00Z';
+  h.prUpdatedAt = '2002-03-06T09:00:00Z';
+  const quiet = await h.collect();
+  assert.equal(quiet.fingerprint, first.fingerprint);
+  assert.equal(quiet.requiresAgent, false);
+  // An unregistered workspace still raises due resumes.
+  h.workspaces[1] = workspace(ids(1), other, 'completed', '2002-03-06T09:00:00Z', {
+    pending_resumes: 1,
+    resumes: [
+      {
+        id: ids(4),
+        kind: 'scheduled',
+        due_at: '2002-03-06T12:00:00Z',
+        content_hash: 'a'.repeat(64),
+      },
+    ],
+  });
+  const due = await h.collect();
+  assert.equal(due.fingerprint, first.fingerprint);
+  assert.equal(due.requiresAgent, true);
+  h.workspaces[1].sessions[0].pending_resumes = 0;
+  h.workspaces[1].sessions[0].resumes = [];
+  h.workspaces[0].sessions[0].executions[0].status = 'running';
+  assert.notEqual((await h.collect()).fingerprint, first.fingerprint);
+  h.scope = { ...scope, watchSessions: ['not-a-session'] };
+  await assert.rejects(h.collect(), /invalid watched session scope/);
+});
+
 test('missing or malformed resume evidence cannot establish a quiet baseline', async () => {
   for (const resumes of [undefined, [], [{ due_at: 'invalid' }]]) {
     const h = fixture();
@@ -534,6 +599,18 @@ test('terminal review cache skips repeated audit, refreshes on expiry and detect
   const cached = await h.collect();
   assert.equal(cached.fingerprint, first.fingerprint);
   assert.equal(h.reads.filter((path) => typeof path === 'string').length, 1);
+  // Facts cached by an older worker (different shape) are re-read at once.
+  h.terminalReviews = {
+    7: { ...first.terminalReviews[7], factsVersion: undefined },
+  };
+  h.reads.length = 0;
+  await h.collect();
+  assert.ok(
+    h.reads.includes(
+      '/repos/synthetic/widgets/pulls/7/reviews?per_page=100&page=1'
+    )
+  );
+  h.terminalReviews = first.terminalReviews;
   h.now += 2 * 60 * 60 * 1000;
   const refreshed = await h.collect();
   assert.ok(
