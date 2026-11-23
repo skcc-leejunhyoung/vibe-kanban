@@ -1094,6 +1094,7 @@ impl VkClient {
             }
             _ => None,
         };
+        let linked = repos.iter().any(|repo| repo.github_linked_branch.is_some());
         let payload = CreateAndStartWorkspaceRequest {
             name: Some(input.name),
             repos,
@@ -1112,13 +1113,36 @@ impl VkClient {
             pr_review: None,
             working_branch: WorkingBranchInput::Auto,
         };
-        let response: CreateAndStartWorkspaceResponse =
-            self.post("/workspaces/start", &payload).await?;
+        let response: CreateAndStartWorkspaceResponse = self
+            .post("/workspaces/start", &payload)
+            .await
+            .map_err(|error| linked_branch_hint(error, linked))?;
         if let Some(issue_id) = input.issue_id {
             self.link_workspace_to_issue(response.workspace.id, issue_id)
                 .await?;
         }
         Ok((response.workspace.id, warning))
+    }
+}
+
+/// A create refused while it asked for the issue's GitHub linked branch: the
+/// host resolves that branch with its own `gh` and refuses a checkout of
+/// another repository, a missing login, ... Name the way back to the given
+/// branch, or an agent retries the same request.
+pub fn linked_branch_hint(error: VkError, linked: bool) -> VkError {
+    match error {
+        VkError::Api {
+            status: 400,
+            message,
+            body,
+        } if linked => VkError::Api {
+            status: 400,
+            message: format!(
+                "{message} (this create targeted the issue's GitHub linked branch; rerun with --no-github-linked-branch, MCP github_linked_branch: false, to target the given branch instead)"
+            ),
+            body,
+        },
+        other => other,
     }
 }
 
@@ -4126,17 +4150,26 @@ mod tests {
     #[tokio::test]
     async fn start_targets_the_issues_github_linked_branch_like_the_ui() {
         let issue = review_issue();
+        let host = Uuid::new_v4();
         let routes = HashMap::from([
             (
                 ("GET", format!("/api/remote/issues/{}", issue.id)),
                 ok(json!(issue)),
             ),
+            // Only this issue's links: a lookup without the query 404s.
             (
-                ("GET", "/api/remote/cloud/github_issue_links".into()),
+                (
+                    "GET",
+                    format!("/api/remote/cloud/github_issue_links?issue_id={}", issue.id),
+                ),
                 (
                     200,
                     json!({ "github_issue_links": [github_link(&issue, Some("I_kw1"))] }),
                 ),
+            ),
+            (
+                ("POST", format!("/api/host/{host}/workspaces/start")),
+                fail(400, "Repository 'acme/gadgets' is not a clone"),
             ),
             (
                 ("POST", "/api/workspaces/start".into()),
@@ -4146,12 +4179,16 @@ mod tests {
         let (url, calls) = fake_vibe(routes).await;
         let client = VkClient::new(&url, "test/1");
 
-        assert!(
-            client
-                .start_workspace(start_input(issue.id, true))
-                .await
-                .is_err()
-        );
+        // On a paired host: the link comes from this machine's cloud proxy,
+        // the start goes to the host that owns the repo, and a refused linked
+        // branch names the way back to `develop`.
+        let error = client
+            .host(Some(host))
+            .start_workspace(start_input(issue.id, true))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--no-github-linked-branch"), "{error}");
         let starts = posted(&calls, "/workspaces/start");
         assert_eq!(starts.len(), 1);
         assert_eq!(starts[0]["repos"][0]["target_branch"], "develop");
@@ -4160,13 +4197,13 @@ mod tests {
             json!({ "issue_node_id": "I_kw1", "repository": "acme/widgets" })
         );
 
-        // Switched off: no lookup, `develop` stays the target.
-        assert!(
-            client
-                .start_workspace(start_input(issue.id, false))
-                .await
-                .is_err()
-        );
+        // Switched off: no lookup, `develop` stays the target, no hint.
+        let error = client
+            .start_workspace(start_input(issue.id, false))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("--no-github-linked-branch"), "{error}");
         let starts = posted(&calls, "/workspaces/start");
         assert!(starts[1]["repos"][0]["github_linked_branch"].is_null());
         let lookups = calls

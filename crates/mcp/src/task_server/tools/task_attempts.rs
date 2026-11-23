@@ -12,7 +12,9 @@ use crate::client::{ReviewWorkspaceInput, StartWorkspaceInput, review_executor_c
 struct McpWorkspaceRepoInput {
     #[schemars(description = "The repository ID")]
     repo_id: Uuid,
-    #[schemars(description = "The branch for this repository")]
+    #[schemars(
+        description = "The target (base) branch for this repository; with a GitHub-linked issue_id, the base the issue's linked branch is created from"
+    )]
     branch: String,
 }
 
