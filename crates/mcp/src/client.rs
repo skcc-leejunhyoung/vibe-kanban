@@ -17,9 +17,9 @@ use std::{
 };
 
 use api_types::{
-    CreateIssueRequest, Issue, IssuePriority, ListIssueTagsResponse, ListProjectStatusesResponse,
-    ListPullRequestsResponse, ListTagsResponse, MutationResponse, ProjectStatus,
-    UpdateIssueRequest,
+    CreateIssueRequest, Issue, IssuePriority, ListGithubIssueLinksResponse, ListIssueTagsResponse,
+    ListProjectStatusesResponse, ListPullRequestsResponse, ListTagsResponse, MutationResponse,
+    ProjectStatus, UpdateIssueRequest,
 };
 use chrono::{DateTime, Utc};
 use db::models::{
@@ -27,8 +27,8 @@ use db::models::{
     requests::{
         AutopilotWorkspaceResponse, ContainerQuery, CreateAndStartWorkspaceRequest,
         CreateAndStartWorkspaceResponse, CreateWorkspaceWithoutStartingRequest,
-        CreateWorkspaceWithoutStartingResponse, LinkedIssueInfo, PrReviewInput, WorkingBranchInput,
-        WorkspaceRepoInput,
+        CreateWorkspaceWithoutStartingResponse, GithubLinkedBranchInput, LinkedIssueInfo,
+        PrReviewInput, WorkingBranchInput, WorkspaceRepoInput,
     },
     session::Session,
     tag::Tag,
@@ -728,6 +728,9 @@ pub struct StartWorkspaceInput {
     pub variant: Option<String>,
     pub repositories: Vec<(Uuid, String)>,
     pub issue_id: Option<Uuid>,
+    /// Target the issue's GitHub linked branch, as the UI does by default
+    /// (see [`VkClient::apply_github_linked_branch`]).
+    pub github_linked_branch: bool,
 }
 
 impl VkClient {
@@ -985,9 +988,70 @@ impl VkClient {
         .await
     }
 
+    /// The UI's "GitHub linked branch" toggle (on by default): a single-repo
+    /// workspace of a GitHub-linked issue targets the issue's linked branch,
+    /// which the server reuses or creates on GitHub from the repo's
+    /// `target_branch`. An issue without a GitHub link changes nothing; a link
+    /// that cannot be used leaves the targets as given and returns a warning.
+    pub async fn apply_github_linked_branch(
+        &self,
+        issue_id: Uuid,
+        repos: &mut [WorkspaceRepoInput],
+    ) -> Option<String> {
+        let links = match self
+            .exec(
+                "GET",
+                "/remote/cloud/github_issue_links",
+                true,
+                &[("issue_id".to_string(), issue_id.to_string())],
+                None,
+                None,
+            )
+            .await
+            .and_then(|value| {
+                serde_json::from_value::<ListGithubIssueLinksResponse>(value)
+                    .map_err(|error| VkError::Parse(error.to_string()))
+            }) {
+            Ok(list) => list.github_issue_links,
+            Err(error) => {
+                return Some(format!(
+                    "Could not read the issue's GitHub link ({error}); the target branch stays as given instead of the issue's GitHub linked branch."
+                ));
+            }
+        };
+        let first = links.first()?;
+        // Links synced before node ids were stored cannot back a linked branch.
+        let Some((node_id, repository)) = links.iter().find_map(|link| {
+            link.github_node_id
+                .clone()
+                .map(|id| (id, link.repository.clone()))
+        }) else {
+            return Some(format!(
+                "The issue's GitHub link ({}#{}) has no GitHub node id yet, so its linked branch cannot be used; the target branch stays as given.",
+                first.repository, first.number
+            ));
+        };
+        let [repo] = repos else {
+            return Some(format!(
+                "The issue is linked to GitHub ({repository}), but a GitHub linked branch applies to a single-repo workspace only; the {} repos keep their target branches.",
+                repos.len()
+            ));
+        };
+        repo.github_linked_branch = Some(GithubLinkedBranchInput {
+            issue_node_id: node_id,
+            repository,
+        });
+        None
+    }
+
     /// Create a workspace and start its first session. Without a prompt the
-    /// linked issue's title and description become the prompt.
-    pub async fn start_workspace(&self, input: StartWorkspaceInput) -> Result<Uuid, VkError> {
+    /// linked issue's title and description become the prompt. Returns the
+    /// workspace id and a warning when the issue's GitHub linked branch could
+    /// not be applied.
+    pub async fn start_workspace(
+        &self,
+        input: StartWorkspaceInput,
+    ) -> Result<(Uuid, Option<String>), VkError> {
         if input.repositories.is_empty() {
             return Err(VkError::message(
                 "At least one repository must be specified.",
@@ -996,7 +1060,7 @@ impl VkClient {
         let executor = parse_executor_agent(&input.executor)?;
         let variant = input.variant.and_then(non_empty);
         let prompt = input.prompt.and_then(non_empty);
-        let repos: Vec<WorkspaceRepoInput> = input
+        let mut repos: Vec<WorkspaceRepoInput> = input
             .repositories
             .into_iter()
             .map(|(repo_id, branch)| WorkspaceRepoInput {
@@ -1024,6 +1088,12 @@ impl VkClient {
         let prompt = prompt.or(issue_prompt).ok_or_else(|| {
             VkError::message("Provide a prompt, or an issue with a non-empty title/description.")
         })?;
+        let warning = match input.issue_id {
+            Some(issue_id) if input.github_linked_branch => {
+                self.apply_github_linked_branch(issue_id, &mut repos).await
+            }
+            _ => None,
+        };
         let payload = CreateAndStartWorkspaceRequest {
             name: Some(input.name),
             repos,
@@ -1048,7 +1118,7 @@ impl VkClient {
             self.link_workspace_to_issue(response.workspace.id, issue_id)
                 .await?;
         }
-        Ok(response.workspace.id)
+        Ok((response.workspace.id, warning))
     }
 }
 
@@ -4023,5 +4093,139 @@ mod tests {
         assert_eq!(creates[0]["linked_issue"]["issue_id"], json!(issue.id));
         assert!(posted(&calls, "/workspaces/start").is_empty());
         assert_eq!(posted(&calls, "/links").len(), 1);
+    }
+
+    fn github_link(issue: &Issue, node_id: Option<&str>) -> Value {
+        json!({
+            "id": Uuid::new_v4(), "project_id": issue.project_id, "issue_id": issue.id,
+            "repository": "acme/widgets", "number": 12,
+            "url": "https://github.com/acme/widgets/issues/12", "github_node_id": node_id,
+            "project_item_id": null, "github_state": "open", "github_updated_at": null,
+            "last_synced_vibe_updated_at": null, "synced_title": null,
+            "synced_description": null, "synced_vibe_status_id": null,
+            "synced_github_status_option_id": null, "synced_parent_issue_id": null,
+            "synced_milestone_id": null, "synced_github_milestone_number": null,
+            "comments_synced_after": null, "created_at": Utc::now(), "updated_at": Utc::now(),
+        })
+    }
+
+    fn start_input(issue_id: Uuid, github_linked_branch: bool) -> StartWorkspaceInput {
+        StartWorkspaceInput {
+            name: "ws".to_string(),
+            prompt: None,
+            executor: "CODEX".to_string(),
+            variant: None,
+            repositories: vec![(Uuid::new_v4(), "develop".to_string())],
+            issue_id: Some(issue_id),
+            github_linked_branch,
+        }
+    }
+
+    /// The UI's default: a GitHub-linked issue's workspace targets the issue's
+    /// linked branch (created from `develop` when missing), not `develop`.
+    #[tokio::test]
+    async fn start_targets_the_issues_github_linked_branch_like_the_ui() {
+        let issue = review_issue();
+        let routes = HashMap::from([
+            (
+                ("GET", format!("/api/remote/issues/{}", issue.id)),
+                ok(json!(issue)),
+            ),
+            (
+                ("GET", "/api/remote/cloud/github_issue_links".into()),
+                (
+                    200,
+                    json!({ "github_issue_links": [github_link(&issue, Some("I_kw1"))] }),
+                ),
+            ),
+            (
+                ("POST", "/api/workspaces/start".into()),
+                fail(400, "stop here"),
+            ),
+        ]);
+        let (url, calls) = fake_vibe(routes).await;
+        let client = VkClient::new(&url, "test/1");
+
+        assert!(
+            client
+                .start_workspace(start_input(issue.id, true))
+                .await
+                .is_err()
+        );
+        let starts = posted(&calls, "/workspaces/start");
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0]["repos"][0]["target_branch"], "develop");
+        assert_eq!(
+            starts[0]["repos"][0]["github_linked_branch"],
+            json!({ "issue_node_id": "I_kw1", "repository": "acme/widgets" })
+        );
+
+        // Switched off: no lookup, `develop` stays the target.
+        assert!(
+            client
+                .start_workspace(start_input(issue.id, false))
+                .await
+                .is_err()
+        );
+        let starts = posted(&calls, "/workspaces/start");
+        assert!(starts[1]["repos"][0]["github_linked_branch"].is_null());
+        let lookups = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path, _)| path.ends_with("/github_issue_links"))
+            .count();
+        assert_eq!(lookups, 1);
+    }
+
+    #[tokio::test]
+    async fn github_linked_branch_warns_when_the_link_cannot_be_used() {
+        let issue = review_issue();
+        let repo = |branch: &str| WorkspaceRepoInput {
+            repo_id: Uuid::new_v4(),
+            target_branch: branch.to_string(),
+            create_target_branch: false,
+            github_linked_branch: None,
+        };
+        let links = |rows: Vec<Value>| {
+            HashMap::from([(
+                ("GET", "/api/remote/cloud/github_issue_links".into()),
+                (200, json!({ "github_issue_links": rows })),
+            )])
+        };
+        let apply = |routes: Routes, mut repos: Vec<WorkspaceRepoInput>| async move {
+            let (url, _) = fake_vibe(routes).await;
+            let warning = VkClient::new(&url, "test/1")
+                .apply_github_linked_branch(issue.id, &mut repos)
+                .await;
+            (warning, repos)
+        };
+
+        // Not linked to GitHub: unchanged and quiet, as before.
+        let (warning, repos) = apply(links(vec![]), vec![repo("main")]).await;
+        assert!(warning.is_none());
+        assert!(repos[0].github_linked_branch.is_none());
+
+        // Linked, but each case below leaves the target as given and says why.
+        let unusable = [
+            (
+                links(vec![github_link(&issue, None)]),
+                1,
+                "no GitHub node id",
+            ),
+            (
+                links(vec![github_link(&issue, Some("I_kw1"))]),
+                2,
+                "single-repo",
+            ),
+            (HashMap::new(), 1, "Could not read"),
+        ];
+        for (routes, repo_count, expected) in unusable {
+            let (warning, repos) =
+                apply(routes, (0..repo_count).map(|_| repo("main")).collect()).await;
+            let warning = warning.unwrap();
+            assert!(warning.contains(expected), "{warning}");
+            assert!(repos.iter().all(|r| r.github_linked_branch.is_none()));
+        }
     }
 }

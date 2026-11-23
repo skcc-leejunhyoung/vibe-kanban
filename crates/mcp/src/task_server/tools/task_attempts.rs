@@ -37,14 +37,21 @@ struct StartWorkspaceRequest {
     #[schemars(description = "Repository selection for the workspace")]
     repositories: Vec<McpWorkspaceRepoInput>,
     #[schemars(
-        description = "Optional issue ID to link the workspace to. When provided, the workspace will be associated with this remote issue."
+        description = "Optional issue ID to link the workspace to. When provided, the workspace will be associated with this remote issue. A GitHub-linked issue's single-repo workspace targets the issue's GitHub linked branch (reused, or created from the given branch), as the UI does."
     )]
     issue_id: Option<Uuid>,
+    #[schemars(
+        description = "Target the issue's GitHub linked branch instead of the given branch (default true, like the UI toggle). false = target the given branch."
+    )]
+    github_linked_branch: Option<bool>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct StartWorkspaceResponse {
     workspace_id: String,
+    #[schemars(description = "Why the issue's GitHub linked branch was not used, if it was not")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -126,6 +133,7 @@ impl McpServer {
             repositories,
             issue_id,
             host_id,
+            github_linked_branch,
         }): Parameters<StartWorkspaceRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         if executor.trim().is_empty() {
@@ -141,13 +149,15 @@ impl McpServer {
                 .map(|r| (r.repo_id, r.branch))
                 .collect(),
             issue_id,
+            github_linked_branch: github_linked_branch.unwrap_or(true),
         };
-        let workspace_id = match self.client.host(host_id).start_workspace(input).await {
-            Ok(id) => id,
+        let (workspace_id, warning) = match self.client.host(host_id).start_workspace(input).await {
+            Ok(started) => started,
             Err(e) => return Ok(Self::tool_error(e)),
         };
         McpServer::success(&StartWorkspaceResponse {
             workspace_id: workspace_id.to_string(),
+            warning,
         })
     }
 
