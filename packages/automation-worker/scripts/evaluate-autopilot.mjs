@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-import { readFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { evaluateAutopilotRecords } from '../src/autopilot-evaluation.mjs';
+import { periodicSummary } from '../src/autopilot-evaluation.mjs';
 
 const args = process.argv.slice(2);
 async function readPeriodicLog(file) {
@@ -38,31 +37,10 @@ async function readPeriodicLog(file) {
   }
   return result;
 }
-const read = async (path, fallback) =>
-  path ? JSON.parse(await readFile(path, 'utf8')) : fallback;
 if (!args[0] || args.includes('--help')) {
-  console.log(
-    'node scripts/evaluate-autopilot.mjs STATE_JSON OBSERVATIONS_JSON LABELS_JSON PRICES_JSON [AP_GATE_JSONL]\nOptional files use -; prices: inputPerMillion, cachedInputPerMillion, cacheWritePerMillion, agentCallCost. Labels: runKey, eventIndex, expectedRoute.'
-  );
+  console.log('node scripts/evaluate-autopilot.mjs AP_GATE_JSONL');
 } else {
-  const [state, observations, labels, prices] = await Promise.all(
-    args
-      .slice(0, 4)
-      .map((value, index) =>
-        read(value === '-' ? undefined : value, index === 2 ? [] : {})
-      )
-  );
   console.log(
-    JSON.stringify(
-      evaluateAutopilotRecords({
-        claims: state?.routineClaims,
-        observations,
-        labels,
-        prices,
-        periodicLog: await readPeriodicLog(args[4]),
-      }),
-      null,
-      2
-    )
+    JSON.stringify(periodicSummary(await readPeriodicLog(args[0])), null, 2)
   );
 }

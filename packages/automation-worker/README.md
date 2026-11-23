@@ -37,137 +37,8 @@ settings page rather than calling the API directly.
 | `RETRY_MAX_ATTEMPTS`          | `5`          | Times a failed rule run (e.g. the Vibe issue create failed) is auto-retried before being marked `exhausted`. |
 | `RETRY_BASE_DELAY_MS`         | `60000`      | First retry backoff; doubles each attempt.                                                                   |
 | `RETRY_MAX_DELAY_MS`          | `3600000`    | Cap on the retry backoff.                                                                                    |
-| `AUTOPILOT_DECISIONS_SHADOW`  | `false`      | Set exactly `true` to record advisory Decisions classifications alongside Autopilot delivery.                |
-| `AUTOPILOT_DECISIONS_ACTIVE`  | `false`      | Enable opt-in active Routine routing.                                                                        |
-| `AUTOPILOT_PERIODIC_RECONCILE` | _(unset)_    | Override the periodic reconciliation API switch. Defaults to the active flag for existing deployments.        |
+| `AUTOPILOT_PERIODIC_RECONCILE` | `false`      | Set exactly `true` to enable the periodic reconciliation API (`/api/autopilot/reconcile`).                    |
 | `AUTOPILOT_GITHUB_RESERVE` | `1500` | GitHub REST calls a periodic reconciliation leaves unspent for `gh` and other automations; below it the run is deferred. |
-| `AUTOPILOT_DECISIONS_API_KEY` | _(unset)_    | Server-only OpenAI API key for Decisions classification; separate API billing applies.                       |
-
-### Autopilot Decisions shadow mode
-
-Shadow mode observes the existing Autopilot `send_prompt` path, including
-retries. It runs in the background: the prompt, executor, queue, notification
-handoff, and delivery result remain unchanged. Explicit-session actions bypass
-it. Active routing is a separate opt-in described below.
-Shadow mode is disabled by default and always disabled by `--self-test`.
-
-Shadow uses the active router to check the owned host, execution identity and
-result guard before reading completion text. Ineligible executions bypass the
-model. A batch with an approval, user instruction or other protected event
-takes the agent path without a Decisions request. For eligible executions, only
-the final assistant message, limited to
-2,000 characters, can be sent to OpenAI's
-`POST /v1/decisions` with `gpt-6-luna`. It excludes event titles, user prompts,
-tool output, identifiers, and notification claim tokens. URLs, email addresses,
-UUIDs, and common absolute paths in the assistant message are redacted;
-credential-shaped messages (including prefixed keys such as `client_secret`
-and `SERVICE_API_KEY`) are skipped before truncation. The scan also checks
-escaped JSON strings and bracket assignments such as `config["client_secret"]`;
-it consumes each key once instead of repeatedly scanning overlapping suffixes.
-Raw assistant messages over 16 KiB are excluded before credential scanning or
-redaction, even when their final 2,000 characters would fit the request.
-Redaction runs before
-truncation so long URLs and paths cannot expose an unredacted suffix.
-Redaction is best effort: the remaining completion text can still contain
-private work. Enable this only where sending
-that text to the configured provider is appropriate. A claimed cloud completion
-can be classified after its source is verified, but it stays in the predicted
-agent batch because shadow cannot confirm the central acknowledgement.
-
-Each observation has a three-second deadline, at most eight eligible events,
-one API request, a 24 KiB request limit, and a 64 KiB response limit. Elapsed time
-is checked before the paid request as well as by the abort timer, so delayed
-timer callbacks cannot admit an already expired request. A refusal,
-missing evidence, malformed response, unavailable host, timeout, or HTTP failure
-records a fallback candidate without affecting agent delivery. Confidence is
-advisory, not an accuracy guarantee. Full context, completion text, API keys,
-and provider error bodies are never included in the observation record.
-
-Observations are exposed as `autopilotShadow` on the existing Routine run and
-claim, available through the existing status API. An independent
-`autopilot-observations.json` journal in `AUTOMATION_DATA_DIR` preserves the
-latest observation across restarts. Its atomic writes use a separate queue
-from delivery state and logs: even a stalled observation write cannot delay
-prompt delivery. Each observation includes the event index, candidate route,
-source, safe reason code, elapsed time, and input token count
-when returned. The routing preview also records the eligibility and remaining
-event counts, the threshold (the configured value or 0.98 for comparison),
-and whether the full batch would avoid an agent call based on the available
-evidence. A completed observation does not mean the underlying work is
-complete. A pending observation is persisted before a paid call; retries and
-restarts do not re-evaluate that claim, even when its outcome remains unknown.
-After a restart, a stale pending observation is unmeasured, not a successful
-classification. Observation storage failure also preserves delivery and prevents
-the paid call until its pending record is durable. An unreadable or malformed
-journal disables new observations until repaired and the worker restarted;
-delivery continues normally. Unreferenced journal entries expire after 14 days,
-while entries for retained claims remain available for retry deduplication.
-
-The Docker Compose automation service passes these environment variables through
-from its environment file. Configure the key locally on the server; do not put
-it in a Routine, prompt, source file, or browser. Activating shadow mode requires
-restarting the worker with those settings. Tests use synthetic data and mocked
-API responses, without provider calls.
-
-### Active routing and durable completion
-
-Set `AUTOPILOT_DECISIONS_ACTIVE=true` on the worker, and opt each existing
-`send_prompt` Autopilot Routine in with:
-
-```json
-{
-  "target": "autopilot",
-  "queue": true,
-  "prompt": "Inspect {{count}} events",
-  "routing": { "mode": "active", "minConfidence": 0.98 }
-}
-```
-
-The threshold is explicit and must be calibrated against labelled observations;
-0.98 above is a configuration example, not a measured accuracy guarantee. When
-both flags are on, opted-in routines use active routing once, without a duplicate
-shadow request. Other routines retain their existing behavior. `--self-test`
-disables both flags. No model is allowed to approve a PR, send a prompt, or change
-work/review status directly.
-
-Only successful, indexed, automation-origin execution results in non-review
-workspaces can qualify. Manual work, chained actions, Autopilot sessions,
-archived/ephemeral workspaces, tracked PRs and Vibe review runs, `VIBE_RESULT`
-workflow verdicts, interactive artifacts, newer execution, queued messages,
-pending starts/resumes and missing
-evidence stay on the agent path. All other event kinds, including user comments
-and approvals, retain agent delivery. The host independently checks these facts,
-binds the final result hash and fresh version, and writes a stable
-`autopilot-result:<execution>` receipt in one SQLite write transaction. This
-receipt records result collection; it does **not** mark the underlying task done.
-
-A matching high-confidence `routine_result` can skip the agent only after this
-native receipt succeeds. A timeout/refusal, low confidence, or changed host
-snapshot keeps the existing agent route. Model intent and outcome are persisted
-before paid calls and before mutation. Unknown mutation outcomes hold the same
-retry key until native proof is recovered; retries do not buy a second decision
-or switch an already frozen agent disposition into completion.
-Transient receipt-recovery failures use the normal retry budget and backoff;
-they do not immediately exhaust the run. Empty mutation replies also recover
-through the native receipt. Exhausted recovery retains the manual recovery boundary.
-
-Claimed cloud completion notifications are first bound to the canonical
-`execution:<id>:Completed` source key, source host and workspace. The central
-`complete-result` transaction checks ownership, live lease/claim deadlines,
-revision, source identity and receipt before consuming the alert. A GET of the
-old revision's `result-receipt` recovers a lost acknowledgement after restart.
-A new revision preserves the old completion proof, including proofs repaired by
-the additive migration. An expired claim remains on the existing user fallback
-path. Provider text, claim tokens and completion text are excluded from active
-routing records.
-
-After a worker restart, interrupted active completion events with complete routing
-identities enter the existing retry queue under their original key. Cloud claim
-revision and lease identity are retained without tokens. Recovery checks any
-existing agent-admission receipt first, then the result receipt; a pending paid
-classification is reused without another request. Unsupported/incomplete history
-keeps the manual recovery boundary. Automatic recovery still respects disabled
-workers and routines, and the retained admission mode during rollback.
 
 ### Autopilot triage
 
@@ -241,8 +112,7 @@ enabled Vibe connector scoped to that project. The top-level `connectorId`
 supplies the owned host catalog and host bridges. Keep this configuration in
 ignored/private runtime storage. The default is disabled
 unless `enabled` is exactly `true`. Set `AUTOPILOT_PERIODIC_RECONCILE=true` on
-the worker to enable this path independently of active Routine routing. If the
-variable is unset, the API follows `AUTOPILOT_DECISIONS_ACTIVE` as before.
+the worker to enable this path.
 The adapter expects the existing `ap` registry/checkpoint interface and falls
 back to its original gate on an unsupported registry or failed source read.
 No live `ap`, launchd job or runtime ledger is changed by this implementation.
@@ -275,8 +145,7 @@ the worker also reads the free `/rate_limit` first and every response's
 `x-ratelimit-remaining`; below `AUTOPILOT_GITHUB_RESERVE` it stops and answers
 `status: deferred`, and the adapter neither checkpoints nor delegates that cycle.
 
-Both periodic checks and completion events enter the same router. Unchanged
-facts are handled by code, with no Decisions request or agent admission. A new
+Unchanged facts are handled by code, with no agent admission. A new
 baseline, changed head, same-head new/dismissed review, a PR entering or leaving
 "Awaiting review from you", changed queue or registry, or incomplete source read
 retains the original agent delegation. The adapter
@@ -322,49 +191,23 @@ Include a `boardResolutions` array in the official checkpoint evidence:
   `hold`, and supply a non-empty `reason`, `owner` and future ISO 8601
   `recheckAt`. A new decision or elapsed deadline makes the entry due again.
 
-### Measure before promotion
+### Measure periodic skips
 
-Run the offline evaluator against local worker state and observations:
+Count periodic runs handled by code versus delegated to an agent from the
+existing ap gate JSONL log:
 
 ```sh
-node packages/automation-worker/scripts/evaluate-autopilot.mjs /path/state.json /path/autopilot-observations.json /path/labels.json /path/prices.json /path/ap-gate.jsonl
+node packages/automation-worker/scripts/evaluate-autopilot.mjs /path/ap-gate.jsonl
 ```
 
-The optional fifth input is the existing ap gate JSONL log. It counts only
-`periodic.status=handled` with `source=code` and an evidence reference as a skipped
-delegation, after official checkpoint confirmation. Repeated evidence references
-and repeated queued/started task IDs count once; holds and in-flight observations
-are not admissions. Unknown admission outcomes remain unresolved. The `periodic`
-section exposes its counts, observed time range, and p50/p90 of the whole gate
-cycle (not model latency). It counts fallback attempts by reason separately from
-admissions. These counts also contribute to the aggregate delivery
-and hypothetical savings fields. With this input omitted, `periodic.available`
-is false and estimates explicitly have `scope=completion_only`. Supply matched
-time ranges for the state/observation inputs and gate log before comparing totals.
-Malformed JSONL fails rather than reporting a partial cost total.
-
-Use `-` for an omitted optional file. Labels are an array of
-`{"runKey":"synthetic-key","eventIndex":0,"expectedRoute":"needs_investigation"}`;
-expected routes are `routine_result`, `needs_investigation`, and `needs_user`.
-Prices are explicit `inputPerMillion`, `cachedInputPerMillion`, `cacheWritePerMillion` and `agentCallCost`
-values, using the same currency. No changing price or agent cost is hardcoded.
-The JSON report includes confusion counts, false routine labels, unmatched
-labels, coverage/fallbacks/timeouts, p50/p90 latency, tokens, completed suppressed
-runs and actual agent admissions. `shadowRouting` reports p50/p90 for the
-whole preview including host reads, whole-batch predictions, event exclusions
-by reason and older records that lack a routing preview. Its predictions never
-contribute to actual suppression or avoided cost. Pending or unknown request/cache-write usage makes cost
-unknown; missing cached usage makes the known-token estimate an upper bound.
-Cache writes are counted separately within the input total; they are not charged a second time as uncached input. See the [official Decisions guide](https://developers.openai.com/api/docs/guides/decisions). Fixed subscription cash savings remain unknown. Avoided agent cost and net
-savings are hypothetical estimates from the supplied baseline, not a bill.
-
-Before enabling active routing, label a representative shadow sample, inspect
-all false routine classifications, and choose the confidence threshold from
-those results. Start with one Routine and check its suppressed outcomes and
-receipt recovery before expanding. Disabling the global flag stops new suppression actions; retained claims still recover prior receipts and frozen delivery outcomes without new model calls. Compare measured latency and hypothetical
-savings with the legacy baseline; keep active routing off if the safety or cost
-criteria are not met. Runtime provider/host evaluation is separate from mocked
-regression tests; the repository does not claim live accuracy or savings.
+It counts only `periodic.status=handled` with `source=code` and an evidence
+reference as a skipped delegation, after official checkpoint confirmation.
+Repeated evidence references and repeated queued/started task IDs count once;
+holds and in-flight observations are not admissions. Unknown admission outcomes
+remain unresolved. The report exposes these counts, the observed time range,
+p50/p90 of the whole gate cycle, and adapter fallback attempts by reason
+separately from admissions. Malformed JSONL fails rather than reporting a
+partial total.
 
 ## Retry Queue
 

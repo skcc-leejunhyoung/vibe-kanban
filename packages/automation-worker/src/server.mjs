@@ -1,11 +1,11 @@
 import { createNotificationRouting } from './notification-routing.mjs';
-import { previewAutopilot, routeAutopilot } from './autopilot-router.mjs';
 import { RULES, TRIAGE_VERSION, createTriage, isCandidate, pruneJournal } from './autopilot-triage.mjs';
 import {
   GithubBudgetLow,
   checkGithubBudget,
   collectReconciliation,
   conditionalGithub,
+  reconcileAutopilot,
   reconciliationProjects,
   validateReconciliationScope,
 } from './autopilot-reconcile.mjs';
@@ -129,10 +129,6 @@ const fetch = withGithubConditionalGet((url, options) =>
 const PORT = Number(process.env.PORT || 8787);
 const DATA_DIR = process.env.AUTOMATION_DATA_DIR || path.resolve('data');
 const STATE_PATH = path.join(DATA_DIR, 'state.json');
-const AUTOPILOT_OBSERVATIONS_PATH = path.join(
-  DATA_DIR,
-  'autopilot-observations.json'
-);
 const AUTOPILOT_TRIAGE_PATH = path.join(DATA_DIR, 'autopilot-triage.json');
 const LOG_PATH = path.join(DATA_DIR, 'logs.json');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
@@ -153,17 +149,9 @@ if (!ADMIN_TOKEN && !process.argv.includes('--self-test')) {
 }
 const HOST = process.env.HOST || '0.0.0.0';
 const RULE_TIMEOUT_MS = Number(process.env.RULE_TIMEOUT_MS || 10000);
-const AUTOPILOT_DECISIONS_SHADOW =
-  process.env.AUTOPILOT_DECISIONS_SHADOW === 'true' &&
-  !process.argv.includes('--self-test');
-const AUTOPILOT_DECISIONS_ACTIVE =
-  process.env.AUTOPILOT_DECISIONS_ACTIVE === 'true' &&
-  !process.argv.includes('--self-test');
 const AUTOPILOT_PERIODIC_RECONCILE =
-  (process.env.AUTOPILOT_PERIODIC_RECONCILE ||
-    String(AUTOPILOT_DECISIONS_ACTIVE)) === 'true' &&
+  process.env.AUTOPILOT_PERIODIC_RECONCILE === 'true' &&
   !process.argv.includes('--self-test');
-const AUTOPILOT_DECISIONS_API_KEY = process.env.AUTOPILOT_DECISIONS_API_KEY || '';
 // GitHub REST calls a periodic reconciliation leaves for everything else (~550 per run).
 const AUTOPILOT_GITHUB_RESERVE = Number(process.env.AUTOPILOT_GITHUB_RESERVE || 1500);
 // ETag-validated GitHub bodies the periodic reconciliation re-reads, per URL.
@@ -487,7 +475,6 @@ let logsDirty = false;
 let logFlushTimer = null;
 let writeQueue = Promise.resolve();
 let autopilotWriteQueue = Promise.resolve();
-let autopilotObservations = {};
 let autopilotTriageJournal = {};
 // Autopilot sessions per Vibe connector, refreshed at most once a minute.
 const autopilotSessionCache = new Map();
@@ -525,7 +512,6 @@ async function bootstrap() {
   logs = await readJson(LOG_PATH, []);
   ensureDefaults();
   pruneAutomationState(state);
-  await restoreAutopilotObservations();
   // The decision journal is evidence, not delivery state: an unreadable one restarts empty.
   autopilotTriageJournal = await readJson(AUTOPILOT_TRIAGE_PATH, {}).catch(() => ({}));
   await restoreInterruptedRoutineRuns();
@@ -1743,15 +1729,6 @@ async function runRoutine(routine, event, idempotencyKey) {
     status: 'running',
     updatedAt: Date.now(),
   };
-  // Keep the admission mode fixed across retries and rollout configuration changes.
-  if (AUTOPILOT_DECISIONS_ACTIVE && routine.action?.type === 'send_prompt' &&
-      routine.action.input?.target === 'autopilot' && !routine.action.input.sessionId &&
-      routine.action.input.routing?.mode === 'active') {
-    state.routineClaims[idempotencyKey].autopilotRouting = {
-      mode: 'active', started_at: run.startedAt, minConfidence: routine.action.input.routing.minConfidence,
-      targetHostId, connectorId: routine.action.connectorId,
-    };
-  }
   routineInFlight.add(routine.id);
   if (targetHostId) routineHostInFlight.add(targetHostId);
   try {
@@ -1807,12 +1784,6 @@ function completeRoutineRun(routine, key, run, result) {
     status: 'succeeded',
     updatedAt: Date.now(),
   });
-  if (claim.autopilotRouting)
-    claim.autopilotRouting.agent_admitted =
-      (claim.autopilotRouting.delivery === 'agent' ||
-        result?.recovered === 'existing agent admission') &&
-      !result?.skipped;
-  if (claim.autopilotRouting) delete claim.autopilotRouting.recovering;
   state.routineIdempotency[key] = claim.runId;
   if (run) {
     run.status = 'succeeded';
@@ -1834,140 +1805,9 @@ async function restoreInterruptedRoutineRuns() {
     const hasRetry = state.retryQueue.some(
       (item) => item.event?.routineIdempotencyKey === run.idempotencyKey
     );
-    if (!hasRetry) {
-      const claim = state.routineClaims[run.idempotencyKey];
-      const routine = state.routines.find((item) => item.id === run.routineId);
-      if (claim?.autopilotRouting?.recovering && routine) {
-        await enqueueRoutineRetry(
-          routine,
-          run.trigger,
-          run.idempotencyKey,
-          new Error('recovering interrupted Autopilot admission')
-        );
-        const retry = state.retryQueue.find(
-          (item) => item.event?.routineIdempotencyKey === run.idempotencyKey
-        );
-        if (retry) retry.nextAttemptAt = Date.now();
-        await persistState(true);
-      } else
-        await queueRoutineEvent(run.routineId, run.trigger, run.idempotencyKey);
-    }
+    if (!hasRetry)
+      await queueRoutineEvent(run.routineId, run.trigger, run.idempotencyKey);
   }
-}
-
-async function restoreAutopilotObservations() {
-  try {
-    const saved = JSON.parse(
-      await fs.readFile(AUTOPILOT_OBSERVATIONS_PATH, 'utf8')
-    );
-    if (
-      !saved ||
-      typeof saved !== 'object' ||
-      Array.isArray(saved) ||
-      Object.values(saved).some(
-        (record) =>
-          !record ||
-          record.mode !== 'shadow' ||
-          !['pending', 'completed', 'skipped', 'fallback'].includes(
-            record.status
-          ) ||
-          !Number.isFinite(Date.parse(record.started_at))
-      )
-    )
-      throw new Error('invalid observation journal');
-    autopilotObservations = saved;
-  } catch (error) {
-    // A missing journal is new; an unreadable one must not repeat paid calls.
-    autopilotObservations = error.code === 'ENOENT' ? {} : null;
-  }
-  for (const [key, claim] of Object.entries(state.routineClaims)) {
-    const saved = autopilotObservations?.[key];
-    if (saved) claim.autopilotShadow = saved;
-  }
-  for (const run of state.routineRuns) {
-    const saved = autopilotObservations?.[run.idempotencyKey];
-    if (!saved) continue;
-    run.autopilotShadow = saved;
-  }
-}
-
-async function persistAutopilotObservations() {
-  const cutoff = Date.now() - 14 * 86400000;
-  for (const [key, record] of Object.entries(autopilotObservations)) {
-    if (Date.parse(record.started_at) < cutoff && !state.routineClaims[key])
-      delete autopilotObservations[key];
-  }
-  await enqueueWrite(
-    AUTOPILOT_OBSERVATIONS_PATH,
-    JSON.stringify(autopilotObservations),
-    true
-  );
-}
-
-function observeAutopilotShadow(routine, event) {
-  if (!AUTOPILOT_DECISIONS_SHADOW) return;
-  const key = event.routineIdempotencyKey;
-  const claim = state.routineClaims[key];
-  if (!claim || claim.autopilotShadow) return;
-  const startedAt = new Date().toISOString();
-  const run = state.routineRuns.find((item) => item.idempotencyKey === key);
-  const saved = autopilotObservations?.[key];
-  if (saved) {
-    claim.autopilotShadow = saved;
-    if (run) run.autopilotShadow = saved;
-    return;
-  }
-  if (!autopilotObservations) {
-    claim.autopilotShadow = {
-      mode: 'shadow',
-      status: 'fallback',
-      reason: 'observation_storage_unavailable',
-    };
-    if (run) run.autopilotShadow = claim.autopilotShadow;
-    return;
-  }
-  claim.autopilotShadow = {
-    mode: 'shadow',
-    status: 'pending',
-    started_at: startedAt,
-  };
-  autopilotObservations[key] = claim.autopilotShadow;
-  if (run) run.autopilotShadow = claim.autopilotShadow;
-  void (async () => {
-    let result;
-    try {
-      await persistAutopilotObservations();
-      const connector = findConnector(
-        String(routine.action.connectorId || 'vibe-default')
-      );
-      result = await previewAutopilot({
-        event,
-        minConfidence: routine.action.input.routing?.minConfidence ?? 0.98,
-        apiKey: AUTOPILOT_DECISIONS_API_KEY,
-        hydrateEvent: (item, signal) =>
-          completionNotification(connector, item, signal),
-        resolveHost: autopilotHostResolver(connector),
-      });
-    } catch {
-      result = {
-        mode: 'shadow',
-        status: 'fallback',
-        reason: 'observation_unavailable',
-      };
-    }
-    claim.autopilotShadow = {
-      ...result,
-      started_at: startedAt,
-      finished_at: new Date().toISOString(),
-    };
-    autopilotObservations[key] = claim.autopilotShadow;
-    if (run) run.autopilotShadow = claim.autopilotShadow;
-    try {
-      await persistAutopilotObservations();
-    } catch {
-      // Shadow persistence must never change delivery or its retry state.
-    }
-  })();
 }
 
 const reconciliationInFlight = new Set();
@@ -2114,17 +1954,13 @@ async function reconcileRoutineAutopilot(input) {
             signal
           ),
       });
-    const routed = await routeAutopilot({
-      event: { kind: 'autopilot.reconcile' },
+    return await reconcileAutopilot({
+      scope: input,
+      collect,
+      acknowledgedAt: input.acknowledgedAt,
       record,
       persist: () => persistState(true),
-      reconciliation: {
-        scope: input,
-        collect,
-        acknowledgedAt: input.acknowledgedAt,
-      },
     });
-    return routed.report;
   } finally {
     reconciliationInFlight.delete(key);
   }
@@ -2190,54 +2026,7 @@ function autopilotHostResolver(connector) {
           undefined,
           signal
         ),
-      post: (path, body, signal) =>
-        vibeApi(
-          connector,
-          'POST',
-          path,
-          body,
-          bridge.baseUrl,
-          undefined,
-          signal
-        ),
     };
-  };
-}
-
-async function routeRoutineAutopilot(routine, event, connector) {
-  const key = event.routineIdempotencyKey;
-  const claim = state.routineClaims[key];
-  const record = claim.autopilotRouting;
-  if (!record) throw new Error('active routing admission is missing');
-  const run = state.routineRuns.find((item) => item.idempotencyKey === key);
-  if (run) run.autopilotRouting = record;
-  const result = await routeAutopilot({
-    event,
-    record,
-    persist: () => persistState(true),
-    hydrateEvent: (item, signal) =>
-      completionNotification(connector, item, signal),
-    apiKey: AUTOPILOT_DECISIONS_API_KEY,
-    minConfidence: record.minConfidence,
-    allowNewActions:
-      AUTOPILOT_DECISIONS_ACTIVE &&
-      routine.action.input.routing?.mode === 'active',
-    resolveHost: autopilotHostResolver(connector),
-    completeNotification: (item, receipt) =>
-      notificationRouting.completeResult(routine, item, receipt),
-  });
-  record.finished_at = new Date().toISOString();
-  record.suppressed = result.remaining.length === 0;
-  record.status = 'completed';
-  record.delivery = record.suppressed ? 'handled' : 'agent';
-  await persistState(true);
-  if (!result.remaining.length) return null;
-  return {
-    ...event,
-    ...(result.remaining.length === 1 ? result.remaining[0] : {}),
-    events: result.remaining,
-    count: result.remaining.length,
-    routineIdempotencyKey: key,
   };
 }
 
@@ -2247,22 +2036,6 @@ async function executeRoutineAction(routine, event) {
   if (!connector.enabled || connector.type !== 'vibe_kanban')
     throw new Error('enabled Vibe connector is required');
   const input = cloneData(action.input || {});
-  const previousRouting =
-    state.routineClaims[event.routineIdempotencyKey]?.autopilotRouting;
-  if (
-    previousRouting &&
-    (action.type !== 'send_prompt' ||
-      input.target !== 'autopilot' ||
-      input.sessionId ||
-      previousRouting.targetHostId !== action.targetHostId ||
-      previousRouting.connectorId !== connector.id)
-  )
-    throw Object.assign(
-      new Error(
-        '409 automation action is already running: routing target changed'
-      ),
-      { indeterminate: true }
-    );
   const bridge = action.targetHostId
     ? connector.config?.hostBridges?.[action.targetHostId]
     : null;
@@ -2289,30 +2062,6 @@ async function executeRoutineAction(routine, event) {
     routineChain: [...(event.routineChain || []), routine.id],
     idempotencyKey: event.routineIdempotencyKey,
   };
-  if (previousRouting?.recovering) {
-    const tick = notificationRoutingTicks.get(routine.id);
-    if (
-      tick &&
-      (event.events || [event]).some((item) => item.notificationClaim)
-    )
-      await tick;
-    const receipt = await vibeApi(
-      connector,
-      'GET',
-      `/api/automation-actions/receipts/${encodeURIComponent(meta.idempotencyKey)}`,
-      undefined,
-      bridge.baseUrl
-    );
-    if (
-      receipt.status === 'succeeded' &&
-      ['queue_prompt', 'notification_handoff'].includes(receipt.action)
-    )
-      return receipt.response || { recovered: 'existing agent admission' };
-    if (receipt.status !== 'missing')
-      throw new Error(
-        '409 automation action is already running: interrupted admission is indeterminate'
-      );
-  }
   if (action.type === 'run_rule') {
     const rule = state.rules.find(
       (item) =>
@@ -2367,7 +2116,6 @@ async function executeRoutineAction(routine, event) {
       sessionId: explicitSessionId,
       target,
       scope: _scope,
-      routing: _routing,
       queue,
       prompt,
       ...payload
@@ -2413,10 +2161,6 @@ async function executeRoutineAction(routine, event) {
         throw new Error(
           'autopilot executor config is unavailable; set input.executor_config'
         );
-    }
-    if (!explicitSessionId && previousRouting) {
-      event = await routeRoutineAutopilot(routine, event, connector);
-      if (!event) return { handled: 'routine_result', suppressed: true };
     }
     const queued = state.routineQueuedPrompts[routine.id];
     if (
@@ -2494,8 +2238,6 @@ async function executeRoutineAction(routine, event) {
         return { skipped: 'previous routine prompt is still queued' };
       }
     }
-    if (!explicitSessionId && !previousRouting)
-      observeAutopilotShadow(routine, event);
     let queuedPrompt;
     const build = async (event) => {
       const message = renderPromptTemplate(prompt, event);
@@ -6203,12 +5945,7 @@ async function processRetryQueue({
       item.attempts += 1;
       item.lastError = errorMessage(error);
       item.updatedAt = Date.now();
-      // Result receipts can be read/replayed safely under the same admission key.
-      if (
-        routine &&
-        isIndeterminateActionError(error) &&
-        error.retryable !== true
-      ) {
+      if (routine && isIndeterminateActionError(item.lastError)) {
         item.attempts = item.maxAttempts;
         item.lastError = `${item.lastError}; outcome is indeterminate, review the target before running again`;
       }
@@ -7096,7 +6833,7 @@ function enqueueWrite(filePath, content, strict = false, afterWrite) {
   // Keep the chain alive: one rejected write must not permanently stall every
   // future persist. Artifact dispatch claims must report failures to the caller.
   // Shadow I/O has its own queue so it cannot hold delivery's durable claim.
-  const shadowIo = [AUTOPILOT_OBSERVATIONS_PATH, AUTOPILOT_TRIAGE_PATH].includes(filePath);
+  const shadowIo = filePath === AUTOPILOT_TRIAGE_PATH;
   const queue = shadowIo ? autopilotWriteQueue : writeQueue;
   const pending = queue.then(async () => {
     try {

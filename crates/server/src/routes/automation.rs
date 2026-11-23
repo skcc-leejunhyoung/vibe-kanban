@@ -138,10 +138,6 @@ pub fn router() -> Router<DeploymentImpl> {
             get(autopilot_snapshot),
         )
         .route(
-            "/automation-actions/autopilot-results/{execution}",
-            get(autopilot_guard).post(autopilot_record),
-        )
-        .route(
             "/automation-actions/triage-facts/{execution}",
             get(triage_facts),
         )
@@ -230,79 +226,6 @@ pub(crate) async fn record_agent_origin(
     {
         tracing::warn!(%execution, ?error, "failed to record the agent origin of an execution");
     }
-}
-
-async fn autopilot_guard(
-    axum::extract::State(deployment): axum::extract::State<DeploymentImpl>,
-    Path(execution): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let mut guard = services::services::autopilot::guard(&deployment.db().pool, execution).await?;
-    if let (Some(session), true) = (
-        guard["session_id"]
-            .as_str()
-            .and_then(|s| Uuid::parse_str(s).ok()),
-        guard["eligible"] == true,
-    ) {
-        // Interactive artifacts stay on the agent path, including ambiguous old receipts.
-        if !services::services::artifact_interactions::list(session, execution)
-            .await
-            .map_err(|_| ApiError::BadGateway("artifact guard unavailable".into()))?
-            .is_empty()
-        {
-            guard["eligible"] = serde_json::json!(false);
-            guard["reason"] = serde_json::json!("interactive_artifact");
-        }
-    }
-    guard["hostId"] = serde_json::json!(deployment.user_id());
-    Ok(Json(guard))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AutopilotResult {
-    version: String,
-    result_hash: String,
-}
-
-async fn autopilot_record(
-    axum::extract::State(deployment): axum::extract::State<DeploymentImpl>,
-    Path(execution): Path<Uuid>,
-    Json(input): Json<AutopilotResult>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    if input.version.len() != 64
-        || input.result_hash.len() != 64
-        || !input
-            .version
-            .bytes()
-            .chain(input.result_hash.bytes())
-            .all(|c| c.is_ascii_hexdigit())
-    {
-        return Err(ApiError::BadRequest("invalid completion evidence".into()));
-    }
-    let guard = autopilot_guard(axum::extract::State(deployment.clone()), Path(execution))
-        .await?
-        .0;
-    // Existing receipts are authoritative even after the workspace has moved on.
-    if guard["receipt"].is_null() && guard["eligible"] != true {
-        return Err(ApiError::Conflict("completion requires an agent".into()));
-    }
-    services::services::autopilot::record(
-        &deployment.db().pool,
-        execution,
-        &input.version,
-        &input.result_hash,
-    )
-    .await
-    .map(Json)
-    .map_err(|error| {
-        if error.downcast_ref::<sqlx::Error>().is_some() {
-            ApiError::BadGateway("completion receipt unavailable".into())
-        } else if error.to_string().contains("indeterminate") {
-            ApiError::Conflict("automation action is already running".into())
-        } else {
-            ApiError::Conflict("completion changed or requires an agent".into())
-        }
-    })
 }
 
 #[derive(Deserialize)]

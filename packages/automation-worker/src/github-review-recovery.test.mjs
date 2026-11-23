@@ -1214,7 +1214,7 @@ test("publishes activity receipts only after a durable write and retains recover
   let contents;
   let fail = true;
   Object.assign(h.context, await import("./github-pr-activity.mjs"), {
-    STATE_PATH: "/fixture/state.json", AUTOPILOT_OBSERVATIONS_PATH: "/fixture/observations.json", AUTOPILOT_TRIAGE_PATH: "/fixture/triage.json",
+    STATE_PATH: "/fixture/state.json", AUTOPILOT_TRIAGE_PATH: "/fixture/triage.json",
     writeQueue: Promise.resolve(), githubActivityWrites: new Set(),
     process: { pid: 9 }, console: { error() {} },
     fs: {

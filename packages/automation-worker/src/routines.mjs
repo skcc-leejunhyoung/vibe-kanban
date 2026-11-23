@@ -77,24 +77,6 @@ export function normalizeRoutine(input) {
       throw new Error('send_prompt target must be "autopilot"');
     if (!actionInput.sessionId && actionInput.target !== 'autopilot')
       throw new Error('send_prompt sessionId or target "autopilot" is required');
-    if (actionInput.routing !== undefined) {
-      const routing = actionInput.routing;
-      if (
-        !routing ||
-        actionInput.target !== 'autopilot' ||
-        actionInput.sessionId ||
-        routing.mode !== 'active' ||
-        !Number.isFinite(routing.minConfidence) ||
-        routing.minConfidence <= 0 ||
-        routing.minConfidence > 1 ||
-        Object.keys(routing).some(
-          (key) => !['mode', 'minConfidence'].includes(key)
-        )
-      )
-        throw new Error(
-          'active routing requires an Autopilot target and an explicit confidence threshold'
-        );
-    }
     if (actionInput.queue !== undefined && typeof actionInput.queue !== 'boolean')
       throw new Error('send_prompt queue must be a boolean');
   }
@@ -272,10 +254,7 @@ export function automationEventKey(event) {
 }
 
 export function isIndeterminateActionError(error) {
-  return (
-    error?.indeterminate === true ||
-    /409[\s\S]*automation action is already running/i.test(String(error))
-  );
+  return /409[\s\S]*automation action is already running/i.test(String(error));
 }
 
 export function pruneAutomationState(state, now = Date.now()) {
@@ -361,57 +340,23 @@ export function recoverInterruptedAutomationState(state) {
   for (const receipt of Object.values(state.eventReceipts || {})) {
     if (receipt.status === 'running') receipt.status = 'indeterminate';
   }
-  const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-  const recoverable = new Set(
-    (state.routineRuns || [])
-      .filter((run) => {
-        if (
-          run.status !== 'running' ||
-          state.routineClaims?.[run.idempotencyKey]?.autopilotRouting?.mode !==
-            'active'
-        )
-          return false;
-        const events = Array.isArray(run.trigger?.events)
-          ? run.trigger.events
-          : [run.trigger];
-        return (
-          events.length > 0 &&
-          events.every(
-            (item) =>
-              item &&
-              typeof item.id === 'string' &&
-              ((item.kind === 'process.completed' &&
-                uuid.test(item.executionId) &&
-                uuid.test(item.hostId)) ||
-                (item.kind === 'cloud.notification' &&
-                  uuid.test(item.notificationId) &&
-                  Number.isSafeInteger(item.notificationRevision) &&
-                  item.notificationRevision > 0 &&
-                  uuid.test(item.notificationClaim?.lease_id)))
-          )
-        );
-      })
-      .map((run) => run.idempotencyKey)
-  );
-  for (const [key, claim] of Object.entries(state.routineClaims || {})) {
+  for (const claim of Object.values(state.routineClaims || {})) {
     if (claim.status !== 'running') continue;
-    claim.status = recoverable.has(key) ? 'retrying' : 'exhausted';
-    if (recoverable.has(key)) claim.autopilotRouting.recovering = true;
+    claim.status = 'exhausted';
     claim.updatedAt = Date.now();
   }
   for (const run of state.routineRuns || []) {
     if (run.trigger) run.trigger = sanitizeNotificationEvent(run.trigger);
     if (run.status !== 'running' || !run.idempotencyKey) continue;
-    run.status = recoverable.has(run.idempotencyKey) ? 'retrying' : 'exhausted';
-    run.error = recoverable.has(run.idempotencyKey)
-      ? 'interrupted; recovering the existing admission receipts'
-      : 'interrupted with an indeterminate action outcome; review the target before running again';
+    run.status = 'exhausted';
+    run.error =
+      'interrupted with an indeterminate action outcome; review the target before running again';
     run.finishedAt ||= new Date().toISOString();
     state.routineClaims[run.idempotencyKey] = {
       ...state.routineClaims[run.idempotencyKey],
       runId: run.id,
       routineId: run.routineId,
-      status: run.status,
+      status: 'exhausted',
       updatedAt: Date.now(),
     };
   }

@@ -163,16 +163,7 @@ test('registered rule schedules require a host and accept only a Rule reference'
 });
 
 
-test('active routing requires an explicit confidence threshold and only targets Autopilot', () => {
-  const spec = { trigger: { type: 'vk_event' }, action: { type: 'send_prompt', connectorId: 'synthetic-vibe', targetHostId: 'synthetic-machine', input: { target: 'autopilot', prompt: 'Synthetic inspection', routing: { mode: 'active', minConfidence: .99 } } } };
-  assert.equal(normalizeRoutine(spec).action.input.routing.minConfidence, .99);
-  for (const routing of [{ mode: 'active' }, { mode: 'active', minConfidence: 0 }, { mode: 'active', minConfidence: 1.1 }, { mode: 'active', minConfidence: .99, unsafe: true }]) {
-    assert.throws(() => normalizeRoutine({ ...spec, action: { ...spec.action, input: { ...spec.action.input, routing } } }), /confidence threshold/);
-  }
-  assert.throws(() => normalizeRoutine({ ...spec, action: { ...spec.action, input: { ...spec.action.input, sessionId: 'synthetic-session' } } }), /confidence threshold/);
-});
-
-test('restart recovery retains cloud claim identity without credentials and rejects incomplete snapshots', () => {
+test('restart recovery retains cloud claim identity without credentials and fences interrupted runs', () => {
   const event = {
     id: 'synthetic-cloud',
     kind: 'cloud.notification',
@@ -195,20 +186,10 @@ test('restart recovery retains cloud claim identity without credentials and reje
   assert.ok(!JSON.stringify(trigger).includes('synthetic-sensitive-token'));
   assert.ok(!JSON.stringify(trigger).includes('synthetic private content'));
   const state = {
-    routineClaims: {
-      valid: { status: 'running', autopilotRouting: { mode: 'active' } },
-      incomplete: { status: 'running', autopilotRouting: { mode: 'active' } },
-    },
-    routineRuns: [
-      { idempotencyKey: 'valid', status: 'running', trigger },
-      {
-        idempotencyKey: 'incomplete',
-        status: 'running',
-        trigger: { ...trigger, notificationRevision: undefined },
-      },
-    ],
+    routineClaims: { interrupted: { status: 'running' } },
+    routineRuns: [{ idempotencyKey: 'interrupted', status: 'running', trigger }],
   };
   recoverInterruptedAutomationState(state);
-  assert.equal(state.routineClaims.valid.status, 'retrying');
-  assert.equal(state.routineClaims.incomplete.status, 'exhausted');
+  assert.equal(state.routineClaims.interrupted.status, 'exhausted');
+  assert.equal(state.routineRuns[0].status, 'exhausted');
 });

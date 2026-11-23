@@ -13,13 +13,12 @@ import {
 } from './routines.mjs';
 import { carriesRetryExhausted, renderPromptTemplate } from './vibe-events.mjs';
 import { createNotificationRouting } from './notification-routing.mjs';
-import { previewAutopilot, routeAutopilot } from './autopilot-router.mjs';
-import { evaluateAutopilotShadow } from './autopilot-routing.mjs';
 
 import {
   checkGithubBudget,
   collectReconciliation,
   conditionalGithub,
+  reconcileAutopilot,
   reconciliationProjects,
   validateReconciliationScope
 } from './autopilot-reconcile.mjs';
@@ -34,10 +33,6 @@ const functions = [
   'runDueRoutines',
   'runRoutine',
   'executeRoutineAction',
-  'observeAutopilotShadow',
-  'autopilotHostResolver',
-  'routeRoutineAutopilot',
-  'completionNotification',
   'removeRoutine',
   'completeRoutineRun',
   'restoreInterruptedRoutineRuns',
@@ -72,14 +67,6 @@ function routine(input = {}) {
 function harness({
   state: restored,
   store = { queue: [], receipts: new Map() },
-  shadow = false,
-  active = false,
-  shadowEvaluate = async () => ({
-    mode: 'shadow',
-    status: 'completed',
-    delivery: 'unchanged',
-    results: [],
-  }),
 } = {}) {
   const state = restored || {
     connectors: [
@@ -117,23 +104,10 @@ function harness({
     calls: [],
     posts: 0,
     releases: 0,
-    shadowCalls: 0,
   };
   const api = async (_, method, endpoint, payload, baseUrl, meta) => {
     h.calls.push({ method, endpoint, baseUrl });
     if (h.fail) throw new Error('synthetic offline');
-    if (endpoint === '/v1/hosts')
-      return {
-        hosts: [
-          {
-            id: '10000000-0000-4000-8000-000000000002',
-            machine_id: 'host',
-            access_role: 'owner',
-          },
-        ],
-      };
-    if (endpoint.startsWith('/api/automation-actions/autopilot-results/'))
-      return h.resultGuard;
     if (endpoint === '/api/automation-actions/status')
       return { hostId: h.hostId || 'host' };
     if (endpoint === '/api/workspaces/autopilot')
@@ -195,20 +169,6 @@ function harness({
     RETRY_MAX_ATTEMPTS: 5,
     MAX_LOGS: 500,
     RULE_TIMEOUT_MS: 1000,
-    AUTOPILOT_DECISIONS_SHADOW: shadow,
-    AUTOPILOT_DECISIONS_ACTIVE: active,
-    routeAutopilot,
-    AUTOPILOT_DECISIONS_API_KEY: 'synthetic-key',
-    autopilotObservations: {},
-    persistAutopilotObservations: async () => {
-      if (h.failShadowWrite)
-        throw new Error('synthetic observation storage failure');
-      h.persistedObservations = structuredClone(context.autopilotObservations);
-    },
-    previewAutopilot: async (input) => {
-      h.shadowCalls += 1;
-      return shadowEvaluate(input);
-    },
     routineInFlight: new Set(),
     routineHostInFlight: new Set(),
     retryInFlight: new Set(),
@@ -227,10 +187,6 @@ function harness({
     findConnector: (id) => state.connectors.find((item) => item.id === id),
     log: async (level, message, meta) => h.logs.push({ level, message, meta }),
     persistState: async (strict) => {
-      if (strict && h.failNextStrictWrite) {
-        h.failNextStrictWrite = false;
-        throw new Error('synthetic observation storage failure');
-      }
       if (strict && h.failStrictWrite)
         throw new Error('synthetic storage failure');
       h.persisted = structuredClone(state);
@@ -280,16 +236,6 @@ function harness({
     ruleContext: context.createRuleContext,
   });
 }
-
-test('shadow mode is off by default and preserves the original prompt', async () => {
-  const h = harness();
-  const r = routine();
-  h.state.routines.push(r);
-  await h.run(r, { count: 3 }, 'synthetic-shadow-off');
-  assert.equal(h.shadowCalls, 0);
-  assert.equal(h.store.queue[0].data.message, 'Synthetic check 3');
-  assert.equal(h.state.routineRuns[0].autopilotShadow, undefined);
-});
 
 test(
   'periodic reconciliation releases its scope when shared token refresh outlasts the deadline',
@@ -365,7 +311,7 @@ test(
       },
       createHash,
       state,
-      routeAutopilot,
+      reconcileAutopilot,
       collectReconciliation,
       reconciliationProjects,
       validateReconciliationScope,
@@ -450,499 +396,6 @@ test(
     assert.equal(tokenReads, 1);
   }
 );
-
-test('a pending shadow classification cannot delay or suppress agent delivery', async () => {
-  let finish;
-  const h = harness({
-    shadow: true,
-    shadowEvaluate: () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-  });
-  const r = routine();
-  h.state.routines.push(r);
-  await h.run(r, { count: 4 }, 'synthetic-shadow-pending');
-  assert.equal(h.shadowCalls, 1);
-  assert.equal(h.posts, 1);
-  assert.equal(h.store.queue[0].data.message, 'Synthetic check 4');
-  assert.equal(h.state.routineRuns[0].status, 'succeeded');
-  assert.equal(h.state.routineRuns[0].autopilotShadow.status, 'pending');
-  finish({
-    mode: 'shadow',
-    status: 'completed',
-    results: [{ route: 'routine_result' }],
-  });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(h.state.routineRuns[0].autopilotShadow.status, 'completed');
-  assert.equal(h.posts, 1);
-});
-
-test('shadow failures and its strict persistence failure leave delivery successful', async () => {
-  for (const storageFailure of [false, true]) {
-    const h = harness({
-      shadow: true,
-      shadowEvaluate: async () => {
-        throw new Error('Synthetic private diagnostic');
-      },
-    });
-    h.failShadowWrite = storageFailure;
-    const r = routine();
-    h.state.routines.push(r);
-    await h.run(r, {}, 'synthetic-shadow-error');
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(h.posts, 1);
-    assert.equal(h.shadowCalls, storageFailure ? 0 : 1);
-    assert.equal(h.state.routineRuns[0].status, 'succeeded');
-    assert.equal(
-      h.state.routineRuns[0].autopilotShadow.reason,
-      'observation_unavailable'
-    );
-    assert.ok(
-      !JSON.stringify(h.state).includes('Synthetic private diagnostic')
-    );
-  }
-});
-
-test('a retry after restart reuses the shadow record and never calls the model again', async () => {
-  const h = harness({ shadow: true });
-  const r = routine();
-  h.state.routines.push(r);
-  h.failQueueOnce = true;
-  await h.run(r, { count: 5 }, 'synthetic-shadow-retry');
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(h.shadowCalls, 1);
-  assert.equal(h.store.queue.length, 0);
-  const restarted = harness({
-    state: structuredClone(h.persisted),
-    store: h.store,
-    shadow: true,
-  });
-  await restarted.retry({ force: true });
-  assert.equal(restarted.shadowCalls, 0);
-  assert.equal(restarted.store.queue.length, 1);
-  assert.equal(restarted.state.routineRuns[0].status, 'succeeded');
-});
-
-test('explicit sessions bypass Autopilot shadow classification', async () => {
-  const h = harness({ shadow: true });
-  const r = routine();
-  r.action.input.sessionId = 'synthetic-explicit-session';
-  h.state.routines.push(r);
-  await h.run(r, {}, 'synthetic-explicit-shadow');
-  assert.equal(h.shadowCalls, 0);
-  assert.equal(h.posts, 1);
-});
-
-test('an unknown pending observation survives restart without re-evaluation', async () => {
-  const h = harness({
-    shadow: true,
-    shadowEvaluate: () => new Promise(() => {}),
-  });
-  const r = routine();
-  h.state.routines.push(r);
-  h.failQueueOnce = true;
-  await h.run(r, {}, 'synthetic-shadow-unknown');
-  assert.equal(h.shadowCalls, 1);
-  assert.equal(h.persisted.routineRuns[0].autopilotShadow.status, 'pending');
-  const restarted = harness({
-    state: structuredClone(h.persisted),
-    store: h.store,
-    shadow: true,
-  });
-  await restarted.retry({ force: true });
-  assert.equal(restarted.shadowCalls, 0);
-  assert.equal(restarted.posts, 1);
-  assert.equal(
-    restarted.state.routineRuns[0].autopilotShadow.status,
-    'pending'
-  );
-});
-
-test('journal host IDs resolve through owned machine IDs and one catalog serves a whole batch', async () => {
-  for (const scenario of [
-    'owned',
-    'foreign',
-    'unconfigured',
-    'mismatch',
-    'unavailable',
-    'ineligible',
-  ]) {
-    const remoteId = '00000000-0000-4000-8000-000000000021';
-    const machineId = 'synthetic-event-machine';
-    const executionId = '00000000-0000-4000-8000-000000000022';
-    const h = harness({ shadow: true });
-    const resultText = 'Synthetic routine complete.';
-    h.resultGuard = {
-      hostId: machineId,
-      execution_id: executionId,
-      eligible: scenario !== 'ineligible',
-      version: 'a'.repeat(64),
-      result_hash: createHash('sha256').update(resultText).digest('hex'),
-    };
-    const r = routine();
-    h.state.routines.push(r);
-    if (scenario !== 'unconfigured')
-      h.state.connectors[0].config.hostBridges[machineId] = {
-        baseUrl: 'https://source.invalid',
-      };
-    const api = h.context.vibeApi;
-    let catalogs = 0;
-    let reads = 0;
-    let models = 0;
-    h.context.vibeApi = async (...args) => {
-      const [, method, endpoint, , baseUrl, , signal] = args;
-      if (endpoint === '/v1/hosts') {
-        catalogs += 1;
-        assert.equal(method, 'GET');
-        assert.ok(signal instanceof AbortSignal);
-        if (scenario === 'unavailable')
-          throw new Error('synthetic catalog failure');
-        return {
-          hosts: [
-            {
-              id: remoteId,
-              machine_id: machineId,
-              access_role: scenario === 'foreign' ? 'member' : 'owner',
-            },
-          ],
-        };
-      }
-      if (baseUrl === 'https://source.invalid') {
-        assert.equal(method, 'GET');
-        reads += 1;
-        if (endpoint === '/v1/hosts')
-          return {
-            hosts: [
-              {
-                id: '10000000-0000-4000-8000-000000000002',
-                machine_id: 'host',
-                access_role: 'owner',
-              },
-            ],
-          };
-        if (endpoint.startsWith('/api/automation-actions/autopilot-results/'))
-          return h.resultGuard;
-        if (endpoint === '/api/automation-actions/status')
-          return {
-            hostId: scenario === 'mismatch' ? 'wrong-machine' : machineId,
-          };
-        assert.ok(
-          endpoint.startsWith(
-            `/api/execution-processes/${executionId}/normalized-logs`
-          )
-        );
-        return {
-          data: {
-            execution_id: executionId,
-            status: 'completed',
-            total: 1,
-            has_more: false,
-            entries: [
-              {
-                entry_type: { type: 'assistant_message' },
-                content: resultText,
-              },
-            ],
-          },
-        };
-      }
-      return api(...args);
-    };
-    h.context.previewAutopilot = (input) =>
-      previewAutopilot({
-        ...input,
-        evaluate: (options) =>
-          evaluateAutopilotShadow({
-            ...options,
-            fetchImpl: async (_, options) => {
-              models += 1;
-              const body = JSON.parse(options.body);
-              return Response.json({
-                model: 'gpt-6-luna',
-                answers: body.questions.map(({ name }) => ({
-                  name,
-                  type: 'choice',
-                  choice: 'routine_result',
-                  confidence: 0.99,
-                })),
-              });
-            },
-          }),
-      });
-    const item = {
-      id: 'synthetic-first-completion',
-      kind: 'process.completed',
-      hostId: remoteId,
-      executionId,
-      machineId: 'untrusted-machine',
-    };
-    await h.run(
-      r,
-      { events: [item, { ...item, id: 'synthetic-second-completion' }] },
-      'synthetic-host-resolution'
-    );
-    await new Promise((resolve) => setImmediate(resolve));
-    const result = h.state.routineRuns[0].autopilotShadow;
-    assert.equal(h.posts, 1);
-    assert.equal(catalogs, 1);
-    assert.equal(models, scenario === 'owned' ? 1 : 0);
-    assert.equal(result.status, scenario === 'owned' ? 'completed' : 'skipped');
-    assert.equal(result.routing_preview.would_suppress, scenario === 'owned');
-    if (['foreign', 'unconfigured', 'unavailable'].includes(scenario))
-      assert.equal(reads, 0);
-  }
-});
-
-test(
-  'held shadow disk writes cannot block production delivery persistence or lose restart deduplication',
-  { timeout: 2000 },
-  async (t) => {
-    const h = harness({ shadow: true });
-    const r = routine();
-    h.state.routines.push(r);
-    const files = new Map();
-    let release;
-    const held = new Promise((resolve) => {
-      release = resolve;
-    });
-    t.after(() => release());
-    let entered;
-    const writing = new Promise((resolve) => {
-      entered = resolve;
-    });
-    let hold = true;
-    Object.assign(h.context, {
-      STATE_PATH: 'synthetic-state.json',
-      AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
-    AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
-      process: { pid: 1 },
-      console: { error() {} },
-      fs: {
-        async writeFile(file, content) {
-          if (file.startsWith('synthetic-observations.json') && hold) {
-            hold = false;
-            entered();
-            await held;
-          }
-          files.set(file, content);
-        },
-        async rename(from, to) {
-          files.set(to, files.get(from));
-          files.delete(from);
-        },
-        async readFile(file) {
-          return files.get(file);
-        },
-      },
-    });
-    vm.runInContext(
-      'let writeQueue = Promise.resolve(); let autopilotWriteQueue = Promise.resolve();\n' +
-        [
-          'persistState',
-          'persistAutopilotObservations',
-          'enqueueWrite',
-          'restoreAutopilotObservations',
-        ]
-          .map(productionFunction)
-          .join('\n'),
-      h.context
-    );
-    const sending = h.run(r, {}, 'synthetic-independent-writes');
-    await writing;
-    await sending;
-    assert.equal(h.posts, 1);
-    assert.equal(h.state.routineRuns[0].status, 'succeeded');
-    assert.equal(
-      h.shadowCalls,
-      0,
-      'a paid call must wait for the durable observation'
-    );
-    release();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(h.shadowCalls, 1);
-    assert.equal(
-      JSON.parse(files.get('synthetic-observations.json'))[
-        'synthetic-independent-writes'
-      ].status,
-      'completed'
-    );
-
-    // The main state can lag a background result; the independent journal wins.
-    h.state.routineRuns[0].autopilotShadow.status = 'pending';
-    h.state.routineClaims[
-      'synthetic-independent-writes'
-    ].autopilotShadow.status = 'pending';
-    await h.context.restoreAutopilotObservations();
-    assert.equal(h.state.routineRuns[0].autopilotShadow.status, 'completed');
-    h.context.observeAutopilotShadow(r, {
-      routineIdempotencyKey: 'synthetic-independent-writes',
-    });
-    assert.equal(h.shadowCalls, 1);
-  }
-);
-
-test('pending journal entries prevent paid replay even when the main state predates observation', async () => {
-  const h = harness({ shadow: true });
-  const key = 'synthetic-journal-only';
-  const trimmedKey = 'synthetic-trimmed-history';
-  h.state.routineClaims[key] = {};
-  h.state.routineClaims[trimmedKey] = {
-    autopilotShadow: { status: 'pending' },
-  };
-  h.state.routineRuns.push({ idempotencyKey: key });
-  Object.assign(h.context, {
-    AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
-    AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
-    fs: {
-      readFile: async () =>
-        JSON.stringify({
-          [key]: {
-            mode: 'shadow',
-            status: 'pending',
-            started_at: new Date().toISOString(),
-          },
-          [trimmedKey]: {
-            mode: 'shadow',
-            status: 'completed',
-            started_at: new Date().toISOString(),
-          },
-        }),
-    },
-  });
-  vm.runInContext(
-    productionFunction('restoreAutopilotObservations'),
-    h.context
-  );
-  await h.context.restoreAutopilotObservations();
-  h.context.observeAutopilotShadow(routine(), { routineIdempotencyKey: key });
-  assert.equal(h.shadowCalls, 0);
-  assert.equal(h.state.routineRuns[0].autopilotShadow.status, 'pending');
-  assert.equal(
-    h.state.routineClaims[trimmedKey].autopilotShadow.status,
-    'completed'
-  );
-});
-
-test('unreadable or malformed observation journals disable paid calls while preserving delivery', async () => {
-  for (const data of [
-    '{broken',
-    '[]',
-    'null',
-    '{"synthetic":{"status":"completed"}}',
-    new Error('synthetic storage offline'),
-  ]) {
-    const h = harness({ shadow: true });
-    Object.assign(h.context, {
-      AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
-    AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
-      fs: {
-        readFile: async () => {
-          if (data instanceof Error) throw data;
-          return data;
-        },
-      },
-    });
-    vm.runInContext(
-      productionFunction('restoreAutopilotObservations'),
-      h.context
-    );
-    await h.context.restoreAutopilotObservations();
-    const r = routine();
-    h.state.routines.push(r);
-    await h.run(r, {}, 'synthetic-unavailable-journal');
-    assert.equal(h.posts, 1);
-    assert.equal(h.shadowCalls, 0);
-    assert.equal(
-      h.state.routineRuns[0].autopilotShadow.reason,
-      'observation_storage_unavailable'
-    );
-  }
-});
-
-test('a failed observation write does not poison either production persistence queue', async () => {
-  const h = harness({ shadow: true });
-  const r = routine();
-  h.state.routines.push(r);
-  const written = [];
-  let fail = true;
-  Object.assign(h.context, {
-    STATE_PATH: 'synthetic-state.json',
-    AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
-    AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
-    process: { pid: 1 },
-    console: { error() {} },
-    fs: {
-      async writeFile(file) {
-        if (file.startsWith('synthetic-observations.json') && fail) {
-          fail = false;
-          throw new Error('synthetic disk failure');
-        }
-        written.push(file);
-      },
-      async rename() {},
-    },
-  });
-  vm.runInContext(
-    'let writeQueue = Promise.resolve(); let autopilotWriteQueue = Promise.resolve();\n' +
-      ['persistState', 'persistAutopilotObservations', 'enqueueWrite']
-        .map(productionFunction)
-        .join('\n'),
-    h.context
-  );
-  await h.run(r, {}, 'synthetic-failed-observation-write');
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(h.posts, 1);
-  assert.equal(h.shadowCalls, 0);
-  assert.equal(
-    h.state.routineRuns[0].autopilotShadow.reason,
-    'observation_unavailable'
-  );
-  assert.ok(written.includes('synthetic-observations.json.1.tmp'));
-  assert.ok(written.includes('synthetic-state.json.1.tmp'));
-});
-
-test('new journals initialize safely and retention preserves live claims', async () => {
-  const h = harness();
-  Object.assign(h.context, {
-    AUTOPILOT_OBSERVATIONS_PATH: 'synthetic-observations.json',
-    AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
-    fs: {
-      readFile: async () => {
-        throw Object.assign(new Error('synthetic absent journal'), {
-          code: 'ENOENT',
-        });
-      },
-    },
-  });
-  vm.runInContext(
-    ['restoreAutopilotObservations', 'persistAutopilotObservations']
-      .map(productionFunction)
-      .join('\n'),
-    h.context
-  );
-  await h.context.restoreAutopilotObservations();
-  assert.deepEqual(Object.keys(h.context.autopilotObservations), []);
-  const old = {
-    mode: 'shadow',
-    status: 'pending',
-    started_at: new Date(Date.now() - 30 * 86400000).toISOString(),
-  };
-  h.context.autopilotObservations = {
-    expired: { ...old },
-    retained: { ...old },
-    recent: { ...old, started_at: new Date().toISOString() },
-  };
-  h.state.routineClaims.retained = {};
-  let saved;
-  h.context.enqueueWrite = async (file, content, strict) => {
-    assert.equal(file, 'synthetic-observations.json');
-    assert.equal(strict, true);
-    saved = JSON.parse(content);
-  };
-  await h.context.persistAutopilotObservations();
-  assert.deepEqual(Object.keys(saved).sort(), ['recent', 'retained']);
-});
 
 test('successful one-shots are removed durably without resurrecting their occurrence', async () => {
   const h = harness();
@@ -1585,342 +1038,60 @@ test('exhausted claims expire while their retry records still prevent automatic 
   assert.ok(h.state.routineIdempotency['synthetic-key']);
 });
 
-test('active Autopilot delivery consumes a recorded native result without queuing an agent', async () => {
-  const h = harness({ active: true });
-  const r = routine();
-  r.action.input.routing = { mode: 'active', minConfidence: 0.99 };
-  h.state.routines.push(r);
-  const execution = '10000000-0000-4000-8000-000000000001';
-  h.resultGuard = {
-    hostId: 'host',
-    execution_id: execution,
-    eligible: false,
-    receipt: {
-      action: 'autopilot_result',
-      status: 'recorded',
-      execution_id: execution,
-    },
-  };
-  const result = await h.context.runRoutine(
-    r,
-    {
-      id: 'synthetic-result',
-      kind: 'process.completed',
-      hostId: '10000000-0000-4000-8000-000000000002',
-      executionId: execution,
-    },
-    'synthetic-active'
-  );
-  assert.equal(result.ok, true);
-  assert.equal(h.posts, 0);
-  assert.equal(
-    h.state.routineClaims['synthetic-active'].autopilotRouting.suppressed,
-    true
-  );
-  assert.equal(h.state.routineClaims['synthetic-active'].status, 'succeeded');
-});
-
-test('active global flag alone preserves legacy delivery until a Routine opts in', async () => {
-  const h = harness({ active: true });
+test('an uncertain action outcome stays manual instead of retrying', async () => {
+  const h = harness();
   const r = routine();
   h.state.routines.push(r);
-  const result = await h.context.runRoutine(
-    r,
-    { kind: 'process.completed' },
-    'synthetic-legacy'
-  );
-  assert.equal(result.ok, true);
-  assert.equal(h.posts, 1);
+  h.context.executeRoutineAction = async () => {
+    throw new Error('409 automation action is already running');
+  };
+  await h.run(r, { id: 'synthetic-event' }, 'synthetic-retry-cap');
+  await h.retry({ force: true });
+  assert.equal(h.state.retryQueue[0].status, 'exhausted');
+  assert.equal(h.state.retryQueue[0].attempts, 5);
 });
 
-test('lost result replies survive a transient recovery failure within the retry budget', async () => {
-  const h = harness({ active: true });
-  const r = routine({ trigger: { type: 'execution_completed' } });
-  r.action.input.routing = { mode: 'active', minConfidence: 0.95 };
-  h.state.routines.push(r);
-  const key = 'synthetic-result-recovery';
-  const executionId = '10000000-0000-4000-8000-000000000001';
-  h.resultGuard = {
-    hostId: 'host',
-    execution_id: executionId,
-    eligible: true,
-    version: 'a'.repeat(64),
-    result_hash: 'b'.repeat(64),
-  };
-  let modelCalls = 0;
-  h.context.routeAutopilot = (options) =>
-    routeAutopilot({
-      ...options,
-      evaluate: async () => {
-        modelCalls++;
-        return {
-          status: 'completed',
-          results: [
-            {
-              event_index: 0,
-              source: 'decisions',
-              route: 'routine_result',
-              confidence: 0.99,
-              truncated: false,
-              evidence_hash: h.resultGuard.result_hash,
-            },
-          ],
-        };
-      },
-    });
-  const originalApi = h.context.vibeApi;
-  let sourceOffline = false;
-  let resultPosts = 0;
-  h.context.vibeApi = async (...args) => {
-    const [, method, endpoint] = args;
-    if (endpoint.includes('/autopilot-results/')) {
-      if (sourceOffline) throw new Error('synthetic transient outage');
-      if (method === 'POST') {
-        resultPosts++;
-        h.resultGuard.receipt = {
-          action: 'autopilot_result',
-          status: 'recorded',
-          execution_id: executionId,
-          result_hash: h.resultGuard.result_hash,
-        };
-        throw new Error('synthetic response lost');
-      }
-    }
-    return originalApi(...args);
-  };
-  await h.run(
-    r,
-    {
-      id: 'synthetic-result',
-      kind: 'process.completed',
-      executionId,
-      hostId: '10000000-0000-4000-8000-000000000002',
-    },
-    key
-  );
-  sourceOffline = true;
-  await h.retry({ force: true });
-  assert.equal(h.state.retryQueue[0].status, 'pending');
-  assert.equal(h.state.retryQueue[0].attempts, 2);
-  sourceOffline = false;
-  await h.retry({ force: true });
-  assert.equal(h.state.retryQueue.length, 0);
-  assert.equal(h.state.routineClaims[key].status, 'succeeded');
-  assert.equal(h.state.routineClaims[key].autopilotRouting.suppressed, true);
-  assert.equal(modelCalls, 1);
-  assert.equal(resultPosts, 1);
-  assert.equal(h.posts, 0);
-});
-
-test('receipt recovery respects its retry cap while other uncertain actions remain manual', async () => {
-  for (const retryable of [true, false]) {
+test(
+  'held triage journal writes cannot block production delivery persistence',
+  { timeout: 2000 },
+  async (t) => {
     const h = harness();
     const r = routine();
     h.state.routines.push(r);
-    h.context.executeRoutineAction = async () => {
-      throw Object.assign(
-        new Error('409 automation action is already running'),
-        {
-          indeterminate: true,
-          retryable,
-        }
-      );
-    };
-    await h.run(r, { id: 'synthetic-event' }, 'synthetic-retry-cap');
-    await h.retry({ force: true });
-    assert.equal(
-      h.state.retryQueue[0].status,
-      retryable ? 'pending' : 'exhausted'
-    );
-    for (let attempt = 0; attempt < 3; attempt++)
-      await h.retry({ force: true });
-    assert.equal(h.state.retryQueue[0].status, 'exhausted');
-    assert.equal(h.state.retryQueue[0].attempts, 5);
-  }
-});
-
-
-test('rollout cannot change a retained legacy admission into agentless handling', async () => {
-  const h = harness({ active: true }); const r = routine();
-  r.action.input.routing = { mode: 'active', minConfidence: .99 };
-  h.state.routineClaims['synthetic-prior-legacy'] = { status: 'retrying' };
-  const execution = '10000000-0000-4000-8000-000000000001';
-  h.resultGuard = { hostId: 'host', execution_id: execution, eligible: false,
-    receipt: { action: 'autopilot_result', status: 'recorded', execution_id: execution } };
-  await h.context.executeRoutineAction(r, { kind: 'process.completed', hostId: '10000000-0000-4000-8000-000000000002', executionId: execution, routineIdempotencyKey: 'synthetic-prior-legacy' });
-  assert.equal(h.posts, 1);
-  assert.equal(h.state.routineClaims['synthetic-prior-legacy'].autopilotRouting, undefined);
-});
-
-test('rollback recovers retained native completion receipts with the global flag off', async () => {
-  const h = harness(); const r = routine();
-  h.state.routineClaims['synthetic-prior-active'] = { status: 'retrying', autopilotRouting: { mode: 'active', targetHostId: 'host', connectorId: 'vibe', minConfidence: .99 } };
-  const execution = '10000000-0000-4000-8000-000000000001';
-  h.resultGuard = { hostId: 'host', execution_id: execution, eligible: false,
-    receipt: { action: 'autopilot_result', status: 'recorded', execution_id: execution } };
-  const result = await h.context.executeRoutineAction(r, { kind: 'process.completed', hostId: '10000000-0000-4000-8000-000000000002', executionId: execution, routineIdempotencyKey: 'synthetic-prior-active' });
-  assert.equal(h.posts, 0); assert.equal(result.suppressed, true);
-});
-
-for (const stage of ['collected', 'pending_decision', 'admitted']) {
-  test(`interrupted active ${stage} resumes through the existing queue without duplicate admission`, async () => {
-    const h = harness({ active: true });
-    const r = routine({ trigger: { type: 'execution_completed' } });
-    h.state.routines.push(r);
-    const key = 'synthetic-interrupted';
-    const event = {
-      id: 'synthetic-event',
-      kind: 'process.completed',
-      executionId: '10000000-0000-4000-8000-000000000001',
-      hostId: '10000000-0000-4000-8000-000000000002',
-    };
-    h.modelCalls = 0;
-    h.context.routeAutopilot = (options) =>
-      routeAutopilot({
-        ...options,
-        evaluate: async () => {
-          h.modelCalls++;
-          return { status: 'fallback', results: [] };
-        },
-      });
-    h.state.routineRuns.push({
-      id: 'synthetic-run',
-      routineId: r.id,
-      idempotencyKey: key,
-      status: 'running',
-      trigger: routineRunTrigger(event),
+    const files = new Map();
+    let release;
+    const held = new Promise((resolve) => {
+      release = resolve;
     });
-    h.state.routineClaims[key] = {
-      runId: 'synthetic-run',
-      routineId: r.id,
-      status: 'running',
-      autopilotRouting: {
-        mode: 'active',
-        targetHostId: 'host',
-        connectorId: 'vibe',
-        minConfidence: 0.99,
-        candidate: { status: 'pending' },
+    t.after(() => release());
+    Object.assign(h.context, {
+      STATE_PATH: 'synthetic-state.json',
+      AUTOPILOT_TRIAGE_PATH: 'synthetic-triage.json',
+      process: { pid: 1 },
+      console: { error() {} },
+      fs: {
+        async writeFile(file, content) {
+          if (file.startsWith('synthetic-triage.json')) await held;
+          files.set(file, content);
+        },
+        async rename(from, to) {
+          files.set(to, files.get(from));
+          files.delete(from);
+        },
       },
-    };
-    h.resultGuard = {
-      hostId: 'host',
-      execution_id: event.executionId,
-      eligible: true,
-      version: 'a'.repeat(64),
-      result_hash: 'b'.repeat(64),
-    };
-    if (stage === 'collected')
-      h.resultGuard.receipt = {
-        action: 'autopilot_result',
-        status: 'recorded',
-        execution_id: event.executionId,
-      };
-    if (stage === 'admitted')
-      h.store.receipts.set(key, {
-        status: 'succeeded',
-        action: 'queue_prompt',
-        response: null,
-      });
-    recoverInterruptedAutomationState(h.state);
-    assert.equal(h.state.routineClaims[key].status, 'retrying');
-    await h.context.restoreInterruptedRoutineRuns();
-    await h.context.restoreInterruptedRoutineRuns();
-    assert.equal(h.state.retryQueue.length, 1);
-    await h.retry({ force: true });
-    assert.equal(h.state.routineClaims[key].status, 'succeeded');
-    assert.equal(h.state.retryQueue.length, 0);
-    assert.equal(h.posts, stage === 'pending_decision' ? 1 : 0);
-    assert.equal(h.shadowCalls, 0);
-    assert.equal(h.modelCalls, 0);
-    await h.retry({ force: true });
-    assert.equal(h.posts, stage === 'pending_decision' ? 1 : 0);
-  });
-}
-
-test('cloud result recovery preserves revision and lease identity and reuses a central acknowledgement', async () => {
-  const h = harness();
-  const r = routine({ trigger: { type: 'vk_event' } });
-  h.state.routines.push(r);
-  const executionId = '10000000-0000-4000-8000-000000000001';
-  const hostId = '10000000-0000-4000-8000-000000000002';
-  const workspaceId = '10000000-0000-4000-8000-000000000003';
-  const event = {
-    id: 'synthetic-cloud',
-    kind: 'cloud.notification',
-    notificationId: '10000000-0000-4000-8000-000000000004',
-    notificationRevision: 2,
-    notificationType: 'workspace_task_completed',
-    notificationIntent: 'raw_event',
-    notificationClaim: {
-      lease_id: '10000000-0000-4000-8000-000000000005',
-      claim_token: 'synthetic-omitted-token',
-    },
-  };
-  const receipt = {
-    action: 'autopilot_result',
-    status: 'recorded',
-    execution_id: executionId,
-    workspace_id: workspaceId,
-    result_hash: 'b'.repeat(64),
-    version: 'a'.repeat(64),
-  };
-  const identity = JSON.stringify([
-    event.id,
-    event.kind,
-    event.notificationId,
-    event.notificationRevision,
-  ]);
-  h.state.routineClaims['synthetic-cloud-recovery'] = {
-    runId: 'synthetic-run',
-    routineId: r.id,
-    status: 'running',
-    autopilotRouting: {
-      mode: 'active',
-      targetHostId: 'host',
-      connectorId: 'vibe',
-      minConfidence: 0.99,
-      bindings: { [identity]: { hostId, executionId, workspaceId } },
-    },
-  };
-  h.state.routineRuns.push({
-    id: 'synthetic-run',
-    routineId: r.id,
-    idempotencyKey: 'synthetic-cloud-recovery',
-    status: 'running',
-    trigger: routineRunTrigger(event),
-  });
-  h.resultGuard = {
-    hostId: 'host',
-    execution_id: executionId,
-    workspace_id: workspaceId,
-    eligible: false,
-    receipt,
-  };
-  let receiptReads = 0;
-  const routing = createNotificationRouting({
-    instanceId: 'synthetic-instance',
-    api: async (_, method, path) => {
-      assert.equal(method, 'GET');
-      assert.ok(path.endsWith('/result-receipt?revision=2'));
-      receiptReads++;
-      return {
-        status: 'completed',
-        proof: { source_host_id: hostId, result_receipt: receipt },
-      };
-    },
-  });
-  h.context.notificationRouting.completeResult = (...args) =>
-    routing.completeResult(...args);
-  recoverInterruptedAutomationState(h.state);
-  await h.context.restoreInterruptedRoutineRuns();
-  assert.ok(
-    !JSON.stringify(h.state.retryQueue).includes('synthetic-omitted-token')
-  );
-  await h.retry({ force: true });
-  assert.equal(
-    h.state.routineClaims['synthetic-cloud-recovery'].status,
-    'succeeded'
-  );
-  assert.equal(receiptReads, 1);
-  assert.equal(h.posts, 0);
-});
+    });
+    vm.runInContext(
+      'let writeQueue = Promise.resolve(); let autopilotWriteQueue = Promise.resolve();\n' +
+        ['persistState', 'enqueueWrite'].map(productionFunction).join('\n'),
+      h.context
+    );
+    const journal = h.context.enqueueWrite('synthetic-triage.json', '{}');
+    await h.run(r, {}, 'synthetic-independent-writes');
+    assert.equal(h.posts, 1);
+    assert.equal(h.state.routineRuns[0].status, 'succeeded');
+    assert.ok(files.has('synthetic-state.json'));
+    release();
+    await journal;
+    assert.equal(files.get('synthetic-triage.json'), '{}');
+  }
+);

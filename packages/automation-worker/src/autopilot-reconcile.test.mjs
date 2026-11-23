@@ -10,7 +10,6 @@ import {
   reconcileAutopilot,
   validateReconciliationScope,
 } from './autopilot-reconcile.mjs';
-import { routeAutopilot } from './autopilot-router.mjs';
 
 const projectId = '20000000-0000-4000-8000-000000000001';
 const reviewTagId = '20000000-0000-4000-8000-000000000002';
@@ -263,15 +262,7 @@ test('missing initial baseline and changed queues require an agent; only officia
     ).changed,
     false
   );
-  const event = { kind: 'autopilot.reconcile' };
-  const routed = await routeAutopilot({
-    event,
-    record,
-    persist: options.persist,
-    reconciliation: { scope, collect: h.collect, now: options.now },
-  });
-  assert.equal(routed.remaining.length, 0);
-  assert.equal(routed.handled[0].source, 'rule');
+  assert.equal((await reconcileAutopilot(options)).changed, false);
   h.workspaces = [
     {
       id: issueId,

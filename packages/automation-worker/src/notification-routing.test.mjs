@@ -6,60 +6,6 @@ import { eventMatchesRoutine, redactEvent } from "./routines.mjs";
 import { journalEventToWorkerEvent } from "./vibe-events.mjs";
 
 const routine = { id: "test-routine", action: { targetHostId: "test-host" } };
-test('agentless completion recovers a lost central acknowledgement without a second completion', async () => {
-  const item = {
-    notificationId: 'synthetic-alert',
-    notificationRevision: 2,
-    notificationClaim: { lease_id: 'synthetic-lease', claim_token: 'synthetic-claim' },
-    hostId: 'synthetic-host',
-  };
-  const receipt = {
-    action: 'autopilot_result',
-    status: 'recorded',
-    execution_id: 'synthetic-execution',
-    result_hash: 'synthetic-hash',
-    version: 'synthetic-version',
-  };
-  let proof,
-    posts = 0;
-  const routing = createNotificationRouting({
-    instanceId: 'synthetic-instance',
-    api: async (_, method, path, payload) => {
-      if (method === 'GET')
-        return proof ? { status: 'completed', proof } : { status: 'missing' };
-      posts++;
-      assert.ok(path.endsWith('/complete-result'));
-      proof = {
-        source_host_id: payload.source_host_id,
-        result_receipt: payload.result_receipt,
-      };
-      throw new Error('synthetic lost reply');
-    },
-  });
-  await assert.rejects(routing.completeResult(routine, item, receipt));
-  assert.equal(await routing.completeResult(routine, item, receipt), true);
-  assert.equal(posts, 1);
-  await assert.rejects(
-    routing.completeResult(routine, item, { ...receipt, version: 'changed' })
-  );
-});
-
-test('an expired completion claim remains available for the normal user fallback', async () => {
-  const routing = createNotificationRouting({
-    instanceId: 'synthetic-instance',
-    api: async (_, method) => {
-      if (method === 'GET') return { status: 'missing' };
-      throw Object.assign(new Error('expired'), { status: 409 });
-    },
-  });
-  const item = {
-    notificationId: 'synthetic-alert',
-    notificationRevision: 2,
-    notificationClaim: {},
-  };
-  assert.equal(await routing.completeResult(routine, item, {}), false);
-});
-
 function fixture(instanceId = "instance") {
   const calls = [];
   let recovered = [];
@@ -753,32 +699,4 @@ test('raw follow-ups use durable admission while ordinary follow-ups keep their 
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].path, delivery.path);
   assert.deepEqual(f.calls[0].payload, delivery.payload);
-});
-
-
-test('restart restores only the target completion claim token before acknowledgement', async () => {
-  const calls = [];
-  const item = { notificationId: 'synthetic-restart', notificationRevision: 3, notificationClaim: { lease_id: 'synthetic-lease' }, hostId: 'synthetic-host' };
-  const routing = createNotificationRouting({ instanceId: 'synthetic-instance', api: async (_, method, path, payload) => {
-    calls.push({ method, path });
-    if (path.includes('/result-receipt?')) return { status: 'missing' };
-    if (path.startsWith('/v1/notification-claims?')) return { claims: [{ id: item.notificationId, revision: 3, claim_token: 'synthetic-restored' }] };
-    assert.ok(path.endsWith('/complete-result'));
-    assert.equal(payload.claim_token, 'synthetic-restored');
-    return { data: { status: 'completed' } };
-  } });
-  assert.equal(await routing.completeResult(routine, item, {}), true);
-  assert.equal(calls.filter((row) => row.method === 'POST').length, 1);
-  assert.ok(!item.notificationClaim.claim_token);
-});
-
-
-test('older cloud servers keep completion alerts on the legacy delivery path', async () => {
-  let posts = 0;
-  const routing = createNotificationRouting({ instanceId: 'synthetic-instance', api: async (_, method) => {
-    if (method === 'POST') posts++;
-    throw Object.assign(new Error('unsupported endpoint'), { status: 404 });
-  } });
-  assert.equal(await routing.completeResult(routine, { notificationId: 'synthetic-alert', notificationRevision: 1 }, {}), false);
-  assert.equal(posts, 0);
 });
