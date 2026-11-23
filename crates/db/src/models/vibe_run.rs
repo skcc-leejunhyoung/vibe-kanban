@@ -559,7 +559,6 @@ impl VibeRun {
         Ok(done.rows_affected() > 0)
     }
 
-    /// Record (or clear, with `None`) the agent's latest sentinel token.
     /// Record (or clear, with `None`) the kind of the prompt just sent into
     /// the run; the turn it started reports it.
     pub async fn set_last_prompt(
@@ -575,6 +574,7 @@ impl VibeRun {
         Ok(())
     }
 
+    /// Record (or clear, with `None`) the agent's latest sentinel token.
     pub async fn set_last_result(
         pool: &SqlitePool,
         workspace_id: Uuid,

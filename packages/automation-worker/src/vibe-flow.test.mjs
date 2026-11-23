@@ -28,6 +28,8 @@ function turn(input = {}) {
     result: 'none',
     status: 'completed',
     run_reason: 'codingagent',
+    // The worker's prompt that started the turn; null for one nobody prompted.
+    prompt: null,
     coding_turns: 0,
     review_turns: 0,
     merge_retries: 0,
@@ -147,6 +149,10 @@ test('the plan check spends a coding turn, never blocks a finished run, and can 
   });
   assert.equal(vibeFlowSettings({}).planReview, true);
   assert.equal(vibeFlowSettings({ planReview: false }).planReview, false);
+  // A host that reports no `prompt` predates the check and would refuse it.
+  const { prompt: _, ...older } = coding({ result: 'done' });
+  assert.deepEqual(decide(older), { action: 'start-review' });
+  assert.deepEqual(decide({ ...older, result: 'continue' }), { action: 'send-prompt', kind: 'continue' });
 });
 
 test('coding goes on while work remains, within the coding budget', () => {

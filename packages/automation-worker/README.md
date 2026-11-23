@@ -572,7 +572,9 @@ start, so turn it off with `enabled: false` instead.
   found nothing (`done` with `prompt: "plan_review"` on its
   `vibe.turn_ended`) starts the review. Each check is a coding turn. With the
   coding budget spent a `done` goes straight to review (a check's `continue`
-  blocks like any other); `planReview: false` skips the check.
+  blocks like any other); `planReview: false` skips the check, and so does a
+  host whose events carry no `prompt` (older than the check, it would refuse
+  `plan_review`).
 - Agents are not offered `VIBE_RESULT: blocked`: a decision a person should
   make is taken as recommended and written to the Drawer (`vk drawer create
   … --label "확인 필요" --notify`), and the work goes on. A `blocked` an agent

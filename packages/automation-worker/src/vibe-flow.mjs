@@ -142,18 +142,21 @@ function decideTurn(event, limits, planReview) {
   if (!finished) return null;
   if (event.phase === 'coding') {
     const checked = event.prompt === 'plan_review';
+    // A host that does not report `prompt` predates the plan check and would
+    // refuse it (400, retried forever): its `done` goes straight to review.
+    const checks = planReview && event.prompt !== undefined;
     // The coding agent's verb is "done"; a stray "approve" asks for review too.
     if (event.result === 'done' || event.result === 'approve') {
       // A plan check that found nothing to fix goes to review. Any other
       // `done` is checked against the plan first — while the coding budget
       // lasts: a finished run is never blocked for want of a check.
-      return planReview && !checked && Number(event.coding_turns || 0) < limits.codingTurns
+      return checks && !checked && Number(event.coding_turns || 0) < limits.codingTurns
         ? prompt('plan_review')
         : { action: 'start-review' };
     }
     // A plan check that found something (fixed or not) is checked again
     // until it finds nothing; any other unfinished turn just goes on.
-    return withinCoding(event, limits, prompt(planReview && checked ? 'plan_review' : 'continue'));
+    return withinCoding(event, limits, prompt(checks && checked ? 'plan_review' : 'continue'));
   }
   // After coding only the review session's turns move the run; a late one of
   // the original coding session does not.
