@@ -21,6 +21,7 @@ export interface AskUserQuestionBannerHandle {
 export interface AskUserQuestionConfirmState {
   canConfirm: boolean;
   isLastQuestion: boolean;
+  allowCustomAnswer: boolean;
 }
 
 interface AskUserQuestionBannerProps {
@@ -87,12 +88,13 @@ export const AskUserQuestionBanner = forwardRef<
   const isLastQuestion = currentIndex >= questions.length - 1;
   const disabled = isSubmitting || isTimedOut;
   const canConfirm = !submitted && !disabled && currentSelection.length > 0;
+  const allowCustomAnswer = currentQuestion?.allowCustomAnswer !== false;
 
   // Layout effect: the parent keeps the last reported state across unmounts,
   // so a new question must overwrite it before paint.
   useLayoutEffect(() => {
-    onConfirmStateChange?.({ canConfirm, isLastQuestion });
-  }, [onConfirmStateChange, canConfirm, isLastQuestion]);
+    onConfirmStateChange?.({ canConfirm, isLastQuestion, allowCustomAnswer });
+  }, [onConfirmStateChange, canConfirm, isLastQuestion, allowCustomAnswer]);
 
   const toQuestionAnswers = useCallback(
     (rec: Record<string, string[]>): QuestionAnswer[] =>
@@ -151,7 +153,14 @@ export const AskUserQuestionBanner = forwardRef<
     ref,
     () => ({
       submitCustomAnswer: (text: string) => {
-        if (disabled || !currentQuestion || !text.trim()) return;
+        if (
+          disabled ||
+          !currentQuestion ||
+          !allowCustomAnswer ||
+          !text.trim()
+        ) {
+          return;
+        }
         const next = {
           ...selections,
           [currentQuestion.question]: [text.trim()],
@@ -168,6 +177,7 @@ export const AskUserQuestionBanner = forwardRef<
     [
       disabled,
       currentQuestion,
+      allowCustomAnswer,
       selections,
       isLastQuestion,
       submitAll,

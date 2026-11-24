@@ -407,6 +407,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   const [askConfirm, setAskConfirm] = useState<AskUserQuestionConfirmState>({
     canConfirm: false,
     isLastQuestion: true,
+    allowCustomAnswer: true,
   });
 
   // Determine if in feedback mode, edit mode, or approval mode
@@ -414,6 +415,8 @@ export function SessionChatBox<TExecutor extends string = string>({
   const isInEditMode = editMode?.isActive ?? false;
   const isInApprovalMode = approvalMode?.isActive ?? false;
   const isInAskQuestionMode = askQuestionMode?.isActive ?? false;
+  const hasChoiceOnlyQuestion =
+    isInAskQuestionMode && !askConfirm.allowCustomAnswer;
 
   // Key to force editor remount when the user enters feedback/edit mode
   // (triggers auto-focus). Agent-initiated modes (approval / ask-question) are
@@ -463,7 +466,7 @@ export function SessionChatBox<TExecutor extends string = string>({
     // AskUserQuestion mode: with text, submit it as a custom answer; with an
     // empty editor, confirm the banner's current selection instead.
     if (isInAskQuestionMode) {
-      if (hasContent) {
+      if (!hasChoiceOnlyQuestion && hasContent) {
         askQuestionBannerRef.current?.submitCustomAnswer(editor.value);
         editor.onChange('');
       } else {
@@ -683,7 +686,8 @@ export function SessionChatBox<TExecutor extends string = string>({
         );
       }
 
-      const hasMessage = editor.value.trim().length > 0;
+      const hasMessage =
+        !hasChoiceOnlyQuestion && editor.value.trim().length > 0;
 
       return (
         <>
@@ -1097,19 +1101,23 @@ export function SessionChatBox<TExecutor extends string = string>({
   return (
     <ChatBoxBase
       fillHeight={fillHeight}
-      editor={renderEditor({
-        focusKey,
-        placeholder,
-        value: editor.value,
-        onChange: editor.onChange,
-        onCmdEnter: handleCmdEnter,
-        onShiftCmdEnter: handleShiftCmdEnter,
-        disabled: isDisabled,
-        repoIds,
-        executor: agent || executor?.selected || null,
-        onPasteFiles: actions.onPasteFiles,
-        localAttachments,
-      })}
+      editor={
+        hasChoiceOnlyQuestion
+          ? undefined
+          : renderEditor({
+              focusKey,
+              placeholder,
+              value: editor.value,
+              onChange: editor.onChange,
+              onCmdEnter: handleCmdEnter,
+              onShiftCmdEnter: handleShiftCmdEnter,
+              disabled: isDisabled,
+              repoIds,
+              executor: agent || executor?.selected || null,
+              onPasteFiles: actions.onPasteFiles,
+              localAttachments,
+            })
+      }
       error={displayError}
       banner={renderBanner()}
       visualVariant={getVisualVariant()}

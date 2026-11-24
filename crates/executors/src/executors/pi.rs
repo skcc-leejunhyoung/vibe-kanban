@@ -10,6 +10,8 @@ use async_trait::async_trait;
 use derivative::Derivative;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_util::{
     compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt},
     sync::CancellationToken,
@@ -34,6 +36,88 @@ use crate::{
 };
 
 const INSTALL: &str = "Install Pi and its ACP adapter on the execution host with npm install -g @earendil-works/pi-coding-agent@1.4.0 pi-acp@0.0.35.";
+const LOGIN: &str = "Run Pi's /login command on the execution host or update the provider API key in the executor environment.";
+
+pub(super) fn session_map(env: &ExecutionEnv) -> Option<PathBuf> {
+    let home_key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let home = env
+        .get(home_key)
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)?;
+    Some(home.join(".pi").join("pi-acp").join("session-map.json"))
+}
+
+pub(super) async fn session_provider_error(
+    map: &Path,
+    id: &str,
+    started_at: i64,
+) -> Option<ExecutorError> {
+    // pi-acp 0.0.35 may return end_turn for a provider error recorded by Pi.
+    uuid::Uuid::parse_str(id).ok()?;
+    let mut bytes = Vec::new();
+    tokio::fs::File::open(map)
+        .await
+        .ok()?
+        .take(4 * 1024 * 1024)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    let map: Value = serde_json::from_slice(&bytes).ok()?;
+    let path = Path::new(map["sessions"].get(id)?["sessionFile"].as_str()?);
+    if !path
+        .file_name()?
+        .to_str()?
+        .ends_with(&format!("_{id}.jsonl"))
+    {
+        return None;
+    }
+    let metadata = tokio::fs::symlink_metadata(path).await.ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    const TAIL_BYTES: u64 = 64 * 1024;
+    let offset = metadata.len().saturating_sub(TAIL_BYTES);
+    file.seek(SeekFrom::Start(offset)).await.ok()?;
+    bytes.clear();
+    file.take(TAIL_BYTES).read_to_end(&mut bytes).await.ok()?;
+    if offset > 0 {
+        let first_line_end = bytes.iter().position(|byte| *byte == b'\n')?;
+        return pi_error_from_tail(&bytes[first_line_end + 1..], started_at);
+    }
+    pi_error_from_tail(&bytes, started_at)
+}
+
+fn pi_error_from_tail(bytes: &[u8], started_at: i64) -> Option<ExecutorError> {
+    let entry = bytes.rsplit(|byte| *byte == b'\n').find_map(|line| {
+        let entry: Value = serde_json::from_slice(line).ok()?;
+        (entry["type"] == "message").then_some(entry)
+    })?;
+    let message = &entry["message"];
+    if message["role"] != "assistant"
+        || message["stopReason"] != "error"
+        || message["timestamp"].as_i64()? < started_at
+    {
+        return None;
+    }
+    let status = message["statusCode"].as_i64().or_else(|| {
+        let error = message["errorMessage"].as_str()?;
+        let error = error.strip_prefix("HTTP ").unwrap_or(error);
+        error
+            .split_ascii_whitespace()
+            .next()?
+            .trim_end_matches(':')
+            .parse()
+            .ok()
+    });
+    Some(utils::provider_request_error(
+        "Pi",
+        status,
+        LOGIN,
+        "Pi's model provider returned an error. Check the selected model and provider configuration.",
+    ))
+}
 
 #[derive(Derivative, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[derivative(Debug, PartialEq)]
@@ -264,5 +348,36 @@ impl StandardCodingAgentExecutor for Pi {
             }
             patch::executor_discovered_options(options)
         })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_recent_pi_errors_without_exposing_provider_response() {
+        let error = |code| {
+            serde_json::json!({
+                "type": "message",
+                "message": {
+                    "role": "assistant", "stopReason": "error", "timestamp": 400,
+                    "errorMessage": format!("{code}: synthetic-secret")
+                }
+            })
+            .to_string()
+        };
+        let rejected = error(401);
+        let not_found = error(404);
+        assert!(matches!(
+            pi_error_from_tail(rejected.as_bytes(), 399),
+            Some(ExecutorError::AuthRequired(_))
+        ));
+        let display = pi_error_from_tail(not_found.as_bytes(), 400)
+            .unwrap()
+            .to_string();
+        assert!(display.contains("HTTP 404"));
+        assert!(!display.contains("synthetic-secret"));
+        assert!(pi_error_from_tail(rejected.as_bytes(), 401).is_none());
     }
 }

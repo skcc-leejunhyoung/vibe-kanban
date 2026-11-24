@@ -1557,6 +1557,7 @@ fn parse_question_items_from_info(items: &[QuestionInfo]) -> Vec<AskUserQuestion
                 })
                 .collect(),
             multi_select: q.multiple.unwrap_or(false),
+            allow_custom_answer: None,
         })
         .collect()
 }

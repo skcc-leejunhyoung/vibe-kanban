@@ -5,7 +5,9 @@ use std::{
     time::Duration,
 };
 
-use agent_client_protocol::{ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields};
+use agent_client_protocol::{
+    ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+};
 use async_trait::async_trait;
 use command_group::AsyncGroupChild;
 use derivative::Derivative;
@@ -95,6 +97,11 @@ impl Api {
             "OpenCode v2 {label} could not reach the local server. Check the opencode2 installation."
         )))?;
         let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(utils::agent_error(format!(
+                "OpenCode v2 {label} could not authenticate to its local API. Check the configured opencode2 version and restart the turn."
+            )));
+        }
         if !status.is_success() {
             return Err(utils::agent_error(format!(
                 "OpenCode v2 {label} failed (HTTP {status}). {LOGIN}"
@@ -505,9 +512,24 @@ impl OpencodeV2 {
                         return Err(utils::agent_error("OpenCode v2 interrupted the turn."));
                     }
                     "session.execution.failed" => {
-                        return Err(utils::agent_error(format!(
-                            "OpenCode v2 could not complete the turn. Check the selected model and provider credentials. {LOGIN}"
-                        )));
+                        let error = &event.data["error"];
+                        let status = error["status"]
+                            .as_i64()
+                            .or_else(|| (error["type"] == "provider.auth").then_some(401));
+                        return Err(utils::provider_request_error(
+                            "OpenCode v2",
+                            status,
+                            LOGIN,
+                            "OpenCode v2 could not complete the turn. Check the selected model and provider configuration.",
+                        ));
+                    }
+                    "session.tool.input.started"
+                    | "session.tool.called"
+                    | "session.tool.success"
+                    | "session.tool.failed" => {
+                        if let Some(tool_event) = tool_event(&event) {
+                            tool_event.write_to(writer).await?;
+                        }
                     }
                     "permission.asked" => {
                         self.reply_permission(api, &path, &event.data, cancel, writer)
@@ -547,6 +569,15 @@ impl OpencodeV2 {
             .filter(|id| valid_id(id))
             .ok_or_else(|| utils::agent_error("OpenCode v2 returned an invalid approval ID."))?;
         let action = data["action"].as_str().unwrap_or("tool");
+        let linked_tool = (data["source"]["type"] == "tool")
+            .then(|| {
+                tool_call_id(
+                    data["source"]["messageID"].as_str(),
+                    data["source"]["id"].as_str(),
+                )
+            })
+            .flatten();
+        let tool_id = linked_tool.as_deref().unwrap_or(id);
         let title = match data["resources"].as_array() {
             Some(resources) => format!(
                 "{action} {}",
@@ -561,14 +592,17 @@ impl OpencodeV2 {
         let status = if self.auto_approve {
             ApprovalStatus::Approved
         } else if let Some(approvals) = &self.approvals {
-            AcpEvent::ToolCall(
-                ToolCall::new(id.to_owned(), title.clone()).status(ToolCallStatus::Pending),
-            )
+            AcpEvent::ToolUpdate(ToolCallUpdate::new(
+                tool_id.to_owned(),
+                ToolCallUpdateFields::new()
+                    .title(&title)
+                    .status(ToolCallStatus::Pending),
+            ))
             .write_to(writer)
             .await?;
             let approval_id = approvals.create_tool_approval(&title).await?;
             AcpEvent::ApprovalRequested {
-                tool_call_id: id.into(),
+                tool_call_id: tool_id.into(),
                 approval_id: approval_id.clone(),
             }
             .write_to(writer)
@@ -592,23 +626,76 @@ impl OpencodeV2 {
         .await?;
         if !self.auto_approve {
             AcpEvent::ApprovalResponse(ApprovalResponse {
-                tool_call_id: id.into(),
+                tool_call_id: tool_id.into(),
                 status,
             })
             .write_to(writer)
             .await?;
-            AcpEvent::ToolUpdate(ToolCallUpdate::new(
-                id.to_owned(),
-                ToolCallUpdateFields::new().status(if decision == "once" {
-                    ToolCallStatus::Completed
-                } else {
-                    ToolCallStatus::Failed
-                }),
-            ))
-            .write_to(writer)
-            .await?;
         }
         Ok(())
+    }
+}
+
+fn tool_call_id(message: Option<&str>, call: Option<&str>) -> Option<String> {
+    Some(format!("{}:{}", message?, call?))
+}
+
+fn tool_event(event: &Event) -> Option<AcpEvent> {
+    let data = &event.data;
+    let id = tool_call_id(data["assistantMessageID"].as_str(), data["id"].as_str())?;
+    let mut update = ToolCallUpdateFields::new();
+    match event.kind.as_str() {
+        "session.tool.input.started" => {
+            let name = data["name"].as_str().unwrap_or("tool");
+            let mut call = ToolCall::new(id, name).status(ToolCallStatus::Pending);
+            if name == "shell" {
+                call = call.kind(ToolKind::Execute);
+            }
+            return Some(AcpEvent::ToolCall(call));
+        }
+        "session.tool.called" => {
+            update = update.status(ToolCallStatus::InProgress);
+            if let Some(command) = data["input"]["command"].as_str() {
+                update = update
+                    .raw_input(json!({"command": command}))
+                    .kind(ToolKind::Execute);
+            }
+        }
+        "session.tool.success" => {
+            let exit = data["metadata"]["exit"].as_i64();
+            if let Some(code) = exit {
+                update = update.content(vec![format!("Exit code: {code}").into()]);
+            }
+            update = update.status(if exit.is_some_and(|code| code != 0) {
+                ToolCallStatus::Failed
+            } else {
+                ToolCallStatus::Completed
+            });
+        }
+        "session.tool.failed" => update = update.status(ToolCallStatus::Failed),
+        _ => return None,
+    }
+    Some(AcpEvent::ToolUpdate(ToolCallUpdate::new(id, update)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_shell_event_with_nonzero_exit_marks_tool_failed() {
+        let event = Event {
+            kind: "session.tool.success".into(),
+            data: json!({
+                "assistantMessageID": "msg_fixture", "id": "call_fixture",
+                "metadata": {"exit": 1}
+            }),
+        };
+        let Some(AcpEvent::ToolUpdate(update)) = tool_event(&event) else {
+            panic!("expected a tool update");
+        };
+        assert_eq!(&*update.tool_call_id.0, "msg_fixture:call_fixture");
+        assert_eq!(update.fields.status, Some(ToolCallStatus::Failed));
     }
 }
 

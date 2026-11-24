@@ -1943,6 +1943,7 @@ impl ClaudeLogProcessor {
                             })
                             .collect(),
                         multi_select: q.multi_select,
+                        allow_custom_answer: None,
                     })
                     .collect(),
             },

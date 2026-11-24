@@ -1845,7 +1845,7 @@ export type SubagentControlTarget = { "executor": "codex", thread_id: string, } 
 
 export type AnsweredQuestion = { question: string, answer: Array<string>, };
 
-export type AskUserQuestionItem = { question: string, header: string, options: Array<AskUserQuestionOption>, multiSelect: boolean, };
+export type AskUserQuestionItem = { question: string, header: string, options: Array<AskUserQuestionOption>, multiSelect: boolean, allowCustomAnswer?: boolean, };
 
 export type AskUserQuestionOption = { label: string, description: string, };
 

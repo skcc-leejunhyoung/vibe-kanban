@@ -8,11 +8,12 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
-use workspace_utils::approvals::ApprovalStatus;
+use workspace_utils::approvals::{ApprovalStatus, QuestionStatus};
 
 use crate::{
     approvals::{ExecutorApprovalError, ExecutorApprovalService},
     executors::acp::{AcpEvent, ApprovalResponse},
+    logs::{AskUserQuestionItem, AskUserQuestionOption},
 };
 
 /// ACP client that handles agent-client protocol communication
@@ -90,6 +91,18 @@ impl acp::Client for AcpClient {
         &self,
         args: acp::RequestPermissionRequest,
     ) -> Result<acp::RequestPermissionResponse, acp::Error> {
+        // pi-acp encodes extension selections as permission options of the same kind.
+        if args.tool_call.tool_call_id.0.starts_with("pi-ui-")
+            && args
+                .tool_call
+                .fields
+                .raw_input
+                .as_ref()
+                .and_then(|raw| raw["method"].as_str())
+                == Some("select")
+        {
+            return self.request_pi_selection(args).await;
+        }
         self.send_event(AcpEvent::RequestPermission(args.clone()));
 
         if self.approvals.is_none() {
@@ -280,6 +293,80 @@ impl acp::Client for AcpClient {
 }
 
 impl AcpClient {
+    async fn request_pi_selection(
+        &self,
+        args: acp::RequestPermissionRequest,
+    ) -> Result<acp::RequestPermissionResponse, acp::Error> {
+        let cancelled = acp::RequestPermissionOutcome::Cancelled;
+        let Some(approvals) = &self.approvals else {
+            return Ok(acp::RequestPermissionResponse::new(cancelled));
+        };
+        if args.options.is_empty() {
+            return Ok(acp::RequestPermissionResponse::new(cancelled));
+        }
+        let id = args.tool_call.tool_call_id;
+        let title = args
+            .tool_call
+            .fields
+            .title
+            .unwrap_or_else(|| "Pi choice".into());
+        let mut options = Vec::<AskUserQuestionOption>::new();
+        for option in &args.options {
+            if !options.iter().any(|item| item.label == option.name) {
+                options.push(AskUserQuestionOption {
+                    label: option.name.clone(),
+                    description: String::new(),
+                });
+            }
+        }
+        let question = AskUserQuestionItem {
+            question: title.clone(),
+            header: "Pi".into(),
+            options,
+            multi_select: false,
+            allow_custom_answer: Some(false),
+        };
+        let approval_id = approvals
+            .create_question_approval(&title, 1)
+            .await
+            .map_err(|_| acp::Error::internal_error())?;
+        self.send_event(AcpEvent::ToolCall(
+            acp::ToolCall::new(id.clone(), title.clone())
+                .raw_input(serde_json::json!({"piSelection": question})),
+        ));
+        self.send_event(AcpEvent::ApprovalRequested {
+            tool_call_id: id.0.to_string(),
+            approval_id: approval_id.clone(),
+        });
+        let answer = approvals
+            .wait_question_answer(&approval_id, self.cancel.clone())
+            .await;
+        let selected = match &answer {
+            Ok(QuestionStatus::Answered { answers }) => match answers.as_slice() {
+                [answer] if answer.question == title => match answer.answer.as_slice() {
+                    [label] => args.options.iter().find(|option| option.name == *label),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        };
+        self.send_event(AcpEvent::ToolUpdate(acp::ToolCallUpdate::new(
+            id,
+            acp::ToolCallUpdateFields::new().status(if selected.is_some() {
+                acp::ToolCallStatus::Completed
+            } else {
+                acp::ToolCallStatus::Failed
+            }),
+        )));
+        let outcome = selected.map_or(cancelled, |option| {
+            acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                option.option_id.clone(),
+            ))
+        });
+        Ok(acp::RequestPermissionResponse::new(outcome))
+    }
+
     fn handle_approval_error(
         &self,
         err: ExecutorApprovalError,
@@ -301,5 +388,93 @@ impl AcpClient {
             }));
             Err(acp::Error::internal_error())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use acp::Client as _;
+    use workspace_utils::approvals::QuestionAnswer;
+
+    use super::*;
+
+    struct SelectSecond;
+
+    #[async_trait]
+    impl ExecutorApprovalService for SelectSecond {
+        async fn create_tool_approval(&self, _: &str) -> Result<String, ExecutorApprovalError> {
+            panic!("a choice must not create a binary approval");
+        }
+
+        async fn create_question_approval(
+            &self,
+            title: &str,
+            count: usize,
+        ) -> Result<String, ExecutorApprovalError> {
+            assert_eq!((title, count), ("Choose a label", 1));
+            Ok("fixture".into())
+        }
+
+        async fn wait_tool_approval(
+            &self,
+            _: &str,
+            _: CancellationToken,
+        ) -> Result<ApprovalStatus, ExecutorApprovalError> {
+            panic!("a choice must wait for a question answer");
+        }
+
+        async fn wait_question_answer(
+            &self,
+            approval_id: &str,
+            _: CancellationToken,
+        ) -> Result<QuestionStatus, ExecutorApprovalError> {
+            assert_eq!(approval_id, "fixture");
+            Ok(QuestionStatus::Answered {
+                answers: vec![QuestionAnswer {
+                    question: "Choose a label".into(),
+                    answer: vec!["Second".into()],
+                }],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn pi_choice_preserves_selected_option_and_cancels_without_user() {
+        let args: acp::RequestPermissionRequest = serde_json::from_value(serde_json::json!({
+            "sessionId": "fixture_session",
+            "toolCall": {
+                "toolCallId": "pi-ui-fixture",
+                "title": "Choose a label",
+                "rawInput": {"method": "select"}
+            },
+            "options": [
+                {"optionId": "choice-0", "name": "First", "kind": "allow_once"},
+                {"optionId": "choice-1", "name": "Second", "kind": "allow_once"}
+            ]
+        }))
+        .unwrap();
+        let (tx, mut events) = mpsc::unbounded_channel();
+        let client = AcpClient::new(
+            tx.clone(),
+            Some(Arc::new(SelectSecond)),
+            CancellationToken::new(),
+        );
+        let response = client.request_permission(args.clone()).await.unwrap();
+        assert!(
+            matches!(response.outcome, acp::RequestPermissionOutcome::Selected(selected) if &*selected.option_id.0 == "choice-1")
+        );
+        assert!(
+            matches!(events.recv().await, Some(AcpEvent::ToolCall(call)) if call.raw_input.as_ref().unwrap()["piSelection"]["options"][1]["label"] == "Second")
+        );
+        assert!(
+            matches!(events.recv().await, Some(AcpEvent::ApprovalRequested { approval_id, .. }) if approval_id == "fixture")
+        );
+
+        let client = AcpClient::new(tx, None, CancellationToken::new());
+        let response = client.request_permission(args).await.unwrap();
+        assert!(matches!(
+            response.outcome,
+            acp::RequestPermissionOutcome::Cancelled
+        ));
     }
 }

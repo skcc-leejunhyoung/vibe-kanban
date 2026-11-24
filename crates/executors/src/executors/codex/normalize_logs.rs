@@ -1204,6 +1204,7 @@ fn question_state_from_questions<T: QuestionLike>(questions: &[T]) -> UserInputR
                 })
                 .collect(),
             multi_select: false,
+            allow_custom_answer: None,
         })
         .collect();
 

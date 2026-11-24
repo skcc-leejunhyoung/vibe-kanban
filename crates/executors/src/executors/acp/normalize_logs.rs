@@ -364,6 +364,14 @@ pub fn normalize_logs_with_suppressed_stderr_patterns(
         }
 
         fn map_to_action_type(tc: &PartialToolCallData) -> ActionType {
+            if tc.id.0.starts_with("pi-ui-")
+                && let Some(question) = tc.raw_input.as_ref().and_then(|raw| raw.get("piSelection"))
+                && let Ok(question) = serde_json::from_value(question.clone())
+            {
+                return ActionType::AskUserQuestion {
+                    questions: vec![question],
+                };
+            }
             match tc.kind {
                 agent_client_protocol::ToolKind::Read => {
                     // Special-case: read_many_files style titles parsed via helper

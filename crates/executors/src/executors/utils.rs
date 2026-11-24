@@ -14,6 +14,23 @@ use crate::{
     profile::ExecutorConfigs,
 };
 
+pub(super) fn provider_request_error(
+    agent: &str,
+    status: Option<i64>,
+    login: &str,
+    fallback: &str,
+) -> super::ExecutorError {
+    match status {
+        Some(401 | 403) => super::ExecutorError::AuthRequired(format!(
+            "{agent}: the provider rejected the credentials or access to the model. {login}"
+        )),
+        Some(404) => agent_error(format!(
+            "{agent}: the provider could not find the selected model or API endpoint (HTTP 404). Check the model ID and provider URL."
+        )),
+        _ => agent_error(fallback),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommandCall<'a> {
     /// The command name in lowercase (without the leading slash)

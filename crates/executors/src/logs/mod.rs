@@ -369,6 +369,13 @@ pub struct AskUserQuestionItem {
     pub options: Vec<AskUserQuestionOption>,
     #[serde(rename = "multiSelect")]
     pub multi_select: bool,
+    #[serde(
+        rename = "allowCustomAnswer",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub allow_custom_answer: Option<bool>,
 }
 
 /// An option for an AskUserQuestion question.

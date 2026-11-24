@@ -5,6 +5,7 @@
 
 use std::{path::Path, sync::Arc, time::Duration};
 
+use agent_client_protocol::ToolCallStatus;
 use executors::{
     approvals::NoopExecutorApprovalService,
     env::ExecutionEnv,
@@ -54,6 +55,7 @@ async fn run_turn(
     let mut errors = Vec::new();
     let mut approval_requested = false;
     let mut approval_resolved = false;
+    let mut tool_completed = false;
     let read = tokio::time::timeout(Duration::from_secs(30), async {
         while let Some(line) = lines.next_line().await.unwrap() {
             store.push_stdout(format!("{line}\n"));
@@ -71,6 +73,9 @@ async fn run_turn(
                     }
                     AcpEvent::ApprovalRequested { .. } => approval_requested = true,
                     AcpEvent::ApprovalResponse(_) => approval_resolved = true,
+                    AcpEvent::ToolUpdate(update) => {
+                        tool_completed |= update.fields.status == Some(ToolCallStatus::Completed);
+                    }
                     AcpEvent::Error(error) => errors.push(error),
                     _ => {}
                 }
@@ -127,6 +132,10 @@ async fn run_turn(
             assert!(
                 approval_requested && approval_resolved,
                 "expected a complete Vibe Kanban approval"
+            );
+            assert!(
+                tool_completed,
+                "the approved tool should report its actual completion"
             );
         }
     }

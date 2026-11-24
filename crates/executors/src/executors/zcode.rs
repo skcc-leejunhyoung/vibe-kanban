@@ -5,7 +5,9 @@ use std::{
     time::Duration,
 };
 
-use agent_client_protocol::{ToolCall, ToolCallStatus};
+use agent_client_protocol::{
+    ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+};
 use async_trait::async_trait;
 use command_group::AsyncGroupChild;
 use derivative::Derivative;
@@ -87,7 +89,7 @@ impl Connection {
             .await
             .map_err(ExecutorError::Io)?
             .ok_or_else(|| {
-                utils::agent_error(format!("ZCode closed its stdio protocol. {INSTALL}"))
+                utils::agent_error("ZCode's app server exited unexpectedly. Check that the configured command runs `app-server --stdio` on this host and has a writable temporary directory.")
             })?;
         serde_json::from_str(&line).map_err(|_| {
             utils::agent_error(format!(
@@ -183,9 +185,12 @@ impl ZCode {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        env.clone()
-            .with_profile(&self.cmd)
-            .apply_to_command(&mut command);
+        let env = env.clone().with_profile(&self.cmd);
+        env.apply_to_command(&mut command);
+        #[cfg(unix)]
+        if zcode_needs_short_tmpdir(&env) {
+            command.env("TMPDIR", "/tmp");
+        }
         command.group_spawn_no_window().map_err(ExecutorError::Io)
     }
 
@@ -353,6 +358,11 @@ impl ZCode {
                     let payload = &params["payload"];
                     match params["type"].as_str() {
                         Some("model.streaming") => {
+                            if payload["kind"] == "tool_call"
+                                && let Some(event) = tool_event(payload)
+                            {
+                                event.write_to(writer).await?;
+                            }
                             if let Some(delta) = payload["delta"].as_str() {
                                 match payload["kind"].as_str() {
                                     Some("text_delta") => {
@@ -372,14 +382,28 @@ impl ZCode {
                                 .is_none_or(|value| value == input_id) =>
                         {
                             if payload["resultType"] != "success" {
-                                return Err(utils::agent_error(format!(
-                                    "ZCode could not complete the turn. Check the provider credentials and selected model. {LOGIN}"
-                                )));
+                                let error = &payload["error"];
+                                let status =
+                                    error["attribution"]["statusCode"].as_i64().or_else(|| {
+                                        (error["attribution"]["reason"] == "auth_failed")
+                                            .then_some(401)
+                                    });
+                                return Err(utils::provider_request_error(
+                                    "ZCode",
+                                    status,
+                                    LOGIN,
+                                    "ZCode could not complete the turn. Check the selected model and provider configuration.",
+                                ));
                             }
                             if !emitted_text && let Some(text) = payload["response"].as_str() {
                                 AcpEvent::text(text).write_to(writer).await?;
                             }
                             return AcpEvent::Done("end_turn".into()).write_to(writer).await;
+                        }
+                        Some("tool.updated") => {
+                            if let Some(event) = tool_event(payload) {
+                                event.write_to(writer).await?;
+                            }
                         }
                         _ => {}
                     }
@@ -408,9 +432,12 @@ impl ZCode {
                 .as_str()
                 .filter(|text| !text.is_empty())
                 .map_or_else(|| name.to_owned(), |reason| format!("{name}: {reason}"));
-            AcpEvent::ToolCall(
-                ToolCall::new(id.to_owned(), title.clone()).status(ToolCallStatus::Pending),
-            )
+            AcpEvent::ToolUpdate(ToolCallUpdate::new(
+                id.to_owned(),
+                ToolCallUpdateFields::new()
+                    .title(name)
+                    .status(ToolCallStatus::Pending),
+            ))
             .write_to(writer)
             .await?;
             let approval_id = approvals.create_tool_approval(&title).await?;
@@ -443,6 +470,85 @@ impl ZCode {
             .await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn zcode_needs_short_tmpdir(env: &ExecutionEnv) -> bool {
+    let path = ["TMPDIR", "TMP", "TEMP"].into_iter().find_map(|key| {
+        env.get(key)
+            .map(std::ffi::OsString::from)
+            .or_else(|| std::env::var_os(key))
+            .filter(|value| !value.is_empty())
+    });
+    // The broker appends /znr-<36-byte UUID>.sock to Node's temp directory.
+    path.is_some_and(|path| path.as_encoded_bytes().len() + 46 > 103)
+}
+
+fn tool_event(payload: &Value) -> Option<AcpEvent> {
+    let id = payload["toolCallId"].as_str()?;
+    let mut update = ToolCallUpdateFields::new();
+    let status = match payload["kind"].as_str()? {
+        "scheduled" | "tool_call" => {
+            let name = payload["toolName"].as_str().unwrap_or("tool");
+            let mut call = ToolCall::new(id.to_owned(), name).status(ToolCallStatus::Pending);
+            if let Some(command) = payload["input"]["command"].as_str() {
+                call = call
+                    .kind(ToolKind::Execute)
+                    .raw_input(json!({"command": command}));
+            }
+            return Some(AcpEvent::ToolCall(call));
+        }
+        "started" => ToolCallStatus::InProgress,
+        "result" => {
+            let result = &payload["result"];
+            let exit_code = result["perf"]["detail"]["command"]["exitCode"].as_i64();
+            if let Some(code) = exit_code {
+                update = update.content(vec![format!("Exit code: {code}").into()]);
+            }
+            if !result["success"].as_bool()? || exit_code.is_some_and(|code| code != 0) {
+                ToolCallStatus::Failed
+            } else {
+                ToolCallStatus::Completed
+            }
+        }
+        "error" => ToolCallStatus::Failed,
+        _ => return None,
+    };
+    Some(AcpEvent::ToolUpdate(ToolCallUpdate::new(
+        id.to_owned(),
+        update.status(status),
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_path_limit_uses_effective_tempdir_in_bytes() {
+        let mut env = ExecutionEnv::new(Default::default(), false, String::new());
+        env.insert("TMPDIR", format!("/{}", "x".repeat(56)));
+        assert!(!zcode_needs_short_tmpdir(&env));
+        env.insert("TMPDIR", format!("/{}", "한".repeat(19)));
+        assert!(zcode_needs_short_tmpdir(&env));
+    }
+
+    #[test]
+    fn maps_tool_result_and_error_to_terminal_status() {
+        for (kind, result, expected) in [
+            ("result", json!({"success":true}), ToolCallStatus::Completed),
+            ("result", json!({"success":false}), ToolCallStatus::Failed),
+            ("error", Value::Null, ToolCallStatus::Failed),
+        ] {
+            let Some(AcpEvent::ToolUpdate(update)) = tool_event(&json!({
+                "toolCallId": "call_fixture", "kind": kind, "result": result,
+            })) else {
+                panic!("expected a tool update");
+            };
+            assert_eq!(update.fields.status, Some(expected));
+        }
     }
 }
 

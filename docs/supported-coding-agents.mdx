@@ -61,7 +61,7 @@ OpenCode v2 supports native session resume, interruption and tool approval. Inte
 
 Install `@earendil-works/pi-coding-agent@1.4.0` and `pi-acp@0.0.35` on the execution host. Sign in through Pi's `/login` command or provide a model provider's API key through the executor environment. Select **Pi** in the workspace or session, or use `--executor PI` in `vk`. [Pi ACP adapter](https://zed.dev/acp/agent/pi)
 
-Pi supports model selection, streaming, native session resume and interruption. Vibe Kanban presents ACP confirmation requests from Pi extensions. Pi extensions control which tools require a confirmation. Message-level rewind is unavailable.
+Pi supports model selection, streaming, native session resume and interruption. With supervised permissions, Vibe Kanban presents Pi extension confirmations and lets you choose an option from a Pi extension's selection request. With automatic approval, Vibe Kanban cancels selection requests that require a user choice. Pi extensions control which tools require confirmation. Message-level rewind is unavailable.
 
 ## ZCode
 
