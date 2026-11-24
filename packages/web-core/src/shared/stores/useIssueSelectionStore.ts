@@ -17,6 +17,12 @@ interface IssueSelectionState {
   orderedIssueIds: string[];
   /** Board (project) that published orderedIssueIds; the selection is on it */
   selectionScopeId: string | null;
+  /**
+   * Last order each board (project) published. Outlives the board, so the
+   * opened-issue Cmd+Arrow navigation still works in a narrow pane that
+   * unmounts the board while an issue is open.
+   */
+  orderByScope: Record<string, string[]>;
 
   /** Turn on explicit selection mode (e.g. from the mobile select button) */
   enterSelectionMode: () => void;
@@ -53,6 +59,21 @@ interface IssueSelectionState {
   ) => void;
 }
 
+const NO_ISSUES: Set<string> = new Set<string>();
+
+/**
+ * The multi-selection as seen from one board (project). Split panes share the
+ * store, and a pane whose board is unmounted (narrow pane with an issue open)
+ * never re-publishes its scope, so readers must not take another project's
+ * selection for their own.
+ */
+export function selectScopedSelectedIssueIds(
+  scopeId: string | null | undefined
+) {
+  return (s: IssueSelectionState): Set<string> =>
+    scopeId && s.selectionScopeId === scopeId ? s.selectedIssueIds : NO_ISSUES;
+}
+
 export const useIssueSelectionStore = create<IssueSelectionState>(
   (set, get) => ({
     selectedIssueIds: new Set<string>(),
@@ -61,6 +82,7 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
     cursorIssueId: null,
     orderedIssueIds: [],
     selectionScopeId: null,
+    orderByScope: {},
 
     enterSelectionMode: () => {
       set({ isSelectionMode: true });
@@ -235,6 +257,9 @@ export const useIssueSelectionStore = create<IssueSelectionState>(
         return {
           orderedIssueIds: ids,
           selectionScopeId: scopeId,
+          ...(scopeId && {
+            orderByScope: { ...state.orderByScope, [scopeId]: ids },
+          }),
           ...(scopeChanged && {
             selectedIssueIds: new Set<string>(),
             isSelectionMode: false,

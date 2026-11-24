@@ -26,7 +26,10 @@ import type { SelectionPage } from './SelectionDialog';
 import type { RepoSelectionResult } from './selections/repoSelection';
 import { useCommandBarState } from './commandBar/useCommandBarState';
 import { useResolvedPage } from './commandBar/useResolvedPage';
-import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
+import {
+  selectScopedSelectedIssueIds,
+  useIssueSelectionStore,
+} from '@/shared/stores/useIssueSelectionStore';
 import { useKeyboardShortcutsStore } from '@/shared/stores/useKeyboardShortcutsStore';
 import { effectiveActionShortcut } from '@/shared/keyboard/registry';
 import {
@@ -123,13 +126,14 @@ function CommandBarContent({
     effectiveDestination && 'issueId' in effectiveDestination
       ? effectiveDestination.issueId
       : undefined;
-  const multiSelectedIssueIds = useIssueSelectionStore(
-    (s) => s.selectedIssueIds
-  );
-  const cursorIssueId = useIssueSelectionStore((s) => s.cursorIssueId);
-
   // Effective issue context: props > multi-selection > opened issue > focused card
   const effectiveProjectId = propProjectId ?? routeProjectId;
+  const multiSelectedIssueIds = useIssueSelectionStore(
+    selectScopedSelectedIssueIds(effectiveProjectId)
+  );
+  const cursorIssueId = useIssueSelectionStore((s) =>
+    s.selectionScopeId === effectiveProjectId ? s.cursorIssueId : null
+  );
   const effectiveIssueIds = useMemo(
     () =>
       resolveCommandBarIssueIds({

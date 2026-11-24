@@ -9,6 +9,7 @@ import { useActions } from '@/shared/hooks/useActions';
 import { usePageTitle } from '@/shared/hooks/usePageTitle';
 import { KanbanContainer } from '@/features/kanban/ui/KanbanContainer';
 import { ProjectLoadingState } from '@/features/kanban/ui/ProjectLoadingState';
+import { useOpenedIssueArrowNavigation } from '@/features/kanban/ui/kanbanIssueNavigation';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import {
   PaneWidthProvider,
@@ -167,7 +168,20 @@ function ProjectKanbanBoard() {
 }
 
 function ProjectKanbanLayout({ projectName }: { projectName: string }) {
-  const { issueId, isPanelOpen } = useCurrentKanbanRouteState();
+  const {
+    projectId,
+    issueId,
+    workspaceId,
+    isPanelOpen,
+    isCreateMode,
+    isWorkspaceCreateMode,
+  } = useCurrentKanbanRouteState();
+  // Only the issue view steps between issues; a workspace session or draft
+  // shown for the issue keeps its own keys.
+  useOpenedIssueArrowNavigation(
+    projectId,
+    isCreateMode || workspaceId || isWorkspaceCreateMode ? null : issueId
+  );
   const isMobile = useIsMobile();
   const isNarrow = usePaneNarrowerThan(SPLIT_MIN_WIDTH);
   const { getIssue } = useProjectContext();

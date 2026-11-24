@@ -18,7 +18,10 @@ import { isProjectDestination } from '@/shared/lib/routes/appNavigation';
 import { useIsPaneGridTargeted } from '@/shared/lib/openInSplitPane';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
-import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
+import {
+  selectScopedSelectedIssueIds,
+  useIssueSelectionStore,
+} from '@/shared/stores/useIssueSelectionStore';
 
 const SEQUENCE_TIMEOUT_MS = 1500;
 
@@ -69,7 +72,7 @@ export function useIssueShortcuts(options?: UseIssueShortcutsOptions) {
 
   // Multi-selection support
   const multiSelectedIssueIds = useIssueSelectionStore(
-    (s) => s.selectedIssueIds
+    selectScopedSelectedIssueIds(projectId)
   );
   const isSelectionMode = useIssueSelectionStore((s) => s.isSelectionMode);
   const selectAll = useIssueSelectionStore((s) => s.selectAll);

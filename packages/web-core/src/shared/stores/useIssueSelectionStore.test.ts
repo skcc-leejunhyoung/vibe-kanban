@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { useIssueSelectionStore } from './useIssueSelectionStore';
+import {
+  selectScopedSelectedIssueIds,
+  useIssueSelectionStore,
+} from './useIssueSelectionStore';
 
 describe('useIssueSelectionStore', () => {
   beforeEach(() => {
@@ -95,5 +98,27 @@ describe('useIssueSelectionStore', () => {
     store.clearSelectionFor(['a']);
 
     expect(useIssueSelectionStore.getState().cursorIssueId).toBe('a');
+  });
+
+  it('hides a selection from boards of other projects', () => {
+    const store = useIssueSelectionStore.getState();
+    store.setOrderedIssueIds(['a1', 'a2'], null, 'proj-a');
+    store.toggleIssue('a1');
+
+    const state = useIssueSelectionStore.getState();
+    expect([...selectScopedSelectedIssueIds('proj-a')(state)]).toEqual(['a1']);
+    expect(selectScopedSelectedIssueIds('proj-b')(state).size).toBe(0);
+    expect(selectScopedSelectedIssueIds(undefined)(state).size).toBe(0);
+  });
+
+  it('keeps each board order after another board publishes', () => {
+    const store = useIssueSelectionStore.getState();
+    store.setOrderedIssueIds(['a1', 'a2'], null, 'proj-a');
+    store.setOrderedIssueIds(['b1'], null, 'proj-b');
+
+    expect(useIssueSelectionStore.getState().orderByScope).toMatchObject({
+      'proj-a': ['a1', 'a2'],
+      'proj-b': ['b1'],
+    });
   });
 });

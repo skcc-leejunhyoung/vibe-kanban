@@ -1,7 +1,8 @@
 import { useCallback, type MouseEvent } from 'react';
-import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
-
-const NO_SELECTION = new Set<string>();
+import {
+  selectScopedSelectedIssueIds,
+  useIssueSelectionStore,
+} from '@/shared/stores/useIssueSelectionStore';
 
 /**
  * Split panes share one selection store. Only the board that owns it (the
@@ -13,11 +14,10 @@ export function useIssueMultiSelect(scopeId: string, isActivePane: boolean) {
   const ownsSelection = useIssueSelectionStore(
     (s) => isActivePane && s.selectionScopeId === scopeId
   );
-  const storeSelectedIssueIds = useIssueSelectionStore(
-    (s) => s.selectedIssueIds
+  const selectedIssueIds = useIssueSelectionStore(
+    selectScopedSelectedIssueIds(isActivePane ? scopeId : null)
   );
   const storeIsSelectionMode = useIssueSelectionStore((s) => s.isSelectionMode);
-  const selectedIssueIds = ownsSelection ? storeSelectedIssueIds : NO_SELECTION;
   const isSelectionMode = ownsSelection && storeIsSelectionMode;
   const enterSelectionMode = useIssueSelectionStore(
     (s) => s.enterSelectionMode
