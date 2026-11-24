@@ -8,6 +8,8 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { isModalKeyboardActive } from '@vibe/ui/lib/modal-keyboard';
+import { adjacentIssueId, isTextEditingTarget } from './kanbanIssueNavigation';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { useOrgContext } from '@/shared/hooks/useOrgContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
@@ -1635,6 +1637,41 @@ export function KanbanContainer() {
     focusedAddStatusId,
     editingAddStatusId,
     isBoardFocused,
+  ]);
+
+  // Cmd/Ctrl+Left/Right steps the opened issue through the board order, like
+  // the pull request list's detail navigation. Text fields keep the keys.
+  useEffect(() => {
+    if (!isActivePane || !selectedKanbanIssueId) return;
+    const navigateOpenedIssue = (event: KeyboardEvent) => {
+      if (isModalKeyboardActive()) return;
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.altKey ||
+        event.shiftKey ||
+        (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') ||
+        isTextEditingTarget(event.target)
+      ) {
+        return;
+      }
+      const nextIssueId = adjacentIssueId(
+        orderedIssueIds,
+        selectedKanbanIssueId,
+        event.key === 'ArrowRight' ? 1 : -1
+      );
+      event.preventDefault();
+      if (!nextIssueId) return;
+      setAnchor(nextIssueId);
+      openIssue(nextIssueId);
+    };
+    window.addEventListener('keydown', navigateOpenedIssue);
+    return () => window.removeEventListener('keydown', navigateOpenedIssue);
+  }, [
+    isActivePane,
+    selectedKanbanIssueId,
+    orderedIssueIds,
+    setAnchor,
+    openIssue,
   ]);
 
   const handleToggleSelectionMode = useCallback(() => {
