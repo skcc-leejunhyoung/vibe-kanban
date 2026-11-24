@@ -226,6 +226,18 @@ console.log(JSON.stringify(flags));
         evidence['board_findings'] = [{'pr_url': 'https://github.com/synthetic/unknown/pull/7'}]
         self.assertEqual(gate(['periodic due'])[1]['system_one_fallback'], 'unverified_board')
 
+    def test_repositories_the_agent_checkpointed_are_read_without_declaration(self):
+        gate, calls, values = self.fixture()
+        values['schedule']['tracked_reconcile_checkpoint'] = {'heads': {'https://github.com/Synthetic/Outside/pull/3': 'a' * 40}}
+        _, handled = gate(['periodic due'])
+        self.assertEqual(handled['status'], 'handled')
+        request = next(body for name, body in calls if name == 'request')
+        self.assertEqual(request['readRepositories'], ['synthetic/outside'])
+        # Past the worker's limit only declared repositories are read: unproven.
+        values['schedule']['tracked_reconcile_checkpoint']['heads'].update(
+            {f'https://github.com/synthetic/extra-{n}/pull/1': 'b' * 40 for n in range(20)})
+        self.assertEqual(gate(['periodic due'])[1]['system_one_fallback'], 'scope_mismatch')
+
     def test_periodic_prompt_names_the_exact_scope_to_record(self):
         namespace = {'calls': []}
         exec("def periodic_gate(due, dry=False):\n return due, None\ndef periodic_prompt():\n return 'base.'", namespace)

@@ -15,6 +15,7 @@ import tempfile
 PR_URL = re.compile(r'https://github\.com/([^/]+/[^/]+)/pull/(\d+)')
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', re.I)
 AGENT_AUDIT_INTERVAL = dt.timedelta(hours=2)
+READ_REPOSITORY_LIMIT = 16   # the worker's cap on read-only repositories
 
 
 def rows(value):
@@ -52,11 +53,13 @@ def registry(ap, config):
             continue
         repo = entry.get('repo') or entry.get('repository') or config.get('defaultRepository')
         refs.append({'repository': repo, 'number': int(str(entry['pr']).lstrip('#'))})
+    checked = set()   # repositories of PRs the periodic agent itself recorded as reconciled
     for url in (schedule.get('tracked_reconcile_checkpoint', {}).get('heads', {})):
         match = PR_URL.fullmatch(url)
         if not match:
             raise ValueError('unrecognized tracked PR')
         refs.append({'repository': match[1], 'number': int(match[2])})
+        checked.add(match[1].lower())
     # Scheduling, cancellation and hold records are inputs, never rewritten here.
     stable = {key: schedule.get(key) for key in ap['PENDING_KEYS']}
     # Rendering and this periodic job's own dispatch cannot trigger the next job.
@@ -66,8 +69,15 @@ def registry(ap, config):
     scope = {key: config[key] for key in ('connectorId', 'githubConnectorId', 'hosts')}
     # Tracked PRs outside review discovery (another repository, an old name
     # GitHub redirects) are read by the worker but never discovered there.
-    if config.get('readRepositories'):
-        scope['readRepositories'] = sorted({repo.lower() for repo in config['readRepositories']})
+    # Declared repositories, plus those whose PRs the agent's own checkpoint
+    # recorded, up to the worker's limit (beyond it the scope stays unproven).
+    discovery = {repo.lower() for repo in config.get('discoveryRepositories') or [config.get('defaultRepository')] if repo}
+    declared = {repo.lower() for repo in config.get('readRepositories') or []}
+    readable = declared | (checked - discovery)
+    if len(readable) > READ_REPOSITORY_LIMIT:
+        readable = declared
+    if readable:
+        scope['readRepositories'] = sorted(readable)
     if 'projects' in config:
         scope['projects'] = config['projects']
     else:
