@@ -284,7 +284,7 @@ def install(ap, config):
                     'projects의 각 프로젝트 review 태그 이슈, repositories의 review 요청 발견, hosts의 각 호스트 공간·실행·queue를 ' +
                     '모두 공식 조회로 확인한 경우에만 이 값을 그대로 coverage로 기록한다. 하나라도 못 했으면 coverage를 넣지 않는다. ' +
                     '증거 디렉터리의 board-reconciliation.json에 대기 항목이 있으면 각 key와 fingerprint를 확인하고, '
-                    '게시 검증 시 disposition=published와 rowSha256을, 보류 시 disposition=hold와 reason, owner, recheckAt을 boardResolutions에 기록한다.')
+                    '게시 검증 시 disposition=published와 rowSha256을, 보류 시 disposition=hold와 reason, owner, recheckAt(지금부터 2시간 이상 뒤, 그 전엔 다음 대조가 보류를 다시 대기로 본다)을 boardResolutions에 기록한다.')
 
         ap['periodic_prompt'] = periodic_prompt
 

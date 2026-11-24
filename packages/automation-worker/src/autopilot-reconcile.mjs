@@ -546,6 +546,11 @@ function reconcileBoardReviews(scope, record, snapshot, acknowledged, now) {
       scope?.tracked?.map(({ repository, number }) => `${repository}#${number}`)
   );
   const pending = { ...record.boardPending };
+  // A PR that left the board has no row left to publish or hold (only an
+  // explicit board list is authoritative).
+  if (Array.isArray(scope?.boardPrs))
+    for (const key of Object.keys(pending))
+      if (!boardPrs.has(key)) delete pending[key];
   const reviews = {};
   const resolutions = new Map(
     (Array.isArray(scope?.boardResolutions) ? scope.boardResolutions : [])

@@ -711,3 +711,31 @@ test('reconciliation never spends the last reserved GitHub calls', () => {
   assert.doesNotThrow(() => checkGithubBudget(undefined, 1500));
   assert.doesNotThrow(() => checkGithubBudget(Number.NaN, 1500));
 });
+
+test('board work for a PR that left the board does not block a quiet baseline', async () => {
+  const h = fixture();
+  h.issueCount = 0;
+  h.discovered = [];
+  const stale = 'synthetic/widgets#99';
+  const record = {
+    boardPending: {
+      [stale]: { key: stale, head, fingerprint: 'f', detectedAt: '2002-03-05T00:00:00Z' },
+    },
+  };
+  let clock = Date.parse('2002-03-06T00:00:00Z');
+  const options = {
+    scope: { ...scope, boardPrs: ['synthetic/widgets#7'] },
+    record,
+    collect: h.collect,
+    persist: async () => {},
+    now: () => clock,
+  };
+  const first = await reconcileAutopilot(options);
+  assert.deepEqual(first.boardPending, []);
+  assert.equal(Object.hasOwn(record.boardPending, stale), false);
+  clock += 1000;
+  assert.equal(
+    (await reconcileAutopilot({ ...options, acknowledgedAt: new Date(clock - 500).toISOString() })).changed,
+    false
+  );
+});
