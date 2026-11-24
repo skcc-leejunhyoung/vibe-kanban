@@ -1079,14 +1079,14 @@ fn context_tokens(tokens: &Value) -> u64 {
         .sum()
 }
 
-/// The context gauge for one turn: the last step's tokens against the window
-/// of the model that ran it.
 /// Compaction edits nothing, so there is nothing to remind about after it.
 fn reminder_for(input: &TurnInput, env: &ExecutionEnv) -> Option<CommitReminder> {
     CommitReminder::from_env(env)
         .filter(|_| !matches!(input, TurnInput::Command { name, .. } if name == COMPACT))
 }
 
+/// The context gauge for one turn: the last step's tokens against the window
+/// of the model that ran it.
 struct ContextUsage {
     limits: HashMap<ModelKey, u32>,
     step_models: HashMap<String, ModelKey>,
@@ -1330,14 +1330,19 @@ fn form_answer(fields: &[FormField], answers: &[QuestionAnswer]) -> Option<Value
         answer.insert(field.key.clone(), value);
     }
     for field in fields {
+        // An unanswered field makes both operators false; against a
+        // multiselect answer they test whether the selection includes the value.
         let holds = field.when.iter().all(|condition| {
-            let other = condition["key"]
-                .as_str()
-                .and_then(|key| answer.get(key))
-                .unwrap_or(&Value::Null);
+            let Some(other) = condition["key"].as_str().and_then(|key| answer.get(key)) else {
+                return false;
+            };
+            let equal = match other {
+                Value::Array(selected) => selected.contains(&condition["value"]),
+                other => other == &condition["value"],
+            };
             match condition["op"].as_str() {
-                Some("eq") => other == &condition["value"],
-                Some("neq") => other != &condition["value"],
+                Some("eq") => equal,
+                Some("neq") => !equal,
                 _ => true,
             }
         });
@@ -2639,6 +2644,28 @@ mod turn_tests {
         let mut wrong = answers.clone();
         wrong[3] = answer("How many?", &["three"]);
         assert!(form_answer(&fields, &wrong).is_none());
+        // Conditions on a multiselect test inclusion; an unanswered field fails both operators.
+        let form = json!({"title": "Setup", "fields": [
+            {"key": "tags", "type": "multiselect", "description": "Tags?",
+             "options": [{"value": "a", "label": "Alpha"}, {"value": "b", "label": "Beta"}]},
+            {"key": "named", "type": "string", "description": "Name?",
+             "when": [{"key": "tags", "op": "eq", "value": "a"}]},
+            {"key": "other", "type": "string", "description": "Other?",
+             "when": [{"key": "tags", "op": "neq", "value": "a"}]},
+            {"key": "orphan", "type": "string", "description": "Orphan?",
+             "when": [{"key": "missing", "op": "neq", "value": "x"}]}
+        ]});
+        let fields = form_questions(&form).unwrap();
+        let answers = vec![
+            answer("Tags?", &["Alpha"]),
+            answer("Name?", &["Ada"]),
+            answer("Other?", &["no"]),
+            answer("Orphan?", &["no"]),
+        ];
+        assert_eq!(
+            form_answer(&fields, &answers).unwrap(),
+            json!({"tags": ["a"], "named": "Ada"})
+        );
         assert!(
             form_questions(&json!({"fields": [{"key": "x", "type": "external", "url": "https://example.test"}]}))
                 .is_none()
