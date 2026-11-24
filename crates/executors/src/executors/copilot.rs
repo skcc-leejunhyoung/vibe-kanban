@@ -97,6 +97,31 @@ impl StandardCodingAgentExecutor for Copilot {
         self.approvals = Some(approvals);
     }
 
+    /// A fresh ACP session that answers once under refused tool requests, so
+    /// no conversation changes. It sees the changes in the instructions, not
+    /// the conversation.
+    async fn generate_commit_message(
+        &self,
+        current_dir: &Path,
+        _session_id: &str,
+        instructions: &str,
+        env: &ExecutionEnv,
+    ) -> Result<Option<String>, ExecutorError> {
+        let mut asking = self.clone();
+        asking.allow_all_tools = Some(false);
+        let command = asking.build_command_builder()?.build_initial()?;
+        super::acp::oneshot::generate_text(
+            command,
+            current_dir,
+            env,
+            &self.cmd,
+            super::acp::oneshot::ModelSelection::None,
+            instructions,
+        )
+        .await
+        .map(Some)
+    }
+
     fn apply_overrides(&mut self, executor_config: &ExecutorConfig) {
         if let Some(model_id) = &executor_config.model_id {
             self.model = Some(model_id.clone());

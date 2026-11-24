@@ -23,6 +23,7 @@ use db::{
         merge::{Merge, MergeStatus},
         pending_rate_limit_resume::PendingRateLimitResume,
         repo::Repo,
+        scratch::DraftFollowUpData,
         session::{CreateSession, Session},
         session_message_index::SessionMessageIndex,
         tag::Tag,
@@ -41,7 +42,9 @@ use executors::{
     env::{ExecutionEnv, RepoContext},
     executors::{
         BaseCodingAgent, CancellationToken, ExecutorExitResult, ExecutorExitSignal,
-        StandardCodingAgentExecutor, SubagentLiveHandle, opencode_v2::memory_skill_dirs,
+        StandardCodingAgentExecutor, SubagentLiveHandle,
+        opencode_v2::memory_skill_dirs,
+        utils::{SlashCommandCall, parse_slash_command},
     },
     logs::{NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch},
     profile::{ExecutorConfig, ExecutorConfigs},
@@ -1360,6 +1363,88 @@ impl LocalContainerService {
         }
     }
 
+    /// Starts the commit reminder as a follow-up turn of the same session when
+    /// the finished turn's agent cannot carry it inside its own turn and
+    /// changes are left. `false` means nothing was started and the turn is
+    /// finalized as usual: no reminder is due, or it could not be started.
+    async fn start_commit_reminder_turn(&self, ctx: &ExecutionContext) -> bool {
+        let Ok(action) = ctx.execution_process.executor_action() else {
+            return false;
+        };
+        let (Some(agent), Some(config), Some(container_ref)) = (
+            action.base_executor(),
+            action.executor_config().cloned(),
+            ctx.workspace.container_ref.as_ref(),
+        ) else {
+            return false;
+        };
+        if !agent.commit_reminder_is_a_follow_up_turn()
+            || !self
+                .commit_reminder_enabled_for(&ctx.workspace, ctx.session.id)
+                .await
+        {
+            return false;
+        }
+        let workspace_root = PathBuf::from(container_ref);
+        let status = RepoContext::new(
+            workspace_root.clone(),
+            ctx.repos.iter().map(|repo| repo.name.clone()).collect(),
+        )
+        .check_uncommitted_changes()
+        .await;
+        let turn_prompt =
+            CodingAgentTurn::find_by_execution_process_id(&self.db.pool, ctx.execution_process.id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|turn| turn.prompt);
+        let configured = self
+            .config
+            .read()
+            .await
+            .commit_reminder_prompt
+            .clone()
+            .filter(|prompt| !prompt.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_COMMIT_REMINDER_PROMPT.to_string());
+        let mut reminder = configured.clone();
+        if workspace_root.is_dir()
+            && let Ok(dir) = utils::path::ensure_scratch_dir(&workspace_root)
+        {
+            reminder.push_str(&scratch_commit_hint(&dir));
+        }
+        let Some(message) = commit_reminder_follow_up(
+            agent,
+            turn_prompt.as_deref(),
+            &configured,
+            &reminder,
+            &status,
+        ) else {
+            return false;
+        };
+        let data = DraftFollowUpData {
+            message,
+            executor_config: config,
+            handoff: false,
+        };
+        // Nothing queued starts ahead of the reminder.
+        let hold = self.queued_message_service.hold_drain(ctx.session.id);
+        let started = self
+            .start_followup_for_session(&ctx.session, &ctx.workspace, &data, None)
+            .await;
+        drop(hold);
+        match started {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(e) => {
+                tracing::warn!(
+                    "Could not start the commit reminder turn for session {}: {e}",
+                    ctx.session.id
+                );
+                false
+            }
+        }
+    }
+
     /// The message for the changes a run left uncommitted. A coding turn's
     /// message is drafted by its agent from the session, apart from the chat:
     /// the final reply is a report for the user (test results, status blocks,
@@ -1405,7 +1490,8 @@ impl LocalContainerService {
         let turn = CodingAgentTurn::find_by_execution_process_id(pool, ctx.execution_process.id)
             .await
             .ok()??;
-        let session_id = turn.agent_session_id?;
+        // Only the agents that answer inside the session need it.
+        let session_id = turn.agent_session_id.unwrap_or_default();
         let action = ctx.execution_process.executor_action().ok()?;
         let config = action.executor_config()?.clone();
         let mut agent = ExecutorConfigs::get_cached().get_coding_agent(&config.profile_id())?;
@@ -1428,7 +1514,8 @@ impl LocalContainerService {
             changed.iter().map(|(repo, _)| repo.name.clone()).collect(),
         );
         let changes = repo_context.check_uncommitted_changes().await;
-        let instructions = commit_message::instructions(&conventions, &changes, &issues);
+        let diff = commit_message::diff_excerpt(repo_context.repo_paths()).await;
+        let instructions = commit_message::instructions(&conventions, &changes, &diff, &issues);
         let env = ExecutionEnv::new(repo_context, false, String::new());
         let draft = tokio::time::timeout(
             COMMIT_MESSAGE_TIMEOUT,
@@ -2467,6 +2554,19 @@ impl LocalContainerService {
             ctx.execution_process.status,
             ExecutionProcessStatus::Completed
         ) && exit_code == Some(0);
+
+        // Agents that end their process with the turn get the commit reminder
+        // as a follow-up turn; that turn's own completion then commits what is
+        // left, so this one is not finalized here.
+        if success
+            && matches!(
+                ctx.execution_process.run_reason,
+                ExecutionProcessRunReason::CodingAgent
+            )
+            && self.start_commit_reminder_turn(ctx).await
+        {
+            return Ok(());
+        }
 
         let cleanup_done = matches!(
             ctx.execution_process.run_reason,
@@ -5134,6 +5234,26 @@ fn opencode_workspace_repo<'a>(
 /// How long finalization waits for an agent to draft a commit message.
 const COMMIT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The prompt of the commit reminder turn for an agent that cannot carry the
+/// reminder in its own turn, or `None` when none is due. A slash command edits
+/// nothing for the reminder to be about, and a turn that already is the
+/// reminder is never answered with another one: what it leaves is committed by
+/// Vibe Kanban.
+fn commit_reminder_follow_up(
+    agent: BaseCodingAgent,
+    turn_prompt: Option<&str>,
+    configured_prompt: &str,
+    reminder_prompt: &str,
+    status: &str,
+) -> Option<String> {
+    let prompt = turn_prompt.unwrap_or_default();
+    (agent.commit_reminder_is_a_follow_up_turn()
+        && !status.trim().is_empty()
+        && !prompt.starts_with(configured_prompt)
+        && parse_slash_command::<SlashCommandCall<'_>>(prompt).is_none())
+    .then(|| format!("{reminder_prompt}\n{status}"))
+}
+
 fn default_agent_commit_message(workspace_id: Uuid) -> String {
     format!("Commit changes from coding agent for workspace {workspace_id}")
 }
@@ -7005,6 +7125,59 @@ done
             session: session.clone(),
             workspace: workspace.clone(),
             repos: vec![],
+        }
+    }
+
+    /// Only an agent whose process ends with its turn gets the reminder as a
+    /// follow-up turn, once, and never for a slash command or after a turn
+    /// that was itself the reminder.
+    #[test]
+    fn commit_reminder_follow_up_is_due_once_for_agents_that_end_with_the_turn() {
+        let configured = "Commit the changes.";
+        let reminder = "Commit the changes.\nKeep scratch files out.";
+        let status = "\nrepo:\n?? notes.txt\n";
+        let due = |agent, prompt: Option<&str>, status: &str| {
+            commit_reminder_follow_up(agent, prompt, configured, reminder, status)
+        };
+        for agent in [
+            BaseCodingAgent::Amp,
+            BaseCodingAgent::CursorAgent,
+            BaseCodingAgent::Droid,
+        ] {
+            assert_eq!(
+                due(agent, Some("Fix the bug"), status).as_deref(),
+                Some(format!("{reminder}\n{status}").as_str())
+            );
+            assert!(due(agent, None, status).is_some());
+            assert_eq!(due(agent, Some("Fix the bug"), " \n"), None, "no changes");
+            assert_eq!(
+                due(agent, Some("/compact now"), status),
+                None,
+                "slash command"
+            );
+            let sent = format!("{reminder}\n{status}");
+            assert_eq!(
+                due(agent, Some(&sent), status),
+                None,
+                "the reminder is not repeated"
+            );
+        }
+        for agent in [
+            BaseCodingAgent::ClaudeCode,
+            BaseCodingAgent::Codex,
+            BaseCodingAgent::Opencode,
+            BaseCodingAgent::OpencodeV2,
+            BaseCodingAgent::Pi,
+            BaseCodingAgent::ZCode,
+            BaseCodingAgent::Gemini,
+            BaseCodingAgent::QwenCode,
+            BaseCodingAgent::Copilot,
+        ] {
+            assert_eq!(
+                due(agent, Some("Fix the bug"), status),
+                None,
+                "{agent} carries its own"
+            );
         }
     }
 

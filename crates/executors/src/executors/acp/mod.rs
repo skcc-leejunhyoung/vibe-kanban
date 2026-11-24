@@ -1,6 +1,7 @@
 pub mod client;
 pub mod harness;
 pub mod normalize_logs;
+pub mod oneshot;
 pub mod session;
 
 use std::{fmt::Display, str::FromStr};

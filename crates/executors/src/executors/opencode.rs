@@ -437,6 +437,39 @@ impl StandardCodingAgentExecutor for Opencode {
         self.approvals = Some(approvals);
     }
 
+    /// Asks a copy of the session with every tool refused, then deletes the
+    /// copy, so the session and its history stay as they are.
+    async fn generate_commit_message(
+        &self,
+        current_dir: &Path,
+        session_id: &str,
+        instructions: &str,
+        env: &ExecutionEnv,
+    ) -> Result<Option<String>, ExecutorError> {
+        let mut env = env.clone();
+        env.insert(
+            "OPENCODE_PERMISSION",
+            r#"{"edit":"deny","bash":"deny","webfetch":"deny","doom_loop":"deny","external_directory":"deny","question":"deny"}"#,
+        );
+        let directory = current_dir.to_string_lossy().to_string();
+        let server = self.spawn_server(current_dir, &env).await?;
+        let client = build_authenticated_client(&directory, &server.server_password)?;
+        sdk::wait_for_health(&client, &server.base_url).await?;
+        let copy = sdk::fork_session(&client, &server.base_url, &directory, session_id).await?;
+        let reply = sdk::generate_text(
+            &client,
+            &server.base_url,
+            &directory,
+            &copy,
+            instructions,
+            self.model.as_deref().and_then(sdk::parse_model),
+            self.variant.clone(),
+        )
+        .await;
+        sdk::delete_session(&client, &server.base_url, &directory, &copy).await;
+        reply.map(Some)
+    }
+
     async fn spawn(
         &self,
         current_dir: &Path,

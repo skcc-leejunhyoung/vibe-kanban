@@ -715,6 +715,68 @@ impl StandardCodingAgentExecutor for Codex {
         self.approvals = Some(approvals);
     }
 
+    /// `codex exec` in a read-only sandbox without saving a session, so the
+    /// thread and its history stay as they are. It sees the changes in the
+    /// instructions, not the conversation.
+    async fn generate_commit_message(
+        &self,
+        current_dir: &Path,
+        _session_id: &str,
+        instructions: &str,
+        env: &ExecutionEnv,
+    ) -> Result<Option<String>, ExecutorError> {
+        let output_file =
+            std::env::temp_dir().join(format!("vk-commit-message-{}.txt", uuid::Uuid::new_v4()));
+        let mut params = vec![
+            "exec".to_string(),
+            "--ephemeral".into(),
+            "--skip-git-repo-check".into(),
+            "--sandbox".into(),
+            "read-only".into(),
+            "--color".into(),
+            "never".into(),
+            "--output-last-message".into(),
+            output_file.to_string_lossy().into_owned(),
+        ];
+        let selected = self.thread_start_params(current_dir, self.selected_model());
+        if let Some(model) = selected.model {
+            params.extend(["--model".to_string(), model]);
+        }
+        if let Some(provider) = selected.model_provider {
+            params.extend([
+                "--config".to_string(),
+                format!("model_provider={provider:?}"),
+            ]);
+        }
+        if let Some(effort) = &self.model_reasoning_effort {
+            params.extend([
+                "--config".to_string(),
+                format!("model_reasoning_effort={:?}", effort.as_str()),
+            ]);
+        }
+        // Instructions come from stdin.
+        params.push("-".into());
+        let builder = CommandBuilder::new(Self::base_command()).params(params);
+        let (program, args) = apply_overrides(builder, &self.cmd)?
+            .build_initial()?
+            .into_resolved()
+            .await?;
+        let mut command = Command::new(program);
+        command.current_dir(current_dir).args(&args);
+        env.clone()
+            .with_profile(&self.cmd)
+            .apply_to_command(&mut command);
+        let printed = super::utils::run_for_text(command, instructions, "Codex").await;
+        let last_message = tokio::fs::read_to_string(&output_file).await.ok();
+        let _ = tokio::fs::remove_file(&output_file).await;
+        let printed = printed?;
+        Ok(Some(
+            last_message
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or(printed),
+        ))
+    }
+
     fn discard_from_message(&mut self, message_id: &str) {
         self.discard_from_turn = Some(message_id.to_string());
     }

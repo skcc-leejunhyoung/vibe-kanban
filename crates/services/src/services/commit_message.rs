@@ -45,8 +45,54 @@ pub fn explicit_issue_numbers<'a>(texts: impl IntoIterator<Item = &'a str>) -> B
         .collect()
 }
 
+/// Most of the diff text offered to the agent that writes the message.
+const MAX_DIFF_CHARS: usize = 12_000;
+
+/// The uncommitted changes of `repos` as `git diff HEAD` shows them, cut to a
+/// size an agent can read at once. Files git does not track yet appear only in
+/// the status list the caller already has.
+pub async fn diff_excerpt(repos: Vec<std::path::PathBuf>) -> String {
+    tokio::task::spawn_blocking(move || {
+        let git = |repo: &std::path::Path, args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(["--no-pager", "diff", "HEAD", "--no-ext-diff", "--no-color"])
+                .args(args)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        };
+        let mut text = String::new();
+        for repo in &repos {
+            let (Some(stat), Some(patch)) = (
+                git(repo, &["--stat"]),
+                git(repo, &["--unified=1", "--minimal"]),
+            ) else {
+                continue;
+            };
+            if stat.trim().is_empty() {
+                continue;
+            }
+            text.push_str(&format!("{}:\n{stat}\n{patch}\n", repo.display()));
+        }
+        match text.char_indices().nth(MAX_DIFF_CHARS) {
+            Some((end, _)) => format!("{}\n... (diff cut)", &text[..end]),
+            None => text,
+        }
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// The request sent to the agent's out-of-conversation generation.
-pub fn instructions(conventions: &str, changes: &str, issues: &BTreeSet<String>) -> String {
+pub fn instructions(
+    conventions: &str,
+    changes: &str,
+    diff: &str,
+    issues: &BTreeSet<String>,
+) -> String {
     let issues = if issues.is_empty() {
         "none. Do not reference any issue number.".to_string()
     } else {
@@ -59,6 +105,11 @@ pub fn instructions(conventions: &str, changes: &str, issues: &BTreeSet<String>)
                 .join(", ")
         )
     };
+    let diff = if diff.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\nDiff of the tracked files:\n{}\n", diff.trim())
+    };
     format!(
         "Write the Git commit message for the uncommitted changes listed below, which this session made.\n\
          Reply with the commit message only: one subject line, optionally followed by a blank line and a short body. \
@@ -67,7 +118,7 @@ pub fn instructions(conventions: &str, changes: &str, issues: &BTreeSet<String>)
          Follow these commit conventions from the user's settings where they describe the message itself:\n\
          {conventions}\n\n\
          Issue numbers the user explicitly provided: {issues}\n\n\
-         Uncommitted changes:\n{changes}\n",
+         Uncommitted changes:\n{changes}\n{diff}",
         conventions = conventions.trim(),
         changes = changes.trim(),
     )
@@ -79,7 +130,16 @@ pub fn sanitize(draft: &str, issues: &BTreeSet<String>) -> Option<String> {
     let text = executors::logs::status_note::strip_blocks(draft);
     let text = crate::services::vibe_orchestrator::strip_result_sentinel(&text);
     let text = unfence(&text);
-    let mut lines = text.lines().map(str::trim_end);
+    let mut lines = text.lines().map(str::trim_end).peekable();
+    // An introduction such as "Here is the commit message:" is not the subject.
+    let introduction = |line: &str| line.trim_end().ends_with([':', '：']);
+    while lines.peek().is_some_and(|line| line.trim().is_empty()) {
+        lines.next();
+    }
+    let more_follows = lines.clone().filter(|line| !line.trim().is_empty()).count() > 1;
+    if more_follows && lines.peek().is_some_and(|line| introduction(line)) {
+        lines.next();
+    }
     let subject = lines.by_ref().find(|line| !line.trim().is_empty())?;
     let subject = LABEL.replace(subject.trim(), "");
     let subject = clean_references(
@@ -169,6 +229,54 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn diff_excerpt_shows_tracked_changes_and_is_cut_to_a_readable_size() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(root.path())
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.test",
+                ])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.path().join("a.txt"), "one\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(root.path().join("a.txt"), "two\n").unwrap();
+        let diff = diff_excerpt(vec![root.path().to_path_buf()]).await;
+        assert!(diff.contains("a.txt") && diff.contains("-one") && diff.contains("+two"));
+        std::fs::write(root.path().join("a.txt"), "line\n".repeat(20_000)).unwrap();
+        let cut = diff_excerpt(vec![root.path().to_path_buf()]).await;
+        assert!(cut.ends_with("... (diff cut)") && cut.chars().count() < MAX_DIFF_CHARS + 40);
+        assert_eq!(diff_excerpt(vec![root.path().join("missing")]).await, "");
+    }
+
+    #[test]
+    fn skips_an_introduction_line_before_the_message() {
+        assert_eq!(
+            sanitize(
+                "Here is the commit message:\n\nfix(x): 수정\n\n본문",
+                &issues(&[])
+            )
+            .as_deref(),
+            Some("fix(x): 수정\n\n본문")
+        );
+        // A message that merely ends its subject with a colon alone is kept.
+        assert_eq!(
+            sanitize("docs: 안내:", &issues(&[])).as_deref(),
+            Some("docs: 안내:")
+        );
+    }
+
     #[test]
     fn removes_the_template_placeholder_when_no_issue_was_given() {
         for echoed in [
@@ -235,11 +343,17 @@ mod tests {
 
     #[test]
     fn instructions_name_the_allowed_issues_and_changes() {
-        let text = instructions("Use Korean.", "\nrepo:\n M src/lib.rs\n", &issues(&["9"]));
+        let text = instructions(
+            "Use Korean.",
+            "\nrepo:\n M src/lib.rs\n",
+            "src/lib.rs | 2 +-\n",
+            &issues(&["9"]),
+        );
         assert!(text.contains("Use Korean."));
         assert!(text.contains("explicitly provided: #9. Do not reference any other"));
-        assert!(text.contains("M src/lib.rs"));
-        let none = instructions("", "x", &issues(&[]));
+        assert!(text.contains("M src/lib.rs") && text.contains("Diff of the tracked files:"));
+        let none = instructions("", "x", "", &issues(&[]));
+        assert!(!none.contains("Diff of the tracked files:"));
         assert!(none.contains("explicitly provided: none."));
     }
 }

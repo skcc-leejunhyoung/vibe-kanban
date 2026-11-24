@@ -302,6 +302,25 @@ impl StandardCodingAgentExecutor for Pi {
         self.approvals = Some(approvals);
     }
 
+    /// A fresh Pi session that answers once under refused extension requests.
+    /// It sees the changes in the instructions, not the conversation.
+    async fn generate_commit_message(
+        &self,
+        current_dir: &Path,
+        _session_id: &str,
+        instructions: &str,
+        env: &ExecutionEnv,
+    ) -> Result<Option<String>, ExecutorError> {
+        let command = self.checked_command(env).await?;
+        let model = match &self.model {
+            Some(model) => acp::oneshot::ModelSelection::ConfigOption(model.clone()),
+            None => acp::oneshot::ModelSelection::None,
+        };
+        acp::oneshot::generate_text(command, current_dir, env, &self.cmd, model, instructions)
+            .await
+            .map(Some)
+    }
+
     async fn spawn(
         &self,
         cwd: &Path,

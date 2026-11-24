@@ -659,6 +659,50 @@ impl StandardCodingAgentExecutor for ClaudeCode {
         self.approvals_service = Some(approvals);
     }
 
+    /// A one-shot print-mode run with no tools and no saved session, so the
+    /// conversation and its history stay as they are. It sees the changes in
+    /// the instructions, not the conversation.
+    async fn generate_commit_message(
+        &self,
+        current_dir: &Path,
+        _session_id: &str,
+        instructions: &str,
+        env: &ExecutionEnv,
+    ) -> Result<Option<String>, ExecutorError> {
+        // The router's command line is not a plain `claude -p`.
+        if self.claude_code_router.unwrap_or(false) {
+            return Ok(None);
+        }
+        let mut builder = CommandBuilder::new(base_command(false)).params([
+            "-p",
+            "--output-format=text",
+            "--no-session-persistence",
+            "--tools",
+            "",
+        ]);
+        if let Some(model) = &self.model {
+            builder = builder.extend_params(["--model".to_string(), model.clone()]);
+        }
+        let (program, args) = apply_overrides(builder, &self.cmd)?
+            .build_initial()?
+            .into_resolved()
+            .await?;
+        let mut command = Command::new(program);
+        command
+            .current_dir(current_dir)
+            .env("NPM_CONFIG_LOGLEVEL", "error")
+            .args(&args);
+        env.clone()
+            .with_profile(&self.cmd)
+            .apply_to_command(&mut command);
+        if self.disable_api_key.unwrap_or(false) {
+            command.env_remove("ANTHROPIC_API_KEY");
+        }
+        super::utils::run_for_text(command, instructions, "Claude Code")
+            .await
+            .map(Some)
+    }
+
     async fn spawn(
         &self,
         current_dir: &Path,

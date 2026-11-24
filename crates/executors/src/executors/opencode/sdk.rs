@@ -684,6 +684,82 @@ async fn prompt(
     ))))
 }
 
+/// Answers `text` in `session_id` and returns the reply's text. Tools are
+/// refused by the server's permissions, so the reply is only words.
+pub(super) async fn generate_text(
+    client: &reqwest::Client,
+    base_url: &str,
+    directory: &str,
+    session_id: &str,
+    text: &str,
+    model: Option<ModelSpec>,
+    model_variant: Option<String>,
+) -> Result<String, ExecutorError> {
+    let req = PromptRequest {
+        model,
+        agent: None,
+        variant: model_variant,
+        parts: vec![TextPartInput {
+            r#type: "text",
+            text: text.to_string(),
+        }],
+    };
+    let resp = client
+        .post(format!("{base_url}/session/{session_id}/message"))
+        .query(&[("directory", directory)])
+        .timeout(OPENCODE_PROMPT_TIMEOUT)
+        .json(&req)
+        .send()
+        .await
+        .map_err(|err| ExecutorError::Io(io::Error::other(err)))?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|err| ExecutorError::Io(io::Error::other(err)))?;
+    if !status.is_success() {
+        return Err(ExecutorError::Io(io::Error::other(format!(
+            "OpenCode commit message generation failed: HTTP {status}"
+        ))));
+    }
+    let parsed: Value = serde_json::from_str(body.trim())
+        .map_err(|err| ExecutorError::Io(io::Error::other(err)))?;
+    reply_text(&parsed).ok_or_else(|| {
+        ExecutorError::Io(io::Error::other(
+            "OpenCode commit message generation returned no text",
+        ))
+    })
+}
+
+/// The text parts of an assistant reply (`{ info, parts }`), joined.
+fn reply_text(reply: &Value) -> Option<String> {
+    let text: String = reply
+        .get("parts")?
+        .as_array()?
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect();
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// Best effort: a copy left behind only clutters the session list.
+pub(super) async fn delete_session(
+    client: &reqwest::Client,
+    base_url: &str,
+    directory: &str,
+    session_id: &str,
+) {
+    let _ = tokio::time::timeout(
+        Duration::from_secs(3),
+        client
+            .delete(format!("{base_url}/session/{session_id}"))
+            .query(&[("directory", directory)])
+            .send(),
+    )
+    .await;
+}
+
 #[derive(Debug, Serialize)]
 struct SessionCommandRequest {
     command: String,
@@ -1007,7 +1083,7 @@ pub(super) async fn send_abort(
     .await;
 }
 
-fn parse_model(model: &str) -> Option<ModelSpec> {
+pub(super) fn parse_model(model: &str) -> Option<ModelSpec> {
     let (provider_id, model_id) = match model.split_once('/') {
         Some((provider, rest)) => (provider.to_string(), rest.to_string()),
         None => (model.to_string(), String::new()),
@@ -1786,4 +1862,28 @@ fn answers_to_opencode_format(questions: &[Value], answers: &[QuestionAnswer]) -
                 })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    #[test]
+    fn reply_text_joins_text_parts_and_ignores_the_rest() {
+        let reply = serde_json::json!({"info": {}, "parts": [
+            {"type": "step-start"},
+            {"type": "text", "text": "fix(x): "},
+            {"type": "tool", "state": {}},
+            {"type": "text", "text": "수정"}
+        ]});
+        assert_eq!(reply_text(&reply).as_deref(), Some("fix(x): 수정"));
+        assert_eq!(
+            reply_text(&serde_json::json!({"parts": [{"type": "text", "text": "  "}]})),
+            None
+        );
+        assert_eq!(
+            reply_text(&serde_json::json!({"name": "UnknownError"})),
+            None
+        );
+    }
 }

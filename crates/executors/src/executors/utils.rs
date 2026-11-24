@@ -5,14 +5,97 @@ use std::{
     time::{Duration, Instant},
 };
 
+use async_trait::async_trait;
 use futures::StreamExt;
 use lru::LruCache;
+use tokio::io::AsyncWriteExt as _;
+use tokio_util::sync::CancellationToken;
+use workspace_utils::{
+    approvals::{ApprovalStatus, QuestionStatus},
+    command_ext::GroupSpawnNoWindowExt,
+};
 
 use super::{BaseCodingAgent, SlashCommandDescription, StandardCodingAgentExecutor};
 use crate::{
     executor_discovery::{ExecutorConfigCacheKey, ExecutorDiscoveredOptions},
     profile::ExecutorConfigs,
 };
+
+/// Answers every request for a tool or an answer with a refusal. A one-shot
+/// text generation runs under it, so an agent that reaches for a tool or asks
+/// a question anyway gets no access and no reply.
+pub(crate) struct DenyAllApprovals;
+
+#[async_trait]
+impl crate::approvals::ExecutorApprovalService for DenyAllApprovals {
+    async fn create_tool_approval(
+        &self,
+        _tool_name: &str,
+    ) -> Result<String, crate::approvals::ExecutorApprovalError> {
+        Ok("denied".into())
+    }
+
+    async fn create_question_approval(
+        &self,
+        _tool_name: &str,
+        _question_count: usize,
+    ) -> Result<String, crate::approvals::ExecutorApprovalError> {
+        Ok("denied".into())
+    }
+
+    async fn wait_tool_approval(
+        &self,
+        _approval_id: &str,
+        _cancel: CancellationToken,
+    ) -> Result<ApprovalStatus, crate::approvals::ExecutorApprovalError> {
+        Ok(ApprovalStatus::Denied {
+            reason: Some("Writing a commit message needs no tools.".into()),
+        })
+    }
+
+    async fn wait_question_answer(
+        &self,
+        _approval_id: &str,
+        _cancel: CancellationToken,
+    ) -> Result<QuestionStatus, crate::approvals::ExecutorApprovalError> {
+        Ok(QuestionStatus::TimedOut)
+    }
+}
+
+/// Runs `command` once with `input` on stdin and returns what it printed. The
+/// caller bounds the time; dropping the future kills the process group.
+pub(super) async fn run_for_text(
+    mut command: tokio::process::Command,
+    input: &str,
+    what: &str,
+) -> Result<String, super::ExecutorError> {
+    command
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = command
+        .group_spawn_no_window()
+        .map_err(super::ExecutorError::Io)?;
+    let mut stdin = child
+        .inner()
+        .stdin
+        .take()
+        .ok_or_else(|| agent_error(format!("{what} could not read its input.")))?;
+    stdin
+        .write_all(input.as_bytes())
+        .await
+        .map_err(super::ExecutorError::Io)?;
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(super::ExecutorError::Io)?;
+    if !output.status.success() {
+        return Err(agent_error(format!("{what} failed ({}).", output.status)));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
 
 pub(super) fn provider_request_error(
     agent: &str,

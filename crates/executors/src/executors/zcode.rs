@@ -496,6 +496,73 @@ impl ZCode {
         }
     }
 
+    /// One prompt in a new session; the text of the reply.
+    async fn answer_once(
+        &self,
+        conn: &mut Connection,
+        cwd: &Path,
+        instructions: &str,
+    ) -> Result<String, ExecutorError> {
+        let snapshot = conn
+            .call(
+                "session/create",
+                json!({"workspace":workspace(cwd), "mode":"build", "persistence":"deferred", "titleGenerationEnabled":false}),
+            )
+            .await?;
+        let id = snapshot["session"]["sessionId"]
+            .as_str()
+            .ok_or_else(|| {
+                utils::agent_error(format!(
+                    "ZCode did not return a native session ID. {INSTALL}"
+                ))
+            })?
+            .to_owned();
+        if let Some(model) = selected_model(
+            &snapshot["settings"]["model"],
+            self.model.as_deref(),
+            self.reasoning.as_deref(),
+        )? {
+            conn.call(
+                "session/setModel",
+                json!({"sessionId":id,"model":model,"persistAsWorkspaceLastUsed":false}),
+            )
+            .await?;
+        }
+        conn.call(
+            "session/subscribe",
+            json!({"sessionId":id,"deliveryKind":"desktop-continuous"}),
+        )
+        .await?;
+        let input_id = uuid::Uuid::new_v4().to_string();
+        let request_id = conn
+            .send(
+                "session/send",
+                json!({"sessionId":id,"inputId":input_id,"content":instructions}),
+            )
+            .await?;
+        let mut log = Vec::new();
+        self.stream_turn(
+            conn,
+            &mut log,
+            request_id,
+            &id,
+            &input_id,
+            &mut ContextUsage::default(),
+            &CancellationToken::new(),
+        )
+        .await?;
+        Ok(String::from_utf8_lossy(&log)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<AcpEvent>(line).ok())
+            .filter_map(|event| match event {
+                AcpEvent::Message(agent_client_protocol::ContentBlock::Text(text)) => {
+                    Some(text.text)
+                }
+                _ => None,
+            })
+            .collect())
+    }
+
     async fn permission(
         &self,
         conn: &mut Connection,
@@ -1086,6 +1153,31 @@ impl StandardCodingAgentExecutor for ZCode {
         self.approvals = Some(approvals);
     }
 
+    /// A fresh session that answers once under refused tool requests and
+    /// declined questions. It sees the changes in the instructions, not the
+    /// conversation.
+    async fn generate_commit_message(
+        &self,
+        current_dir: &Path,
+        _session_id: &str,
+        instructions: &str,
+        env: &ExecutionEnv,
+    ) -> Result<Option<String>, ExecutorError> {
+        let mut asking = self.clone();
+        asking.auto_approve = false;
+        asking.dont_ask = true;
+        asking.unsupported_policy = None;
+        asking.approvals = Some(Arc::new(utils::DenyAllApprovals));
+        let mut child = asking.start_server(current_dir, env).await?;
+        let mut conn = Connection::new(&mut child);
+        let answer = asking
+            .answer_once(&mut conn, current_dir, instructions)
+            .await;
+        drop(conn);
+        let _ = tokio::time::timeout(Duration::from_secs(2), child.kill()).await;
+        answer.map(Some)
+    }
+
     async fn spawn(
         &self,
         cwd: &Path,
@@ -1409,6 +1501,23 @@ for line in sys.stdin:
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "runs a python3 ZCode app-server fixture"]
+    async fn commit_message_generation_answers_once_and_declines_questions() {
+        let fixture = fixture(PermissionPolicy::Auto, None, false, Some("p/m2"));
+        let message = fixture
+            .zcode
+            .generate_commit_message(&fixture.repo, "session", "Write it.", &fixture.env)
+            .await
+            .unwrap();
+        assert_eq!(message.as_deref(), Some("reply 1"));
+        let log: Value =
+            serde_json::from_str(&std::fs::read_to_string(&fixture.log).unwrap()).unwrap();
+        assert_eq!(log["sends"], json!(["Write it."]));
+        assert_eq!(log["replies"][0]["action"], "decline");
+        assert_eq!(log["model"], "m2");
     }
 
     #[tokio::test]

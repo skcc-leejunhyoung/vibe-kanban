@@ -87,6 +87,35 @@ impl StandardCodingAgentExecutor for QwenCode {
         self.approvals = Some(approvals);
     }
 
+    /// A fresh ACP session that answers once under refused tool requests, so
+    /// no conversation changes. It sees the changes in the instructions, not
+    /// the conversation.
+    async fn generate_commit_message(
+        &self,
+        current_dir: &Path,
+        _session_id: &str,
+        instructions: &str,
+        env: &ExecutionEnv,
+    ) -> Result<Option<String>, ExecutorError> {
+        let mut asking = self.clone();
+        asking.yolo = Some(false);
+        let command = asking.build_command_builder()?.build_initial()?;
+        let model = match &self.model {
+            Some(model) => super::acp::oneshot::ModelSelection::SessionModel(model.clone()),
+            None => super::acp::oneshot::ModelSelection::None,
+        };
+        super::acp::oneshot::generate_text(
+            command,
+            current_dir,
+            env,
+            &self.cmd,
+            model,
+            instructions,
+        )
+        .await
+        .map(Some)
+    }
+
     async fn spawn(
         &self,
         current_dir: &Path,
