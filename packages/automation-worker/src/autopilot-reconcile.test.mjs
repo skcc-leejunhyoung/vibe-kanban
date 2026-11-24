@@ -165,7 +165,9 @@ test('same-head discrepancies survive stale and failed publication until the boa
   ];
   const {
     boardPending: [pending],
+    factsUnchanged,
   } = await poll();
+  assert.equal(factsUnchanged, false);
   assert.equal(pending.key, 'synthetic/widgets#7');
 
   const published =
@@ -738,4 +740,27 @@ test('board work for a PR that left the board does not block a quiet baseline', 
     (await reconcileAutopilot({ ...options, acknowledgedAt: new Date(clock - 500).toISOString() })).changed,
     false
   );
+});
+
+test('board work is isolated only if the other reconciliation facts are unchanged', async () => {
+  const pending = {
+    key: 'synthetic/widgets#7',
+    fingerprint: 'a'.repeat(64),
+  };
+  const record = {
+    baseline: { fingerprint: 'b'.repeat(64) },
+    boardPending: { [pending.key]: pending },
+  };
+  const run = (requiresAgent) =>
+    reconcileAutopilot({
+      scope: { boardPrs: [pending.key] },
+      record,
+      collect: async () => ({ fingerprint: 'b'.repeat(64), requiresAgent }),
+      persist: async () => {},
+    });
+  const result = await run(false);
+  assert.deepEqual(result.boardPending, [pending]);
+  assert.equal(result.changed, true);
+  assert.equal(result.factsUnchanged, true);
+  assert.equal((await run(true)).factsUnchanged, false);
 });

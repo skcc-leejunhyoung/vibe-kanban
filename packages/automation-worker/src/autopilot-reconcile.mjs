@@ -676,10 +676,10 @@ export async function reconcileAutopilot({
     checked - acknowledged < 2 * 60 * 60 * 1000
   )
     record.baseline = { fingerprint: snapshot.fingerprint, at: acknowledgedAt };
-  const changed =
-    boardPending.length > 0 ||
-    snapshot.requiresAgent === true ||
-    record.baseline?.fingerprint !== snapshot.fingerprint;
+  const factsUnchanged =
+    snapshot.requiresAgent !== true &&
+    record.baseline?.fingerprint === snapshot.fingerprint;
+  const changed = boardPending.length > 0 || !factsUnchanged;
   record.pending = {
     at:
       record.pending?.fingerprint === snapshot.fingerprint
@@ -701,6 +701,7 @@ export async function reconcileAutopilot({
       : 'Registered PRs, review discovery and host queues are unchanged',
     checkedAt: at,
     boardPending,
+    factsUnchanged,
     counts: snapshot.counts,
     fingerprint: snapshot.fingerprint,
     coverage: snapshot.facts?.coverage,

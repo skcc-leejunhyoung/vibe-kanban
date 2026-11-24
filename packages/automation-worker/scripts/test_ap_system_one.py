@@ -15,7 +15,7 @@ spec.loader.exec_module(adapter)
 
 
 class PeriodicTests(unittest.TestCase):
-    def fixture(self, decision='would_delegate', report=None, checkpoint=0):
+    def fixture(self, decision='would_delegate', report=None, checkpoint=0, prompt=False):
         values = {'schedule': {key: [] for key in ('pending_admissions',)}, 'board': {'rows': {}}, 'dispatch': {'requests': {}}, 'deleg': {'tasks': {}}, 'inbox': {'items': {}}}
         evidence_path = os.path.join(self.folder, 'official-evidence.json')
         coverage = {'projects': [{'projectId': 'synthetic-project', 'reviewTagId': 'synthetic-tag'}], 'hosts': ['synthetic-machine'], 'repositories': ['synthetic/widgets']}
@@ -27,7 +27,7 @@ class PeriodicTests(unittest.TestCase):
             values['schedule'][key] = {'status': 'success', 'by': 'ap checkpoint', 'evidence': evidence_path, 'at': stamp.isoformat()}
         calls = []
         namespace = {'calls': calls, 'decision': decision}
-        exec("def periodic_gate(due, dry=False):\n calls.append(('gate',dry))\n return ['other'], {'status':decision if dry else 'legacy'}", namespace)
+        exec("def periodic_gate(due, dry=False):\n calls.append(('gate',dry))\n if not dry and 'periodic_prompt' in globals(): calls.append(('prompt', periodic_prompt()))\n return ['other'], {'status':decision if dry else 'legacy'}", namespace)
         def api(path, body, **kwargs):
             calls.append(('request', dict(body)))
             return report if report is not None else {'status': 'ok', 'changed': False, 'errors': [], 'fingerprint': 'a' * 64,
@@ -42,6 +42,8 @@ class PeriodicTests(unittest.TestCase):
                          verify_board_coverage=lambda evidence, mismatches: None,
                          cmd_checkpoint=lambda args: calls.append(('checkpoint', args.evidence)) or checkpoint)
         config = {'connectorId': 'synthetic-vibe', 'githubConnectorId': 'synthetic-github', 'projectId': 'synthetic-project', 'reviewTagId': 'synthetic-tag', 'hosts': ['synthetic-machine'], 'defaultRepository': 'synthetic/widgets'}
+        if prompt:
+            namespace['periodic_prompt'] = lambda: '전체 대조'
         self.ap, self.config = namespace, config
         adapter.install(namespace, config)
         return namespace['periodic_gate'], calls, values
@@ -308,6 +310,33 @@ console.log(JSON.stringify(flags));
         body = next(value for name, value in calls if name == 'request')
         self.assertEqual(body['tracked'], [{'repository': 'synthetic/widgets', 'number': 17}, {'repository': 'synthetic/widgets', 'number': 18}, {'repository': 'synthetic/widgets', 'number': 19}])
         self.assertEqual(body['boardPrs'], ['synthetic/widgets#17'])
+
+    def test_board_only_reuses_scope_proof_without_limiting_checks_to_pending_rows(self):
+        for unchanged in (True, False):
+            with self.subTest(unchanged=unchanged):
+                gate, calls, _ = self.fixture(prompt=True)
+                api = self.ap['api']
+                self.ap['api'] = lambda *args, **kwargs: {
+                    **api(*args, **kwargs), 'changed': True, 'factsUnchanged': unchanged,
+                    'checkedAt': self.ap['now']().isoformat(),
+                    'boardPending': [{'key': 'synthetic/widgets#17', 'head': 'b' * 40, 'fingerprint': 'c' * 64}],
+                }
+                _, result = gate(['periodic due'])
+                prompt = next(value for name, value in calls if name == 'prompt')
+                self.assertNotIn('checkpoint', [name for name, _ in calls])
+                if unchanged:
+                    self.assertEqual(result['system_one_fallback'], 'board_only')
+                    self.assertIn('게시 행 전체', prompt)
+                    self.assertIn('목록 밖 게시 행', prompt)
+                    self.assertNotIn('전체 대조', prompt)
+                    paths = list(Path(self.folder, 'system-one-evidence').glob('board-only-*.json'))
+                    report = json.loads(paths[0].read_text())
+                    self.assertEqual(report['coverage']['repositories'], ['synthetic/widgets'])
+                    self.assertEqual(report['agentReviewedAt'], '2020-01-01T00:00:00+00:00')
+                else:
+                    self.assertEqual(result['system_one_fallback'], 'facts_changed')
+                    self.assertIn('전체 대조', prompt)
+                self.assertIn('전체 대조', self.ap['periodic_prompt']())
 
     def test_unresolved_board_report_is_preserved_for_delegation_and_evidence_is_forwarded(self):
         pending = {'key': 'synthetic/widgets#17', 'head': 'b' * 40, 'fingerprint': 'c' * 64}

@@ -157,6 +157,7 @@ def identity_recheck_due(ap, reviewed_at):
 
 def install(ap, config):
     original = ap['periodic_gate']
+    board_only_evidence = None
 
     def manual_delegation_open():
         tasks = rows(ap['load'](ap['DELEG'], {}).get('tasks', {}))
@@ -165,7 +166,15 @@ def install(ap, config):
         return any(task.get('kind') != 'periodic' and '30분' in task.get('title', '') and
                    not task.get('archived') and inbox.get('delegate:' + task['id'], {}).get('status') in ('wait', 'open') for task in tasks)
 
+    def admission_current(due, proof, scope, reviewed_at):
+        rest, decision = original(due, dry=True)
+        return rest, bool(decision and decision.get('status') == 'would_delegate' and
+                          not manual_delegation_open() and checkpoint_proof(ap) == proof and
+                          registry(ap, config) == scope and not identity_recheck_due(ap, reviewed_at) and
+                          ap['now']() - reviewed_at < AGENT_AUDIT_INTERVAL)
+
     def quiet_checkpoint(due):
+        nonlocal board_only_evidence
         if manual_delegation_open():
             return None, 'existing_delegation'
         scope = registry(ap, config)
@@ -217,6 +226,15 @@ def install(ap, config):
             with os.fdopen(handle, 'w') as stream:
                 json.dump({'checkedAt': report['checkedAt'], 'boardPending': pending}, stream)
             os.replace(path, board_report)
+        if pending and report.get('factsUnchanged') is True and 'periodic_prompt' in ap:
+            if not admission_current(due, proof, scope, reviewed_at)[1]:
+                return None, 'admission_changed'
+            report.update(agentReviewedAt=reviewed_at.isoformat())
+            handle, path = tempfile.mkstemp(prefix='board-only-', suffix='.json', dir=folder)
+            with os.fdopen(handle, 'w') as stream:
+                json.dump(report, stream)
+            board_only_evidence = path
+            return None, 'board_only'
         if pending or report.get('changed') is not False:
             return None, 'facts_changed'
         findings = evidence.get('board_findings')
@@ -235,10 +253,8 @@ def install(ap, config):
             ap['verify_board_coverage'](evidence, {})
         except (KeyError, ValueError):
             return None, 'unverified_board'
-        rest, decision = original(due, dry=True)
-        if (not decision or decision.get('status') != 'would_delegate' or manual_delegation_open() or
-            checkpoint_proof(ap) != proof or registry(ap, config) != scope or identity_recheck_due(ap, reviewed_at) or
-            ap['now']() - reviewed_at >= AGENT_AUDIT_INTERVAL):
+        rest, current = admission_current(due, proof, scope, reviewed_at)
+        if not current:
             return None, 'admission_changed'
         report.update(board_findings=findings, board_mismatches=[], board_snapshot_sha=evidence['board_snapshot_sha'],
                       agentReviewedAt=reviewed_at.isoformat())
@@ -253,6 +269,7 @@ def install(ap, config):
         return (rest, {'status': 'handled', 'source': 'code', 'evidence': path, 'counts': counts}), None
 
     def periodic(due, dry=False):
+        nonlocal board_only_evidence
         rest, decision = original(due, dry=True)
         if dry:
             return rest, decision
@@ -263,7 +280,10 @@ def install(ap, config):
                 handled, reason = None, 'reconciliation_unavailable'
             if handled is not None:
                 return handled
-            rest, result = original(due, dry=False)
+            try:
+                rest, result = original(due, dry=False)
+            finally:
+                board_only_evidence = None
             if isinstance(result, dict):
                 result = {**result, 'system_one_fallback': reason}
             return rest, result
@@ -279,6 +299,25 @@ def install(ap, config):
                                'hosts': config['hosts']}, ensure_ascii=False, separators=(',', ':'))
 
         def periodic_prompt():
+            if board_only_evidence:
+                return (
+                    f'정기 대조 중 게시 보드만 확인한다. 코드가 현재 회차의 등록 PR·리뷰 발견·양 호스트 실행과 '
+                    f'대기열을 검증했다. 원본 증거는 {board_only_evidence}이다. 전체 PR·이슈·세션 목록을 다시 조회하지 않는다. '
+                    f'`{ap["AP"]}/bin/ap board snapshot`의 게시 행 전체를 최신 PR head와 리뷰 근거에 대조한다. '
+                    'boardPending은 우선 확인할 항목이며, 목록 밖 게시 행의 상태·설명·대기 사유 불일치도 확인한다. '
+                    '리뷰어별 최신 결정 리뷰의 commit과 현재 head를 대조한다. 조회 실패나 추가 비보드 변경을 발견하면 '
+                    '체크포인트를 확정하지 말고 status=error, changed=true로 보고한다. '
+                    '원본 JSON을 복사해 coverage와 agentReviewedAt을 보존한다. 새 증거에 board_snapshot_sha(현재 보드 SHA), '
+                    'board_findings(모든 게시 PR의 pr_url, 최신 전체 head SHA, checked:true), '
+                    'board_mismatches(불일치마다 pr_url, head, 필요한 경우 review_id, expected 정정값), '
+                    'boardResolutions(대기 항목 key와 fingerprint, 게시가 맞으면 disposition=published와 rowSha256, '
+                    '보류면 disposition=hold와 reason, owner, 2시간 이후 recheckAt)를 기록한다. '
+                    '원본, 보드, 장부를 직접 변경하거나 후보 등록·전송·승인·알림을 하지 않는다. '
+                    f'새 증거 파일로 `{ap["AP"]}/bin/ap checkpoint --evidence <절대경로>`를 실행한다. '
+                    '보드 SHA가 달라져 거부되면 새 스냅샷으로 다시 대조하거나 미완료로 보고한다. '
+                    '성공 시 changed=false로 보드 불일치 후속 처리를 기존 회수 경로에 맡긴다. '
+                    '최종 응답 첫 줄은 RECONCILE에 이어 status, changed, summary, evidence(새 파일 절대경로)를 담은 JSON 한 줄이다.'
+                )
             return (original_prompt() +
                     ' System One 검증용으로 공식 증거에 coverage를 기록한다. 이번 대조 범위는 ' + expected + '이다. ' +
                     'projects의 각 프로젝트 review 태그 이슈, repositories의 review 요청 발견, hosts의 각 호스트 공간·실행·queue를 ' +
