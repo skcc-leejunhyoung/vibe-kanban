@@ -191,7 +191,7 @@ const ARTIFACT_REMINDER: &str = "[Artifacts] Attach each deliverable on its own 
      [Title](relative/path \"vibe-artifact\"). The full artifact rules are in your instructions. \
      [Status] Keep the ```vibe-status block current: plain prose under 1000 visible characters \
      telling someone without context what this work is and how far it has come; the full \
-     rules are in your instructions.";
+     rules are in your instructions. [Scratch] Files you must not commit go in $VK_SCRATCH_DIR.";
 
 const CLI_REMINDER: &str = " [CLI] The `vk` command on PATH reads and controls Vibe Kanban \
      (workspaces, sessions, issues, git, events); run `vk --help`.";
@@ -241,7 +241,12 @@ const ARTIFACT_INSTRUCTIONS: &str = "[Artifacts]\n\
              block as the workspace summary and shows a small marker in its place; write your \
              normal reply around it rather than repeating its text in prose. Skip the block only \
              when the entire reply must be machine-readable, such as a JSON-only answer; a required \
-             final line such as VIBE_RESULT: still follows the block.";
+             final line such as VIBE_RESULT: still follows the block.\n\
+             \n\
+             [Scratch]\n\
+             Files you need but must not commit (evidence, logs, intermediate data, one-off \
+             scripts) go in the directory named by $VK_SCRATCH_DIR, which git never tracks, \
+             not in the repository folder.";
 
 const CLI_INSTRUCTIONS: &str = "\n\n[CLI]\n\
              The `vk` command on PATH gives you Vibe Kanban itself: workspaces, sessions and \
@@ -278,11 +283,10 @@ mod tests {
         assert!(prompt.contains("under 1000 visible characters"));
         assert!(ARTIFACT_REMINDER.contains("[Status] Keep the ```vibe-status block current"));
         let reminder = with_cli(ARTIFACT_REMINDER, CLI_REMINDER, true);
-        assert!(
-            reminder.contains("rules are in your instructions. [CLI] The `vk` command on PATH")
-        );
+        assert!(reminder.contains("go in $VK_SCRATCH_DIR. [CLI] The `vk` command on PATH"));
         let instructions = with_cli(ARTIFACT_INSTRUCTIONS, CLI_INSTRUCTIONS, true);
-        assert!(instructions.contains("follows the block.\n\n[CLI]\nThe `vk` command on PATH"));
+        assert!(instructions.contains("follows the block.\n\n[Scratch]\nFiles you need"));
+        assert!(instructions.contains("not in the repository folder.\n\n[CLI]\nThe `vk` command"));
         assert!(!with_cli(ARTIFACT_INSTRUCTIONS, CLI_INSTRUCTIONS, false).contains("[CLI]"));
     }
 

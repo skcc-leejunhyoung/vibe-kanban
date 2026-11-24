@@ -3851,6 +3851,16 @@ impl MergeFailures {
     }
 }
 
+/// Appended to the commit reminder so an agent whose rules forbid committing
+/// its evidence or logs moves them out of the repository instead.
+fn scratch_commit_hint(scratch_dir: &Path) -> String {
+    format!(
+        "\nFiles that must not be committed (evidence, logs, intermediate data, one-off scripts) \
+         belong in {}, which git never tracks: move them there instead of committing them.",
+        scratch_dir.display()
+    )
+}
+
 /// Git's merge errors can list many files; keep `last_error`, the comment and
 /// the journal event small.
 fn cap_merge_error(detail: &str) -> String {
@@ -4241,11 +4251,25 @@ impl ContainerService for LocalContainerService {
             .commit_reminder_enabled_for(execution_process.session_id)
             .await;
         let config = self.config.read().await;
-        let commit_reminder_prompt = config
+        let mut commit_reminder_prompt = config
             .commit_reminder_prompt
             .clone()
             .unwrap_or_else(|| DEFAULT_COMMIT_REMINDER_PROMPT.to_string());
         drop(config);
+        // Only into an existing root: creating it would resurrect a moved or
+        // deleted in-place checkout as an empty directory.
+        let scratch_dir = if current_dir.is_dir() {
+            utils::path::ensure_scratch_dir(&current_dir)
+                .inspect_err(|e| {
+                    tracing::warn!("Failed to prepare scratch dir in {:?}: {}", current_dir, e)
+                })
+                .ok()
+        } else {
+            None
+        };
+        if let Some(dir) = &scratch_dir {
+            commit_reminder_prompt.push_str(&scratch_commit_hint(dir));
+        }
         let mut env = ExecutionEnv::new(
             repo_context,
             commit_reminder_enabled,
@@ -4255,6 +4279,9 @@ impl ContainerService for LocalContainerService {
         // Always inject workspace/session context
         env.insert("VK_WORKSPACE_ID", workspace.id.to_string());
         env.insert("VK_WORKSPACE_BRANCH", &workspace.branch);
+        if let Some(dir) = &scratch_dir {
+            env.insert(utils::path::SCRATCH_DIR_ENV, dir.to_string_lossy());
+        }
         env.insert(
             utils::agent_cli::SESSION_ID_ENV,
             execution_process.session_id.to_string(),

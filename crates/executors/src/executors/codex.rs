@@ -1065,6 +1065,16 @@ impl Codex {
         let mut params = self.thread_start_params(cwd, self.selected_model());
         params.developer_instructions =
             env.with_system_instructions(params.developer_instructions.as_deref());
+        // The scratch dir sits beside the repo, outside the sandbox's cwd.
+        // ponytail: replaces a writable_roots list from the user's config.toml.
+        if params.sandbox == Some(V2SandboxMode::WorkspaceWrite)
+            && let Some(dir) = env.vars.get(workspace_utils::path::SCRATCH_DIR_ENV)
+        {
+            params.config.get_or_insert_with(HashMap::new).insert(
+                "sandbox_workspace_write.writable_roots".to_string(),
+                Value::Array(vec![Value::String(dir.clone())]),
+            );
+        }
         params
     }
 
@@ -1586,6 +1596,30 @@ base_url = "https://api.sailresearch.com/v1"
                 .thread_start_params(std::path::Path::new("/tmp"), None)
                 .service_tier,
             None
+        );
+    }
+
+    #[test]
+    fn workspace_write_sandbox_can_write_the_scratch_dir() {
+        let mut env = ExecutionEnv::new(Default::default(), false, String::new());
+        env.insert(workspace_utils::path::SCRATCH_DIR_ENV, "/ws/.vibe-scratch");
+        let codex: Codex = serde_json::from_value(json!({})).unwrap();
+        let params = codex.build_thread_start_params(std::path::Path::new("/ws/repo"), &env);
+        assert_eq!(
+            params
+                .config
+                .as_ref()
+                .and_then(|c| c.get("sandbox_workspace_write.writable_roots")),
+            Some(&json!(["/ws/.vibe-scratch"]))
+        );
+
+        let full: Codex =
+            serde_json::from_value(json!({ "sandbox": "danger-full-access" })).unwrap();
+        let params = full.build_thread_start_params(std::path::Path::new("/ws/repo"), &env);
+        assert!(
+            params
+                .config
+                .is_none_or(|c| !c.contains_key("sandbox_workspace_write.writable_roots"))
         );
     }
 

@@ -3,6 +3,24 @@ use std::path::{Path, PathBuf};
 /// Directory name for storing attachments in worktrees
 pub const VIBE_ATTACHMENTS_DIR: &str = ".vibe-attachments";
 
+/// Per-workspace directory for agent files that must never be committed
+/// (evidence, logs, intermediate data). Agents find it via `VK_SCRATCH_DIR`.
+pub const VIBE_SCRATCH_DIR: &str = ".vibe-scratch";
+pub const SCRATCH_DIR_ENV: &str = "VK_SCRATCH_DIR";
+
+/// Create `<workspace_root>/.vibe-scratch/` with its own `.gitignore` (`*`).
+/// A worktree workspace root sits outside every repository; for in-place
+/// workspaces the root is the repository, and the self-ignore keeps git clean.
+pub fn ensure_scratch_dir(workspace_root: &Path) -> std::io::Result<PathBuf> {
+    let dir = workspace_root.join(VIBE_SCRATCH_DIR);
+    std::fs::create_dir_all(&dir)?;
+    let gitignore = dir.join(".gitignore");
+    if !gitignore.exists() {
+        std::fs::write(gitignore, "*\n")?;
+    }
+    Ok(dir)
+}
+
 /// Images the agent viewed from outside the workspace are cached here instead
 /// of inside the worktree, so checkouts stay clean and the copy outlives the
 /// worktree. Chat still addresses them by a `.vibe-attachments/` path; the
@@ -176,6 +194,29 @@ pub fn expand_tilde(path_str: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scratch_dir_stays_out_of_git_even_inside_a_repository() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap()
+        };
+        assert!(git(&["init", "-q"]).status.success());
+
+        let dir = ensure_scratch_dir(repo.path()).unwrap();
+        std::fs::write(dir.join("evidence.json"), "{}").unwrap();
+        // A second call keeps what is already there.
+        assert_eq!(ensure_scratch_dir(repo.path()).unwrap(), dir);
+        assert!(dir.join("evidence.json").exists());
+
+        let status = git(&["status", "--porcelain", "--untracked-files=all"]);
+        assert!(status.status.success());
+        assert!(status.stdout.is_empty(), "{:?}", status);
+    }
 
     #[test]
     fn test_make_path_relative() {
