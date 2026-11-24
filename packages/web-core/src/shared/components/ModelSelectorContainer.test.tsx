@@ -46,10 +46,15 @@ const modelConfig: ModelSelectorConfig = {
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
-const discovery = vi.hoisted(() => ({ error: null as string | null }));
+const discovery = vi.hoisted(() => ({
+  error: null as string | null,
+  config: null as ModelSelectorConfig | null,
+}));
 vi.mock('@/shared/hooks/useExecutorDiscovery', () => ({
   useModelSelectorConfig: () => ({
-    config: discovery.error ? { ...modelConfig, models: [] } : modelConfig,
+    config: discovery.error
+      ? { ...modelConfig, models: [] }
+      : (discovery.config ?? modelConfig),
     loadingModels: false,
     error: discovery.error,
   }),
@@ -104,6 +109,7 @@ type PopoverProps = {
   selectedModelId: string | null;
   selectedReasoningId: string | null;
   onModelSelect: (id: string, providerId?: string) => void;
+  onReasoningSelect: (id: string | null) => void;
   onOpenChange: (open: boolean) => void;
 };
 let popover: PopoverProps;
@@ -158,6 +164,7 @@ beforeEach(() => {
   root = createRoot(container as unknown as HTMLElement);
   menuItems.clear();
   discovery.error = null;
+  discovery.config = null;
   hostSystems.byHost.clear();
   hostSystems.contextHostId = null;
   updateRecentModels.mockClear();
@@ -168,6 +175,46 @@ afterEach(async () => {
 });
 
 const click = (label: string) => act(() => menuItems.get(label)!());
+
+describe.each([BaseCodingAgent.OPENCODE_V2, BaseCodingAgent.ZCODE])(
+  '%s default model reasoning',
+  (agent) => {
+    it('sends the actual default provider and model with the chosen effort', async () => {
+      discovery.config = {
+        ...modelConfig,
+        providers: [
+          { id: 'first', name: 'First' },
+          { id: 'second', name: 'Second' },
+        ],
+        models: [
+          { ...modelConfig.models[0], id: 'other', provider_id: 'first' },
+          { ...modelConfig.models[0], id: 'default', provider_id: 'second' },
+        ],
+        default_model: 'second/default',
+      };
+      const onChange = vi.fn();
+      await act(() =>
+        root.render(
+          <ModelSelectorContainer
+            agent={agent}
+            workspaceId={undefined}
+            presets={[]}
+            selectedPreset={null}
+            executorConfig={{ executor: agent }}
+            presetOptions={null}
+            onOverrideChange={onChange}
+          />
+        )
+      );
+      expect(popover.selectedModelId).toBe('default');
+      await act(() => popover.onReasoningSelect('high'));
+      expect(onChange).toHaveBeenCalledWith({
+        model_id: 'second/default',
+        reasoning_id: 'high',
+      });
+    });
+  }
+);
 
 describe('ModelSelectorContainer with session overrides', () => {
   let current: ExecutorConfig | null = null;

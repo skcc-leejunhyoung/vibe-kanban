@@ -11,8 +11,8 @@ import {
   SlidersHorizontalIcon,
   type Icon,
 } from '@phosphor-icons/react';
-import type { BaseCodingAgent, ExecutorConfig, ModelInfo } from 'shared/types';
-import { PermissionPolicy } from 'shared/types';
+import type { ExecutorConfig, ModelInfo } from 'shared/types';
+import { BaseCodingAgent, PermissionPolicy } from 'shared/types';
 import { toPrettyCase } from '@/shared/lib/string';
 import {
   getModelKey,
@@ -220,9 +220,13 @@ export function ModelSelectorContainer({
   const resolvedPresetProviderId = resolveProviderId(presetProviderId);
 
   const hasDefaultModel = Boolean(config?.default_model);
+  const defaultProviderId = resolveProviderId(
+    parseModelId(config?.default_model, hasProviders).providerId
+  );
   const selectedProviderId =
     resolvedConfigProviderId ??
     resolvedPresetProviderId ??
+    defaultProviderId ??
     (hasDefaultModel ? fallbackProviderId : null);
 
   const defaultModelId = config
@@ -481,7 +485,22 @@ export function ModelSelectorContainer({
   };
 
   const handleReasoningSelect = (reasoningId: string | null) => {
-    onOverrideChange({ reasoning_id: reasoningId });
+    const needsModel =
+      reasoningId &&
+      (agent === BaseCodingAgent.OPENCODE_V2 ||
+        agent === BaseCodingAgent.ZCODE) &&
+      !executorConfig?.model_id &&
+      !presetOptions?.model_id;
+    onOverrideChange({
+      reasoning_id: reasoningId,
+      ...(needsModel && selectedModelId
+        ? {
+            model_id: selectedProviderId
+              ? `${selectedProviderId}/${selectedModelId}`
+              : selectedModelId,
+          }
+        : {}),
+    });
     pendingReasoningRef.current = reasoningId;
   };
 

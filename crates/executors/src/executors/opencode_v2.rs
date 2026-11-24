@@ -162,6 +162,7 @@ struct Data<T> {
 #[derive(Deserialize)]
 struct Session {
     id: String,
+    model: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -436,7 +437,7 @@ impl OpencodeV2 {
         cancel: &CancellationToken,
         writer: &mut (impl AsyncWrite + Unpin),
     ) -> Result<(), ExecutorError> {
-        let model = self
+        let explicit_model = self
             .model
             .as_deref()
             .map(|model| model_ref(model, self.variant.as_deref()))
@@ -450,6 +451,7 @@ impl OpencodeV2 {
                 if let Some(id) = id {
                     let path = session_path(&id)?;
                     let session: Data<Session> = Api::read(api.request(Method::GET, &path), "session resume").await?;
+                    let model = resolve_turn_model(api, cwd, explicit_model, session.data.model.clone(), self.variant.as_deref()).await?;
                     if let Some(model) = &model {
                         api.post(&format!("{path}/model"), json!({"model":model}), "model selection").await?;
                     }
@@ -460,6 +462,7 @@ impl OpencodeV2 {
                         .json(&json!({"permissions": permissions.as_ref().unwrap_or(&json!([]))})), "session permissions").await?;
                     Ok::<_, ExecutorError>(session.data)
                 } else {
+                    let model = resolve_turn_model(api, cwd, explicit_model, None, self.variant.as_deref()).await?;
                     let created: Data<Session> = Api::read(api.request(Method::POST, "/api/session")
                         .json(&json!({"location":{"directory":cwd}, "model":model, "agent":self.agent, "permissions":permissions})), "session creation").await?;
                     Ok(created.data)
@@ -725,6 +728,111 @@ fn model_ref(model: &str, variant: Option<&str>) -> Result<Value, ExecutorError>
         model["variant"] = json!(variant);
     }
     Ok(model)
+}
+
+async fn resolve_turn_model(
+    api: &Api,
+    cwd: &Path,
+    explicit: Option<Value>,
+    session_model: Option<Value>,
+    variant: Option<&str>,
+) -> Result<Option<Value>, ExecutorError> {
+    if explicit.is_some() || variant.is_none() {
+        return Ok(explicit);
+    }
+    let model = match session_model {
+        Some(model) => model,
+        None => {
+            let directory = cwd.to_string_lossy();
+            let default: Data<Option<Value>> = Api::read(
+                api.request(Method::GET, "/api/model/default")
+                    .query(&[("location[directory]", directory.as_ref())]),
+                "default model discovery",
+            )
+            .await?;
+            default.data.ok_or_else(|| {
+                utils::agent_error(
+                    "Select an OpenCode v2 model before setting its reasoning variant.",
+                )
+            })?
+        }
+    };
+    let provider = model["providerID"].as_str().ok_or_else(|| {
+        utils::agent_error("OpenCode v2 did not return a provider for its current model.")
+    })?;
+    let id = model["id"]
+        .as_str()
+        .ok_or_else(|| utils::agent_error("OpenCode v2 did not return its current model ID."))?;
+    model_ref(&format!("{provider}/{id}"), variant).map(Some)
+}
+
+#[cfg(test)]
+mod turn_model_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reasoning_uses_discovered_default_for_a_new_session() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let length = stream.read(&mut request).await.unwrap();
+            assert!(
+                String::from_utf8_lossy(&request[..length])
+                    .contains("/api/model/default?location%5Bdirectory%5D=")
+            );
+            let body = r#"{"data":{"providerID":"fixture","id":"default"}}"#;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let api = Api {
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            url: Url::parse(&format!("http://{address}")).unwrap(),
+            password: String::new(),
+        };
+        assert_eq!(
+            resolve_turn_model(&api, Path::new("/fixture"), None, None, Some("high"))
+                .await
+                .unwrap(),
+            Some(json!({"providerID":"fixture", "id":"default", "variant":"high"}))
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reasoning_keeps_the_resumed_session_model() {
+        let api = Api {
+            client: reqwest::Client::new(),
+            url: Url::parse("http://127.0.0.1:1").unwrap(),
+            password: String::new(),
+        };
+        let model = resolve_turn_model(
+            &api,
+            Path::new("."),
+            None,
+            Some(json!({
+                "providerID": "fixture", "id": "model", "variant": "low"
+            })),
+            Some("high"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            model,
+            Some(json!({"providerID":"fixture", "id":"model", "variant":"high"}))
+        );
+    }
 }
 
 #[async_trait]

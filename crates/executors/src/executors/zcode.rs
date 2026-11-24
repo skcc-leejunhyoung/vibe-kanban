@@ -278,15 +278,14 @@ impl ZCode {
                 ))
             })?;
             let catalog = &snapshot["settings"]["model"];
-            if let Some(model) = &self.model {
-                let model = model_ref(catalog, model, self.reasoning.as_deref())?;
+            if let Some(model) =
+                selected_model(catalog, self.model.as_deref(), self.reasoning.as_deref())?
+            {
                 conn.call(
                     "session/setModel",
                     json!({"sessionId":id,"model":model,"persistAsWorkspaceLastUsed":false}),
                 )
                 .await?;
-            } else if catalog["current"].is_null() {
-                return Err(ExecutorError::AuthRequired(LOGIN.into()));
             }
             if snapshot["projection"]["mode"].as_str() != Some(mode) {
                 conn.call("session/setMode", json!({"sessionId":id,"mode":mode}))
@@ -554,6 +553,54 @@ mod tests {
 
 fn workspace(cwd: &Path) -> Value {
     json!({"workspacePath":cwd,"workspaceKey":cwd})
+}
+
+fn selected_model(
+    catalog: &Value,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+) -> Result<Option<Value>, ExecutorError> {
+    let current = &catalog["current"];
+    if model.is_none() && reasoning.is_none() {
+        return if current.is_null() {
+            Err(ExecutorError::AuthRequired(LOGIN.into()))
+        } else {
+            Ok(None)
+        };
+    }
+    let current_model = || {
+        Some(format!(
+            "{}/{}",
+            current["providerId"].as_str()?,
+            current["modelId"].as_str()?
+        ))
+    };
+    let model = model
+        .map(str::to_owned)
+        .or_else(current_model)
+        .ok_or_else(|| ExecutorError::AuthRequired(LOGIN.into()))?;
+    model_ref(catalog, &model, reasoning).map(Some)
+}
+
+#[cfg(test)]
+mod selected_model_tests {
+    use super::*;
+
+    #[test]
+    fn reasoning_without_override_uses_the_current_model() {
+        let catalog = json!({
+            "current": {"providerId":"fixture", "modelId":"model"},
+            "available": [{"ref":{"providerId":"fixture", "modelId":"model"}}]
+        });
+        assert_eq!(selected_model(&catalog, None, None).unwrap(), None);
+        assert_eq!(
+            selected_model(&catalog, None, Some("high")).unwrap(),
+            Some(json!({
+                "providerId":"fixture", "modelId":"model", "options":{"reasoningLevel":"high"}
+            }))
+        );
+        assert!(selected_model(&json!({}), None, Some("high")).is_err());
+    }
 }
 
 fn model_ref(
