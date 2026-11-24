@@ -1,9 +1,9 @@
 use std::{
-    collections::HashMap,
-    io::BufRead,
-    path::{Path, PathBuf},
+    collections::{HashMap, HashSet},
+    io::{BufRead, Read},
+    path::{Component, Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
@@ -15,6 +15,7 @@ use command_group::AsyncGroupChild;
 use derivative::Derivative;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
+use regex::Regex;
 use reqwest::{Method, RequestBuilder, Url};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -31,6 +32,7 @@ use workspace_utils::{
     approvals::{ApprovalStatus, QuestionAnswer, QuestionStatus},
     command_ext::GroupSpawnNoWindowExt,
     msg_store::MsgStore,
+    path::VIBE_ATTACHMENTS_DIR,
 };
 
 use super::{
@@ -69,6 +71,11 @@ const UNSUPPORTED_FORM: &str =
 const INVALID_ANSWER: &str =
     "The user's answer did not fit the requested format. Ask again in plain text.";
 const GENERATE_TIMEOUT: Duration = Duration::from_secs(90);
+/// OpenCode refuses the whole prompt when one attachment is larger.
+const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+/// OpenCode decodes and resizes images before admitting a prompt: about one
+/// second per 20 MiB image on 2.4.1. A timeout would fail a turn it may start.
+const IMAGE_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const MEMORY_SKILL_IDS: [&str; 2] = ["vibe-repository-memory", "vibe-shared-repository-memory"];
 
 pub fn memory_scope_binding(key: &str) -> String {
@@ -176,9 +183,22 @@ impl Api {
         request: RequestBuilder,
         label: &str,
     ) -> Result<reqwest::Response, ExecutorError> {
-        let response = request.send().await.map_err(|_| utils::agent_error(format!(
+        Self::accepted(Self::send(request, label).await?, label)
+    }
+
+    async fn send(
+        request: RequestBuilder,
+        label: &str,
+    ) -> Result<reqwest::Response, ExecutorError> {
+        request.send().await.map_err(|_| utils::agent_error(format!(
             "OpenCode v2 {label} could not reach the local server. Check the opencode2 installation."
-        )))?;
+        )))
+    }
+
+    fn accepted(
+        response: reqwest::Response,
+        label: &str,
+    ) -> Result<reqwest::Response, ExecutorError> {
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(utils::agent_error(format!(
@@ -267,6 +287,31 @@ impl Api {
             label,
         )
         .await
+    }
+
+    /// Send a prompt with its chat images. OpenCode reads and decodes every
+    /// attachment before admitting a prompt and refuses all of it (HTTP 400)
+    /// for one it cannot use, such as a corrupt image. Nothing was admitted
+    /// then, so the prompt goes once more as text, which still names each image.
+    async fn prompt(&self, path: &str, mut body: Value) -> Result<(), ExecutorError> {
+        let label = "prompt";
+        if body.get("files").is_some() {
+            let response = Self::send(
+                self.request(Method::POST, path)
+                    .timeout(IMAGE_PROMPT_TIMEOUT)
+                    .json(&body),
+                label,
+            )
+            .await?;
+            if response.status() != reqwest::StatusCode::BAD_REQUEST {
+                return Self::accepted(response, label).map(drop);
+            }
+            tracing::warn!("OpenCode v2 refused the chat images; sending the prompt without them");
+            if let Some(body) = body.as_object_mut() {
+                body.remove("files");
+            }
+        }
+        self.post(path, body, label).await.map(drop)
     }
 }
 
@@ -731,12 +776,12 @@ impl OpencodeV2 {
             // The SSE connection is established before sending the input.
             match &input {
                 TurnInput::Prompt(text) => {
-                    api.post(
-                        &format!("{path}/prompt"),
-                        json!({"text":text, "delivery":"queue", "resume":true}),
-                        "prompt",
-                    )
-                    .await?;
+                    let mut body = json!({"text":text, "delivery":"queue", "resume":true});
+                    let images = chat_images(cwd, text);
+                    if !images.is_empty() {
+                        body["files"] = Value::Array(images);
+                    }
+                    api.prompt(&format!("{path}/prompt"), body).await?;
                 }
                 TurnInput::Command { name, .. } if name == COMPACT => {
                     api.post(
@@ -1353,6 +1398,77 @@ fn form_answer(fields: &[FormField], answers: &[QuestionAnswer]) -> Option<Value
     Some(Value::Object(answer))
 }
 
+/// Chat images the prompt references, as OpenCode prompt `files` so an
+/// image-capable model receives them with the prompt itself.
+///
+/// Only Markdown destinations in the turn's `.vibe-attachments/` qualify —
+/// where Vibe copies what the user attached in chat — and only regular files
+/// that stay inside it and whose bytes are PNG, JPEG, GIF or WebP, the formats
+/// OpenCode hands a model as image media. Anything else remains a plain path
+/// in the text: OpenCode refuses the whole prompt for an unreadable attachment
+/// and leaves other binaries out of the model request.
+fn chat_images(cwd: &Path, prompt: &str) -> Vec<Value> {
+    static DESTINATION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(&format!(
+            r"\]\(({}/[^)\s]+)\)",
+            regex::escape(VIBE_ATTACHMENTS_DIR)
+        ))
+        .expect("valid attachment pattern")
+    });
+    // dunce: a plain path, not a Windows `\\?\` one, so the `file:` URL stays ordinary.
+    // The directory itself must stay in the workspace too: it could be a symlink.
+    let (Ok(base), Ok(root)) = (
+        dunce::canonicalize(cwd),
+        dunce::canonicalize(cwd.join(VIBE_ATTACHMENTS_DIR)),
+    ) else {
+        return Vec::new();
+    };
+    if !root.starts_with(&base) {
+        return Vec::new();
+    }
+    let mut seen = HashSet::new();
+    DESTINATION
+        .captures_iter(prompt)
+        .filter_map(|captures| {
+            let relative = Path::new(captures.get(1)?.as_str());
+            if !relative
+                .components()
+                .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+            {
+                return None;
+            }
+            let file = dunce::canonicalize(cwd.join(relative))
+                .ok()
+                .filter(|file| file.starts_with(&root))?;
+            let readable = file
+                .metadata()
+                .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_ATTACHMENT_BYTES);
+            if !readable || !is_model_image(&file) || !seen.insert(file.clone()) {
+                return None;
+            }
+            Some(json!({
+                "uri": Url::from_file_path(&file).ok()?.as_str(),
+                "name": file.file_name()?.to_str()?,
+            }))
+        })
+        .collect()
+}
+
+fn is_model_image(file: &Path) -> bool {
+    let mut head = Vec::with_capacity(12);
+    if std::fs::File::open(file)
+        .and_then(|file| file.take(12).read_to_end(&mut head))
+        .is_err()
+    {
+        return false;
+    }
+    head.starts_with(b"\x89PNG\r\n\x1a\n")
+        || head.starts_with(b"\xff\xd8\xff")
+        || head.starts_with(b"GIF87a")
+        || head.starts_with(b"GIF89a")
+        || (head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WEBP".as_slice()))
+}
+
 fn tool_call_id(message: Option<&str>, call: Option<&str>) -> Option<String> {
     Some(format!("{}:{}", message?, call?))
 }
@@ -1711,6 +1827,462 @@ mod turn_model_tests {
             model,
             Some(json!({"providerID":"fixture", "id":"model", "variant":"high"}))
         );
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use std::sync::Mutex;
+
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+        net::TcpListener,
+        sync::Notify,
+    };
+
+    use super::*;
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+    const JPEG: &[u8] = b"\xff\xd8\xff\xe0\0\x10JFIF";
+    const GIF: &[u8] = b"GIF89a\x01\0\x01\0";
+    const WEBP: &[u8] = b"RIFF\x1a\0\0\0WEBPVP8L";
+    /// A complete, decodable 1x1 GIF (the constants above are headers only).
+    const ONE_PIXEL_GIF: &[u8] = b"GIF89a\x01\0\x01\0\x80\0\0\xff\0\0\0\0\0!\xf9\x04\0\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
+
+    fn workspace(files: &[(&str, &[u8])]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, bytes) in files {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        dir
+    }
+
+    fn file(cwd: &Path, relative: &str) -> Value {
+        let path = dunce::canonicalize(cwd.join(relative)).unwrap();
+        json!({
+            "uri": Url::from_file_path(&path).unwrap().as_str(),
+            "name": path.file_name().unwrap().to_str().unwrap(),
+        })
+    }
+
+    fn agent(model: Option<&str>) -> OpencodeV2 {
+        OpencodeV2 {
+            append_prompt: AppendPrompt::default(),
+            model: model.map(str::to_owned),
+            variant: None,
+            agent: None,
+            auto_approve: false,
+            dont_ask: false,
+            cmd: CmdOverrides::default(),
+            approvals: None,
+            unsupported_policy: None,
+        }
+    }
+
+    #[test]
+    fn only_model_images_in_the_attachment_directory_are_attached() {
+        let dir = workspace(&[
+            (".vibe-attachments/a_shot.png", PNG),
+            (".vibe-attachments/b_photo.jpg", JPEG),
+            (".vibe-attachments/c_anim.gif", GIF),
+            (".vibe-attachments/d_still.webp", WEBP),
+            (".vibe-attachments/e_한글_화면.png", PNG),
+            (".vibe-attachments/f_bitmap.bmp", b"BM\0\0\0\0"),
+            (
+                ".vibe-attachments/g_renamed.png",
+                b"plain text, not an image",
+            ),
+            (".vibe-attachments/h_report.pdf", b"%PDF-1.7"),
+            ("docs/outside.png", PNG),
+            ("secret.png", PNG),
+        ]);
+        let cwd = dir.path();
+        std::fs::create_dir(cwd.join(".vibe-attachments/i_folder.png")).unwrap();
+        let big = std::fs::File::create(cwd.join(".vibe-attachments/j_big.png")).unwrap();
+        std::io::Write::write_all(&mut &big, PNG).unwrap();
+        big.set_len(MAX_ATTACHMENT_BYTES + 1).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            cwd.join("secret.png"),
+            cwd.join(".vibe-attachments/k_link.png"),
+        )
+        .unwrap();
+        let prompt = [
+            "![shot.png](.vibe-attachments/a_shot.png)",
+            "[photo.jpg](.vibe-attachments/b_photo.jpg) and ![again](.vibe-attachments/a_shot.png)",
+            "![anim](.vibe-attachments/c_anim.gif) ![still](.vibe-attachments/d_still.webp)",
+            "![한글 화면](.vibe-attachments/e_한글_화면.png)",
+            "![bmp](.vibe-attachments/f_bitmap.bmp) ![renamed](.vibe-attachments/g_renamed.png)",
+            "[report](.vibe-attachments/h_report.pdf) ![gone](.vibe-attachments/missing.png)",
+            "![folder](.vibe-attachments/i_folder.png) ![big](.vibe-attachments/j_big.png)",
+            "![link](.vibe-attachments/k_link.png) ![up](.vibe-attachments/../secret.png)",
+            "![docs](docs/outside.png) ![abs](/etc/hosts) bare .vibe-attachments/a_shot.png",
+        ]
+        .join("\n");
+        let images = chat_images(cwd, &prompt);
+        assert_eq!(
+            images,
+            [
+                ".vibe-attachments/a_shot.png",
+                ".vibe-attachments/b_photo.jpg",
+                ".vibe-attachments/c_anim.gif",
+                ".vibe-attachments/d_still.webp",
+                ".vibe-attachments/e_한글_화면.png",
+            ]
+            .map(|relative| file(cwd, relative))
+        );
+        assert!(images[4]["uri"].as_str().unwrap().contains("%ED%95%9C"));
+        assert!(chat_images(cwd, "no attachments here").is_empty());
+        assert!(chat_images(&cwd.join("docs"), &prompt).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_attachment_directory_cannot_reach_outside_the_workspace() {
+        let outside = workspace(&[("elsewhere/leak.png", PNG)]);
+        let dir = workspace(&[]);
+        std::os::unix::fs::symlink(
+            outside.path().join("elsewhere"),
+            dir.path().join(VIBE_ATTACHMENTS_DIR),
+        )
+        .unwrap();
+        assert!(chat_images(dir.path(), "![leak](.vibe-attachments/leak.png)").is_empty());
+    }
+
+    type Requests = Arc<Mutex<Vec<(String, Value)>>>;
+
+    /// A stand-in for the local OpenCode v2 API with just enough session,
+    /// event and prompt handling to run one turn. Records every request; with
+    /// `refuse_images` it answers a prompt carrying files as OpenCode does for
+    /// an image it cannot decode.
+    async fn fake_opencode(refuse_images: bool) -> (Api, Requests) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let requests = Requests::default();
+        let prompted = Arc::new(Notify::new());
+        let seen = requests.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (seen, prompted) = (seen.clone(), prompted.clone());
+                tokio::spawn(async move {
+                    let (read, mut write) = stream.into_split();
+                    let mut reader = BufReader::new(read);
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        let target = line.split(' ').take(2).collect::<Vec<_>>().join(" ");
+                        let mut length = 0;
+                        loop {
+                            let mut header = String::new();
+                            reader.read_line(&mut header).await.unwrap();
+                            match header.trim().split_once(':') {
+                                Some((name, value))
+                                    if name.eq_ignore_ascii_case("content-length") =>
+                                {
+                                    length = value.trim().parse().unwrap()
+                                }
+                                Some(_) => {}
+                                None => break,
+                            }
+                        }
+                        let mut body = vec![0; length];
+                        reader.read_exact(&mut body).await.unwrap();
+                        let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                        let refused = refuse_images && body.get("files").is_some();
+                        seen.lock().unwrap().push((target.clone(), body));
+                        if target == "GET /api/event" {
+                            write
+                                .write_all(
+                                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n",
+                                )
+                                .await
+                                .unwrap();
+                            prompted.notified().await;
+                            let done = r#"{"type":"session.execution.succeeded","data":{"sessionID":"ses_fixture"}}"#;
+                            write
+                                .write_all(format!("data: {done}\n\n").as_bytes())
+                                .await
+                                .unwrap();
+                            return;
+                        }
+                        let (status, reply) = if refused {
+                            (
+                                "400 Bad Request",
+                                r#"{"_tag":"InvalidRequestError","message":"Image could not be decoded: one.png","field":"files"}"#,
+                            )
+                        } else {
+                            ("200 OK", r#"{"data":{"id":"ses_fixture","model":null}}"#)
+                        };
+                        if target.ends_with("/prompt") && !refused {
+                            prompted.notify_one();
+                        }
+                        let response = format!(
+                            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{reply}",
+                            reply.len()
+                        );
+                        write.write_all(response.as_bytes()).await.unwrap();
+                    }
+                });
+            }
+        });
+        let api = Api {
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            url,
+            password: "fixture".into(),
+        };
+        (api, requests)
+    }
+
+    /// Run one turn against the stand-in; returns every prompt body sent and
+    /// every request target, in order.
+    async fn run_fake_turn(
+        cwd: &Path,
+        prompt: &str,
+        id: Option<&str>,
+        refuse_images: bool,
+    ) -> (Vec<Value>, Vec<String>) {
+        let (api, requests) = fake_opencode(refuse_images).await;
+        let mut log = Vec::new();
+        agent(None)
+            .run_turn(
+                &api,
+                cwd,
+                TurnInput::Prompt(prompt.into()),
+                id.map(str::to_owned),
+                None,
+                &CancellationToken::new(),
+                &mut log,
+            )
+            .await
+            .unwrap();
+        let requests = requests.lock().unwrap().clone();
+        let prompts = requests
+            .iter()
+            .filter(|(target, _)| target == "POST /api/session/ses_fixture/prompt")
+            .map(|(_, body)| body.clone())
+            .collect();
+        (
+            prompts,
+            requests.into_iter().map(|(target, _)| target).collect(),
+        )
+    }
+
+    async fn prompt_body(cwd: &Path, prompt: &str, id: Option<&str>) -> (Value, Vec<String>) {
+        let (mut prompts, targets) = run_fake_turn(cwd, prompt, id, false).await;
+        assert_eq!(prompts.len(), 1);
+        (prompts.remove(0), targets)
+    }
+
+    #[tokio::test]
+    async fn refused_images_fall_back_to_the_text_prompt_once() {
+        let dir = workspace(&[(".vibe-attachments/one.png", PNG)]);
+        let prompt = "Look ![one](.vibe-attachments/one.png)";
+        let (prompts, _) = run_fake_turn(dir.path(), prompt, None, true).await;
+        assert_eq!(
+            prompts,
+            [
+                json!({"text": prompt, "delivery": "queue", "resume": true,
+                       "files": [file(dir.path(), ".vibe-attachments/one.png")]}),
+                json!({"text": prompt, "delivery": "queue", "resume": true}),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn first_turn_sends_chat_images_with_the_prompt() {
+        let dir = workspace(&[
+            (".vibe-attachments/one.png", PNG),
+            (".vibe-attachments/two.jpg", JPEG),
+            (".vibe-attachments/three.bmp", b"BM\0\0"),
+        ]);
+        let prompt = "Compare\n![one](.vibe-attachments/one.png)\n![two](.vibe-attachments/two.jpg)\n\
+                      ![three](.vibe-attachments/three.bmp)\n![four](.vibe-attachments/four.png)";
+        let (body, targets) = prompt_body(dir.path(), prompt, None).await;
+        assert!(targets.contains(&"POST /api/session".to_string()));
+        assert_eq!(
+            body,
+            json!({
+                "text": prompt, "delivery": "queue", "resume": true,
+                "files": [file(dir.path(), ".vibe-attachments/one.png"), file(dir.path(), ".vibe-attachments/two.jpg")],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn resumed_turn_sends_chat_images_with_the_prompt() {
+        let dir = workspace(&[(".vibe-attachments/next.webp", WEBP)]);
+        let prompt = "Also this one ![next](.vibe-attachments/next.webp)";
+        let (body, targets) = prompt_body(dir.path(), prompt, Some("ses_fixture")).await;
+        assert_eq!(targets[0], "GET /api/session/ses_fixture");
+        assert!(!targets.contains(&"POST /api/session".to_string()));
+        assert_eq!(
+            body["files"],
+            json!([file(dir.path(), ".vibe-attachments/next.webp")])
+        );
+        assert_eq!(body["text"], prompt);
+    }
+
+    #[tokio::test]
+    async fn prompt_without_images_keeps_the_text_only_body() {
+        let dir = workspace(&[(".vibe-attachments/notes.txt", b"plain")]);
+        for prompt in ["Just text", "See [notes](.vibe-attachments/notes.txt)"] {
+            let (body, _) = prompt_body(dir.path(), prompt, None).await;
+            assert_eq!(
+                body,
+                json!({"text": prompt, "delivery": "queue", "resume": true})
+            );
+        }
+    }
+
+    fn installed(root: &Path) -> (OpencodeV2, ExecutionEnv) {
+        let mut agent = agent(
+            std::env::var("VK_TEST_OPENCODE_V2_IMAGE_MODEL")
+                .ok()
+                .as_deref(),
+        );
+        agent.cmd.base_command_override =
+            Some(std::env::var("VK_TEST_OPENCODE_V2_COMMAND").unwrap());
+        let mut env = ExecutionEnv::new(Default::default(), false, String::new());
+        for key in [
+            "HOME",
+            "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+        ] {
+            env.insert(key, root.join(key).to_str().unwrap());
+        }
+        env.insert("OPENCODE_DB", ":memory:");
+        (agent, env)
+    }
+
+    /// 64x32 PNG: the left half red, the right half blue.
+    fn red_blue_png() -> Vec<u8> {
+        base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAgCAIAAAAt/+nTAAAAN0lEQVR42u3PsQkAAAzDsPz/dHpDh2wCzwalybTxvgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+HY6S/hqZZnSdgAAAABJRU5ErkJggg==",
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires VK_TEST_OPENCODE_V2_COMMAND pointing to an installed OpenCode v2"]
+    async fn installed_opencode_accepts_and_reads_chat_images() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        let cwd = root.join("work space");
+        std::fs::create_dir_all(cwd.join(".vibe-attachments")).unwrap();
+        std::fs::write(cwd.join(".vibe-attachments/a_첫째.png"), red_blue_png()).unwrap();
+        std::fs::write(cwd.join(".vibe-attachments/b_second.gif"), ONE_PIXEL_GIF).unwrap();
+        std::fs::write(cwd.join(".vibe-attachments/e_corrupt.png"), PNG).unwrap();
+        std::fs::write(cwd.join(".vibe-attachments/c_bitmap.bmp"), b"BM\0\0").unwrap();
+        let (agent, env) = installed(&root);
+        let (mut child, password) = agent.start_server(&cwd, &env).await.unwrap();
+        let api = OpencodeV2::api(child.inner().stdout.take().unwrap(), password)
+            .await
+            .unwrap();
+        let session: Data<Session> = Api::read(
+            api.request(Method::POST, "/api/session")
+                .json(&json!({"location":{"directory":cwd}})),
+            "test session",
+        )
+        .await
+        .unwrap();
+        let path = session_path(&session.data.id).unwrap();
+        let prompt = "![a](.vibe-attachments/a_첫째.png) ![b](.vibe-attachments/b_second.gif) \
+                      ![c](.vibe-attachments/c_bitmap.bmp) ![d](.vibe-attachments/missing.png)";
+        let files = chat_images(&cwd, prompt);
+        assert_eq!(files.len(), 2);
+        // resume=false queues the message in the session inbox without running a model.
+        let queued: Data<Value> = Api::read(
+            api.request(Method::POST, &format!("{path}/prompt")).json(
+                &json!({"text": prompt, "files": files, "delivery": "queue", "resume": false}),
+            ),
+            "test prompt",
+        )
+        .await
+        .unwrap();
+        let stored = &queued.data["payload"]["files"];
+        assert_eq!(stored[0]["mime"], "image/png");
+        assert_eq!(
+            stored[0]["data"],
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, red_blue_png())
+        );
+        assert_eq!(stored[1]["mime"], "image/gif");
+        assert_eq!(stored[0]["name"], "a_첫째.png");
+        // One attachment OpenCode cannot read or decode refuses the whole prompt:
+        // why unreadable files are never sent and a refusal resends the text alone.
+        for name in ["missing.png", "e_corrupt.png"] {
+            let uri = Url::from_file_path(cwd.join(".vibe-attachments").join(name)).unwrap();
+            let refused = api
+                .request(Method::POST, &format!("{path}/prompt"))
+                .json(&json!({"text": "x", "files": [{"uri": uri.as_str()}], "resume": false}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(refused.status(), reqwest::StatusCode::BAD_REQUEST, "{name}");
+        }
+        drop(child.inner().stdin.take());
+        let _ = tokio::time::timeout(REQUEST_TIMEOUT, child.wait()).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "calls a real model: set VK_TEST_OPENCODE_V2_COMMAND and VK_TEST_OPENCODE_V2_IMAGE_MODEL"]
+    async fn installed_model_sees_chat_images_on_the_first_request() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        let cwd = root.join("workspace");
+        std::fs::create_dir_all(cwd.join(".vibe-attachments")).unwrap();
+        std::fs::write(cwd.join(".vibe-attachments/swatch.png"), red_blue_png()).unwrap();
+        let (agent, env) = installed(&root);
+        let (mut child, password) = agent.start_server(&cwd, &env).await.unwrap();
+        let api = OpencodeV2::api(child.inner().stdout.take().unwrap(), password)
+            .await
+            .unwrap();
+        let mut log = Vec::new();
+        let prompt = "![swatch](.vibe-attachments/swatch.png)\nWithout using any tools, look at the attached \
+                      image and name the color of its left half and then its right half, as two lowercase \
+                      words separated by a space.";
+        agent
+            .run_turn(
+                &api,
+                &cwd,
+                TurnInput::Prompt(prompt.into()),
+                None,
+                None,
+                &CancellationToken::new(),
+                &mut log,
+            )
+            .await
+            .unwrap();
+        drop(child.inner().stdin.take());
+        let _ = tokio::time::timeout(REQUEST_TIMEOUT, child.wait()).await;
+        let events: Vec<AcpEvent> = String::from_utf8(log)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse().unwrap())
+            .collect();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AcpEvent::ToolCall(_))),
+            "{events:?}"
+        );
+        let answer: String = events
+            .iter()
+            .filter_map(|event| match event {
+                AcpEvent::Message(agent_client_protocol::ContentBlock::Text(text)) => {
+                    Some(text.text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        println!("model answer: {answer}");
+        assert!(answer.to_lowercase().contains("red blue"), "{answer}");
     }
 }
 

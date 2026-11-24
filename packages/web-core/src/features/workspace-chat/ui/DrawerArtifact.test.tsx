@@ -117,6 +117,9 @@ describe('Drawer read-only dashboard', () => {
       initial: { editable: false },
     });
   });
+  it('leaves the frame unpainted so its pixel-snapped edge cannot show a white hairline', () => {
+    expect(render()).not.toMatch(/<iframe[^>]*\bbg-/);
+  });
   it('passes authored dashboard HTML unchanged so padding cannot resize charts', () => {
     render();
     const previewSource = vi.mocked(buildArtifactPreview).mock.calls[0][0];

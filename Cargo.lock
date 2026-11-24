@@ -3687,6 +3687,7 @@ dependencies = [
  "convert_case 0.6.0",
  "derivative",
  "dirs 5.0.1",
+ "dunce",
  "enum_dispatch",
  "eventsource-stream",
  "futures",

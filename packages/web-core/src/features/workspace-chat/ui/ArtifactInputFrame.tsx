@@ -262,7 +262,7 @@ export function ArtifactInputFrame({
           referrerPolicy="no-referrer"
           scrolling="no"
           srcDoc={srcDoc}
-          className="w-full border-0 bg-white"
+          className="w-full border-0"
           style={{ height }}
         />
         <figcaption className="space-y-half border-t border-border p-base">

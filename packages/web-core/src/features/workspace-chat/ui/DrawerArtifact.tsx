@@ -286,7 +286,7 @@ export function DrawerArtifact({
           referrerPolicy="no-referrer"
           scrolling="no"
           srcDoc={preview.srcDoc}
-          className="w-full border-0 bg-white"
+          className="w-full border-0"
           style={{ height }}
           onLoad={postState}
         />
