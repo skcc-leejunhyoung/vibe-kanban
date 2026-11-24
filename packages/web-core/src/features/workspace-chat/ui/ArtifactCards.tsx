@@ -477,7 +477,7 @@ function ArtifactViewer({
       return (
         <iframe
           ref={frameRef}
-          className="h-full w-full border-0 bg-white"
+          className="h-full w-full border-0"
           title={artifact.name}
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
@@ -897,7 +897,7 @@ function ArtifactTile({
         // Half-scale page thumbnail that never scrolls; the overlay keeps
         // wheel and pointer events out of the frame in every browser.
         return preview ? (
-          <div className="relative h-[320px] overflow-hidden bg-white">
+          <div className="relative h-[320px] overflow-hidden">
             <iframe
               className="h-[640px] w-[200%] origin-top-left scale-50 border-0"
               title={artifact.name}
