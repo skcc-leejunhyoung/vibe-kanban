@@ -430,8 +430,9 @@ start, so turn it off with `enabled: false` instead.
   host whose events carry no `prompt` (older than the check, it would refuse
   `plan_review`).
 - Agents are not offered `VIBE_RESULT: blocked`: a decision a person should
-  make is taken as recommended and written to the Drawer (`vk drawer create
-  … --label "확인 필요" --notify`), and the work goes on. A `blocked` an agent
+  make is taken as recommended. The agent appends it to the existing Drawer
+  note for the issue (or PR when there is no issue), creating a note only if
+  none exists. The work then goes on. A `blocked` an agent
   still prints counts as "not finished"; only the limits above (and a step
   the host keeps failing, or a stalled run) block a run.
 - `finish: "merge"` ends a run at its local merge (the issue goes to In
