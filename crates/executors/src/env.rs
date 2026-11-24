@@ -115,13 +115,19 @@ impl ExecutionEnv {
         self.vars.insert(key.into(), value.into());
     }
 
-    /// Merge additional vars into this env. Incoming keys overwrite existing ones.
+    /// Merge additional vars into this env, preserving the runtime scratch path.
     pub fn merge(&mut self, other: &HashMap<String, String>) {
-        self.vars
-            .extend(other.iter().map(|(k, v)| (k.clone(), v.clone())));
+        self.vars.extend(
+            other
+                .iter()
+                .filter(|(key, _)| {
+                    !key.eq_ignore_ascii_case(workspace_utils::path::SCRATCH_DIR_ENV)
+                })
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
     }
 
-    /// Return a new env with overrides applied. Overrides take precedence.
+    /// Return a new env with overrides applied, except the protected scratch path.
     pub fn with_overrides(mut self, overrides: &HashMap<String, String>) -> Self {
         self.merge(overrides);
         self
@@ -138,6 +144,8 @@ impl ExecutionEnv {
 
     /// Apply all environment variables to a Command
     pub fn apply_to_command(&self, command: &mut Command) {
+        // A failed scratch setup must not leave a value inherited from the server.
+        command.env_remove(workspace_utils::path::SCRATCH_DIR_ENV);
         for (key, value) in &self.vars {
             command.env(key, value);
         }
@@ -171,5 +179,32 @@ mod tests {
         assert_eq!(merged.vars.get("VK_PROJECT_NAME").unwrap(), "runtime");
         assert_eq!(merged.vars.get("FOO").unwrap(), "profile"); // overrides
         assert_eq!(merged.vars.get("BAR").unwrap(), "profile");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn scratch_path_cannot_be_overridden_or_inherited() {
+        let key = workspace_utils::path::SCRATCH_DIR_ENV;
+        let overrides = CmdOverrides {
+            env: Some(HashMap::from([(key.to_owned(), "unsafe".to_owned())])),
+            ..Default::default()
+        };
+        for safe in [None, Some("verified")] {
+            let mut env = ExecutionEnv::new(RepoContext::default(), false, String::new());
+            if let Some(safe) = safe {
+                env.insert(key, safe);
+            }
+            let env = env.with_profile(&overrides);
+            let mut command = Command::new("/usr/bin/env");
+            command.env(key, "inherited");
+            env.apply_to_command(&mut command);
+            let output = command.output().await.unwrap();
+            assert!(output.status.success());
+            let value = String::from_utf8(output.stdout).unwrap();
+            let actual = value
+                .lines()
+                .find_map(|line| line.strip_prefix("VK_SCRATCH_DIR="));
+            assert_eq!(actual, safe);
+        }
     }
 }
