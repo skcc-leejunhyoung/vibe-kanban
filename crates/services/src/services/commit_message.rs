@@ -26,6 +26,13 @@ static ISSUE_PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| {
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\S) {2,}").expect("valid regex"));
 static ISSUE_URL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"/(?:issues|pull)/(\d+)\b").expect("valid regex"));
+/// A Conventional Commits subject, which may itself end with a colon.
+static CONVENTIONAL_SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\([^)]*\))?!?:\s",
+    )
+    .expect("valid regex")
+});
 static LABEL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*(?:\*\*)?(?:git\s+)?commit(?:\s+message)?\s*:(?:\*\*)?\s*")
         .expect("valid regex")
@@ -132,7 +139,9 @@ pub fn sanitize(draft: &str, issues: &BTreeSet<String>) -> Option<String> {
     let text = unfence(&text);
     let mut lines = text.lines().map(str::trim_end).peekable();
     // An introduction such as "Here is the commit message:" is not the subject.
-    let introduction = |line: &str| line.trim_end().ends_with([':', '：']);
+    let introduction = |line: &str| {
+        line.trim_end().ends_with([':', '：']) && !CONVENTIONAL_SUBJECT.is_match(line.trim_start())
+    };
     while lines.peek().is_some_and(|line| line.trim().is_empty()) {
         lines.next();
     }
@@ -142,10 +151,7 @@ pub fn sanitize(draft: &str, issues: &BTreeSet<String>) -> Option<String> {
     }
     let subject = lines.by_ref().find(|line| !line.trim().is_empty())?;
     let subject = LABEL.replace(subject.trim(), "");
-    let subject = clean_references(
-        subject.trim_matches(|c: char| c == '`' || c == '"' || c == '\''),
-        issues,
-    );
+    let subject = clean_references(unquote(&subject), issues);
     if subject.is_empty()
         || subject.chars().count() > MAX_SUBJECT_CHARS
         || subject.starts_with('#')
@@ -172,6 +178,20 @@ pub fn sanitize(draft: &str, issues: &BTreeSet<String>) -> Option<String> {
         return Some(subject);
     }
     Some(format!("{subject}\n\n{}", body.join("\n")))
+}
+
+/// The subject without one pair of quotes around all of it. A quote that ends
+/// the subject on its own, such as a trailing code span, belongs to it.
+fn unquote(subject: &str) -> &str {
+    ['`', '"', '\'']
+        .into_iter()
+        .find_map(|quote| {
+            subject
+                .strip_prefix(quote)?
+                .strip_suffix(quote)
+                .filter(|inner| !inner.contains(quote))
+        })
+        .unwrap_or(subject)
 }
 
 /// The content of a message the model wrapped in a code fence.
@@ -275,6 +295,11 @@ mod tests {
             sanitize("docs: 안내:", &issues(&[])).as_deref(),
             Some("docs: 안내:")
         );
+        // So is a conventional subject that ends with one before its body.
+        assert_eq!(
+            sanitize("fix(x): 다음을 처리:\n\n- 하나", &issues(&[])).as_deref(),
+            Some("fix(x): 다음을 처리:\n\n- 하나")
+        );
     }
 
     #[test]
@@ -321,6 +346,23 @@ mod tests {
             sanitize(draft, &issues(&[])).as_deref(),
             Some("docs: README 추가")
         );
+    }
+
+    #[test]
+    fn keeps_quotes_that_belong_to_the_subject() {
+        for subject in [
+            "docs: update `README.md`",
+            "fix: rename 'a' to 'b'",
+            "feat: add `--flag` and `--other`",
+        ] {
+            assert_eq!(sanitize(subject, &issues(&[])).as_deref(), Some(subject));
+        }
+        for wrapped in ["`fix: 수정`", "\"fix: 수정\"", "'fix: 수정'"] {
+            assert_eq!(
+                sanitize(wrapped, &issues(&[])).as_deref(),
+                Some("fix: 수정")
+            );
+        }
     }
 
     #[test]
