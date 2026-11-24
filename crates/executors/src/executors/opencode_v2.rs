@@ -774,9 +774,16 @@ fn chat_images(cwd: &Path, prompt: &str) -> Vec<Value> {
         .expect("valid attachment pattern")
     });
     // dunce: a plain path, not a Windows `\\?\` one, so the `file:` URL stays ordinary.
-    let Ok(root) = dunce::canonicalize(cwd.join(VIBE_ATTACHMENTS_DIR)) else {
+    // The directory itself must stay in the workspace too: it could be a symlink.
+    let (Ok(base), Ok(root)) = (
+        dunce::canonicalize(cwd),
+        dunce::canonicalize(cwd.join(VIBE_ATTACHMENTS_DIR)),
+    ) else {
         return Vec::new();
     };
+    if !root.starts_with(&base) {
+        return Vec::new();
+    }
     let mut seen = HashSet::new();
     DESTINATION
         .captures_iter(prompt)
@@ -1283,6 +1290,19 @@ mod attachment_tests {
         assert!(images[4]["uri"].as_str().unwrap().contains("%ED%95%9C"));
         assert!(chat_images(cwd, "no attachments here").is_empty());
         assert!(chat_images(&cwd.join("docs"), &prompt).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_attachment_directory_cannot_reach_outside_the_workspace() {
+        let outside = workspace(&[("elsewhere/leak.png", PNG)]);
+        let dir = workspace(&[]);
+        std::os::unix::fs::symlink(
+            outside.path().join("elsewhere"),
+            dir.path().join(VIBE_ATTACHMENTS_DIR),
+        )
+        .unwrap();
+        assert!(chat_images(dir.path(), "![leak](.vibe-attachments/leak.png)").is_empty());
     }
 
     type Requests = Arc<Mutex<Vec<(String, Value)>>>;
