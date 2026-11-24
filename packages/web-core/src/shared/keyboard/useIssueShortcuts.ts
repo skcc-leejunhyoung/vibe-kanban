@@ -262,11 +262,17 @@ export function useIssueShortcuts(options?: UseIssueShortcutsOptions) {
     [overrides]
   );
 
+  // Selection writes only from the project whose board published the shared
+  // store's scope; a narrow pane with its board unmounted never re-publishes,
+  // and writing there would mix its issues into another project's selection.
+  const ownsSelectionScope = () =>
+    useIssueSelectionStore.getState().selectionScopeId === projectIdRef.current;
+
   // Select all visible issues
   useHotkeys(
     'mod+a',
     (e) => {
-      if (!isKanbanRef.current) return;
+      if (!isKanbanRef.current || !ownsSelectionScope()) return;
       e.preventDefault();
       selectAllRef.current();
     },
@@ -277,7 +283,7 @@ export function useIssueShortcuts(options?: UseIssueShortcutsOptions) {
   useHotkeys(
     'escape',
     (e) => {
-      if (!isKanbanRef.current) return;
+      if (!isKanbanRef.current || !ownsSelectionScope()) return;
       if (
         multiSelectedIssueIdsRef.current.size > 0 ||
         isSelectionModeRef.current
@@ -294,7 +300,7 @@ export function useIssueShortcuts(options?: UseIssueShortcutsOptions) {
   useHotkeys(
     'x',
     (e) => {
-      if (!isKanbanRef.current) return;
+      if (!isKanbanRef.current || !ownsSelectionScope()) return;
       // Skip if part of a sequence (e.g. i>x for delete)
       if (sequencePendingRef.current) return;
       const currentIssueId = issueIdRef.current;
@@ -309,7 +315,7 @@ export function useIssueShortcuts(options?: UseIssueShortcutsOptions) {
   useHotkeys(
     'shift+j, shift+down',
     (e) => {
-      if (!isKanbanRef.current) return;
+      if (!isKanbanRef.current || !ownsSelectionScope()) return;
       e.preventDefault();
       selectAdjacentRef.current('down', issueIdRef.current);
     },
@@ -320,7 +326,7 @@ export function useIssueShortcuts(options?: UseIssueShortcutsOptions) {
   useHotkeys(
     'shift+k, shift+up',
     (e) => {
-      if (!isKanbanRef.current) return;
+      if (!isKanbanRef.current || !ownsSelectionScope()) return;
       e.preventDefault();
       selectAdjacentRef.current('up', issueIdRef.current);
     },

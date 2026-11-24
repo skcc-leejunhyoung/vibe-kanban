@@ -52,12 +52,12 @@ export function useOpenedIssueArrowNavigation(
       ) {
         return;
       }
-      const { orderByScope, setAnchor } = useIssueSelectionStore.getState();
-      const order = orderByScope[projectId];
-      if (!order) return;
+      // Prevent even when there is nowhere to go, as the PR list does, so
+      // Cmd+Left never falls through to the browser's history Back.
       event.preventDefault();
+      const { orderByScope, setAnchor } = useIssueSelectionStore.getState();
       const nextIssueId = adjacentIssueId(
-        order,
+        orderByScope[projectId] ?? [],
         issueId,
         event.key === 'ArrowRight' ? 1 : -1
       );
