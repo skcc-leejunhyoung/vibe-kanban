@@ -70,8 +70,9 @@ fn canonical_snapshot_entries(content: &str) -> (String, Vec<CanonicalMemoryEntr
 
     let mut sections = Vec::<String>::new();
     let mut current = Vec::<&str>::new();
-    for line in lines {
-        if line.starts_with("## ") && !current.is_empty() {
+    let body = lines.join("\n");
+    for (line, outside) in utils::markdown::lines_outside_fences(&body) {
+        if outside && line.starts_with("## ") && !current.is_empty() {
             let section = current
                 .drain(..)
                 .map(str::trim_end)
@@ -1196,6 +1197,18 @@ mod tests {
         assert_ne!(
             canonical_snapshot_entries(before).0,
             canonical_snapshot_entries(after).0
+        );
+    }
+
+    #[test]
+    fn canonical_entries_keep_fenced_headings_inside_their_section() {
+        let snapshot = "## Build\n```sh\n## Build\necho ready\n```\n\n## Test\nRun tests.";
+        let (_, entries) = canonical_snapshot_entries(snapshot);
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries[0]
+                .content
+                .contains("```sh\n## Build\necho ready\n```")
         );
     }
 

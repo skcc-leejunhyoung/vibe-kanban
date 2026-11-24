@@ -63,6 +63,7 @@ In **Settings → Automation → Agent Memory Sync**, enable reconciliation and 
 
 - To share new knowledge, add a `## Topic` section to the skill in the registered checkout, not a copy in the worktree. Include only durable information you want to share with the other executors.
 - To correct or delete an authored topic, edit its body or remove its section, then sync again. Leave the skill frontmatter, scope comment, and identifiers for retained topics in place. Removing the entire file is treated as a missing local copy, not a request to delete remote memory.
+- Close fenced code blocks before syncing. An unclosed fence stops synchronization rather than risking changes to the surrounding topics.
 - To read imported memory, use `@vibe-shared-repository-memory`. Do not edit the generated skill. To change an imported topic, use **Memory corrections and deletions → One repository** in the same settings.
 
 Sync keeps the two memory files out of Git through a local exclude rule and refuses to use tracked paths. If you register the same repository more than once on a host, sync uses the first registered checkout. Vibe Kanban uses those same files rather than copying them into linked worktrees. Sync does not read OpenCode's global instructions, global skills, plugins, session database or conversation history. For self-hosted installations, update the central server and all participating hosts before selecting OpenCode v2.

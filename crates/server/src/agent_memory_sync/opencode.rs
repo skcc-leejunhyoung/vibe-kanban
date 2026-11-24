@@ -30,13 +30,15 @@ struct Topic {
 
 impl Topic {
     fn marker(&self) -> Option<(Uuid, i64)> {
-        self.body.lines().find_map(parse_marker)
+        utils::markdown::lines_outside_fences(&self.body)
+            .find_map(|(line, outside)| outside.then(|| parse_marker(line)).flatten())
     }
 
     fn text(&self) -> String {
-        self.body
-            .lines()
-            .filter(|line| parse_marker(line).is_none())
+        utils::markdown::lines_outside_fences(&self.body)
+            .filter_map(|(line, outside)| {
+                (!outside || parse_marker(line).is_none()).then_some(line)
+            })
             .collect::<Vec<_>>()
             .join("\n")
             .trim()
@@ -60,9 +62,13 @@ fn parse_marker(line: &str) -> Option<(Uuid, i64)> {
 }
 
 fn topics(markdown: &str) -> anyhow::Result<Vec<Topic>> {
+    anyhow::ensure!(
+        utils::markdown::fences_closed(markdown),
+        "memory contains an unclosed code fence"
+    );
     let mut result = Vec::<Topic>::new();
-    for line in markdown.lines() {
-        if let Some(title) = line.strip_prefix("## ") {
+    for (line, outside) in utils::markdown::lines_outside_fences(markdown) {
+        if let Some(title) = outside.then(|| line.strip_prefix("## ")).flatten() {
             anyhow::ensure!(!title.trim().is_empty(), "memory topic heading is empty");
             result.push(Topic {
                 title: title.trim().to_string(),
@@ -142,10 +148,8 @@ fn plan_changes(
             "OpenCode memory topic exceeds 16 KiB; split it before syncing"
         );
         anyhow::ensure!(
-            topic
-                .body
-                .lines()
-                .filter(|line| parse_marker(line).is_some())
+            utils::markdown::lines_outside_fences(&topic.body)
+                .filter(|(line, outside)| *outside && parse_marker(line).is_some())
                 .count()
                 <= 1,
             "an authored memory topic must have at most one memory identifier"
@@ -670,6 +674,24 @@ mod tests {
     const OTHER: &str = "example.test/synthetic/other";
     const INITIAL: &str = "## Tray label\nUse the violet label.\n";
     const UPDATED: &str = "## Tray label\nUse the amber label.\n";
+
+    #[test]
+    fn fenced_headings_remain_in_their_original_topic_during_sync() {
+        let input = "## Setup\n````sh\n## Setup\nprintf 'ready\\n'\n```\n````\n\n## Next\n~~~\n## Setup\n[vibe-memory-id:00000000-0000-4000-8000-000000000001 generation:1]\n~~~\n";
+        let mut authored = topics(input).unwrap();
+        assert_eq!(authored.len(), 2);
+        plan_changes(Uuid::new_v4(), KEY, &[], &mut authored, &[]).unwrap();
+        let rendered = render(&authored);
+        assert!(rendered.contains("````sh\n## Setup\nprintf 'ready\\n'\n```\n````"));
+        assert!(rendered.contains(
+            "~~~\n## Setup\n[vibe-memory-id:00000000-0000-4000-8000-000000000001 generation:1]\n~~~"
+        ));
+        let snapshot = snapshot(AGENT, SCOPE, KEY, rendered.trim_start());
+        let parsed = snapshot_topics(&snapshot, KEY).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(render(&parsed), rendered);
+        assert!(topics("## Setup\n```sh\n## incomplete").is_err());
+    }
 
     fn guard(request: CreateAgentMemoryMutationRequest) -> AgentMemoryMutation {
         AgentMemoryMutation {

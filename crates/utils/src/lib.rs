@@ -13,6 +13,7 @@ pub mod git_ops;
 pub mod http_headers;
 pub mod jwt;
 pub mod log_msg;
+pub mod markdown;
 pub mod msg_store;
 pub mod path;
 pub mod port_file;

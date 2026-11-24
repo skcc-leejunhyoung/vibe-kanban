@@ -1065,9 +1065,8 @@ pub async fn mirror_local_claude_to_codex(
         source_revision: source.revision,
         target_revision: published.snapshot.revision,
         bytes: snapshot.len(),
-        sections: snapshot
-            .lines()
-            .filter(|line| line.starts_with("## "))
+        sections: utils::markdown::lines_outside_fences(&snapshot)
+            .filter(|(line, outside)| *outside && line.starts_with("## "))
             .count(),
     })
 }
@@ -2520,9 +2519,8 @@ fn validate_snapshot_scope(
             "agent memory snapshot must have a blank line followed by a level-2 topic section"
         );
     }
-    let headings = body
-        .lines()
-        .filter_map(|line| line.strip_prefix("## "))
+    let headings = utils::markdown::lines_outside_fences(body)
+        .filter_map(|(line, outside)| outside.then(|| line.strip_prefix("## ")).flatten())
         .collect::<Vec<_>>();
     if headings.iter().any(|heading| heading.trim().is_empty()) {
         anyhow::bail!("agent memory snapshot contains an empty topic heading");
