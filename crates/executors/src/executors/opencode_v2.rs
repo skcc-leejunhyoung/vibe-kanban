@@ -59,6 +59,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CONFIG_CONTENT: &str = "OPENCODE_CONFIG_CONTENT";
 /// OpenCode refuses the whole prompt when one attachment is larger.
 const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+/// OpenCode decodes and resizes images before admitting a prompt: about one
+/// second per 20 MiB image on 2.4.1. A timeout would fail a turn it may start.
+const IMAGE_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const MEMORY_SKILL_IDS: [&str; 2] = ["vibe-repository-memory", "vibe-shared-repository-memory"];
 
 pub fn memory_scope_binding(key: &str) -> String {
@@ -238,7 +241,7 @@ impl Api {
         if body.get("files").is_some() {
             let response = Self::send(
                 self.request(Method::POST, path)
-                    .timeout(REQUEST_TIMEOUT)
+                    .timeout(IMAGE_PROMPT_TIMEOUT)
                     .json(&body),
                 label,
             )
