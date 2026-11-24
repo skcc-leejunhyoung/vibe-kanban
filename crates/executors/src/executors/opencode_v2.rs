@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::BufRead,
     path::{Path, PathBuf},
     process::Stdio,
@@ -27,22 +28,26 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 use workspace_utils::{
-    approvals::ApprovalStatus, command_ext::GroupSpawnNoWindowExt, msg_store::MsgStore,
+    approvals::{ApprovalStatus, QuestionAnswer, QuestionStatus},
+    command_ext::GroupSpawnNoWindowExt,
+    msg_store::MsgStore,
 };
 
 use super::{
     AppendPrompt, AvailabilityInfo, BaseCodingAgent, ExecutorError, ExecutorExitResult,
-    SpawnedChild, StandardCodingAgentExecutor,
+    SlashCommandDescription, SpawnedChild, StandardCodingAgentExecutor,
     acp::{self, AcpEvent, ApprovalResponse},
     opencode::sdk::generate_server_password,
-    utils,
+    utils::{self, SlashCommandCall, parse_slash_command, reorder_slash_commands},
 };
 use crate::{
     approvals::ExecutorApprovalService,
     command::CmdOverrides,
-    env::ExecutionEnv,
+    env::{CommitReminder, ExecutionEnv},
     executor_discovery::ExecutorDiscoveredOptions,
-    logs::utils::patch,
+    logs::{
+        AnsweredQuestion, AskUserQuestionItem, AskUserQuestionOption, TokenUsageInfo, utils::patch,
+    },
     model_selector::{
         AgentInfo, ModelInfo, ModelProvider, ModelSelectorConfig, PermissionPolicy, ReasoningOption,
     },
@@ -54,6 +59,16 @@ const INSTALL: &str = "Install @opencode/cli@2.4.1 in a separate npm prefix on t
 const LOGIN: &str = "Configure a model provider in opencode2 with /connect, or set its API key in the executor environment.";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CONFIG_CONTENT: &str = "OPENCODE_CONFIG_CONTENT";
+/// Compaction has its own endpoint; OpenCode lists only prompt commands.
+const COMPACT: &str = "compact";
+/// OpenCode's primary agent when neither the profile nor the session picks one.
+const DEFAULT_AGENT: &str = "build";
+const NO_ANSWER: &str = "The user cannot answer questions in this run. Continue with your best judgment and state the assumptions you make.";
+const UNSUPPORTED_FORM: &str =
+    "This form cannot be answered in Vibe Kanban's chat. Ask in plain text instead.";
+const INVALID_ANSWER: &str =
+    "The user's answer did not fit the requested format. Ask again in plain text.";
+const GENERATE_TIMEOUT: Duration = Duration::from_secs(90);
 pub const MEMORY_SKILL_IDS: [&str; 2] = ["vibe-repository-memory", "vibe-shared-repository-memory"];
 
 pub fn memory_scope_binding(key: &str) -> String {
@@ -123,12 +138,22 @@ pub struct OpencodeV2 {
     pub agent: Option<String>,
     #[serde(default)]
     pub auto_approve: bool,
+    /// Deny the question tool and decline any form (unattended runs). Tool
+    /// approvals still follow `auto_approve`.
+    #[serde(default)]
+    pub dont_ask: bool,
     #[serde(flatten)]
     pub cmd: CmdOverrides,
     #[serde(skip)]
     #[ts(skip)]
     #[derivative(Debug = "ignore", PartialEq = "ignore")]
     pub approvals: Option<Arc<dyn ExecutorApprovalService>>,
+    /// A requested policy this executor cannot honour; the turn is refused
+    /// rather than run under a different one.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[derivative(PartialEq = "ignore")]
+    pub unsupported_policy: Option<PermissionPolicy>,
 }
 
 #[derive(Clone)]
@@ -183,9 +208,9 @@ impl Api {
             })
     }
 
-    async fn events(&self, kind: Option<&str>) -> Result<reqwest::Response, ExecutorError> {
+    async fn events(&self, kinds: &[&str]) -> Result<reqwest::Response, ExecutorError> {
         let mut request = self.request(Method::GET, "/api/event");
-        if let Some(kind) = kind {
+        for kind in kinds {
             request = request.query(&[("types", kind)]);
         }
         tokio::time::timeout(
@@ -194,6 +219,39 @@ impl Api {
         )
         .await
         .map_err(|_| utils::agent_error("OpenCode v2 event subscription timed out."))?
+    }
+
+    async fn commands(&self, cwd: &Path) -> Result<Vec<CommandInfo>, ExecutorError> {
+        let directory = cwd.to_string_lossy();
+        Self::read::<Data<Vec<CommandInfo>>>(
+            self.request(Method::GET, "/api/command")
+                .query(&[("location[directory]", directory.as_ref())]),
+            "command discovery",
+        )
+        .await
+        .map(|commands| commands.data)
+    }
+
+    /// Context windows by provider and model. Unknown when the list fails.
+    async fn model_limits(&self, cwd: &Path) -> HashMap<ModelKey, u32> {
+        let directory = cwd.to_string_lossy();
+        let Ok(models) = Self::read::<Data<Vec<Value>>>(
+            self.request(Method::GET, "/api/model")
+                .query(&[("location[directory]", directory.as_ref())]),
+            "model limits",
+        )
+        .await
+        else {
+            return HashMap::new();
+        };
+        models
+            .data
+            .iter()
+            .filter_map(|model| {
+                let window = model["limit"]["context"].as_u64()?;
+                Some((model_key(model)?, u32::try_from(window).ok()?))
+            })
+            .collect()
     }
 
     async fn post(
@@ -221,6 +279,7 @@ struct Data<T> {
 struct Session {
     id: String,
     model: Option<Value>,
+    agent: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +296,12 @@ struct Model {
 #[derive(Deserialize)]
 struct Variant {
     id: String,
+}
+
+#[derive(Deserialize)]
+struct CommandInfo {
+    name: String,
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -355,7 +420,10 @@ impl OpencodeV2 {
         })
     }
 
-    async fn discover(&self, cwd: PathBuf) -> Result<ModelSelectorConfig, ExecutorError> {
+    async fn discover(
+        &self,
+        cwd: PathBuf,
+    ) -> Result<(ModelSelectorConfig, Vec<SlashCommandDescription>), ExecutorError> {
         let env = ExecutionEnv::new(Default::default(), false, String::new());
         let (mut child, password) = self.start_server(&cwd, &env).await?;
         let stdout = child.inner().stdout.take().expect("piped stdout");
@@ -363,9 +431,9 @@ impl OpencodeV2 {
             let api = Self::api(stdout, password).await?;
             let directory = cwd.to_string_lossy();
             let location = [("location[directory]", directory.as_ref())];
-            // Location startup publishes one or more model updates as plugins settle.
+            // Location startup publishes model and command updates as plugins settle.
             let event_stream = api
-                .events(Some("model.updated"))
+                .events(&["model.updated", "command.updated"])
                 .await?
                 .bytes_stream()
                 .eventsource();
@@ -382,7 +450,7 @@ impl OpencodeV2 {
                 }
             })
             .await;
-            let (models, default, providers, agents) = tokio::try_join!(
+            let (models, default, providers, agents, commands) = tokio::try_join!(
                 Api::read::<Data<Vec<Model>>>(
                     api.request(Method::GET, "/api/model").query(&location),
                     "model discovery"
@@ -400,6 +468,7 @@ impl OpencodeV2 {
                     api.request(Method::GET, "/api/agent").query(&location),
                     "agent discovery"
                 ),
+                api.commands(&cwd),
             )?;
             let models: Vec<_> = models
                 .data
@@ -418,7 +487,19 @@ impl OpencodeV2 {
             if models.is_empty() {
                 return Err(ExecutorError::AuthRequired(LOGIN.into()));
             }
-            Ok(ModelSelectorConfig {
+            let commands = reorder_slash_commands(
+                std::iter::once(SlashCommandDescription {
+                    name: COMPACT.into(),
+                    description: Some("Compact the session".into()),
+                })
+                .chain(commands.into_iter().map(|command| {
+                    SlashCommandDescription {
+                        name: command.name,
+                        description: command.description,
+                    }
+                })),
+            );
+            let selector = ModelSelectorConfig {
                 models,
                 default_model: default
                     .data
@@ -443,8 +524,13 @@ impl OpencodeV2 {
                         is_default: false,
                     })
                     .collect(),
-                permissions: vec![PermissionPolicy::Supervised, PermissionPolicy::Auto],
-            })
+                permissions: vec![
+                    PermissionPolicy::Supervised,
+                    PermissionPolicy::Auto,
+                    PermissionPolicy::DontAsk,
+                ],
+            };
+            Ok((selector, commands))
         }
         .await;
         let _ = child.kill().await;
@@ -458,6 +544,11 @@ impl OpencodeV2 {
         id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        if let Some(policy) = &self.unsupported_policy {
+            return Err(utils::agent_error(format!(
+                "OpenCode v2 does not support the {policy:?} permission policy. Choose Supervised, Auto or Don't Ask, or select OpenCode's plan agent."
+            )));
+        }
         let (mut child, password) = self.start_server(cwd, env).await?;
         let stdin = child.inner().stdin.take().expect("piped stdin");
         let stdout = child.inner().stdout.take().expect("piped stdout");
@@ -468,7 +559,15 @@ impl OpencodeV2 {
         let executor = self.clone();
         let cwd = cwd.to_path_buf();
         let id = id.map(str::to_owned);
-        let prompt = self.append_prompt.combine_prompt(prompt);
+        let input = match parse_slash_command::<SlashCommandCall<'_>>(prompt) {
+            Some(call) => TurnInput::Command {
+                text: prompt.to_owned(),
+                name: call.name,
+                arguments: call.arguments.to_owned(),
+            },
+            None => TurnInput::Prompt(self.append_prompt.combine_prompt(prompt)),
+        };
+        let reminder = CommitReminder::from_env(env);
         tokio::spawn(async move {
             let result = async {
                 let api = tokio::select! {
@@ -476,7 +575,7 @@ impl OpencodeV2 {
                     api = Self::api(stdout, password) => api?,
                 };
                 executor
-                    .run_turn(&api, &cwd, prompt, id, &turn_cancel, &mut writer)
+                    .run_turn(&api, &cwd, input, id, reminder, &turn_cancel, &mut writer)
                     .await
             }
             .await;
@@ -499,24 +598,80 @@ impl OpencodeV2 {
         })
     }
 
+    /// Session rules for the selected policy, recomputed every turn.
+    async fn session_permissions(
+        &self,
+        api: &Api,
+        cwd: &Path,
+        agent: Option<&str>,
+    ) -> Result<Vec<Value>, ExecutorError> {
+        let agent_rules = if self.auto_approve {
+            Vec::new()
+        } else {
+            let agent = self.agent.as_deref().or(agent).unwrap_or(DEFAULT_AGENT);
+            if !valid_id(agent) {
+                return Err(utils::agent_error("Invalid OpenCode v2 agent ID."));
+            }
+            let directory = cwd.to_string_lossy();
+            let agent: Data<Value> = Api::read(
+                api.request(Method::GET, &format!("/api/agent/{agent}"))
+                    .query(&[("location[directory]", directory.as_ref())]),
+                "agent permissions",
+            )
+            .await?;
+            agent.data["permissions"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
+        Ok(permission_rules(
+            !self.auto_approve,
+            self.dont_ask,
+            &agent_rules,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn run_turn(
         &self,
         api: &Api,
         cwd: &Path,
-        prompt: String,
+        input: TurnInput,
         id: Option<String>,
+        reminder: Option<CommitReminder>,
         cancel: &CancellationToken,
         writer: &mut (impl AsyncWrite + Unpin),
     ) -> Result<(), ExecutorError> {
+        if let TurnInput::Command { name, .. } = &input {
+            let unavailable = if name == COMPACT {
+                id.is_none()
+                    .then(|| "_No session available to compact yet._".to_owned())
+            } else {
+                let commands = tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    commands = api.commands(cwd) => commands?,
+                };
+                (!commands.iter().any(|command| &command.name == name))
+                    .then(|| format!("_Command not found: `/{name}`_"))
+            };
+            if let Some(message) = unavailable {
+                if let Some(id) = &id {
+                    AcpEvent::SessionStart(id.clone()).write_to(writer).await?;
+                }
+                AcpEvent::User(input.text().to_owned())
+                    .write_to(writer)
+                    .await?;
+                AcpEvent::text(&message).write_to(writer).await?;
+                return AcpEvent::Done("end_turn".into()).write_to(writer).await;
+            }
+        }
         let explicit_model = self
             .model
             .as_deref()
             .map(|model| model_ref(model, self.variant.as_deref()))
             .transpose()?;
-        let permissions = self
-            .auto_approve
-            .then(|| json!([{"action":"*", "resource":"*", "effect":"allow"}]));
-        let session = tokio::select! {
+        let resumed = id.is_some();
+        let (session, model) = tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
             session = async {
                 if let Some(id) = id {
@@ -529,14 +684,18 @@ impl OpencodeV2 {
                     if let Some(agent) = &self.agent {
                         api.post(&format!("{path}/agent"), json!({"agent":agent}), "agent selection").await?;
                     }
+                    let permissions = self.session_permissions(api, cwd, session.data.agent.as_deref()).await?;
                     Api::checked(api.request(Method::PATCH, &path).timeout(REQUEST_TIMEOUT)
-                        .json(&json!({"permissions": permissions.as_ref().unwrap_or(&json!([]))})), "session permissions").await?;
-                    Ok::<_, ExecutorError>(session.data)
+                        .json(&json!({"permissions": permissions})), "session permissions").await?;
+                    let model = model.or(session.data.model.clone());
+                    Ok::<_, ExecutorError>((session.data, model))
                 } else {
                     let model = resolve_turn_model(api, cwd, explicit_model, None, self.variant.as_deref()).await?;
+                    let permissions = self.session_permissions(api, cwd, None).await?;
                     let created: Data<Session> = Api::read(api.request(Method::POST, "/api/session")
                         .json(&json!({"location":{"directory":cwd}, "model":model, "agent":self.agent, "permissions":permissions})), "session creation").await?;
-                    Ok(created.data)
+                    let model = model.or(created.data.model.clone());
+                    Ok((created.data, model))
                 }
             } => session?,
         };
@@ -544,18 +703,60 @@ impl OpencodeV2 {
         AcpEvent::SessionStart(session.id.clone())
             .write_to(writer)
             .await?;
-        AcpEvent::User(prompt.clone()).write_to(writer).await?;
+        AcpEvent::User(input.text().to_owned())
+            .write_to(writer)
+            .await?;
+        let mut usage = ContextUsage {
+            limits: api.model_limits(cwd).await,
+            step_models: HashMap::new(),
+        };
+        let baseline = match resumed {
+            true => {
+                let context: Option<Data<Vec<Value>>> = Api::read(
+                    api.request(Method::GET, &format!("{path}/context")),
+                    "context",
+                )
+                .await
+                .ok();
+                usage.baseline(context.map(|c| c.data).as_deref(), model.as_ref())
+            }
+            false => UNKNOWN_USAGE,
+        };
+        AcpEvent::TokenUsage(baseline).write_to(writer).await?;
+        let mut reminder = reminder;
         let turn = async {
-            let response = api.events(None).await?;
+            let response = api.events(&[]).await?;
             let events = response.bytes_stream().eventsource();
             futures::pin_mut!(events);
-            // The SSE connection is established before sending the prompt.
-            api.post(
-                &format!("{path}/prompt"),
-                json!({"text":prompt, "delivery":"queue", "resume":true}),
-                "prompt",
-            )
-            .await?;
+            // The SSE connection is established before sending the input.
+            match &input {
+                TurnInput::Prompt(text) => {
+                    api.post(
+                        &format!("{path}/prompt"),
+                        json!({"text":text, "delivery":"queue", "resume":true}),
+                        "prompt",
+                    )
+                    .await?;
+                }
+                TurnInput::Command { name, .. } if name == COMPACT => {
+                    api.post(
+                        &format!("{path}/compact"),
+                        json!({"delivery":"queue"}),
+                        "compaction",
+                    )
+                    .await?;
+                }
+                TurnInput::Command {
+                    name, arguments, ..
+                } => {
+                    api.post(
+                        &format!("{path}/command"),
+                        json!({"name":name, "text":arguments, "delivery":"queue"}),
+                        "command",
+                    )
+                    .await?;
+                }
+            }
             while let Some(event) = events.next().await {
                 let event = event
                     .map_err(|_| utils::agent_error("OpenCode v2 event stream disconnected."))?;
@@ -579,7 +780,25 @@ impl OpencodeV2 {
                             event.write_to(writer).await?;
                         }
                     }
+                    "session.step.started" | "session.step.ended" | "session.compaction.ended" => {
+                        if let Some(info) = usage.observe(&event) {
+                            AcpEvent::TokenUsage(info).write_to(writer).await?;
+                        }
+                    }
                     "session.execution.succeeded" => {
+                        if let Some(text) = match reminder.take() {
+                            Some(reminder) => reminder.prompt().await,
+                            None => None,
+                        } {
+                            AcpEvent::System(text.clone()).write_to(writer).await?;
+                            api.post(
+                                &format!("{path}/prompt"),
+                                json!({"text":text, "delivery":"queue", "resume":true}),
+                                "commit reminder",
+                            )
+                            .await?;
+                            continue;
+                        }
                         return AcpEvent::Done("end_turn".into()).write_to(writer).await;
                     }
                     "session.execution.interrupted" => {
@@ -610,9 +829,8 @@ impl OpencodeV2 {
                             .await?
                     }
                     "form.created" => {
-                        return Err(utils::agent_error(
-                            "OpenCode v2 requested an interactive form, which this executor does not support.",
-                        ));
+                        self.reply_form(api, &path, &event.data["form"], cancel, writer)
+                            .await?
                     }
                     _ => {}
                 }
@@ -708,6 +926,397 @@ impl OpencodeV2 {
         }
         Ok(())
     }
+
+    /// OpenCode's question tool asks through a form. Under Don't Ask, or for
+    /// fields this chat cannot render, the form is declined with a reason the
+    /// agent can act on.
+    async fn reply_form(
+        &self,
+        api: &Api,
+        path: &str,
+        form: &Value,
+        cancel: &CancellationToken,
+        writer: &mut (impl AsyncWrite + Unpin),
+    ) -> Result<(), ExecutorError> {
+        let id = form["id"]
+            .as_str()
+            .filter(|id| valid_id(id))
+            .ok_or_else(|| utils::agent_error("OpenCode v2 returned an invalid form ID."))?;
+        let decline = |message: &'static str| async move {
+            Api::checked(
+                api.request(Method::DELETE, &format!("{path}/form/{id}"))
+                    .query(&[("message", message)])
+                    .timeout(REQUEST_TIMEOUT),
+                "form reply",
+            )
+            .await
+            .map(|_| ())
+        };
+        let approvals = match &self.approvals {
+            Some(approvals) if !self.dont_ask => approvals,
+            _ => return decline(NO_ANSWER).await,
+        };
+        let Some(fields) = form_questions(form) else {
+            return decline(UNSUPPORTED_FORM).await;
+        };
+        let tool_id = tool_call_id(
+            form["metadata"]["tool"]["messageID"].as_str(),
+            form["metadata"]["tool"]["id"].as_str(),
+        )
+        .unwrap_or_else(|| id.to_owned());
+        let title = form["title"].as_str().unwrap_or("Question");
+        let questions: Vec<_> = fields.iter().map(|field| field.item.clone()).collect();
+        AcpEvent::ToolUpdate(ToolCallUpdate::new(
+            tool_id.clone(),
+            ToolCallUpdateFields::new()
+                .title(title)
+                .status(ToolCallStatus::Pending)
+                .raw_input(Value::Object(serde_json::Map::from_iter([(
+                    acp::QUESTIONS_KEY.to_owned(),
+                    json!(questions),
+                )]))),
+        ))
+        .write_to(writer)
+        .await?;
+        let approval_id = approvals
+            .create_question_approval(title, questions.len())
+            .await?;
+        AcpEvent::ApprovalRequested {
+            tool_call_id: tool_id.clone(),
+            approval_id: approval_id.clone(),
+        }
+        .write_to(writer)
+        .await?;
+        let answers = match approvals
+            .wait_question_answer(&approval_id, cancel.clone())
+            .await?
+        {
+            QuestionStatus::Answered { answers } => answers,
+            QuestionStatus::TimedOut => return decline(NO_ANSWER).await,
+        };
+        let Some(answer) = form_answer(&fields, &answers) else {
+            return decline(INVALID_ANSWER).await;
+        };
+        api.post(
+            &format!("{path}/form/{id}/reply"),
+            json!({ "answer": answer }),
+            "form reply",
+        )
+        .await?;
+        AcpEvent::QuestionAnswered {
+            tool_call_id: tool_id,
+            answers: answers
+                .into_iter()
+                .map(|answer| AnsweredQuestion {
+                    question: answer.question,
+                    answer: answer.answer,
+                })
+                .collect(),
+        }
+        .write_to(writer)
+        .await
+    }
+}
+
+enum TurnInput {
+    Prompt(String),
+    Command {
+        text: String,
+        name: String,
+        arguments: String,
+    },
+}
+
+impl TurnInput {
+    fn text(&self) -> &str {
+        match self {
+            Self::Prompt(text) | Self::Command { text, .. } => text,
+        }
+    }
+}
+
+type ModelKey = (String, String);
+
+fn model_key(model: &Value) -> Option<ModelKey> {
+    Some((
+        model["providerID"].as_str()?.to_owned(),
+        model["id"].as_str()?.to_owned(),
+    ))
+}
+
+/// Tokens in the context the step's request sent plus its reply, as the
+/// OpenCode TUI counts them.
+fn context_tokens(tokens: &Value) -> u64 {
+    ["input", "output", "reasoning"]
+        .iter()
+        .map(|key| &tokens[*key])
+        .chain([&tokens["cache"]["read"], &tokens["cache"]["write"]])
+        .filter_map(Value::as_f64)
+        .map(|value| value.max(0.0) as u64)
+        .sum()
+}
+
+/// The context gauge for one turn: the last step's tokens against the window
+/// of the model that ran it.
+struct ContextUsage {
+    limits: HashMap<ModelKey, u32>,
+    step_models: HashMap<String, ModelKey>,
+}
+
+const UNKNOWN_USAGE: TokenUsageInfo = TokenUsageInfo {
+    total_tokens: 0,
+    model_context_window: 0,
+};
+
+impl ContextUsage {
+    fn info(&self, tokens: u64, model: Option<&ModelKey>) -> TokenUsageInfo {
+        match model.and_then(|model| self.limits.get(model)) {
+            Some(&window) if tokens > 0 && window > 0 => TokenUsageInfo {
+                total_tokens: u32::try_from(tokens).unwrap_or(u32::MAX),
+                model_context_window: window,
+            },
+            _ => UNKNOWN_USAGE,
+        }
+    }
+
+    /// Usage left by earlier turns: the last measured reply after the last
+    /// compaction, shown only if the same model runs this turn. A switched
+    /// model or a compacted context is unknown until the next reply.
+    fn baseline(&self, context: Option<&[Value]>, model: Option<&Value>) -> TokenUsageInfo {
+        let Some(last) = context.and_then(|messages| {
+            messages
+                .iter()
+                .rev()
+                .take_while(|message| message["type"] != "compaction")
+                .find(|message| message["type"] == "assistant" && message["tokens"].is_object())
+        }) else {
+            return UNKNOWN_USAGE;
+        };
+        let measured = model_key(&last["model"]);
+        if measured.is_none() || measured != model.and_then(model_key) {
+            return UNKNOWN_USAGE;
+        }
+        self.info(context_tokens(&last["tokens"]), measured.as_ref())
+    }
+
+    fn observe(&mut self, event: &Event) -> Option<TokenUsageInfo> {
+        let data = &event.data;
+        match event.kind.as_str() {
+            "session.step.started" => {
+                let id = data["assistantMessageID"].as_str()?;
+                self.step_models
+                    .insert(id.to_owned(), model_key(&data["model"])?);
+                None
+            }
+            "session.step.ended" => {
+                let model = self.step_models.get(data["assistantMessageID"].as_str()?);
+                Some(self.info(context_tokens(&data["tokens"]), model))
+            }
+            // The summary replaces the context; its size is known after the next reply.
+            "session.compaction.ended" => Some(UNKNOWN_USAGE),
+            _ => None,
+        }
+    }
+}
+
+/// Supervised asks before these actions unless an explicit rule decides.
+const SUPERVISED_ACTIONS: [&str; 6] = [
+    "edit",
+    "write",
+    "shell",
+    "webfetch",
+    "websearch",
+    "external_directory",
+];
+
+fn rule(action: &str, effect: &str) -> Value {
+    json!({"action": action, "resource": "*", "effect": effect})
+}
+
+/// Session rules apply after the agent's own, the last match winning. An
+/// allow-all session rule would override the user's deny rules, so Auto and
+/// Don't Ask add none and approve each request that still asks instead.
+/// Supervised replaces only the agent's catch-all allow: its other rules,
+/// which include the user's configured ones, follow the asks again so an
+/// explicit allow or deny keeps deciding.
+fn permission_rules(supervised: bool, dont_ask: bool, agent_rules: &[Value]) -> Vec<Value> {
+    let mut rules = Vec::new();
+    if supervised {
+        rules.extend(SUPERVISED_ACTIONS.iter().map(|action| rule(action, "ask")));
+        rules.extend(
+            agent_rules
+                .iter()
+                .filter(|rule| {
+                    !(rule["action"] == "*" && rule["resource"] == "*" && rule["effect"] == "allow")
+                })
+                .cloned(),
+        );
+    }
+    if dont_ask {
+        rules.push(rule("question", "deny"));
+    }
+    rules
+}
+
+#[derive(Clone)]
+enum FieldKind {
+    Text,
+    Choice,
+    Multi,
+    Boolean,
+    Number { integer: bool },
+}
+
+#[derive(Clone)]
+struct FormField {
+    key: String,
+    kind: FieldKind,
+    /// Option labels with the values OpenCode expects back.
+    values: Vec<(String, String)>,
+    when: Vec<Value>,
+    item: AskUserQuestionItem,
+}
+
+/// The form's visible fields as chat questions, or `None` when one of them
+/// cannot be answered in the chat (an external link).
+fn form_questions(form: &Value) -> Option<Vec<FormField>> {
+    let mut fields = Vec::new();
+    for field in form["fields"].as_array()? {
+        if field["hidden"] == true {
+            continue;
+        }
+        let key = field["key"].as_str()?.to_owned();
+        let title = field["title"].as_str();
+        let question = field["description"]
+            .as_str()
+            .or(title)
+            .unwrap_or(&key)
+            .to_owned();
+        let options: Vec<(String, String, String)> = field["options"]
+            .as_array()
+            .map(|options| {
+                options
+                    .iter()
+                    .filter_map(|option| {
+                        let value = option["value"].as_str()?;
+                        Some((
+                            option["label"].as_str().unwrap_or(value).to_owned(),
+                            value.to_owned(),
+                            option["description"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let custom = field["custom"] == true;
+        let (kind, options, allow_custom) = match field["type"].as_str()? {
+            "string" if options.is_empty() => (FieldKind::Text, options, true),
+            "string" => (FieldKind::Choice, options, custom),
+            "multiselect" => (FieldKind::Multi, options, custom),
+            "boolean" => (
+                FieldKind::Boolean,
+                vec![
+                    ("Yes".into(), "true".into(), String::new()),
+                    ("No".into(), "false".into(), String::new()),
+                ],
+                false,
+            ),
+            kind @ ("number" | "integer") => (
+                FieldKind::Number {
+                    integer: kind == "integer",
+                },
+                Vec::new(),
+                true,
+            ),
+            _ => return None,
+        };
+        fields.push(FormField {
+            key,
+            kind: kind.clone(),
+            values: options
+                .iter()
+                .map(|(label, value, _)| (label.clone(), value.clone()))
+                .collect(),
+            when: field["when"].as_array().cloned().unwrap_or_default(),
+            item: AskUserQuestionItem {
+                question,
+                header: title
+                    .or(form["title"].as_str())
+                    .unwrap_or("Question")
+                    .to_owned(),
+                options: options
+                    .into_iter()
+                    .map(|(label, _, description)| AskUserQuestionOption { label, description })
+                    .collect(),
+                multi_select: matches!(kind, FieldKind::Multi),
+                allow_custom_answer: Some(allow_custom),
+            },
+        });
+    }
+    (!fields.is_empty()).then_some(fields)
+}
+
+/// The form reply for the chat's answers. Fields whose `when` conditions do
+/// not hold are left out; `None` when a number answer is not a number.
+fn form_answer(fields: &[FormField], answers: &[QuestionAnswer]) -> Option<Value> {
+    let mut answer = serde_json::Map::new();
+    for field in fields {
+        let Some(chosen) = answers
+            .iter()
+            .find(|answer| answer.question == field.item.question)
+        else {
+            continue;
+        };
+        let value = |label: &String| {
+            field
+                .values
+                .iter()
+                .find(|(option, _)| option == label)
+                .map_or_else(|| label.clone(), |(_, value)| value.clone())
+        };
+        let first = chosen.answer.first();
+        let value = match field.kind {
+            FieldKind::Multi => json!(chosen.answer.iter().map(value).collect::<Vec<_>>()),
+            FieldKind::Text | FieldKind::Choice => match first {
+                Some(label) => json!(value(label)),
+                None => continue,
+            },
+            FieldKind::Boolean => match first.map(value).as_deref() {
+                Some("true") => json!(true),
+                Some("false") => json!(false),
+                _ => return None,
+            },
+            FieldKind::Number { integer } => {
+                let text = first?.trim();
+                if integer {
+                    json!(text.parse::<i64>().ok()?)
+                } else {
+                    json!(text.parse::<f64>().ok().filter(|n| n.is_finite())?)
+                }
+            }
+        };
+        answer.insert(field.key.clone(), value);
+    }
+    for field in fields {
+        let holds = field.when.iter().all(|condition| {
+            let other = condition["key"]
+                .as_str()
+                .and_then(|key| answer.get(key))
+                .unwrap_or(&Value::Null);
+            match condition["op"].as_str() {
+                Some("eq") => other == &condition["value"],
+                Some("neq") => other != &condition["value"],
+                _ => true,
+            }
+        });
+        if !holds {
+            answer.remove(&field.key);
+        }
+    }
+    Some(Value::Object(answer))
 }
 
 fn tool_call_id(message: Option<&str>, call: Option<&str>) -> Option<String> {
@@ -775,7 +1384,7 @@ mod tests {
         .unwrap();
         assert!(memory_skill_dirs(repo.path(), "example.test/fixtures/two").is_empty());
         let dirs = memory_skill_dirs(repo.path(), key);
-        assert_eq!(dirs, [dir.clone()]);
+        assert_eq!(dirs, std::slice::from_ref(&dir));
         let existing = Some(
             "{/* keep settings */ \"model\": \"fixture/model\", \"skills\": [\"./existing\"],}",
         );
@@ -845,11 +1454,13 @@ mod tests {
             variant: None,
             agent: None,
             auto_approve: false,
+            dont_ask: false,
             cmd: CmdOverrides {
                 base_command_override: Some(std::env::var("VK_TEST_OPENCODE_V2_COMMAND").unwrap()),
                 ..Default::default()
             },
             approvals: None,
+            unsupported_policy: None,
         };
         let mut env = ExecutionEnv::new(Default::default(), false, String::new());
         for key in [
@@ -1087,6 +1698,9 @@ impl StandardCodingAgentExecutor for OpencodeV2 {
         if let Some(policy) = &config.permission_policy {
             self.auto_approve =
                 matches!(policy, PermissionPolicy::Auto | PermissionPolicy::DontAsk);
+            self.dont_ask = matches!(policy, PermissionPolicy::DontAsk);
+            self.unsupported_policy =
+                matches!(policy, PermissionPolicy::Plan).then_some(PermissionPolicy::Plan);
         }
     }
 
@@ -1117,6 +1731,37 @@ impl StandardCodingAgentExecutor for OpencodeV2 {
         self.run(cwd, prompt, Some(id), env).await
     }
 
+    /// `generate` answers from the session's context without changing its
+    /// history; its tokens count toward the session.
+    async fn generate_commit_message(
+        &self,
+        cwd: &Path,
+        session_id: &str,
+        instructions: &str,
+        env: &ExecutionEnv,
+    ) -> Result<Option<String>, ExecutorError> {
+        let path = session_path(session_id)?;
+        let (mut child, password) = self.start_server(cwd, env).await?;
+        let stdout = child.inner().stdout.take().expect("piped stdout");
+        let result = async {
+            let api = Self::api(stdout, password).await?;
+            let generated: Data<Value> = Api::checked(
+                api.request(Method::POST, &format!("{path}/generate"))
+                    .timeout(GENERATE_TIMEOUT)
+                    .json(&json!({ "prompt": instructions })),
+                "commit message generation",
+            )
+            .await?
+            .json()
+            .await
+            .map_err(|_| utils::agent_error("Unexpected OpenCode v2 generation response."))?;
+            Ok(generated.data["text"].as_str().map(str::to_owned))
+        }
+        .await;
+        let _ = child.kill().await;
+        result
+    }
+
     fn normalize_logs(&self, store: Arc<MsgStore>, cwd: &Path) -> Vec<tokio::task::JoinHandle<()>> {
         acp::normalize_logs(store, cwd)
     }
@@ -1134,10 +1779,10 @@ impl StandardCodingAgentExecutor for OpencodeV2 {
         config.model_id = self.model.clone();
         config.agent_id = self.agent.clone();
         config.reasoning_id = self.variant.clone();
-        config.permission_policy = Some(if self.auto_approve {
-            PermissionPolicy::Auto
-        } else {
-            PermissionPolicy::Supervised
+        config.permission_policy = Some(match (self.auto_approve, self.dont_ask) {
+            (true, true) => PermissionPolicy::DontAsk,
+            (true, false) => PermissionPolicy::Auto,
+            (false, _) => PermissionPolicy::Supervised,
         });
         config
     }
@@ -1152,10 +1797,681 @@ impl StandardCodingAgentExecutor for OpencodeV2 {
         Ok(Box::pin(futures::stream::once(async move {
             let mut options = ExecutorDiscoveredOptions::default();
             match executor.discover(cwd).await {
-                Ok(config) => options.model_selector = config,
+                Ok((config, commands)) => {
+                    options.model_selector = config;
+                    options.slash_commands = commands;
+                }
                 Err(err) => options.error = Some(err.to_string()),
             }
             patch::executor_discovered_options(options)
         })))
+    }
+}
+
+#[cfg(test)]
+mod turn_tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::mpsc,
+    };
+
+    use super::*;
+    use crate::{approvals::ExecutorApprovalError, env::RepoContext};
+
+    #[derive(Debug, Clone)]
+    struct Request {
+        method: String,
+        path: String,
+        body: Value,
+    }
+
+    type Handler = dyn Fn(&Request, &mpsc::UnboundedSender<Value>) -> (u16, Value) + Send + Sync;
+
+    /// A local OpenCode v2 API: one request per connection, events on the
+    /// open `/api/event` stream.
+    struct MockServer {
+        api: Api,
+        requests: Arc<Mutex<Vec<Request>>>,
+    }
+
+    impl MockServer {
+        async fn start(handler: Box<Handler>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            // Events go to the newest subscription; a finished turn's stream is gone.
+            let (events_tx, mut events_rx) = mpsc::unbounded_channel::<Value>();
+            let sink: Arc<Mutex<Option<mpsc::UnboundedSender<Value>>>> = Arc::default();
+            let current = sink.clone();
+            tokio::spawn(async move {
+                while let Some(event) = events_rx.recv().await {
+                    if let Some(sink) = current.lock().unwrap().as_ref() {
+                        let _ = sink.send(event);
+                    }
+                }
+            });
+            let handler: Arc<Handler> = Arc::from(handler);
+            let log = requests.clone();
+            tokio::spawn(async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let (handler, log, events_tx, sink) = (
+                        handler.clone(),
+                        log.clone(),
+                        events_tx.clone(),
+                        sink.clone(),
+                    );
+                    tokio::spawn(async move {
+                        let mut buffer = Vec::new();
+                        let mut chunk = [0; 8192];
+                        let head_end = loop {
+                            let read = stream.read(&mut chunk).await.unwrap();
+                            if read == 0 {
+                                return;
+                            }
+                            buffer.extend_from_slice(&chunk[..read]);
+                            if let Some(end) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break end + 4;
+                            }
+                        };
+                        let head = String::from_utf8_lossy(&buffer[..head_end]).to_string();
+                        let length = head
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        while buffer.len() < head_end + length {
+                            let read = stream.read(&mut chunk).await.unwrap();
+                            buffer.extend_from_slice(&chunk[..read]);
+                        }
+                        let mut line = head.lines().next().unwrap().split(' ');
+                        let request = Request {
+                            method: line.next().unwrap().to_owned(),
+                            path: line.next().unwrap().to_owned(),
+                            body: serde_json::from_slice(&buffer[head_end..head_end + length])
+                                .unwrap_or(Value::Null),
+                        };
+                        log.lock().unwrap().push(request.clone());
+                        if request.path.starts_with("/api/event") {
+                            stream
+                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\n")
+                                .await
+                                .unwrap();
+                            let (tx, mut events) = mpsc::unbounded_channel();
+                            *sink.lock().unwrap() = Some(tx);
+                            while let Some(event) = events.recv().await {
+                                let frame = format!("data: {event}\n\n");
+                                if stream.write_all(frame.as_bytes()).await.is_err() {
+                                    return;
+                                }
+                            }
+                            return;
+                        }
+                        let (status, body) = handler(&request, &events_tx);
+                        let body = if body.is_null() {
+                            String::new()
+                        } else {
+                            body.to_string()
+                        };
+                        let response = format!(
+                            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = stream.write_all(response.as_bytes()).await;
+                    });
+                }
+            });
+            Self {
+                api: Api {
+                    client: reqwest::Client::builder().no_proxy().build().unwrap(),
+                    url: Url::parse(&format!("http://{address}")).unwrap(),
+                    password: String::new(),
+                },
+                requests,
+            }
+        }
+
+        fn requests(&self, method: &str, prefix: &str) -> Vec<Request> {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request.method == method && request.path.starts_with(prefix))
+                .cloned()
+                .collect()
+        }
+    }
+
+    fn event(kind: &str, data: Value) -> Value {
+        json!({"id": "evt_fixture", "type": kind, "data": data})
+    }
+
+    fn step(id: &str, model: &str) -> Value {
+        event(
+            "session.step.started",
+            json!({"sessionID": "ses_fixture", "assistantMessageID": id, "agent": "build",
+                   "model": {"providerID": "fixture", "id": model}, "started": 1}),
+        )
+    }
+
+    fn step_end(id: &str, input: u64, read: u64) -> Value {
+        event(
+            "session.step.ended",
+            json!({"sessionID": "ses_fixture", "assistantMessageID": id, "finish": "stop", "cost": 0,
+                   "tokens": {"input": input, "output": 20, "reasoning": 5, "cache": {"read": read, "write": 10}}}),
+        )
+    }
+
+    fn done() -> Value {
+        event(
+            "session.execution.succeeded",
+            json!({"sessionID": "ses_fixture"}),
+        )
+    }
+
+    fn models() -> Value {
+        json!({"data": [
+            {"providerID": "fixture", "id": "small", "limit": {"context": 1000, "output": 100}},
+            {"providerID": "fixture", "id": "large", "limit": {"context": 4000, "output": 100}}
+        ]})
+    }
+
+    fn agent() -> Value {
+        json!({"data": {"id": "build", "permissions": [
+            {"action": "*", "resource": "*", "effect": "allow"},
+            {"action": "question", "resource": "*", "effect": "allow"},
+            {"action": "shell", "resource": "rm *", "effect": "deny"}
+        ]}})
+    }
+
+    struct Approvals {
+        tool: ApprovalStatus,
+        question: Option<QuestionStatus>,
+    }
+
+    #[async_trait]
+    impl ExecutorApprovalService for Approvals {
+        async fn create_tool_approval(&self, _: &str) -> Result<String, ExecutorApprovalError> {
+            Ok("approval-tool".into())
+        }
+        async fn create_question_approval(
+            &self,
+            _: &str,
+            _: usize,
+        ) -> Result<String, ExecutorApprovalError> {
+            Ok("approval-question".into())
+        }
+        async fn wait_tool_approval(
+            &self,
+            _: &str,
+            _: CancellationToken,
+        ) -> Result<ApprovalStatus, ExecutorApprovalError> {
+            Ok(self.tool.clone())
+        }
+        async fn wait_question_answer(
+            &self,
+            _: &str,
+            _: CancellationToken,
+        ) -> Result<QuestionStatus, ExecutorApprovalError> {
+            self.question
+                .clone()
+                .ok_or(ExecutorApprovalError::ServiceUnavailable)
+        }
+    }
+
+    fn executor(policy: PermissionPolicy, approvals: Option<Approvals>) -> OpencodeV2 {
+        let mut executor = OpencodeV2 {
+            append_prompt: AppendPrompt::default(),
+            model: None,
+            variant: None,
+            agent: None,
+            auto_approve: false,
+            dont_ask: false,
+            cmd: CmdOverrides::default(),
+            approvals: approvals.map(|a| Arc::new(a) as Arc<dyn ExecutorApprovalService>),
+            unsupported_policy: None,
+        };
+        let mut config = ExecutorConfig::new(BaseCodingAgent::OpencodeV2);
+        config.permission_policy = Some(policy);
+        executor.apply_overrides(&config);
+        executor
+    }
+
+    fn output(writer: &[u8]) -> Vec<AcpEvent> {
+        String::from_utf8_lossy(writer)
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn usages(events: &[AcpEvent]) -> Vec<(u32, u32)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AcpEvent::TokenUsage(info) => Some((info.total_tokens, info.model_context_window)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn dirty_repo() -> (tempfile::TempDir, RepoContext) {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(repo.join("left-over.txt"), "fixture").unwrap();
+        let context = RepoContext::new(root.path().to_path_buf(), vec!["repo".into()]);
+        (root, context)
+    }
+
+    #[tokio::test]
+    async fn supervised_resume_reports_usage_asks_and_reminds_once() {
+        let server = MockServer::start(Box::new(|request, events| {
+            let path = request.path.split('?').next().unwrap();
+            match (request.method.as_str(), path) {
+                ("GET", "/api/session/ses_fixture") => (
+                    200,
+                    json!({"data": {"id": "ses_fixture", "agent": "build",
+                                    "model": {"providerID": "fixture", "id": "small"}}}),
+                ),
+                ("GET", "/api/agent/build") => (200, agent()),
+                ("GET", "/api/model") => (200, models()),
+                ("GET", "/api/session/ses_fixture/context") => (
+                    200,
+                    json!({"data": [
+                        {"type": "user"},
+                        {"type": "assistant", "model": {"providerID": "fixture", "id": "small"},
+                         "tokens": {"input": 100, "output": 50, "reasoning": 0, "cache": {"read": 200, "write": 0}}},
+                        {"type": "idle"}
+                    ]}),
+                ),
+                ("POST", "/api/session/ses_fixture/prompt") => {
+                    if request.body["text"] == "Fix the fixture" {
+                        events.send(step("msg_a", "small")).unwrap();
+                        events
+                            .send(event(
+                                "permission.asked",
+                                json!({"id": "per_fixture", "sessionID": "ses_fixture", "action": "shell",
+                                       "resources": ["cargo test"],
+                                       "source": {"type": "tool", "messageID": "msg_a", "id": "call_a"}}),
+                            ))
+                            .unwrap();
+                    } else {
+                        events.send(step("msg_c", "small")).unwrap();
+                        events.send(step_end("msg_c", 10, 600)).unwrap();
+                        events.send(done()).unwrap();
+                    }
+                    (200, json!({"data": {}}))
+                }
+                ("POST", "/api/session/ses_fixture/permission/per_fixture/reply") => {
+                    events.send(step_end("msg_a", 300, 400)).unwrap();
+                    events.send(done()).unwrap();
+                    (204, Value::Null)
+                }
+                ("PATCH", "/api/session/ses_fixture") => (200, json!({"data": {}})),
+                _ => (404, json!({"error": request.path})),
+            }
+        }))
+        .await;
+        let (_root, repo) = dirty_repo();
+        let executor = executor(
+            PermissionPolicy::Supervised,
+            Some(Approvals {
+                tool: ApprovalStatus::Approved,
+                question: None,
+            }),
+        );
+        let mut writer = Vec::new();
+        executor
+            .run_turn(
+                &server.api,
+                Path::new("/fixture"),
+                TurnInput::Prompt("Fix the fixture".into()),
+                Some("ses_fixture".into()),
+                Some(CommitReminder {
+                    repo,
+                    prompt: "Commit the changes.".into(),
+                }),
+                &CancellationToken::new(),
+                &mut writer,
+            )
+            .await
+            .unwrap();
+
+        let permissions = &server.requests("PATCH", "/api/session/ses_fixture")[0].body;
+        assert_eq!(
+            permissions["permissions"],
+            json!([
+                rule("edit", "ask"),
+                rule("write", "ask"),
+                rule("shell", "ask"),
+                rule("webfetch", "ask"),
+                rule("websearch", "ask"),
+                rule("external_directory", "ask"),
+                {"action": "question", "resource": "*", "effect": "allow"},
+                {"action": "shell", "resource": "rm *", "effect": "deny"}
+            ])
+        );
+        assert_eq!(
+            server.requests(
+                "POST",
+                "/api/session/ses_fixture/permission/per_fixture/reply"
+            )[0]
+            .body,
+            json!({"decision": "once", "message": null})
+        );
+        let prompts = server.requests("POST", "/api/session/ses_fixture/prompt");
+        assert_eq!(prompts.len(), 2, "the reminder is sent once");
+        let reminder = prompts[1].body["text"].as_str().unwrap();
+        assert!(
+            reminder.starts_with("Commit the changes.\n") && reminder.contains("left-over.txt")
+        );
+
+        let events = output(&writer);
+        // Resume baseline, the supervised step, then the reminder's step.
+        assert_eq!(usages(&events), [(350, 1000), (735, 1000), (645, 1000)]);
+        assert!(events.iter().any(|event| matches!(event,
+            AcpEvent::ApprovalRequested { tool_call_id, .. } if tool_call_id == "msg_a:call_a")));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AcpEvent::System(text) if text == reminder))
+        );
+        assert!(matches!(events.last(), Some(AcpEvent::Done(_))));
+    }
+
+    #[tokio::test]
+    async fn dont_ask_denies_questions_declines_forms_and_handles_unknown_usage() {
+        let server = MockServer::start(Box::new(|request, events| {
+            let path = request.path.split('?').next().unwrap();
+            match (request.method.as_str(), path) {
+                ("POST", "/api/session") => (
+                    200,
+                    json!({"data": {"id": "ses_fixture", "model": {"providerID": "fixture", "id": "small"}}}),
+                ),
+                ("GET", "/api/model") => (200, models()),
+                ("POST", "/api/session/ses_fixture/prompt") => {
+                    events.send(step("msg_a", "unlisted")).unwrap();
+                    events
+                        .send(event(
+                            "form.created",
+                            json!({"form": {"id": "frm_fixture", "sessionID": "ses_fixture", "title": "Questions",
+                                            "fields": [{"key": "q0", "type": "string", "options": [{"value": "a", "label": "A"}]}]}}),
+                        ))
+                        .unwrap();
+                    (200, json!({"data": {}}))
+                }
+                ("DELETE", "/api/session/ses_fixture/form/frm_fixture") => {
+                    events.send(step_end("msg_a", 50, 0)).unwrap();
+                    events.send(step("msg_b", "large")).unwrap();
+                    events.send(step_end("msg_b", 70, 0)).unwrap();
+                    events
+                        .send(event(
+                            "session.compaction.ended",
+                            json!({"sessionID": "ses_fixture", "reason": "auto", "text": "summary"}),
+                        ))
+                        .unwrap();
+                    events.send(done()).unwrap();
+                    (204, Value::Null)
+                }
+                _ => (404, json!({"error": request.path})),
+            }
+        }))
+        .await;
+        let executor = executor(
+            PermissionPolicy::DontAsk,
+            Some(Approvals {
+                tool: ApprovalStatus::Approved,
+                question: None,
+            }),
+        );
+        assert_eq!(
+            executor.get_preset_options().permission_policy,
+            Some(PermissionPolicy::DontAsk)
+        );
+        let mut writer = Vec::new();
+        executor
+            .run_turn(
+                &server.api,
+                Path::new("/fixture"),
+                TurnInput::Prompt("Work unattended".into()),
+                None,
+                None,
+                &CancellationToken::new(),
+                &mut writer,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            server.requests("POST", "/api/session")[0].body["permissions"],
+            json!([rule("question", "deny")])
+        );
+        let decline = &server.requests("DELETE", "/api/session/ses_fixture/form/frm_fixture")[0];
+        assert!(decline.path.contains("message=The+user+cannot+answer"));
+        // New session clears the previous gauge; an unlisted model and a
+        // compaction are unknown rather than a guessed percentage.
+        assert_eq!(
+            usages(&output(&writer)),
+            [(0, 0), (0, 0), (105, 4000), (0, 0)]
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_answers_forms_with_option_values() {
+        let server = MockServer::start(Box::new(|request, events| {
+            let path = request.path.split('?').next().unwrap();
+            match (request.method.as_str(), path) {
+                ("POST", "/api/session") => (200, json!({"data": {"id": "ses_fixture"}})),
+                ("GET", "/api/model") => (200, models()),
+                ("POST", "/api/session/ses_fixture/prompt") => {
+                    events
+                        .send(event(
+                            "form.created",
+                            json!({"form": {"id": "frm_fixture", "sessionID": "ses_fixture", "title": "Questions",
+                                            "metadata": {"kind": "question", "tool": {"messageID": "msg_a", "id": "call_q"}},
+                                            "fields": [{"key": "q0", "title": "Color", "description": "Which color?", "type": "string",
+                                                        "options": [{"value": "red", "label": "Red"}, {"value": "blue", "label": "Blue"}],
+                                                        "custom": true}]}}),
+                        ))
+                        .unwrap();
+                    (200, json!({"data": {}}))
+                }
+                ("POST", "/api/session/ses_fixture/form/frm_fixture/reply") => {
+                    events.send(done()).unwrap();
+                    (204, Value::Null)
+                }
+                _ => (404, json!({"error": request.path})),
+            }
+        }))
+        .await;
+        let executor = executor(
+            PermissionPolicy::Auto,
+            Some(Approvals {
+                tool: ApprovalStatus::Denied { reason: None },
+                question: Some(QuestionStatus::Answered {
+                    answers: vec![QuestionAnswer {
+                        question: "Which color?".into(),
+                        answer: vec!["Blue".into()],
+                    }],
+                }),
+            }),
+        );
+        let mut writer = Vec::new();
+        executor
+            .run_turn(
+                &server.api,
+                Path::new("/fixture"),
+                TurnInput::Prompt("Ask me".into()),
+                None,
+                None,
+                &CancellationToken::new(),
+                &mut writer,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            server.requests("POST", "/api/session")[0].body["permissions"],
+            json!([])
+        );
+        assert_eq!(
+            server.requests("POST", "/api/session/ses_fixture/form/frm_fixture/reply")[0].body,
+            json!({"answer": {"q0": "blue"}})
+        );
+        let events = output(&writer);
+        assert!(events.iter().any(|event| matches!(event,
+            AcpEvent::ToolUpdate(update) if update.tool_call_id.0.as_ref() == "msg_a:call_q"
+                && update.fields.raw_input.as_ref().unwrap()[acp::QUESTIONS_KEY][0]["options"][1]["label"] == "Blue")));
+        assert!(events.iter().any(|event| matches!(event,
+            AcpEvent::QuestionAnswered { answers, .. } if answers[0].answer == ["Blue"])));
+    }
+
+    #[tokio::test]
+    async fn slash_commands_use_the_command_and_compaction_endpoints() {
+        let server = MockServer::start(Box::new(|request, events| {
+            let path = request.path.split('?').next().unwrap();
+            match (request.method.as_str(), path) {
+                ("GET", "/api/command") => (
+                    200,
+                    json!({"location": {"directory": "/fixture"},
+                           "data": [{"name": "review"}, {"name": "hello", "description": "Fixture"}]}),
+                ),
+                ("GET", "/api/session/ses_fixture") => (
+                    200,
+                    json!({"data": {"id": "ses_fixture", "model": {"providerID": "fixture", "id": "small"}}}),
+                ),
+                ("GET", "/api/model") => (200, models()),
+                ("GET", "/api/session/ses_fixture/context") => (200, json!({"data": []})),
+                ("PATCH", "/api/session/ses_fixture") => (200, json!({"data": {}})),
+                ("POST", "/api/session/ses_fixture/command")
+                | ("POST", "/api/session/ses_fixture/compact") => {
+                    events.send(done()).unwrap();
+                    (200, json!({"data": {}}))
+                }
+                _ => (404, json!({"error": request.path})),
+            }
+        }))
+        .await;
+        let executor = executor(PermissionPolicy::Auto, None);
+        let run = |text: &str, id: Option<&str>| {
+            let call = parse_slash_command::<SlashCommandCall<'_>>(text).unwrap();
+            let input = TurnInput::Command {
+                text: text.into(),
+                name: call.name,
+                arguments: call.arguments.into(),
+            };
+            let (executor, api, id) = (&executor, &server.api, id.map(str::to_owned));
+            async move {
+                let mut writer = Vec::new();
+                executor
+                    .run_turn(
+                        api,
+                        Path::new("/fixture"),
+                        input,
+                        id,
+                        None,
+                        &CancellationToken::new(),
+                        &mut writer,
+                    )
+                    .await
+                    .unwrap();
+                output(&writer)
+            }
+        };
+        run("/hello  big world", Some("ses_fixture")).await;
+        assert_eq!(
+            server.requests("POST", "/api/session/ses_fixture/command")[0].body,
+            json!({"name": "hello", "text": "big world", "delivery": "queue"})
+        );
+        run("/compact", Some("ses_fixture")).await;
+        assert_eq!(
+            server
+                .requests("POST", "/api/session/ses_fixture/compact")
+                .len(),
+            1
+        );
+        for (text, message) in [
+            ("/compact", "No session available"),
+            ("/missing arg", "Command not found: `/missing`"),
+        ] {
+            let events = run(text, None).await;
+            assert!(events.iter().any(|event| matches!(event,
+                AcpEvent::Message(agent_client_protocol::ContentBlock::Text(t)) if t.text.contains(message))));
+            assert!(matches!(events.last(), Some(AcpEvent::Done(_))));
+        }
+        assert!(
+            server
+                .requests("POST", "/api/session")
+                .iter()
+                .all(|request| request.path != "/api/session"),
+            "an unavailable command creates no session"
+        );
+    }
+
+    #[test]
+    fn plan_is_refused_instead_of_running_under_another_policy() {
+        let executor = executor(PermissionPolicy::Plan, None);
+        assert_eq!(executor.unsupported_policy, Some(PermissionPolicy::Plan));
+        let switched = {
+            let mut executor = executor.clone();
+            let mut config = ExecutorConfig::new(BaseCodingAgent::OpencodeV2);
+            config.permission_policy = Some(PermissionPolicy::Supervised);
+            executor.apply_overrides(&config);
+            executor
+        };
+        assert_eq!(switched.unsupported_policy, None);
+    }
+
+    #[test]
+    fn form_answers_cover_every_field_kind_and_conditions() {
+        let form = json!({"title": "Setup", "fields": [
+            {"key": "name", "type": "string", "title": "Name"},
+            {"key": "tags", "type": "multiselect", "description": "Tags?", "custom": true,
+             "options": [{"value": "a", "label": "Alpha"}, {"value": "b", "label": "Beta"}]},
+            {"key": "ok", "type": "boolean", "description": "Proceed?"},
+            {"key": "count", "type": "integer", "description": "How many?"},
+            {"key": "why", "type": "string", "description": "Why not?",
+             "when": [{"key": "ok", "op": "eq", "value": false}]},
+            {"key": "secret", "type": "string", "hidden": true}
+        ]});
+        let fields = form_questions(&form).unwrap();
+        assert_eq!(fields.len(), 5);
+        assert!(fields[1].item.multi_select);
+        assert_eq!(fields[2].item.allow_custom_answer, Some(false));
+        let answer = |question: &str, answer: &[&str]| QuestionAnswer {
+            question: question.into(),
+            answer: answer.iter().map(|a| a.to_string()).collect(),
+        };
+        let answers = vec![
+            answer("Name", &["Ada"]),
+            answer("Tags?", &["Beta", "custom"]),
+            answer("Proceed?", &["Yes"]),
+            answer("How many?", &["3"]),
+            answer("Why not?", &["skipped"]),
+        ];
+        assert_eq!(
+            form_answer(&fields, &answers).unwrap(),
+            json!({"name": "Ada", "tags": ["b", "custom"], "ok": true, "count": 3})
+        );
+        let mut wrong = answers.clone();
+        wrong[3] = answer("How many?", &["three"]);
+        assert!(form_answer(&fields, &wrong).is_none());
+        assert!(
+            form_questions(&json!({"fields": [{"key": "x", "type": "external", "url": "https://example.test"}]}))
+                .is_none()
+        );
     }
 }

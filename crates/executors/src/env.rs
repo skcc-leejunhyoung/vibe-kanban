@@ -74,6 +74,28 @@ impl RepoContext {
     }
 }
 
+/// The uncommitted-changes reminder a turn sends once after it ends normally.
+#[derive(Debug, Clone)]
+pub struct CommitReminder {
+    pub repo: RepoContext,
+    pub prompt: String,
+}
+
+impl CommitReminder {
+    pub fn from_env(env: &ExecutionEnv) -> Option<Self> {
+        env.commit_reminder.then(|| Self {
+            repo: env.repo_context.clone(),
+            prompt: env.commit_reminder_prompt.clone(),
+        })
+    }
+
+    /// The reminder to send now, or `None` when nothing is left uncommitted.
+    pub async fn prompt(&self) -> Option<String> {
+        let status = self.repo.check_uncommitted_changes().await;
+        (!status.is_empty()).then(|| format!("{}\n{}", self.prompt, status))
+    }
+}
+
 /// Environment variables to inject into executor processes
 #[derive(Debug, Clone)]
 pub struct ExecutionEnv {

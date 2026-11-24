@@ -122,7 +122,7 @@ pub struct AnsweredQuestion {
     pub answer: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 pub struct TokenUsageInfo {
     pub total_tokens: u32,
     pub model_context_window: u32,

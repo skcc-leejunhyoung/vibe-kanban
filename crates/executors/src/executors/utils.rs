@@ -31,6 +31,18 @@ pub(super) fn provider_request_error(
     }
 }
 
+/// Refuses a turn under a permission policy the agent cannot honour instead
+/// of running it under a different one.
+pub(super) fn unsupported_policy(
+    agent: &str,
+    policy: &crate::model_selector::PermissionPolicy,
+    supported: &str,
+) -> super::ExecutorError {
+    agent_error(format!(
+        "{agent} cannot run with the {policy:?} permission policy. Choose {supported}."
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommandCall<'a> {
     /// The command name in lowercase (without the leading slash)

@@ -22,21 +22,25 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 use workspace_utils::{
-    approvals::ApprovalStatus, command_ext::GroupSpawnNoWindowExt, msg_store::MsgStore,
+    approvals::{ApprovalStatus, QuestionStatus},
+    command_ext::GroupSpawnNoWindowExt,
+    msg_store::MsgStore,
 };
 
 use super::{
     AppendPrompt, AvailabilityInfo, BaseCodingAgent, ExecutorError, ExecutorExitResult,
-    SpawnedChild, StandardCodingAgentExecutor,
+    SlashCommandDescription, SpawnedChild, StandardCodingAgentExecutor,
     acp::{self, AcpEvent, ApprovalResponse},
     utils,
 };
 use crate::{
     approvals::ExecutorApprovalService,
     command::CmdOverrides,
-    env::ExecutionEnv,
+    env::{CommitReminder, ExecutionEnv},
     executor_discovery::ExecutorDiscoveredOptions,
-    logs::utils::patch,
+    logs::{
+        AnsweredQuestion, AskUserQuestionItem, AskUserQuestionOption, TokenUsageInfo, utils::patch,
+    },
     model_selector::{
         ModelInfo, ModelProvider, ModelSelectorConfig, PermissionPolicy, ReasoningOption,
     },
@@ -57,15 +61,27 @@ pub struct ZCode {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    /// Approve every permission request without asking. ZCode still applies
+    /// the user's deny rules first, which its `yolo` mode would skip.
     #[serde(default)]
     pub auto_approve: bool,
+    /// Decline the agent's questions (unattended runs).
+    #[serde(default)]
+    pub dont_ask: bool,
     #[serde(flatten)]
     pub cmd: CmdOverrides,
     #[serde(skip)]
     #[ts(skip)]
     #[derivative(Debug = "ignore", PartialEq = "ignore")]
     pub approvals: Option<Arc<dyn ExecutorApprovalService>>,
+    /// A requested policy this executor cannot honour; the turn is refused.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[derivative(PartialEq = "ignore")]
+    pub unsupported_policy: Option<PermissionPolicy>,
 }
+
+const NO_ANSWER: &str = "The user cannot answer questions in this run. Continue with your best judgment and state the assumptions you make.";
 
 struct Connection {
     input: ChildStdin,
@@ -127,6 +143,9 @@ impl Connection {
                 self.reply(frame, json!({"nativeSearchEnhancementsEnabled":false,"askUserQuestionAutoResolutionEnabled":false})).await
             }
             Some("interaction/requestPermission") => self.reply(frame, json!({"decision":"deny"})).await,
+            Some("interaction/requestUserInput") => {
+                self.reply(frame, json!({"action":"decline","reason":NO_ANSWER})).await
+            }
             Some(_) => self.write(json!({"id":frame["id"],"error":{"code":-32601,"message":"This client does not provide this interaction."}})).await,
             None => Ok(()),
         }
@@ -194,7 +213,10 @@ impl ZCode {
         command.group_spawn_no_window().map_err(ExecutorError::Io)
     }
 
-    async fn discover(&self, cwd: PathBuf) -> Result<ModelSelectorConfig, ExecutorError> {
+    async fn discover(
+        &self,
+        cwd: PathBuf,
+    ) -> Result<(ModelSelectorConfig, Vec<SlashCommandDescription>), ExecutorError> {
         let env = ExecutionEnv::new(Default::default(), false, String::new());
         let mut child = self.start_server(&cwd, &env).await?;
         let mut conn = Connection::new(&mut child);
@@ -203,7 +225,7 @@ impl ZCode {
                 "workspace": workspace(&cwd), "persistence":"deferred", "titleGenerationEnabled":false
             })).await?;
             let config = model_config(&snapshot["settings"]["model"])?;
-            Ok(config)
+            Ok((config, slash_commands(&snapshot)))
         }.await;
         drop(conn);
         let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
@@ -218,6 +240,11 @@ impl ZCode {
         id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        if let Some(policy) = &self.unsupported_policy {
+            return Err(utils::agent_error(format!(
+                "ZCode in Vibe Kanban does not support the {policy:?} permission policy. Choose Supervised, Auto or Don't Ask."
+            )));
+        }
         let mut child = self.start_server(cwd, env).await?;
         let mut conn = Connection::new(&mut child);
         let mut writer = create_stdout_pipe_writer(&mut child)?;
@@ -227,10 +254,25 @@ impl ZCode {
         let executor = self.clone();
         let cwd = cwd.to_path_buf();
         let id = id.map(str::to_owned);
-        let prompt = self.append_prompt.combine_prompt(prompt);
+        // ZCode runs `/name args` as a command; the text must stay exact.
+        let prompt = if utils::parse_slash_command::<utils::SlashCommandCall<'_>>(prompt).is_some()
+        {
+            prompt.to_owned()
+        } else {
+            self.append_prompt.combine_prompt(prompt)
+        };
+        let reminder = CommitReminder::from_env(env);
         tokio::spawn(async move {
             let result = executor
-                .run_turn(&mut conn, &cwd, prompt, id, &turn_cancel, &mut writer)
+                .run_turn(
+                    &mut conn,
+                    &cwd,
+                    prompt,
+                    id,
+                    reminder,
+                    &turn_cancel,
+                    &mut writer,
+                )
                 .await;
             let status = match result {
                 Ok(()) => ExecutorExitResult::Success,
@@ -250,17 +292,21 @@ impl ZCode {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_turn(
         &self,
         conn: &mut Connection,
         cwd: &Path,
         prompt: String,
         id: Option<String>,
+        mut reminder: Option<CommitReminder>,
         cancel: &CancellationToken,
         writer: &mut (impl AsyncWrite + Unpin),
     ) -> Result<(), ExecutorError> {
         let setup = async {
-            let mode = if self.auto_approve { "yolo" } else { "build" };
+            // Auto approves each request in build mode instead of using yolo,
+            // which allows a tool before the user's deny rules are checked.
+            let mode = "build";
             let snapshot = if let Some(id) = id {
                 conn.call(
                     "session/resume",
@@ -278,9 +324,16 @@ impl ZCode {
                 ))
             })?;
             let catalog = &snapshot["settings"]["model"];
+            let mut usage = ContextUsage::from_snapshot(&snapshot);
             if let Some(model) =
                 selected_model(catalog, self.model.as_deref(), self.reasoning.as_deref())?
             {
+                if model["providerId"] != catalog["current"]["providerId"]
+                    || model["modelId"] != catalog["current"]["modelId"]
+                {
+                    // The measured context belongs to the previous model.
+                    usage = ContextUsage::default();
+                }
                 conn.call(
                     "session/setModel",
                     json!({"sessionId":id,"model":model,"persistAsWorkspaceLastUsed":false}),
@@ -296,31 +349,44 @@ impl ZCode {
                 json!({"sessionId":id,"deliveryKind":"desktop-continuous"}),
             )
             .await?;
-            Ok::<_, ExecutorError>(id.to_owned())
+            Ok::<_, ExecutorError>((id.to_owned(), usage))
         };
-        let id = tokio::select! {
+        let (id, mut usage) = tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
             result = setup => result?,
         };
         AcpEvent::SessionStart(id.clone()).write_to(writer).await?;
         AcpEvent::User(prompt.clone()).write_to(writer).await?;
-        let input_id = uuid::Uuid::new_v4().to_string();
-        let request_id = conn
-            .send(
-                "session/send",
-                json!({"sessionId":id,"inputId":input_id,"content":prompt}),
-            )
-            .await?;
-        let result = tokio::select! {
-            _ = cancel.cancelled() => {
-                let _ = tokio::time::timeout(Duration::from_secs(2), conn.call("session/stop", json!({"sessionId":id}))).await;
-                return Ok(());
+        AcpEvent::TokenUsage(usage.info()).write_to(writer).await?;
+        let mut prompt = prompt;
+        loop {
+            let input_id = uuid::Uuid::new_v4().to_string();
+            let request_id = conn
+                .send(
+                    "session/send",
+                    json!({"sessionId":id,"inputId":input_id,"content":prompt}),
+                )
+                .await?;
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), conn.call("session/stop", json!({"sessionId":id}))).await;
+                    return Ok(());
+                }
+                result = self.stream_turn(conn, writer, request_id, &id, &input_id, &mut usage, cancel) => result?,
             }
-            result = self.stream_turn(conn, writer, request_id, &id, &input_id, cancel) => result,
-        };
-        result
+            let next = match reminder.take() {
+                Some(reminder) => reminder.prompt().await,
+                None => None,
+            };
+            let Some(next) = next else {
+                return AcpEvent::Done("end_turn".into()).write_to(writer).await;
+            };
+            AcpEvent::System(next.clone()).write_to(writer).await?;
+            prompt = next;
+        }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn stream_turn(
         &self,
         conn: &mut Connection,
@@ -328,6 +394,7 @@ impl ZCode {
         request_id: u32,
         id: &str,
         input_id: &str,
+        usage: &mut ContextUsage,
         cancel: &CancellationToken,
     ) -> Result<(), ExecutorError> {
         let mut emitted_text = false;
@@ -352,6 +419,11 @@ impl ZCode {
                     if params["sessionId"].as_str() == Some(id) =>
                 {
                     self.permission(conn, writer, &frame, cancel).await?;
+                }
+                Some("interaction/requestUserInput")
+                    if params["sessionId"].as_str() == Some(id) =>
+                {
+                    self.user_input(conn, writer, &frame, cancel).await?;
                 }
                 Some("session/event") if params["sessionId"].as_str() == Some(id) => {
                     let payload = &params["payload"];
@@ -397,7 +469,12 @@ impl ZCode {
                             if !emitted_text && let Some(text) = payload["response"].as_str() {
                                 AcpEvent::text(text).write_to(writer).await?;
                             }
-                            return AcpEvent::Done("end_turn".into()).write_to(writer).await;
+                            return Ok(());
+                        }
+                        Some("session.updated") => {
+                            if let Some(info) = usage.observe(payload) {
+                                AcpEvent::TokenUsage(info).write_to(writer).await?;
+                            }
                         }
                         Some("tool.updated") => {
                             if let Some(event) = tool_event(payload) {
@@ -472,6 +549,210 @@ impl ZCode {
     }
 }
 
+impl ZCode {
+    /// ZCode's AskUserQuestion. Under Don't Ask, or for anything but a list
+    /// of choice questions (such as a plan approval), it is declined with a
+    /// reason the agent can act on.
+    async fn user_input(
+        &self,
+        conn: &mut Connection,
+        writer: &mut (impl AsyncWrite + Unpin),
+        frame: &Value,
+        cancel: &CancellationToken,
+    ) -> Result<(), ExecutorError> {
+        let params = &frame["params"];
+        let decline = json!({"action":"decline","reason":NO_ANSWER});
+        let approvals = match &self.approvals {
+            Some(approvals) if !self.dont_ask => approvals,
+            _ => return conn.reply(frame, decline).await,
+        };
+        let Some(questions) = user_questions(params) else {
+            return conn.reply(frame, decline).await;
+        };
+        let tool_id = params["toolCallId"]
+            .as_str()
+            .or(params["requestId"].as_str())
+            .unwrap_or("question")
+            .to_owned();
+        let title = params["toolName"].as_str().unwrap_or("AskUserQuestion");
+        AcpEvent::ToolUpdate(ToolCallUpdate::new(
+            tool_id.clone(),
+            ToolCallUpdateFields::new()
+                .title(title)
+                .status(ToolCallStatus::Pending)
+                .raw_input(Value::Object(serde_json::Map::from_iter([(
+                    acp::QUESTIONS_KEY.to_owned(),
+                    json!(questions),
+                )]))),
+        ))
+        .write_to(writer)
+        .await?;
+        let approval_id = approvals
+            .create_question_approval(title, questions.len())
+            .await?;
+        AcpEvent::ApprovalRequested {
+            tool_call_id: tool_id.clone(),
+            approval_id: approval_id.clone(),
+        }
+        .write_to(writer)
+        .await?;
+        let answers = match approvals
+            .wait_question_answer(&approval_id, cancel.clone())
+            .await?
+        {
+            QuestionStatus::Answered { answers } => answers,
+            QuestionStatus::TimedOut => return conn.reply(frame, decline).await,
+        };
+        let content: serde_json::Map<String, Value> = answers
+            .iter()
+            .map(|answer| {
+                let value = match answer.answer.as_slice() {
+                    [single] => json!(single),
+                    many => json!(many),
+                };
+                (answer.question.clone(), value)
+            })
+            .collect();
+        conn.reply(
+            frame,
+            json!({"action":"accept","content":{"answers":content}}),
+        )
+        .await?;
+        AcpEvent::QuestionAnswered {
+            tool_call_id: tool_id,
+            answers: answers
+                .into_iter()
+                .map(|answer| AnsweredQuestion {
+                    question: answer.question,
+                    answer: answer.answer,
+                })
+                .collect(),
+        }
+        .write_to(writer)
+        .await
+    }
+}
+
+/// AskUserQuestion's questions in the chat's form; `None` for any other
+/// interaction that arrives this way, such as a plan approval.
+fn user_questions(params: &Value) -> Option<Vec<AskUserQuestionItem>> {
+    if !params["schema"]["interaction"].is_null() {
+        return None;
+    }
+    let questions = params["questions"].as_array()?;
+    let items: Vec<_> = questions
+        .iter()
+        .map(|question| {
+            Some(AskUserQuestionItem {
+                question: question["question"].as_str()?.to_owned(),
+                header: question["header"].as_str().unwrap_or("Question").to_owned(),
+                options: question["options"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|option| {
+                        Some(AskUserQuestionOption {
+                            label: option["label"].as_str()?.to_owned(),
+                            description: option["description"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned(),
+                        })
+                    })
+                    .collect(),
+                multi_select: question["multiSelect"] == true,
+                allow_custom_answer: Some(true),
+            })
+        })
+        .collect::<Option<_>>()?;
+    (!items.is_empty()).then_some(items)
+}
+
+/// The commands a session's snapshot lists for its `/` menu.
+fn slash_commands(snapshot: &Value) -> Vec<SlashCommandDescription> {
+    utils::reorder_slash_commands(
+        snapshot["slashCommands"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|command| {
+                let name = command["name"].as_str()?.trim_start_matches('/');
+                let description = command["description"].as_str().unwrap_or_default();
+                let description = match command["inputHint"].as_str() {
+                    Some(hint) if !description.is_empty() => format!("{description} ({hint})"),
+                    Some(hint) => hint.to_owned(),
+                    None => description.to_owned(),
+                };
+                Some(SlashCommandDescription {
+                    name: name.to_owned(),
+                    description: (!description.is_empty()).then_some(description),
+                })
+            }),
+    )
+}
+
+/// The context gauge: ZCode's own meter at session start, then each main
+/// model call's context (input window plus output) against the session
+/// model's window.
+#[derive(Default)]
+struct ContextUsage {
+    used: u64,
+    window: u64,
+}
+
+impl ContextUsage {
+    fn from_snapshot(snapshot: &Value) -> Self {
+        let usage = &snapshot["runtime"]["contextUsage"];
+        let window = usage["size"]
+            .as_u64()
+            .or(snapshot["projection"]["contextWindow"].as_u64())
+            .unwrap_or_default();
+        Self {
+            used: usage["used"].as_u64().unwrap_or_default(),
+            window,
+        }
+    }
+
+    fn info(&self) -> TokenUsageInfo {
+        match (u32::try_from(self.used), u32::try_from(self.window)) {
+            (Ok(used), Ok(window)) if used > 0 && window > 0 => TokenUsageInfo {
+                total_tokens: used,
+                model_context_window: window,
+            },
+            _ => TokenUsageInfo {
+                total_tokens: 0,
+                model_context_window: 0,
+            },
+        }
+    }
+
+    /// `session.updated` carries internal events ZCode has no legacy name
+    /// for: a model call's completion, and a model selection with its window.
+    fn observe(&mut self, payload: &Value) -> Option<TokenUsageInfo> {
+        if payload["modelSelection"].is_object() {
+            self.window = payload["contextWindow"].as_u64().unwrap_or_default();
+            self.used = 0;
+            return Some(self.info());
+        }
+        let usage = &payload["usage"];
+        if !usage.is_object() || payload["stopReason"].is_null() {
+            return None;
+        }
+        if payload["querySource"]
+            .as_str()
+            .is_some_and(|source| source != "main_turn")
+        {
+            return None;
+        }
+        let count = |key: &str| usage[key].as_u64().unwrap_or_default();
+        let used = count("inputTokens") + count("outputTokens");
+        self.used = if used > 0 { used } else { count("totalTokens") };
+        if let Some(window) = payload["contextWindow"].as_u64() {
+            self.window = window;
+        }
+        Some(self.info())
+    }
+}
+
 #[cfg(unix)]
 fn zcode_needs_short_tmpdir(env: &ExecutionEnv) -> bool {
     let path = ["TMPDIR", "TMP", "TEMP"].into_iter().find_map(|key| {
@@ -532,6 +813,90 @@ mod tests {
         assert!(!zcode_needs_short_tmpdir(&env));
         env.insert("TMPDIR", format!("/{}", "한".repeat(19)));
         assert!(zcode_needs_short_tmpdir(&env));
+    }
+
+    #[test]
+    fn context_usage_follows_snapshot_model_calls_and_model_switches() {
+        let mut usage = ContextUsage::from_snapshot(&json!({
+            "runtime": {"contextUsage": {"used": 1200, "size": 200000, "cost": null}},
+            "projection": {"contextWindow": 200000}
+        }));
+        assert_eq!(
+            (usage.info().total_tokens, usage.info().model_context_window),
+            (1200, 200000)
+        );
+        let call = |source: &str, input: u64| {
+            json!({"usage": {"inputTokens": input, "outputTokens": 300}, "stopReason": "stop",
+                   "querySource": source, "content": ""})
+        };
+        assert_eq!(usage.observe(&call("title", 9999)), None);
+        let info = usage.observe(&call("main_turn", 5000)).unwrap();
+        assert_eq!(
+            (info.total_tokens, info.model_context_window),
+            (5300, 200000)
+        );
+        let switched = usage
+            .observe(&json!({"modelSelection": {"providerId": "p", "modelId": "m"}, "contextWindow": 64000}))
+            .unwrap();
+        assert_eq!(
+            (switched.total_tokens, switched.model_context_window),
+            (0, 0)
+        );
+        let info = usage.observe(&call("main_turn", 100)).unwrap();
+        assert_eq!((info.total_tokens, info.model_context_window), (400, 64000));
+        assert_eq!(usage.observe(&json!({"title": "renamed"})), None);
+        assert_eq!(
+            ContextUsage::from_snapshot(&json!({}))
+                .info()
+                .model_context_window,
+            0
+        );
+    }
+
+    #[test]
+    fn lists_snapshot_commands_and_questions() {
+        let commands = slash_commands(&json!({"slashCommands": [
+            {"name": "init", "description": "Create AGENTS.md", "source": "builtin"},
+            {"name": "compact", "description": "Compact", "inputHint": "focus", "source": "builtin"}
+        ]}));
+        assert_eq!(commands[0].name, "compact");
+        assert_eq!(commands[0].description.as_deref(), Some("Compact (focus)"));
+        let questions = user_questions(&json!({"requestId": "r", "sessionId": "s", "questions": [
+            {"question": "Which?", "header": "Pick", "multiSelect": true,
+             "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]}
+        ]}))
+        .unwrap();
+        assert!(questions[0].multi_select && questions[0].options[1].label == "B");
+        assert!(
+            user_questions(&json!({"schema": {"interaction": "plan_approval"}, "questions": []}))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn policies_map_to_build_mode_flags_and_plan_is_refused() {
+        let mut zcode: ZCode = serde_json::from_value(json!({})).unwrap();
+        let mut config = ExecutorConfig::new(BaseCodingAgent::ZCode);
+        for (policy, auto, dont_ask, refused) in [
+            (PermissionPolicy::Auto, true, false, false),
+            (PermissionPolicy::DontAsk, true, true, false),
+            (PermissionPolicy::Supervised, false, false, false),
+            (PermissionPolicy::Plan, false, false, true),
+        ] {
+            config.permission_policy = Some(policy.clone());
+            zcode.apply_overrides(&config);
+            assert_eq!(
+                (
+                    zcode.auto_approve,
+                    zcode.dont_ask,
+                    zcode.unsupported_policy.is_some()
+                ),
+                (auto, dont_ask, refused)
+            );
+            if !refused {
+                assert_eq!(zcode.get_preset_options().permission_policy, Some(policy));
+            }
+        }
     }
 
     #[test]
@@ -633,7 +998,11 @@ fn model_ref(
 
 fn model_config(catalog: &Value) -> Result<ModelSelectorConfig, ExecutorError> {
     let mut config = ModelSelectorConfig {
-        permissions: vec![PermissionPolicy::Supervised, PermissionPolicy::Auto],
+        permissions: vec![
+            PermissionPolicy::Supervised,
+            PermissionPolicy::Auto,
+            PermissionPolicy::DontAsk,
+        ],
         ..Default::default()
     };
     if let (Some(provider), Some(id)) = (
@@ -700,6 +1069,9 @@ impl StandardCodingAgentExecutor for ZCode {
         if let Some(policy) = &config.permission_policy {
             self.auto_approve =
                 matches!(policy, PermissionPolicy::Auto | PermissionPolicy::DontAsk);
+            self.dont_ask = matches!(policy, PermissionPolicy::DontAsk);
+            self.unsupported_policy =
+                matches!(policy, PermissionPolicy::Plan).then_some(PermissionPolicy::Plan);
         }
     }
 
@@ -746,10 +1118,10 @@ impl StandardCodingAgentExecutor for ZCode {
         let mut config = ExecutorConfig::new(BaseCodingAgent::ZCode);
         config.model_id = self.model.clone();
         config.reasoning_id = self.reasoning.clone();
-        config.permission_policy = Some(if self.auto_approve {
-            PermissionPolicy::Auto
-        } else {
-            PermissionPolicy::Supervised
+        config.permission_policy = Some(match (self.auto_approve, self.dont_ask) {
+            (true, true) => PermissionPolicy::DontAsk,
+            (true, false) => PermissionPolicy::Auto,
+            (false, _) => PermissionPolicy::Supervised,
         });
         config
     }
@@ -764,7 +1136,10 @@ impl StandardCodingAgentExecutor for ZCode {
         Ok(Box::pin(futures::stream::once(async move {
             let mut options = ExecutorDiscoveredOptions::default();
             match executor.discover(cwd).await {
-                Ok(config) => options.model_selector = config,
+                Ok((config, commands)) => {
+                    options.model_selector = config;
+                    options.slash_commands = commands;
+                }
                 Err(err) => options.error = Some(err.to_string()),
             }
             patch::executor_discovered_options(options)

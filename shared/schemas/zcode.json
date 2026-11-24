@@ -24,6 +24,12 @@
       ]
     },
     "auto_approve": {
+      "description": "Approve every permission request without asking. ZCode still applies\nthe user's deny rules first, which its `yolo` mode would skip.",
+      "type": "boolean",
+      "default": false
+    },
+    "dont_ask": {
+      "description": "Decline the agent's questions (unattended runs).",
       "type": "boolean",
       "default": false
     },

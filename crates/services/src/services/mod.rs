@@ -5,6 +5,7 @@ pub mod artifacts;
 pub mod auth;
 pub mod automation;
 pub mod autopilot;
+pub mod commit_message;
 pub mod config;
 pub mod container;
 pub mod diff_stream;

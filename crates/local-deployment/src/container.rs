@@ -41,18 +41,17 @@ use executors::{
     env::{ExecutionEnv, RepoContext},
     executors::{
         BaseCodingAgent, CancellationToken, ExecutorExitResult, ExecutorExitSignal,
-        SubagentLiveHandle,
-        opencode_v2::memory_skill_dirs,
-        utils::{SlashCommandCall, parse_slash_command},
+        StandardCodingAgentExecutor, SubagentLiveHandle, opencode_v2::memory_skill_dirs,
     },
     logs::{NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch},
-    profile::ExecutorConfig,
+    profile::{ExecutorConfig, ExecutorConfigs},
 };
 use futures::{FutureExt, StreamExt, TryStreamExt, stream::select};
 use git::{GitService, GitServiceError};
 use services::services::{
     agent_journal,
     approvals::{Approvals, executor_approvals::ExecutorApprovalBridge},
+    commit_message,
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
     container::{
         ContainerError, ContainerLocks, ContainerRef, ContainerService, SessionStopSignals,
@@ -1256,9 +1255,12 @@ impl LocalContainerService {
 
     /// Whether a run in `session_id` gets the uncommitted-changes reminder. A
     /// throwaway one-shot run must not: the reminder would tell it to commit
-    /// the user's work in progress in the real workspace.
-    async fn commit_reminder_enabled_for(&self, session_id: Uuid) -> bool {
-        self.config.read().await.commit_reminder_enabled
+    /// the user's work in progress in the real workspace. Neither may a quick
+    /// chat, which works in the user's own checkout and leaves its changes for
+    /// the user to review and commit.
+    async fn commit_reminder_enabled_for(&self, workspace: &Workspace, session_id: Uuid) -> bool {
+        !workspace.in_place
+            && self.config.read().await.commit_reminder_enabled
             && matches!(
                 Session::is_ephemeral(&self.db.pool, session_id).await,
                 Ok(false)
@@ -1358,62 +1360,25 @@ impl LocalContainerService {
         }
     }
 
-    /// Get the commit message based on the execution run reason.
-    async fn get_commit_message(&self, ctx: &ExecutionContext) -> String {
+    /// The message for the changes a run left uncommitted. A coding turn's
+    /// message is drafted by its agent from the session, apart from the chat:
+    /// the final reply is a report for the user (test results, status blocks,
+    /// orchestration markers) and never becomes Git history. Without a usable
+    /// draft the default message is used.
+    async fn get_commit_message(
+        &self,
+        ctx: &ExecutionContext,
+        workspace_root: &Path,
+        changed: &[(Repo, PathBuf)],
+    ) -> String {
         match ctx.execution_process.run_reason {
             ExecutionProcessRunReason::CodingAgent => {
-                // Try to retrieve the task summary from the coding agent turn
-                // otherwise fallback to default message
-                match CodingAgentTurn::find_by_execution_process_id(
-                    &self.db().pool,
-                    ctx.execution_process.id,
-                )
-                .await
+                match self
+                    .draft_commit_message(ctx, workspace_root, changed)
+                    .await
                 {
-                    // Slash-command output (/export, /usage, /debug-config, ...) can
-                    // hold the conversation or account data: never commit it.
-                    Ok(Some(turn))
-                        if turn.summary.is_some()
-                            && !turn.prompt.as_deref().is_some_and(|prompt| {
-                                parse_slash_command::<SlashCommandCall<'_>>(prompt).is_some()
-                            }) =>
-                    {
-                        // The summary is the agent's final message verbatim, which
-                        // in a vibe run ends with the `VIBE_RESULT:` sentinel. Strip
-                        // it so orchestration noise never lands in the commit; fall
-                        // back to the default if nothing meaningful remains.
-                        let cleaned =
-                            vibe_orchestrator::strip_result_sentinel(&turn.summary.unwrap());
-                        if cleaned.is_empty() {
-                            format!(
-                                "Commit changes from coding agent for workspace {}",
-                                ctx.workspace.id
-                            )
-                        } else {
-                            cleaned
-                        }
-                    }
-                    Ok(_) => {
-                        tracing::debug!(
-                            "No summary found for execution process {}, using default message",
-                            ctx.execution_process.id
-                        );
-                        format!(
-                            "Commit changes from coding agent for workspace {}",
-                            ctx.workspace.id
-                        )
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            "Failed to retrieve summary for execution process {}: {}",
-                            ctx.execution_process.id,
-                            e
-                        );
-                        format!(
-                            "Commit changes from coding agent for workspace {}",
-                            ctx.workspace.id
-                        )
-                    }
+                    Some(message) => message,
+                    None => default_agent_commit_message(ctx.workspace.id),
                 }
             }
             ExecutionProcessRunReason::CleanupScript => {
@@ -1424,6 +1389,84 @@ impl LocalContainerService {
                 ctx.execution_process.id
             ),
         }
+    }
+
+    /// Asks the turn's agent for a commit message that follows the configured
+    /// commit conventions, without adding to its conversation. `None` when the
+    /// agent cannot generate text that way, generation fails, or the draft is
+    /// not a commit message.
+    async fn draft_commit_message(
+        &self,
+        ctx: &ExecutionContext,
+        workspace_root: &Path,
+        changed: &[(Repo, PathBuf)],
+    ) -> Option<String> {
+        let pool = &self.db.pool;
+        let turn = CodingAgentTurn::find_by_execution_process_id(pool, ctx.execution_process.id)
+            .await
+            .ok()??;
+        let session_id = turn.agent_session_id?;
+        let action = ctx.execution_process.executor_action().ok()?;
+        let config = action.executor_config()?.clone();
+        let mut agent = ExecutorConfigs::get_cached().get_coding_agent(&config.profile_id())?;
+        if config.has_overrides() {
+            agent.apply_overrides(&config);
+        }
+        let prompts = CodingAgentTurn::find_prompts_by_session_id(pool, ctx.session.id)
+            .await
+            .unwrap_or_default();
+        let issues = commit_message::explicit_issue_numbers(prompts.iter().map(String::as_str));
+        let conventions = self
+            .config
+            .read()
+            .await
+            .commit_reminder_prompt
+            .clone()
+            .unwrap_or_else(|| DEFAULT_COMMIT_REMINDER_PROMPT.to_string());
+        let repo_context = RepoContext::new(
+            workspace_root.to_path_buf(),
+            changed.iter().map(|(repo, _)| repo.name.clone()).collect(),
+        );
+        let changes = repo_context.check_uncommitted_changes().await;
+        let instructions = commit_message::instructions(&conventions, &changes, &issues);
+        let env = ExecutionEnv::new(repo_context, false, String::new());
+        let draft = tokio::time::timeout(
+            COMMIT_MESSAGE_TIMEOUT,
+            agent.generate_commit_message(
+                &action.effective_dir(workspace_root),
+                &session_id,
+                &instructions,
+                &env,
+            ),
+        )
+        .await;
+        let draft = match draft {
+            Ok(Ok(Some(draft))) => draft,
+            Ok(Ok(None)) => return None,
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    "Commit message generation failed for execution {}: {}",
+                    ctx.execution_process.id,
+                    e
+                );
+                return None;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Commit message generation timed out for execution {}",
+                    ctx.execution_process.id
+                );
+                return None;
+            }
+        };
+        let message = commit_message::sanitize(&draft, &issues);
+        if message.is_none() {
+            tracing::warn!(
+                "Discarded a generated commit message that was not a commit message for execution {}",
+                ctx.execution_process.id
+            );
+        }
+        message
     }
 
     /// Check which repos have uncommitted changes. Fails if any repo is inaccessible.
@@ -4254,7 +4297,7 @@ impl ContainerService for LocalContainerService {
         let repo_context = RepoContext::new(current_dir.clone(), repo_names);
 
         let commit_reminder_enabled = self
-            .commit_reminder_enabled_for(execution_process.session_id)
+            .commit_reminder_enabled_for(workspace, execution_process.session_id)
             .await;
         let config = self.config.read().await;
         let mut commit_reminder_prompt = config
@@ -4666,8 +4709,6 @@ impl ContainerService for LocalContainerService {
             return Ok(false);
         }
 
-        let message = self.get_commit_message(ctx).await;
-
         let container_ref = ctx
             .workspace
             .container_ref
@@ -4688,6 +4729,9 @@ impl ContainerService for LocalContainerService {
             return Ok(false);
         }
 
+        let message = self
+            .get_commit_message(ctx, &workspace_root, &repos_with_changes)
+            .await;
         Ok(self.commit_repos(repos_with_changes, &message))
     }
 
@@ -5069,10 +5113,10 @@ fn opencode_workspace_repo<'a>(
     let matches = |checkout: &Path, repo: &Repo| {
         common(checkout).is_some_and(|dir| common(&repo.path).as_ref() == Some(&dir))
     };
-    if let [repo] = repos {
-        if (!in_place && cwd == root) || matches(&root, repo) {
-            return Some(repo);
-        }
+    if let [repo] = repos
+        && ((!in_place && cwd == root) || matches(&root, repo))
+    {
+        return Some(repo);
     }
     // At the parent of multiple worktrees there is no single repository to
     // lend these two skill IDs to. Only expose the selected worktree's memory.
@@ -5085,6 +5129,13 @@ fn opencode_workspace_repo<'a>(
                 && matches(&path, repo)
         })
     })
+}
+
+/// How long finalization waits for an agent to draft a commit message.
+const COMMIT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn default_agent_commit_message(workspace_id: Uuid) -> String {
+    format!("Commit changes from coding agent for workspace {workspace_id}")
 }
 
 #[cfg(test)]
@@ -6957,19 +7008,18 @@ done
         }
     }
 
+    /// The final reply is a report for the user. Neither it nor a slash
+    /// command's output (/export, /usage, ...) becomes the commit message; an
+    /// agent that cannot draft one gets the default message.
     #[tokio::test]
-    async fn slash_command_output_never_becomes_the_commit_message() {
+    async fn chat_summary_never_becomes_the_commit_message() {
         use db::models::{
             coding_agent_turn::CreateCodingAgentTurn, execution_process::CreateExecutionProcess,
         };
 
         let (container, session, workspace) = queue_test_container().await;
         let pool = &container.db.pool;
-        for (prompt, expected) in [
-            (" /export", None),
-            ("/usage weekly", None),
-            ("Fix the bug", Some("Fixed the bug")),
-        ] {
+        for prompt in [" /export", "/usage weekly", "Fix the bug"] {
             let mut ctx = finished_turn(&session, &workspace, ExecutionProcessStatus::Completed);
             ctx.execution_process = ExecutionProcess::create(
                 pool,
@@ -6990,19 +7040,102 @@ done
             CodingAgentTurn::create(pool, &turn, Uuid::new_v4())
                 .await
                 .unwrap();
-            CodingAgentTurn::update_summary(pool, ctx.execution_process.id, "Fixed the bug")
-                .await
-                .unwrap();
-            let default = format!(
-                "Commit changes from coding agent for workspace {}",
-                workspace.id
-            );
+            CodingAgentTurn::update_agent_session_id(
+                pool,
+                ctx.execution_process.id,
+                "fixture-session",
+            )
+            .await
+            .unwrap();
+            CodingAgentTurn::update_summary(
+                pool,
+                ctx.execution_process.id,
+                "Fixed the bug.\n\n## Tests\n- cargo test passed\n\nVIBE_RESULT: done",
+            )
+            .await
+            .unwrap();
             assert_eq!(
-                container.get_commit_message(&ctx).await,
-                expected.map_or(default, str::to_string),
+                container
+                    .get_commit_message(&ctx, Path::new("/fixture"), &[])
+                    .await,
+                default_agent_commit_message(workspace.id),
                 "{prompt}"
             );
         }
+    }
+
+    /// Leftover changes are committed in every repository once, with the
+    /// default message when the agent drafts none; a quick chat's checkout
+    /// and a run that is not a coding turn are left alone.
+    #[tokio::test]
+    async fn uncommitted_changes_are_committed_once_per_repository() {
+        let (container, session, workspace) = queue_test_container().await;
+        let root = tempfile::tempdir().unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(dir)
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.test",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        let mut repos = Vec::new();
+        for name in ["first", "second"] {
+            let dir = root.path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            git(&dir, &["init", "-q"]);
+            git(&dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+            std::fs::write(dir.join("change.txt"), name).unwrap();
+            repos.push(
+                Repo::find_or_create(&container.db.pool, &dir, name)
+                    .await
+                    .unwrap(),
+            );
+        }
+        let workspace = Workspace {
+            container_ref: Some(root.path().to_string_lossy().into()),
+            ..workspace
+        };
+        let context = |workspace: &Workspace, reason| {
+            let mut ctx = finished_turn(&session, workspace, ExecutionProcessStatus::Completed);
+            ctx.execution_process.run_reason = reason;
+            ctx.repos = repos.clone();
+            ctx
+        };
+        let ctx = context(&workspace, ExecutionProcessRunReason::CodingAgent);
+
+        let quick_chat = Workspace {
+            in_place: true,
+            ..workspace.clone()
+        };
+        let quick_chat = context(&quick_chat, ExecutionProcessRunReason::CodingAgent);
+        assert!(!container.try_commit_changes(&quick_chat).await.unwrap());
+        let setup = context(&workspace, ExecutionProcessRunReason::SetupScript);
+        assert!(!container.try_commit_changes(&setup).await.unwrap());
+        assert_eq!(
+            git(&root.path().join("first"), &["status", "--porcelain"]),
+            "?? change.txt"
+        );
+
+        assert!(container.try_commit_changes(&ctx).await.unwrap());
+        for name in ["first", "second"] {
+            let dir = root.path().join(name);
+            assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+            assert_eq!(
+                git(&dir, &["log", "-1", "--format=%B"]),
+                default_agent_commit_message(workspace.id)
+            );
+        }
+        assert!(!container.try_commit_changes(&ctx).await.unwrap());
     }
 
     #[tokio::test]
@@ -9960,8 +10093,25 @@ mod ephemeral_session_tests {
             .unwrap()
             .unwrap();
         assert_eq!(latest.id, user.id);
-        assert!(container.commit_reminder_enabled_for(user.id).await);
-        assert!(!container.commit_reminder_enabled_for(throwaway.id).await);
+        assert!(
+            container
+                .commit_reminder_enabled_for(&workspace, user.id)
+                .await
+        );
+        assert!(
+            !container
+                .commit_reminder_enabled_for(&workspace, throwaway.id)
+                .await
+        );
+        let quick_chat = Workspace {
+            in_place: true,
+            ..workspace.clone()
+        };
+        assert!(
+            !container
+                .commit_reminder_enabled_for(&quick_chat, user.id)
+                .await
+        );
     }
 
     /// After a restart, a throwaway session's orphaned run is not reported

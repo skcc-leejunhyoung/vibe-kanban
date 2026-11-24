@@ -1677,15 +1677,42 @@ export type Opencode = { append_prompt: AppendPrompt, model?: string | null, var
  */
 auto_approve: boolean,
 /**
+ * Deny the question tool (unattended runs).
+ */
+dont_ask: boolean,
+/**
  * Enable auto-compaction when the context length approaches the model's context window limit
  */
 auto_compact: boolean, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 
-export type OpencodeV2 = { append_prompt: AppendPrompt, model?: string | null, variant?: string | null, agent?: string | null, auto_approve: boolean, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
+export type OpencodeV2 = { append_prompt: AppendPrompt, model?: string | null, variant?: string | null, agent?: string | null, auto_approve: boolean,
+/**
+ * Deny the question tool and decline any form (unattended runs). Tool
+ * approvals still follow `auto_approve`.
+ */
+dont_ask: boolean, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 
-export type Pi = { append_prompt: AppendPrompt, model?: string | null, auto_approve: boolean, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
+export type Pi = { append_prompt: AppendPrompt, model?: string | null,
+/**
+ * Approve extension confirmations without asking.
+ */
+auto_approve: boolean,
+/**
+ * Also cancel extension selections, which are Pi's questions to the user
+ * (unattended runs).
+ */
+dont_ask: boolean, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 
-export type ZCode = { append_prompt: AppendPrompt, model?: string | null, reasoning?: string | null, auto_approve: boolean, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
+export type ZCode = { append_prompt: AppendPrompt, model?: string | null, reasoning?: string | null,
+/**
+ * Approve every permission request without asking. ZCode still applies
+ * the user's deny rules first, which its `yolo` mode would skip.
+ */
+auto_approve: boolean,
+/**
+ * Decline the agent's questions (unattended runs).
+ */
+dont_ask: boolean, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 
 export type QwenCode = { append_prompt: AppendPrompt, model?: string | null, agent?: string | null, yolo?: boolean | null, base_command_override?: string | null, additional_params?: Array<string> | null, env?: { [key in string]?: string } | null, };
 

@@ -18,6 +18,12 @@
       ]
     },
     "auto_approve": {
+      "description": "Approve extension confirmations without asking.",
+      "type": "boolean",
+      "default": false
+    },
+    "dont_ask": {
+      "description": "Also cancel extension selections, which are Pi's questions to the user\n(unattended runs).",
       "type": "boolean",
       "default": false
     },

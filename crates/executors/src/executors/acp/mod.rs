@@ -30,6 +30,15 @@ pub enum AcpEvent {
         approval_id: String,
     },
     ApprovalResponse(ApprovalResponse),
+    /// Tokens in the current context and the window of the model that
+    /// measured them. `0 / 0` means not known until the next reply.
+    TokenUsage(crate::logs::TokenUsageInfo),
+    /// A note from Vibe Kanban itself, shown as a system message.
+    System(String),
+    QuestionAnswered {
+        tool_call_id: String,
+        answers: Vec<crate::logs::AnsweredQuestion>,
+    },
     Error(String),
     Done(String),
     Other(agent_client_protocol::SessionNotification),

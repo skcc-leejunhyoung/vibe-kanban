@@ -24,6 +24,10 @@ use crate::{
     },
 };
 
+/// Raw input key of a tool call that asks the user the listed
+/// `AskUserQuestionItem`s.
+pub const QUESTIONS_KEY: &str = "vibeQuestions";
+
 pub fn normalize_logs(
     msg_store: Arc<MsgStore>,
     worktree_path: &Path,
@@ -319,6 +323,51 @@ pub fn normalize_logs_with_suppressed_stderr_patterns(
                                 .push_patch(ConversationPatch::add_normalized_entry(idx, entry));
                         }
                     }
+                    AcpEvent::TokenUsage(info) => {
+                        let entry = NormalizedEntry {
+                            timestamp: None,
+                            content: format!(
+                                "Tokens used: {} / Context window: {}",
+                                info.total_tokens, info.model_context_window
+                            ),
+                            entry_type: NormalizedEntryType::TokenUsageInfo(info),
+                            metadata: None,
+                        };
+                        msg_store.push_patch(ConversationPatch::add_normalized_entry(
+                            entry_index.next(),
+                            entry,
+                        ));
+                    }
+                    AcpEvent::System(content) => {
+                        streaming.assistant_text = None;
+                        streaming.thinking_text = None;
+                        let entry = NormalizedEntry {
+                            timestamp: None,
+                            entry_type: NormalizedEntryType::SystemMessage,
+                            content,
+                            metadata: None,
+                        };
+                        msg_store.push_patch(ConversationPatch::add_normalized_entry(
+                            entry_index.next(),
+                            entry,
+                        ));
+                    }
+                    AcpEvent::QuestionAnswered { answers, .. } => {
+                        let entry = NormalizedEntry {
+                            timestamp: None,
+                            content: format!(
+                                "Answered {} question{}",
+                                answers.len(),
+                                if answers.len() == 1 { "" } else { "s" }
+                            ),
+                            entry_type: NormalizedEntryType::UserAnsweredQuestions { answers },
+                            metadata: None,
+                        };
+                        msg_store.push_patch(ConversationPatch::add_normalized_entry(
+                            entry_index.next(),
+                            entry,
+                        ));
+                    }
                     AcpEvent::User(_) | AcpEvent::Other(_) => (),
                 }
             }
@@ -371,6 +420,11 @@ pub fn normalize_logs_with_suppressed_stderr_patterns(
                 return ActionType::AskUserQuestion {
                     questions: vec![question],
                 };
+            }
+            if let Some(questions) = tc.raw_input.as_ref().and_then(|raw| raw.get(QUESTIONS_KEY))
+                && let Ok(questions) = serde_json::from_value(questions.clone())
+            {
+                return ActionType::AskUserQuestion { questions };
             }
             match tc.kind {
                 agent_client_protocol::ToolKind::Read => {
@@ -835,6 +889,7 @@ impl TryFrom<SessionNotification> for AcpEvent {
             acp::SessionUpdate::CurrentModeUpdate(update) => {
                 AcpEvent::CurrentMode(update.current_mode_id)
             }
+            acp::SessionUpdate::UsageUpdate(usage) => super::client::context_usage(&usage),
             _ => return Err(()),
         };
         Ok(event)

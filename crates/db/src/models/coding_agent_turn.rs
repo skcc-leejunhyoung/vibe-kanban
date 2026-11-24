@@ -306,6 +306,25 @@ impl CodingAgentTurn {
         Ok(result.into_iter().collect())
     }
 
+    /// Every non-empty prompt sent in a session, oldest first.
+    pub async fn find_prompts_by_session_id(
+        pool: &SqlitePool,
+        session_id: Uuid,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar(
+            r#"SELECT cat.prompt
+               FROM execution_processes ep
+               JOIN coding_agent_turns cat ON cat.execution_process_id = ep.id
+               WHERE ep.session_id = $1
+                 AND cat.prompt IS NOT NULL
+                 AND TRIM(cat.prompt) <> ''
+               ORDER BY cat.created_at, cat.id"#,
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await
+    }
+
     /// Find the most recent non-empty prompt for each workspace with the given
     /// archived status. Returns a map of workspace_id -> latest prompt text.
     /// Used to surface what each workspace is working on in the sidebar.

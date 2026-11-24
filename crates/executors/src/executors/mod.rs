@@ -220,13 +220,9 @@ impl CodingAgent {
             Self::Gemini(_) | Self::QwenCode(_) => {
                 vec![BaseAgentCapability::SessionFork]
             }
+            Self::OpencodeV2(_) | Self::Pi(_) => vec![BaseAgentCapability::ContextUsage],
             Self::CursorAgent(_) => vec![BaseAgentCapability::SetupHelper],
-            Self::Amp(_)
-            | Self::Copilot(_)
-            | Self::Droid(_)
-            | Self::Pi(_)
-            | Self::ZCode(_)
-            | Self::OpencodeV2(_) => vec![],
+            Self::Amp(_) | Self::Copilot(_) | Self::Droid(_) | Self::ZCode(_) => vec![],
             #[cfg(feature = "qa-mode")]
             Self::QaMock(_) => vec![], // QA mock doesn't need special capabilities
         }
@@ -293,6 +289,19 @@ pub trait StandardCodingAgentExecutor {
             }
             None => self.spawn(current_dir, prompt, env).await,
         }
+    }
+
+    /// Drafts a commit message for changes a finished turn left uncommitted,
+    /// from the session's context but without adding to its conversation.
+    /// `Ok(None)` when the agent has no way to generate text like that.
+    async fn generate_commit_message(
+        &self,
+        _current_dir: &Path,
+        _session_id: &str,
+        _instructions: &str,
+        _env: &ExecutionEnv,
+    ) -> Result<Option<String>, ExecutorError> {
+        Ok(None)
     }
 
     fn normalize_logs(

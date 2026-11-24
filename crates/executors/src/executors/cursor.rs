@@ -54,6 +54,16 @@ pub struct CursorAgent {
     pub reasoning: Option<String>,
     #[serde(flatten)]
     pub cmd: CmdOverrides,
+    /// Run in Cursor's read-only plan mode.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[schemars(skip)]
+    pub plan: bool,
+    /// Print mode has no per-tool approval, so Supervised cannot be honoured.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[schemars(skip)]
+    pub unsupported_policy: Option<crate::model_selector::PermissionPolicy>,
 }
 
 // get the model full name
@@ -151,7 +161,9 @@ impl CursorAgent {
         let mut builder =
             CommandBuilder::new(Self::base_command()).params(["-p", "--output-format=stream-json"]);
 
-        if self.force.unwrap_or(false) {
+        if self.plan {
+            builder = builder.extend_params(["--trust", "--mode", "plan"]);
+        } else if self.force.unwrap_or(false) {
             builder = builder.extend_params(["--force"]);
         } else {
             // trusting the current directory is a minimum requirement for cursor to run
@@ -176,11 +188,14 @@ impl StandardCodingAgentExecutor for CursorAgent {
             self.reasoning = Some(reasoning_id.clone());
         }
         if let Some(permission_policy) = executor_config.permission_policy.clone() {
+            use crate::model_selector::PermissionPolicy;
             self.force = Some(matches!(
                 permission_policy,
-                crate::model_selector::PermissionPolicy::Auto
-                    | crate::model_selector::PermissionPolicy::DontAsk
+                PermissionPolicy::Auto | PermissionPolicy::DontAsk
             ));
+            self.plan = permission_policy == PermissionPolicy::Plan;
+            self.unsupported_policy =
+                (permission_policy == PermissionPolicy::Supervised).then_some(permission_policy);
         }
     }
 
@@ -190,6 +205,13 @@ impl StandardCodingAgentExecutor for CursorAgent {
         prompt: &str,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        if let Some(policy) = &self.unsupported_policy {
+            return Err(super::utils::unsupported_policy(
+                "Cursor Agent",
+                policy,
+                "Auto, Don't Ask or Plan",
+            ));
+        }
         mcp::ensure_mcp_server_trust(self, current_dir).await;
 
         let command_parts = self.build_command_builder()?.build_initial()?;
@@ -230,6 +252,13 @@ impl StandardCodingAgentExecutor for CursorAgent {
         _reset_to_message_id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        if let Some(policy) = &self.unsupported_policy {
+            return Err(super::utils::unsupported_policy(
+                "Cursor Agent",
+                policy,
+                "Auto, Don't Ask or Plan",
+            ));
+        }
         mcp::ensure_mcp_server_trust(self, current_dir).await;
 
         let command_parts = self
@@ -1408,6 +1437,28 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn plan_runs_read_only_and_supervised_is_refused() {
+        use crate::model_selector::PermissionPolicy;
+        let mut cursor: CursorAgent = serde_json::from_value(serde_json::json!({})).unwrap();
+        let mut config = ExecutorConfig::new(BaseCodingAgent::CursorAgent);
+        config.permission_policy = Some(PermissionPolicy::Plan);
+        cursor.apply_overrides(&config);
+        let args = cursor
+            .build_command_builder()
+            .unwrap()
+            .build_initial()
+            .unwrap();
+        let args = format!("{args:?}");
+        assert!(args.contains("\"--mode\", \"plan\"") && !args.contains("--force"));
+        config.permission_policy = Some(PermissionPolicy::Supervised);
+        cursor.apply_overrides(&config);
+        assert!(!cursor.plan && cursor.unsupported_policy.is_some());
+        config.permission_policy = Some(PermissionPolicy::DontAsk);
+        cursor.apply_overrides(&config);
+        assert!(cursor.force == Some(true) && cursor.unsupported_policy.is_none());
+    }
+
     #[tokio::test]
     async fn test_cursor_streaming_patch_generation() {
         // Avoid relying on feature flag in tests; construct with a dummy command
@@ -1417,6 +1468,8 @@ mod tests {
             model: None,
             reasoning: None,
             cmd: Default::default(),
+            plan: false,
+            unsupported_policy: None,
         };
         let msg_store = Arc::new(MsgStore::new());
         let current_dir = std::path::PathBuf::from("/tmp/test-worktree");

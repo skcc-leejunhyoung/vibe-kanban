@@ -55,7 +55,7 @@ Install `@opencode/cli@2.4.1` in a separate npm prefix on the execution host. In
 
 You can use provider API keys carried in the executor environment. To use credentials from `/connect`, set a dedicated `XDG_DATA_HOME` in the OpenCode v2 profile and run `opencode2` with that same setting. Vibe Kanban otherwise uses its own v2 data directory. Keep your OpenCode configuration compatible with v1 if both versions read it. [OpenCode v2 migration and configuration](https://opencode.ai/docs/migrate-v1/)
 
-OpenCode v2 supports native session resume, interruption and tool approval. Interactive forms and message-level rewind are unavailable in this integration. Choose **OpenCode** to continue existing v1 sessions and profiles.
+OpenCode v2 supports native session resume, interruption, the context usage gauge and the commands it lists, including your project and user commands, in the chat's `/` menu. `/compact` compacts the session. With **Supervised**, Vibe Kanban asks before edits, shell commands, web access and access outside the workspace, unless a rule in your OpenCode configuration already allows or denies the action. **Auto** approves the remaining requests and shows the agent's questions in the chat. **Don't Ask** also approves them but stops the agent from asking questions. In every mode, deny rules in your configuration still apply. OpenCode's plan agent is available in the agent selector; the **Plan** permission policy is refused. When the commit reminder is on and a turn leaves changes, Vibe Kanban sends the reminder once in the same session. Message-level rewind is unavailable. Choose **OpenCode** to continue existing v1 sessions and profiles.
 
 ### Sync repository memory
 
@@ -72,7 +72,7 @@ Sync keeps the two memory files out of Git through a local exclude rule and refu
 
 Install `@earendil-works/pi-coding-agent@1.4.0` and `pi-acp@0.0.35` on the execution host. Sign in through Pi's `/login` command or provide a model provider's API key through the executor environment. Select **Pi** in the workspace or session, or use `--executor PI` in `vk`. [Pi ACP adapter](https://zed.dev/acp/agent/pi)
 
-Pi supports model selection, streaming, native session resume and interruption. With supervised permissions, Vibe Kanban presents Pi extension confirmations and lets you choose an option from a Pi extension's selection request. With automatic approval, Vibe Kanban cancels selection requests that require a user choice. Pi extensions control which tools require confirmation. Message-level rewind is unavailable.
+Pi supports model selection, streaming, native session resume, interruption, the context usage gauge, the commit reminder and the commands Pi announces in the chat's `/` menu. With **Supervised**, Vibe Kanban presents Pi extension confirmations and lets you choose an option from a Pi extension's selection request. **Auto** approves confirmations and still shows selection requests. **Don't Ask** approves confirmations and cancels selection requests. Pi has no plan mode, so the **Plan** permission policy is refused. Pi extensions control which tools require confirmation. Message-level rewind is unavailable.
 
 ## ZCode
 
@@ -80,4 +80,4 @@ Use the Z.ai ZCode CLI from the [FrontierHarness Eval source build](https://gith
 
 Configure a model and credentials on the execution host using ZCode's personal provider configuration. You can pass the configuration path as `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` in the executor environment. Use a provider that supports tool calls for coding tasks. Models use `provider/model` identifiers. [ZCode provider configuration](https://github.com/zai-org/ZCode/blob/3c5b227649371507ddc4eb46ac5133afe6db1cab/apps/zcode-cli/docs/usage/03-config.md)
 
-Select **ZCode** in the workspace or session, or use `--executor ZCODE` in `vk`. ZCode's stdio app server provides streaming, native session resume, interruption and tool approval. Interactive questions and message-level rewind are unavailable in this integration.
+Select **ZCode** in the workspace or session, or use `--executor ZCODE` in `vk`. ZCode's stdio app server provides streaming, native session resume, interruption, tool approval, the context usage gauge, the commit reminder and the commands listed by the session in the chat's `/` menu. Vibe Kanban runs ZCode in build mode and approves requests itself under **Auto** and **Don't Ask**, so ZCode's deny rules still apply. **Auto** shows the agent's questions in the chat; **Don't Ask** declines them. The **Plan** permission policy is refused. Message-level rewind is unavailable.

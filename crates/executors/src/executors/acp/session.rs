@@ -31,6 +31,11 @@ impl SessionManager {
         Ok(Self { base_dir })
     }
 
+    #[cfg(test)]
+    pub(super) fn base_dir(&self) -> &std::path::Path {
+        &self.base_dir
+    }
+
     /// Get the file path for a session
     fn session_file_path(&self, session_id: &str) -> PathBuf {
         self.base_dir.join(format!("{session_id}.jsonl"))
@@ -72,7 +77,11 @@ impl SessionManager {
             AcpEvent::SessionStart(..)
             | AcpEvent::Error(..)
             | AcpEvent::Done(..)
+            | AcpEvent::TokenUsage(..)
+            | AcpEvent::System(..)
             | AcpEvent::Other(..) => return None,
+
+            AcpEvent::QuestionAnswered { .. } => {}
 
             AcpEvent::User(..)
             | AcpEvent::Message(..)

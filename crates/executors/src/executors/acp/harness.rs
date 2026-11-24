@@ -25,7 +25,7 @@ use super::{AcpClient, SessionManager};
 use crate::{
     approvals::ExecutorApprovalService,
     command::{CmdOverrides, CommandParts},
-    env::ExecutionEnv,
+    env::{CommitReminder, ExecutionEnv},
     executors::{ExecutorError, ExecutorExitResult, SpawnedChild, acp::AcpEvent},
 };
 
@@ -35,6 +35,7 @@ pub struct AcpAgentHarness {
     model: Option<String>,
     mode: Option<String>,
     native_sessions: bool,
+    auto_approve_tools: bool,
 }
 
 impl Default for AcpAgentHarness {
@@ -52,6 +53,7 @@ impl AcpAgentHarness {
             model: None,
             mode: None,
             native_sessions: false,
+            auto_approve_tools: false,
         }
     }
 
@@ -62,11 +64,19 @@ impl AcpAgentHarness {
             model: None,
             mode: None,
             native_sessions: false,
+            auto_approve_tools: false,
         }
     }
 
     pub fn with_native_sessions(mut self) -> Self {
         self.native_sessions = true;
+        self
+    }
+
+    /// Approve tool permissions without asking; questions still go to the
+    /// approval service.
+    pub fn with_auto_approved_tools(mut self, auto_approve: bool) -> Self {
+        self.auto_approve_tools = auto_approve;
         self
     }
 
@@ -128,6 +138,7 @@ impl AcpAgentHarness {
             current_dir.to_path_buf(),
             None,
             prompt,
+            CommitReminder::from_env(&env),
             Some(exit_tx),
             self.session_namespace.clone(),
             self.native_sessions,
@@ -137,6 +148,7 @@ impl AcpAgentHarness {
             self.model.clone(),
             self.mode.clone(),
             approvals,
+            self.auto_approve_tools,
             cancel.clone(),
         )
         .await?;
@@ -189,6 +201,7 @@ impl AcpAgentHarness {
             current_dir.to_path_buf(),
             Some(session_id.to_string()),
             prompt,
+            CommitReminder::from_env(&env),
             Some(exit_tx),
             self.session_namespace.clone(),
             self.native_sessions,
@@ -198,6 +211,7 @@ impl AcpAgentHarness {
             self.model.clone(),
             self.mode.clone(),
             approvals,
+            self.auto_approve_tools,
             cancel.clone(),
         )
         .await?;
@@ -216,6 +230,7 @@ impl AcpAgentHarness {
         cwd: PathBuf,
         existing_session: Option<String>,
         prompt: String,
+        reminder: Option<CommitReminder>,
         exit_signal: Option<tokio::sync::oneshot::Sender<ExecutorExitResult>>,
         session_namespace: String,
         native_sessions: bool,
@@ -223,6 +238,7 @@ impl AcpAgentHarness {
         model: Option<String>,
         mode: Option<String>,
         approvals: Option<std::sync::Arc<dyn ExecutorApprovalService>>,
+        auto_approve_tools: bool,
         cancel: CancellationToken,
     ) -> Result<(), ExecutorError> {
         // Take child's stdio for ACP wiring
@@ -333,7 +349,8 @@ impl AcpAgentHarness {
                             mpsc::unbounded_channel::<crate::executors::acp::AcpEvent>();
 
                         if native_sessions {
-                            let client = AcpClient::new(event_tx, approvals, cancel.clone());
+                            let client = AcpClient::new(event_tx, approvals, cancel.clone())
+                                .auto_approving_tools(auto_approve_tools);
                             // Native load replays prior messages. Keep them out of this turn.
                             client.set_replaying(true);
                             let (conn, io_fut) = proto::ClientSideConnection::new(
@@ -354,6 +371,7 @@ impl AcpAgentHarness {
                                 existing_session,
                                 model,
                                 prompt,
+                                reminder,
                                 pi_session_map.as_deref(),
                                 &cancel,
                             ));
@@ -409,7 +427,8 @@ impl AcpAgentHarness {
 
                         // Create ACP client with approvals support
                         let client =
-                            AcpClient::new(event_tx.clone(), approvals.clone(), cancel.clone());
+                            AcpClient::new(event_tx.clone(), approvals.clone(), cancel.clone())
+                                .auto_approving_tools(auto_approve_tools);
                         let client_feedback_handle = client.clone();
 
                         client.record_user_prompt_event(&prompt);
@@ -554,6 +573,7 @@ impl AcpAgentHarness {
                         );
 
                         let mut current_req = Some(initial_req);
+                        let mut reminder = reminder;
 
                         while let Some(req) = current_req.take() {
                             if cancel.is_cancelled() {
@@ -571,8 +591,10 @@ impl AcpAgentHarness {
                                 result = conn.prompt(req) => result,
                             };
 
+                            let mut ended = false;
                             match prompt_result {
                                 Ok(resp) => {
+                                    ended = resp.stop_reason == proto::StopReason::EndTurn;
                                     // Emit done with stop_reason
                                     let stop_reason = serde_json::to_string(&resp.stop_reason)
                                         .unwrap_or_default();
@@ -611,6 +633,22 @@ impl AcpAgentHarness {
                                     ))],
                                 );
                                 current_req = Some(feedback_req);
+                            } else if ended
+                                && !cancel.is_cancelled()
+                                && let Some(text) = match reminder.take() {
+                                    Some(reminder) => reminder.prompt().await,
+                                    None => None,
+                                }
+                            {
+                                let _ = log_tx.send(AcpEvent::System(text.clone()).to_string());
+                                let _ = session_manager.append_raw_line(
+                                    &display_session_id,
+                                    &serde_json::json!({ "user": text }).to_string(),
+                                );
+                                current_req = Some(proto::PromptRequest::new(
+                                    proto::SessionId::new(acp_session_id.clone()),
+                                    vec![proto::ContentBlock::Text(proto::TextContent::new(text))],
+                                ));
                             }
                         }
 
@@ -661,6 +699,7 @@ async fn run_native_turn(
     existing_session: Option<String>,
     model: Option<String>,
     prompt: String,
+    mut reminder: Option<CommitReminder>,
     pi_session_map: Option<&Path>,
     cancel: &CancellationToken,
 ) -> Result<(), ExecutorError> {
@@ -691,33 +730,193 @@ async fn run_native_turn(
         }) => result.map_err(|_| ExecutorError::Io(std::io::Error::other("Pi ACP setup timed out. Check that pi-acp and Pi start on this host.")))??,
     };
 
-    let started_at = chrono::Utc::now().timestamp_millis();
     client.start_turn(&session_id, &prompt);
-    let response = conn.prompt(proto::PromptRequest::new(
-        session_id.clone(),
-        vec![proto::ContentBlock::Text(proto::TextContent::new(prompt))],
-    ));
-    tokio::pin!(response);
-    tokio::select! {
-        result = &mut response => {
-            let result = result.map_err(|e| pi_error("prompt", e))?;
-            if result.stop_reason == proto::StopReason::EndTurn
-                && let Some(session_map) = pi_session_map
-                && let Ok(Some(error)) = tokio::time::timeout(
-                    std::time::Duration::from_secs(1),
-                    super::super::pi::session_provider_error(session_map, &session_id.0, started_at),
-                ).await
-            {
-                return Err(error);
+    let compacting = crate::executors::utils::parse_slash_command::<
+        crate::executors::utils::SlashCommandCall<'_>,
+    >(&prompt)
+    .is_some_and(|command| command.name == "compact");
+    let mut prompt = prompt;
+    loop {
+        let started_at = chrono::Utc::now().timestamp_millis();
+        let response = conn.prompt(proto::PromptRequest::new(
+            session_id.clone(),
+            vec![proto::ContentBlock::Text(proto::TextContent::new(prompt))],
+        ));
+        tokio::pin!(response);
+        let stop_reason = tokio::select! {
+            result = &mut response => {
+                let result = result.map_err(|e| pi_error("prompt", e))?;
+                if result.stop_reason == proto::StopReason::EndTurn
+                    && let Some(session_map) = pi_session_map
+                    && let Ok(Some(error)) = tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        super::super::pi::session_provider_error(session_map, &session_id.0, started_at),
+                    ).await
+                {
+                    return Err(error);
+                }
+                result.stop_reason
             }
-            client.finish_turn(&result.stop_reason);
+            _ = cancel.cancelled() => {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    conn.cancel(proto::CancelNotification::new(session_id)).await?;
+                    response.await
+                }).await;
+                return Ok(());
+            }
+        };
+        if compacting {
+            // Pi reports no context size until the next reply after compaction.
+            client.report(AcpEvent::TokenUsage(crate::logs::TokenUsageInfo {
+                total_tokens: 0,
+                model_context_window: 0,
+            }));
         }
-        _ = cancel.cancelled() => {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                conn.cancel(proto::CancelNotification::new(session_id)).await?;
-                response.await
-            }).await;
-        }
+        let next = match (stop_reason == proto::StopReason::EndTurn, reminder.take()) {
+            (true, Some(reminder)) => reminder.prompt().await,
+            _ => None,
+        };
+        let Some(next) = next else {
+            client.finish_turn(&stop_reason);
+            return Ok(());
+        };
+        client.report(AcpEvent::System(next.clone()));
+        prompt = next;
     }
-    Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod reminder_tests {
+    use tokio::io::AsyncReadExt;
+
+    use super::*;
+    use crate::{command::CommandParts, env::RepoContext};
+
+    /// A minimal ACP agent: every prompt reports its context with
+    /// `usage_update`, replies, and ends the turn.
+    const AGENT: &str = r#"
+import json, sys
+prompts = []
+def send(message):
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+def update(kind, **fields):
+    send({"jsonrpc": "2.0", "method": "session/update",
+          "params": {"sessionId": "sess-fixture", "update": {"sessionUpdate": kind, **fields}}})
+for line in sys.stdin:
+    message = json.loads(line)
+    method, request = message.get("method"), message.get("id")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": request, "result": {"protocolVersion": 1, "agentCapabilities": {}}})
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": request, "result": {"sessionId": "sess-fixture"}})
+    elif method == "session/prompt":
+        prompts.append(message["params"]["prompt"][0]["text"])
+        with open(sys.argv[1], "w") as log:
+            json.dump(prompts, log)
+        update("usage_update", used=100 * len(prompts), size=1000)
+        update("agent_message_chunk", content={"type": "text", "text": "reply %d" % len(prompts)})
+        send({"jsonrpc": "2.0", "id": request, "result": {"stopReason": "end_turn"}})
+    elif request is not None:
+        send({"jsonrpc": "2.0", "id": request, "result": None})
+"#;
+
+    async fn run(harness: AcpAgentHarness) -> (Vec<String>, Vec<AcpEvent>) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(repo.join("left-over.txt"), "fixture").unwrap();
+        let script = fixture.path().join("agent.py");
+        std::fs::write(&script, AGENT).unwrap();
+        let prompts = fixture.path().join("prompts.json");
+        let env = ExecutionEnv::new(
+            RepoContext::new(fixture.path().to_path_buf(), vec!["repo".into()]),
+            true,
+            "Commit the changes.".into(),
+        );
+        let command = CommandParts::new(
+            "python3".into(),
+            vec![
+                script.to_string_lossy().into(),
+                prompts.to_string_lossy().into(),
+            ],
+        );
+        let mut spawned = harness
+            .spawn_with_command(
+                &repo,
+                "Fix the fixture".into(),
+                command,
+                &env,
+                &CmdOverrides::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        let mut stdout = spawned.child.inner().stdout.take().unwrap();
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            spawned.exit_signal.take().unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(status, ExecutorExitResult::Success));
+        let _ = spawned.child.kill().await;
+        let mut output = String::new();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stdout.read_to_string(&mut output),
+        )
+        .await;
+        let prompts: Vec<String> =
+            serde_json::from_str(&std::fs::read_to_string(prompts).unwrap()).unwrap();
+        let events = output
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        (prompts, events)
+    }
+
+    fn check(prompts: &[String], events: &[AcpEvent]) {
+        assert_eq!(prompts.len(), 2, "the reminder is sent once: {prompts:?}");
+        assert!(prompts[1].starts_with("Commit the changes.\n"));
+        assert!(prompts[1].contains("left-over.txt"));
+        assert!(events.iter().any(|event| matches!(event,
+            AcpEvent::System(text) if text == &prompts[1])));
+        let usage: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                AcpEvent::TokenUsage(info) => Some((info.total_tokens, info.model_context_window)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usage, [(100, 1000), (200, 1000)]);
+    }
+
+    #[tokio::test]
+    #[ignore = "runs a python3 ACP agent fixture"]
+    async fn native_session_reminds_once_and_reports_usage() {
+        let (prompts, events) = run(AcpAgentHarness::new().with_native_sessions()).await;
+        check(&prompts, &events);
+    }
+
+    #[tokio::test]
+    #[ignore = "runs a python3 ACP agent fixture and writes ~/.vibe-kanban session history"]
+    async fn replayed_session_reminds_once_and_reports_usage() {
+        let namespace = format!("acp-reminder-fixture-{}", uuid::Uuid::new_v4());
+        let (prompts, events) =
+            run(AcpAgentHarness::with_session_namespace(namespace.clone())).await;
+        if let Ok(manager) = SessionManager::new(namespace) {
+            let _ = std::fs::remove_dir_all(manager.base_dir());
+        }
+        check(&prompts, &events);
+    }
 }

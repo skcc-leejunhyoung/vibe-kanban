@@ -13,8 +13,24 @@ use workspace_utils::approvals::{ApprovalStatus, QuestionStatus};
 use crate::{
     approvals::{ExecutorApprovalError, ExecutorApprovalService},
     executors::acp::{AcpEvent, ApprovalResponse},
-    logs::{AskUserQuestionItem, AskUserQuestionOption},
+    logs::{AskUserQuestionItem, AskUserQuestionOption, TokenUsageInfo},
 };
+
+/// ACP's `usage_update` carries the tokens now in context and the window
+/// size. Without a window the usage cannot be shown, so it is reported as
+/// unknown rather than kept from an earlier model.
+pub(super) fn context_usage(usage: &acp::UsageUpdate) -> AcpEvent {
+    let size = u32::try_from(usage.size).unwrap_or(u32::MAX);
+    let used = if size == 0 {
+        0
+    } else {
+        u32::try_from(usage.used).unwrap_or(u32::MAX)
+    };
+    AcpEvent::TokenUsage(TokenUsageInfo {
+        total_tokens: used,
+        model_context_window: size,
+    })
+}
 
 /// ACP client that handles agent-client protocol communication
 #[derive(Clone)]
@@ -24,6 +40,9 @@ pub struct AcpClient {
     feedback_queue: Arc<Mutex<Vec<String>>>,
     cancel: CancellationToken,
     replaying: Arc<AtomicBool>,
+    /// Approve tool permissions without asking while user questions still
+    /// reach the approval service (Auto under an agent that asks both ways).
+    auto_approve_tools: bool,
 }
 
 impl AcpClient {
@@ -39,7 +58,13 @@ impl AcpClient {
             feedback_queue: Arc::new(Mutex::new(Vec::new())),
             cancel,
             replaying: Arc::new(AtomicBool::new(false)),
+            auto_approve_tools: false,
         }
+    }
+
+    pub fn auto_approving_tools(mut self, auto_approve: bool) -> Self {
+        self.auto_approve_tools = auto_approve;
+        self
     }
 
     pub fn record_user_prompt_event(&self, prompt: &str) {
@@ -54,6 +79,11 @@ impl AcpClient {
         self.send_event(AcpEvent::SessionStart(session_id.0.to_string()));
         self.record_user_prompt_event(prompt);
         self.set_replaying(false);
+    }
+
+    /// Reports an event of Vibe Kanban's own into the turn's log.
+    pub(super) fn report(&self, event: AcpEvent) {
+        self.send_event(event);
     }
 
     pub(super) fn finish_turn(&self, reason: &acp::StopReason) {
@@ -105,7 +135,7 @@ impl acp::Client for AcpClient {
         }
         self.send_event(AcpEvent::RequestPermission(args.clone()));
 
-        if self.approvals.is_none() {
+        if self.approvals.is_none() || self.auto_approve_tools {
             // Auto-approve with best available option when no approval service is configured
             let chosen_option = args
                 .options
@@ -221,6 +251,7 @@ impl acp::Client for AcpClient {
             acp::SessionUpdate::ToolCall(tc) => Some(AcpEvent::ToolCall(tc)),
             acp::SessionUpdate::ToolCallUpdate(update) => Some(AcpEvent::ToolUpdate(update)),
             acp::SessionUpdate::Plan(plan) => Some(AcpEvent::Plan(plan)),
+            acp::SessionUpdate::UsageUpdate(usage) => Some(context_usage(&usage)),
             _ => Some(AcpEvent::Other(args)),
         };
 

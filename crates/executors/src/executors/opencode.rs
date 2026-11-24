@@ -55,6 +55,9 @@ pub struct Opencode {
     /// Auto-approve agent actions
     #[serde(default = "default_to_true")]
     pub auto_approve: bool,
+    /// Deny the question tool (unattended runs).
+    #[serde(default)]
+    pub dont_ask: bool,
     /// Enable auto-compaction when the context length approaches the model's context window limit
     #[serde(default = "default_to_true")]
     pub auto_compact: bool,
@@ -379,7 +382,11 @@ fn default_discovered_options() -> crate::executor_discovery::ExecutorDiscovered
             models: vec![],
             default_model: None,
             agents: vec![],
-            permissions: vec![PermissionPolicy::Auto, PermissionPolicy::Supervised],
+            permissions: vec![
+                PermissionPolicy::Auto,
+                PermissionPolicy::DontAsk,
+                PermissionPolicy::Supervised,
+            ],
         },
         slash_commands: hardcoded_slash_commands(),
         loading_models: false,
@@ -405,6 +412,7 @@ impl StandardCodingAgentExecutor for Opencode {
                 permission_policy,
                 PermissionPolicy::Auto | PermissionPolicy::DontAsk
             );
+            self.dont_ask = permission_policy == PermissionPolicy::DontAsk;
         }
 
         if let Some(reasoning_id) = &executor_config.reasoning_id {
@@ -422,7 +430,7 @@ impl StandardCodingAgentExecutor for Opencode {
         prompt: &str,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        let env = setup_permissions_env(self.auto_approve, env);
+        let env = setup_permissions_env(self.auto_approve, self.dont_ask, env);
         let env = setup_compaction_env(self.auto_compact, &env);
         self.spawn_inner(current_dir, prompt, None, &env).await
     }
@@ -435,7 +443,7 @@ impl StandardCodingAgentExecutor for Opencode {
         _reset_to_message_id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        let env = setup_permissions_env(self.auto_approve, env);
+        let env = setup_permissions_env(self.auto_approve, self.dont_ask, env);
         let env = setup_compaction_env(self.auto_compact, &env);
         self.spawn_inner(current_dir, prompt, Some(session_id), &env)
             .await
@@ -638,7 +646,7 @@ impl StandardCodingAgentExecutor for Opencode {
             };
 
             let env = ExecutionEnv::new(RepoContext::default(), false, String::new());
-            let env = setup_permissions_env(this.auto_approve, &env);
+            let env = setup_permissions_env(this.auto_approve, this.dont_ask, &env);
 
             let server = match this.spawn_server(&discovery_path, &env).await {
                 Ok(s) => s,
@@ -800,10 +808,10 @@ impl StandardCodingAgentExecutor for Opencode {
             agent_id: self.agent.clone(),
             reasoning_id: self.variant.clone(),
             sandbox_policy: None,
-            permission_policy: Some(if self.auto_approve {
-                PermissionPolicy::Auto
-            } else {
-                PermissionPolicy::Supervised
+            permission_policy: Some(match (self.auto_approve, self.dont_ask) {
+                (true, true) => PermissionPolicy::DontAsk,
+                (true, false) => PermissionPolicy::Auto,
+                (false, _) => PermissionPolicy::Supervised,
             }),
         }
     }
@@ -813,12 +821,12 @@ fn default_to_true() -> bool {
     true
 }
 
-fn setup_permissions_env(auto_approve: bool, env: &ExecutionEnv) -> ExecutionEnv {
+fn setup_permissions_env(auto_approve: bool, dont_ask: bool, env: &ExecutionEnv) -> ExecutionEnv {
     let mut env = env.clone();
 
     let permissions = match env.get("OPENCODE_PERMISSION") {
         Some(existing) => Some(existing.to_string()),
-        None => build_default_permissions(auto_approve),
+        None => build_default_permissions(auto_approve, dont_ask),
     };
 
     if let Some(permissions) = permissions {
@@ -827,11 +835,12 @@ fn setup_permissions_env(auto_approve: bool, env: &ExecutionEnv) -> ExecutionEnv
     env
 }
 
-fn build_default_permissions(auto_approve: bool) -> Option<String> {
-    if auto_approve {
-        None
-    } else {
-        Some(r#"{"edit":"ask","bash":"ask","webfetch":"ask","doom_loop":"ask","external_directory":"ask","question":"allow"}"#.to_string())
+fn build_default_permissions(auto_approve: bool, dont_ask: bool) -> Option<String> {
+    match (auto_approve, dont_ask) {
+        (true, false) => None,
+        // Unattended: nobody can answer, so the agent may not ask.
+        (true, true) => Some(r#"{"question":"deny"}"#.to_string()),
+        (false, _) => Some(r#"{"edit":"ask","bash":"ask","webfetch":"ask","doom_loop":"ask","external_directory":"ask","question":"allow"}"#.to_string()),
     }
 }
 
@@ -859,4 +868,40 @@ fn merge_compaction_config(existing_json: Option<&str>) -> String {
     config.insert("compaction".to_string(), Value::Object(compaction));
 
     serde_json::to_string(&config).unwrap_or_else(|_| r#"{"compaction":{"auto":true}}"#.to_string())
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    #[test]
+    fn dont_ask_denies_questions_and_auto_keeps_them() {
+        let mut opencode: Opencode = serde_json::from_value(serde_json::json!({})).unwrap();
+        let mut config = ExecutorConfig::new(BaseCodingAgent::Opencode);
+        let env = ExecutionEnv::new(Default::default(), false, String::new());
+        for (policy, permission) in [
+            (PermissionPolicy::Auto, None),
+            (PermissionPolicy::DontAsk, Some(r#"{"question":"deny"}"#)),
+        ] {
+            config.permission_policy = Some(policy.clone());
+            opencode.apply_overrides(&config);
+            assert_eq!(
+                opencode.get_preset_options().permission_policy,
+                Some(policy)
+            );
+            let env = setup_permissions_env(opencode.auto_approve, opencode.dont_ask, &env);
+            assert_eq!(
+                env.get("OPENCODE_PERMISSION").map(String::as_str),
+                permission
+            );
+        }
+        config.permission_policy = Some(PermissionPolicy::Supervised);
+        opencode.apply_overrides(&config);
+        let env = setup_permissions_env(opencode.auto_approve, opencode.dont_ask, &env);
+        assert!(
+            env.get("OPENCODE_PERMISSION")
+                .unwrap()
+                .contains(r#""question":"allow""#)
+        );
+    }
 }

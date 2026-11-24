@@ -82,9 +82,26 @@ pub struct Droid {
 
     #[serde(flatten)]
     pub cmd: crate::command::CmdOverrides,
+    /// `droid exec` stops at the first approval and its spec mode is not
+    /// verified in exec mode.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[schemars(skip)]
+    pub unsupported_policy: Option<crate::model_selector::PermissionPolicy>,
 }
 
 impl Droid {
+    fn check_policy(&self) -> Result<(), ExecutorError> {
+        match &self.unsupported_policy {
+            Some(policy) => Err(super::utils::unsupported_policy(
+                "Factory Droid",
+                policy,
+                "Auto or Don't Ask, or set the autonomy level in the profile",
+            )),
+            None => Ok(()),
+        }
+    }
+
     pub fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
         use crate::command::{CommandBuilder, apply_overrides};
         let mut builder =
@@ -147,14 +164,14 @@ impl StandardCodingAgentExecutor for Droid {
             self.model = Some(model_id.clone());
         }
         if let Some(permission_policy) = executor_config.permission_policy.clone() {
-            self.autonomy = match permission_policy {
+            self.unsupported_policy = None;
+            match permission_policy {
                 crate::model_selector::PermissionPolicy::Auto
                 | crate::model_selector::PermissionPolicy::DontAsk => {
-                    Autonomy::SkipPermissionsUnsafe
+                    self.autonomy = Autonomy::SkipPermissionsUnsafe;
                 }
-                crate::model_selector::PermissionPolicy::Supervised
-                | crate::model_selector::PermissionPolicy::Plan => Autonomy::Normal,
-            };
+                policy => self.unsupported_policy = Some(policy),
+            }
         }
     }
 
@@ -164,6 +181,7 @@ impl StandardCodingAgentExecutor for Droid {
         prompt: &str,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        self.check_policy()?;
         let droid_command = self.build_command_builder()?.build_initial()?;
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
 
@@ -178,6 +196,7 @@ impl StandardCodingAgentExecutor for Droid {
         _reset_to_message_id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        self.check_policy()?;
         let continue_cmd = self
             .build_command_builder()?
             .build_follow_up(&["--session-id".to_string(), session_id.to_string()])?;

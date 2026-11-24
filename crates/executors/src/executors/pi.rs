@@ -20,8 +20,8 @@ use ts_rs::TS;
 use workspace_utils::msg_store::MsgStore;
 
 use super::{
-    AppendPrompt, AvailabilityInfo, BaseCodingAgent, ExecutorError, SpawnedChild,
-    StandardCodingAgentExecutor,
+    AppendPrompt, AvailabilityInfo, BaseCodingAgent, ExecutorError, SlashCommandDescription,
+    SpawnedChild, StandardCodingAgentExecutor,
     acp::{self, AcpAgentHarness, AcpClient, harness::pi_error},
     utils,
 };
@@ -126,14 +126,24 @@ pub struct Pi {
     pub append_prompt: AppendPrompt,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Approve extension confirmations without asking.
     #[serde(default)]
     pub auto_approve: bool,
+    /// Also cancel extension selections, which are Pi's questions to the user
+    /// (unattended runs).
+    #[serde(default)]
+    pub dont_ask: bool,
     #[serde(flatten)]
     pub cmd: CmdOverrides,
     #[serde(skip)]
     #[ts(skip)]
     #[derivative(Debug = "ignore", PartialEq = "ignore")]
     pub approvals: Option<Arc<dyn ExecutorApprovalService>>,
+    /// A requested policy Pi cannot honour; the turn is refused.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[derivative(PartialEq = "ignore")]
+    pub unsupported_policy: Option<PermissionPolicy>,
 }
 
 impl Pi {
@@ -172,12 +182,19 @@ impl Pi {
         id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        if let Some(policy) = &self.unsupported_policy {
+            return Err(utils::agent_error(format!(
+                "Pi has no {policy:?} mode. Choose Supervised, Auto or Don't Ask."
+            )));
+        }
         let command = self.checked_command(env).await?;
-        let mut harness = AcpAgentHarness::new().with_native_sessions();
+        let mut harness = AcpAgentHarness::new()
+            .with_native_sessions()
+            .with_auto_approved_tools(self.auto_approve);
         if let Some(model) = &self.model {
             harness = harness.with_model(model);
         }
-        let approvals = if self.auto_approve {
+        let approvals = if self.dont_ask {
             None
         } else {
             Some(
@@ -186,7 +203,13 @@ impl Pi {
                     .ok_or(crate::approvals::ExecutorApprovalError::ServiceUnavailable)?,
             )
         };
-        let prompt = self.append_prompt.combine_prompt(prompt);
+        // Pi runs its commands from the prompt text, which must stay exact.
+        let prompt = if utils::parse_slash_command::<utils::SlashCommandCall<'_>>(prompt).is_some()
+        {
+            prompt.to_owned()
+        } else {
+            self.append_prompt.combine_prompt(prompt)
+        };
         match id {
             Some(id) => {
                 harness
@@ -203,7 +226,10 @@ impl Pi {
         }
     }
 
-    async fn discover(&self, cwd: PathBuf) -> Result<proto::SessionModelState, ExecutorError> {
+    async fn discover(
+        &self,
+        cwd: PathBuf,
+    ) -> Result<(proto::SessionModelState, Vec<SlashCommandDescription>), ExecutorError> {
         let env = ExecutionEnv::new(Default::default(), false, String::new());
         let (program, args) = self.checked_command(&env).await?.into_resolved().await?;
         let mut command = tokio::process::Command::new(program);
@@ -221,7 +247,7 @@ impl Pi {
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(ExecutorError::Io)?;
             tokio::task::LocalSet::new().block_on(&rt, async move {
-                let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+                let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
                 let client = AcpClient::new(events, None, CancellationToken::new());
                 let (conn, io) = proto::ClientSideConnection::new(client, stdin.compat_write(), stdout.compat(), |task| {
                     tokio::task::spawn_local(task);
@@ -230,9 +256,22 @@ impl Pi {
                 let result = tokio::time::timeout(Duration::from_secs(15), async {
                     conn.initialize(proto::InitializeRequest::new(proto::ProtocolVersion::V1))
                         .await.map_err(|e| pi_error("initialization", e))?;
-                    conn.new_session(proto::NewSessionRequest::new(cwd)).await
+                    let models = conn.new_session(proto::NewSessionRequest::new(cwd)).await
                         .map_err(|e| pi_error("model discovery", e))?
-                        .models.ok_or_else(|| utils::agent_error("Pi ACP did not return a model list. Install pi-acp@0.0.35."))
+                        .models.ok_or_else(|| utils::agent_error("Pi ACP did not return a model list. Install pi-acp@0.0.35."))?;
+                    // pi-acp announces the session's commands right after creating it.
+                    let commands = tokio::time::timeout(Duration::from_secs(2), async {
+                        while let Some(event) = receiver.recv().await {
+                            if let acp::AcpEvent::Other(proto::SessionNotification {
+                                update: proto::SessionUpdate::AvailableCommandsUpdate(update), ..
+                            }) = event
+                            {
+                                return update.available_commands;
+                            }
+                        }
+                        Vec::new()
+                    }).await.unwrap_or_default();
+                    Ok::<_, ExecutorError>((models, slash_commands(commands)))
                 }).await;
                 // Closing ACP stdin lets the adapter close its Pi child.
                 driver.abort();
@@ -253,6 +292,9 @@ impl StandardCodingAgentExecutor for Pi {
         if let Some(policy) = &config.permission_policy {
             self.auto_approve =
                 matches!(policy, PermissionPolicy::Auto | PermissionPolicy::DontAsk);
+            self.dont_ask = matches!(policy, PermissionPolicy::DontAsk);
+            self.unsupported_policy =
+                matches!(policy, PermissionPolicy::Plan).then_some(PermissionPolicy::Plan);
         }
     }
 
@@ -314,6 +356,11 @@ impl StandardCodingAgentExecutor for Pi {
     fn get_preset_options(&self) -> ExecutorConfig {
         let mut config = ExecutorConfig::new(BaseCodingAgent::Pi);
         config.model_id = self.model.clone();
+        config.permission_policy = Some(match (self.auto_approve, self.dont_ask) {
+            (true, true) => PermissionPolicy::DontAsk,
+            (true, false) => PermissionPolicy::Auto,
+            (false, _) => PermissionPolicy::Supervised,
+        });
         config
     }
 
@@ -329,7 +376,8 @@ impl StandardCodingAgentExecutor for Pi {
                 ..Default::default()
             };
             match agent.discover(cwd).await {
-                Ok(models) => {
+                Ok((models, commands)) => {
+                    options.slash_commands = commands;
                     options.model_selector.default_model =
                         Some(models.current_model_id.0.to_string());
                     options.model_selector.models = models
@@ -351,9 +399,77 @@ impl StandardCodingAgentExecutor for Pi {
     }
 }
 
+/// Commands Pi runs from a prompt, as the chat's `/` menu lists them.
+fn slash_commands(commands: Vec<proto::AvailableCommand>) -> Vec<SlashCommandDescription> {
+    utils::reorder_slash_commands(commands.into_iter().map(|command| {
+        let hint = match command.input {
+            Some(proto::AvailableCommandInput::Unstructured(input)) => Some(input.hint),
+            _ => None,
+        };
+        SlashCommandDescription {
+            name: command.name,
+            description: match (command.description.trim(), hint) {
+                ("", hint) => hint,
+                (description, Some(hint)) => Some(format!("{description} ({hint})")),
+                (description, None) => Some(description.to_owned()),
+            },
+        }
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_announced_commands_with_input_hints() {
+        let commands: Vec<proto::AvailableCommand> = serde_json::from_value(serde_json::json!([
+            {"name": "name", "description": "Rename the session", "input": {"hint": "new name"}},
+            {"name": "compact", "description": "Compact the context"},
+            {"name": "skill:review", "description": ""}
+        ]))
+        .unwrap();
+        assert_eq!(
+            slash_commands(commands),
+            [
+                SlashCommandDescription {
+                    name: "compact".into(),
+                    description: Some("Compact the context".into()),
+                },
+                SlashCommandDescription {
+                    name: "name".into(),
+                    description: Some("Rename the session (new name)".into()),
+                },
+                SlashCommandDescription {
+                    name: "skill:review".into(),
+                    description: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn auto_keeps_questions_and_dont_ask_blocks_them() {
+        let mut pi: Pi = serde_json::from_value(serde_json::json!({})).unwrap();
+        let mut config = ExecutorConfig::new(BaseCodingAgent::Pi);
+        for (policy, auto, dont_ask, refused) in [
+            (PermissionPolicy::Auto, true, false, false),
+            (PermissionPolicy::DontAsk, true, true, false),
+            (PermissionPolicy::Supervised, false, false, false),
+            (PermissionPolicy::Plan, false, false, true),
+        ] {
+            config.permission_policy = Some(policy);
+            pi.apply_overrides(&config);
+            assert_eq!(
+                (
+                    pi.auto_approve,
+                    pi.dont_ask,
+                    pi.unsupported_policy.is_some()
+                ),
+                (auto, dont_ask, refused)
+            );
+        }
+    }
 
     #[test]
     fn classifies_recent_pi_errors_without_exposing_provider_response() {

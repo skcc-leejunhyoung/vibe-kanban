@@ -33,6 +33,11 @@
       "type": "boolean",
       "default": false
     },
+    "dont_ask": {
+      "description": "Deny the question tool and decline any form (unattended runs). Tool\napprovals still follow `auto_approve`.",
+      "type": "boolean",
+      "default": false
+    },
     "base_command_override": {
       "title": "Base Command Override",
       "description": "Override the base command with a custom command",

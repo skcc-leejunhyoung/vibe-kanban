@@ -30,9 +30,25 @@ pub struct Amp {
     pub dangerously_allow_all: Option<bool>,
     #[serde(flatten)]
     pub cmd: CmdOverrides,
+    /// Amp's execute mode never stops for an approval and has no plan mode.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[schemars(skip)]
+    pub unsupported_policy: Option<crate::model_selector::PermissionPolicy>,
 }
 
 impl Amp {
+    fn check_policy(&self) -> Result<(), ExecutorError> {
+        match &self.unsupported_policy {
+            Some(policy) => Err(super::utils::unsupported_policy(
+                "Amp",
+                policy,
+                "Auto or Don't Ask",
+            )),
+            None => Ok(()),
+        }
+    }
+
     fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
         let mut builder = CommandBuilder::new("npx -y @sourcegraph/amp@latest")
             .params(["--execute", "--stream-json"]);
@@ -45,12 +61,24 @@ impl Amp {
 
 #[async_trait]
 impl StandardCodingAgentExecutor for Amp {
+    fn apply_overrides(&mut self, config: &ExecutorConfig) {
+        use crate::model_selector::PermissionPolicy;
+        if let Some(policy) = &config.permission_policy {
+            self.unsupported_policy = matches!(
+                policy,
+                PermissionPolicy::Supervised | PermissionPolicy::Plan
+            )
+            .then(|| policy.clone());
+        }
+    }
+
     async fn spawn(
         &self,
         current_dir: &Path,
         prompt: &str,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        self.check_policy()?;
         let command_parts = self.build_command_builder()?.build_initial()?;
         let (executable_path, args) = command_parts.into_resolved().await?;
 
@@ -89,6 +117,7 @@ impl StandardCodingAgentExecutor for Amp {
         _reset_to_message_id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        self.check_policy()?;
         let builder = self.build_command_builder()?;
         let continue_line = builder.build_follow_up(&[
             "threads".to_string(),

@@ -17,7 +17,7 @@ use crate::{
         BaseCodingAgent, CodingAgent, ExecutorError, SpawnedChild,
         utils::{SlashCommandCall, parse_slash_command},
     },
-    profile::ExecutorConfigs,
+    profile::{ExecutorConfig, ExecutorConfigs},
 };
 pub mod coding_agent_follow_up;
 pub mod coding_agent_initial;
@@ -91,6 +91,19 @@ impl ExecutorAction {
                 Some(request.base_executor())
             }
             ExecutorActionType::ReviewRequest(request) => Some(request.base_executor()),
+            ExecutorActionType::ScriptRequest(_) => None,
+        }
+    }
+
+    pub fn executor_config(&self) -> Option<&ExecutorConfig> {
+        match self.typ() {
+            ExecutorActionType::CodingAgentInitialRequest(request) => {
+                Some(&request.executor_config)
+            }
+            ExecutorActionType::CodingAgentFollowUpRequest(request) => {
+                Some(&request.executor_config)
+            }
+            ExecutorActionType::ReviewRequest(request) => Some(&request.executor_config),
             ExecutorActionType::ScriptRequest(_) => None,
         }
     }
