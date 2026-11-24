@@ -94,6 +94,19 @@ impl ExecutorAction {
             ExecutorActionType::ScriptRequest(_) => None,
         }
     }
+
+    pub fn effective_dir(&self, current_dir: &Path) -> std::path::PathBuf {
+        match self.typ() {
+            ExecutorActionType::CodingAgentInitialRequest(request) => {
+                request.effective_dir(current_dir)
+            }
+            ExecutorActionType::CodingAgentFollowUpRequest(request) => {
+                request.effective_dir(current_dir)
+            }
+            ExecutorActionType::ReviewRequest(request) => request.effective_dir(current_dir),
+            ExecutorActionType::ScriptRequest(_) => current_dir.to_path_buf(),
+        }
+    }
 }
 
 #[async_trait]

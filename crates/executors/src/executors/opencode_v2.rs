@@ -1,4 +1,5 @@
 use std::{
+    io::BufRead,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -17,6 +18,7 @@ use reqwest::{Method, RequestBuilder, Url};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWrite, BufReader},
     process::Command,
@@ -51,6 +53,62 @@ use crate::{
 const INSTALL: &str = "Install @opencode/cli@2.4.1 in a separate npm prefix on the execution host, then set the profile base command to its opencode2 executable.";
 const LOGIN: &str = "Configure a model provider in opencode2 with /connect, or set its API key in the executor environment.";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const CONFIG_CONTENT: &str = "OPENCODE_CONFIG_CONTENT";
+pub const MEMORY_SKILL_IDS: [&str; 2] = ["vibe-repository-memory", "vibe-shared-repository-memory"];
+
+pub fn memory_scope_binding(key: &str) -> String {
+    format!(
+        "<!-- vibe-repository-scope:{:x} -->\n",
+        Sha256::digest(key.as_bytes())
+    )
+}
+
+pub fn memory_skill_dirs(checkout: &Path, key: &str) -> Vec<PathBuf> {
+    let config = checkout.join(".opencode");
+    let root = config.join("skills");
+    let is_dir = |path: &Path| path.symlink_metadata().is_ok_and(|meta| meta.is_dir());
+    if !is_dir(&config) || !is_dir(&root) {
+        return Vec::new();
+    }
+    let binding = memory_scope_binding(key);
+    MEMORY_SKILL_IDS
+        .iter()
+        .map(|id| root.join(id))
+        .filter(|directory| {
+            let file = directory.join("SKILL.md");
+            is_dir(directory)
+                && file.symlink_metadata().is_ok_and(|meta| meta.is_file())
+                && std::fs::File::open(file).is_ok_and(|file| {
+                    std::io::BufReader::new(std::io::Read::take(file, 4096))
+                        .lines()
+                        .take(8)
+                        .map_while(Result::ok)
+                        .any(|line| line == binding.trim_end())
+                })
+        })
+        .collect()
+}
+
+fn with_memory_skill_dirs(existing: Option<&str>, dirs: &[PathBuf]) -> Option<String> {
+    let mut config = match existing {
+        Some(existing) if !existing.trim().is_empty() => {
+            jsonc_parser::parse_to_serde_value(existing, &Default::default()).ok()??
+        }
+        _ => json!({}),
+    };
+    let skills = config
+        .as_object_mut()?
+        .entry("skills")
+        .or_insert_with(|| json!([]));
+    let skills = skills.as_array_mut()?;
+    for dir in dirs {
+        let path = json!(dir.to_str()?);
+        if !skills.contains(&path) {
+            skills.push(path);
+        }
+    }
+    Some(config.to_string())
+}
 
 #[derive(Derivative, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[derivative(Debug, PartialEq)]
@@ -228,9 +286,22 @@ impl OpencodeV2 {
             "XDG_DATA_HOME",
             workspace_utils::assets::asset_dir().join("opencode-v2-data"),
         );
-        env.clone()
-            .with_profile(&self.cmd)
-            .apply_to_command(&mut command);
+        let env = env.clone().with_profile(&self.cmd);
+        env.apply_to_command(&mut command);
+        if !env.opencode_memory_skills.is_empty() {
+            let inherited = std::env::var(CONFIG_CONTENT);
+            let existing = env
+                .get(CONFIG_CONTENT)
+                .map(String::as_str)
+                .or(inherited.as_deref().ok());
+            if let Some(config) = with_memory_skill_dirs(existing, &env.opencode_memory_skills) {
+                command.env(CONFIG_CONTENT, config);
+            } else {
+                tracing::warn!(
+                    "OpenCode repository memory skills could not be added to inline config"
+                );
+            }
+        }
         command
             .env("OPENCODE_PASSWORD", &password)
             .env_remove("OPENCODE_SERVER_USERNAME")
@@ -684,6 +755,169 @@ fn tool_event(event: &Event) -> Option<AcpEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_skill_config_preserves_other_settings_and_checks_scope() {
+        let repo = tempfile::tempdir().unwrap();
+        let dir = repo
+            .path()
+            .join(".opencode/skills")
+            .join(MEMORY_SKILL_IDS[0]);
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = "example.test/fixtures/one";
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!(
+                "---\nname: Fixture\ndescription: Fixture only\n---\n{}",
+                memory_scope_binding(key)
+            ),
+        )
+        .unwrap();
+        assert!(memory_skill_dirs(repo.path(), "example.test/fixtures/two").is_empty());
+        let dirs = memory_skill_dirs(repo.path(), key);
+        assert_eq!(dirs, [dir.clone()]);
+        let existing = Some(
+            "{/* keep settings */ \"model\": \"fixture/model\", \"skills\": [\"./existing\"],}",
+        );
+        let merged = with_memory_skill_dirs(existing, &dirs).unwrap();
+        assert_eq!(
+            with_memory_skill_dirs(Some(&merged), &dirs).unwrap(),
+            merged
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&merged).unwrap(),
+            json!({
+                "model": "fixture/model", "skills": ["./existing", dir]
+            })
+        );
+        assert!(with_memory_skill_dirs(Some("{broken"), &dirs).is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires VK_TEST_OPENCODE_V2_COMMAND pointing to an installed OpenCode v2"]
+    async fn installed_opencode_loads_and_edits_the_original_skill_from_a_worktree() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        let workspace = root.join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let cwd = workspace.join("repo");
+        let checkout = root.join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&checkout)
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.test",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "fixture"]);
+        git(&[
+            "worktree",
+            "add",
+            "-qb",
+            "memory-fixture",
+            cwd.to_str().unwrap(),
+        ]);
+        let dir = checkout.join(".opencode/skills").join(MEMORY_SKILL_IDS[0]);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("SKILL.md");
+        let key = "example.test/fixture/repo";
+        let frontmatter = format!(
+            "---\nname: Fixture\ndescription: Fixture memory\n---\n{}",
+            memory_scope_binding(key)
+        );
+        let content = format!("{frontmatter}\n## Tray\nThe original tray is violet.\n");
+        std::fs::write(&path, content).unwrap();
+
+        let agent = OpencodeV2 {
+            append_prompt: AppendPrompt::default(),
+            model: None,
+            variant: None,
+            agent: None,
+            auto_approve: false,
+            cmd: CmdOverrides {
+                base_command_override: Some(std::env::var("VK_TEST_OPENCODE_V2_COMMAND").unwrap()),
+                ..Default::default()
+            },
+            approvals: None,
+        };
+        let mut env = ExecutionEnv::new(Default::default(), false, String::new());
+        for key in [
+            "HOME",
+            "XDG_DATA_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+        ] {
+            env.insert(key, root.join(key).to_str().unwrap());
+        }
+        env.insert("OPENCODE_DB", ":memory:");
+        env.insert(CONFIG_CONTENT, "{}");
+        env.opencode_memory_skills = memory_skill_dirs(&checkout, key);
+        let (mut child, password) = agent.start_server(&cwd, &env).await.unwrap();
+        let api = OpencodeV2::api(child.inner().stdout.take().unwrap(), password)
+            .await
+            .unwrap();
+        let session: Data<Session> = Api::read(
+            api.request(Method::POST, "/api/session")
+                .json(&json!({"location":{"directory":cwd}})),
+            "test session",
+        )
+        .await
+        .unwrap();
+        let id = session.data.id;
+        api.post(
+            &format!("/api/experimental/session/{id}/skill"),
+            json!({
+                "id": MEMORY_SKILL_IDS[0], "resume": false
+            }),
+            "test skill activation",
+        )
+        .await
+        .unwrap();
+        let context: Data<Value> = Api::read(
+            api.request(Method::GET, &format!("/api/session/{id}/context")),
+            "test skill context",
+        )
+        .await
+        .unwrap();
+        assert!(
+            context
+                .data
+                .to_string()
+                .contains("The original tray is violet.")
+        );
+        let edited = format!("{frontmatter}\n## Tray\nThe tray is amber.\n");
+        Api::checked(
+            api.request(Method::POST, "/api/experimental/fs/write")
+                .query(&[("path", path.to_str().unwrap())])
+                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .body(edited.clone()),
+            "test skill edit",
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), edited);
+        assert!(!cwd.join(".opencode").exists());
+        drop(child.inner().stdin.take());
+        assert!(
+            tokio::time::timeout(REQUEST_TIMEOUT, child.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success()
+        );
+    }
 
     #[test]
     fn completed_shell_event_with_nonzero_exit_marks_tool_failed() {

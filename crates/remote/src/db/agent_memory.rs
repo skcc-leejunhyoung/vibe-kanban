@@ -187,6 +187,7 @@ struct MutationRow {
     scope: String,
     scope_key: String,
     match_text: String,
+    prior_match_texts: Vec<String>,
     replacement_text: Option<String>,
     created_at: DateTime<Utc>,
     receipt_count: i64,
@@ -204,6 +205,7 @@ impl TryFrom<MutationRow> for AgentMemoryMutation {
             scope: parse_scope(&row.scope)?,
             scope_key: (!row.scope_key.is_empty()).then_some(row.scope_key),
             match_text: row.match_text,
+            prior_match_texts: row.prior_match_texts,
             replacement_text: row.replacement_text,
             created_at: row.created_at,
             receipt_count: row.receipt_count,
@@ -211,7 +213,12 @@ impl TryFrom<MutationRow> for AgentMemoryMutation {
     }
 }
 
-const MUTATION_COLUMNS: &str = "m.id, m.memory_id, m.generation, m.operation, m.scope, m.scope_key, m.match_text, m.replacement_text, m.created_at, (SELECT COUNT(*) FROM agent_memory_mutation_receipts r WHERE r.mutation_id = m.id AND r.status = 'accepted') AS receipt_count";
+const MUTATION_COLUMNS: &str = "m.id, m.memory_id, m.generation, m.operation, m.scope, m.scope_key, m.match_text, m.replacement_text, m.created_at, \
+    ARRAY(SELECT DISTINCT older.match_text FROM agent_memory_mutations older \
+          WHERE older.owner_user_id = m.owner_user_id AND older.memory_id = m.memory_id \
+            AND older.generation < m.generation AND m.scope = 'repository' \
+            AND older.match_text <> m.match_text ORDER BY older.match_text) AS prior_match_texts, \
+    (SELECT COUNT(*) FROM agent_memory_mutation_receipts r WHERE r.mutation_id = m.id AND r.status = 'accepted') AS receipt_count";
 
 #[derive(FromRow)]
 struct MutationDeliveryState {
@@ -356,7 +363,7 @@ pub async fn mutation_inbox(
           AND receipt.target_agent = $5 \
           AND receipt.target_scope_key = $6 \
          WHERE m.owner_user_id = $1 AND m.scope = $2 AND m.scope_key = $3 \
-         ORDER BY m.created_at ASC, m.generation ASC",
+         ORDER BY m.generation ASC",
     )
     .bind(owner_user_id)
     .bind(scope_name(scope))

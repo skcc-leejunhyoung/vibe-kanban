@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::anyhow;
+use api_types::AgentMemoryKind;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use command_group::AsyncGroupChild;
@@ -41,6 +42,7 @@ use executors::{
     executors::{
         BaseCodingAgent, CancellationToken, ExecutorExitResult, ExecutorExitSignal,
         SubagentLiveHandle,
+        opencode_v2::memory_skill_dirs,
         utils::{SlashCommandCall, parse_slash_command},
     },
     logs::{NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch},
@@ -4259,6 +4261,12 @@ impl ContainerService for LocalContainerService {
             .commit_reminder_prompt
             .clone()
             .unwrap_or_else(|| DEFAULT_COMMIT_REMINDER_PROMPT.to_string());
+        let opencode_memory = executor_action.base_executor() == Some(BaseCodingAgent::OpencodeV2)
+            && config.agent_memory_sync.enabled
+            && config
+                .agent_memory_sync
+                .agents
+                .contains(&AgentMemoryKind::OpencodeV2);
         drop(config);
         // Only into an existing root: creating it would resurrect a moved or
         // deleted in-place checkout as an empty directory.
@@ -4279,6 +4287,31 @@ impl ContainerService for LocalContainerService {
             commit_reminder_enabled,
             commit_reminder_prompt,
         );
+        if opencode_memory
+            && let Some(repo) = opencode_workspace_repo(
+                &self.git,
+                &repos,
+                &current_dir,
+                &executor_action.effective_dir(&current_dir),
+                workspace.in_place,
+            )
+            && let Ok(remote) = self.git.get_default_remote(&repo.path)
+        {
+            let key = utils::repo_url::memory_repo_key(&remote.url);
+            // Sync uses the oldest registration for a canonical repository key.
+            // Resolve the same checkout rather than copying memory into worktrees.
+            let mut candidates = Repo::list_all(&self.db.pool).await?;
+            candidates.sort_by_key(|repo| (repo.created_at, repo.id));
+            if let Some(source) = candidates.iter().find(|candidate| {
+                candidate.id == repo.id
+                    || self
+                        .git
+                        .get_default_remote(&candidate.path)
+                        .is_ok_and(|remote| utils::repo_url::memory_repo_key(&remote.url) == key)
+            }) {
+                env.opencode_memory_skills = memory_skill_dirs(&source.path, &key);
+            }
+        }
 
         // Always inject workspace/session context
         env.insert("VK_WORKSPACE_ID", workspace.id.to_string());
@@ -5014,6 +5047,44 @@ fn success_exit_status() -> std::process::ExitStatus {
         use std::os::windows::process::ExitStatusExt;
         ExitStatusExt::from_raw(0)
     }
+}
+
+fn opencode_workspace_repo<'a>(
+    git: &GitService,
+    repos: &'a [Repo],
+    workspace_root: &Path,
+    cwd: &Path,
+    in_place: bool,
+) -> Option<&'a Repo> {
+    let root = workspace_root.canonicalize().ok()?;
+    let cwd = cwd.canonicalize().ok()?;
+    if !cwd.starts_with(&root) {
+        return None;
+    }
+    let common = |path: &Path| {
+        git.get_common_dir(path)
+            .ok()
+            .and_then(|path| path.canonicalize().ok())
+    };
+    let matches = |checkout: &Path, repo: &Repo| {
+        common(checkout).is_some_and(|dir| common(&repo.path).as_ref() == Some(&dir))
+    };
+    if let [repo] = repos {
+        if (!in_place && cwd == root) || matches(&root, repo) {
+            return Some(repo);
+        }
+    }
+    // At the parent of multiple worktrees there is no single repository to
+    // lend these two skill IDs to. Only expose the selected worktree's memory.
+    repos.iter().find(|repo| {
+        let checkout = root.join(&repo.name);
+        checkout.canonicalize().is_ok_and(|path| {
+            path.starts_with(&root)
+                && path != root
+                && cwd.starts_with(&path)
+                && matches(&path, repo)
+        })
+    })
 }
 
 #[cfg(test)]
@@ -9650,6 +9721,47 @@ mod ephemeral_session_tests {
         sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
         let container = super::tests::container_on(pool.clone());
         (dir, pool, container)
+    }
+
+    #[tokio::test]
+    async fn opencode_workspace_memory_resolves_the_current_worktree_only() {
+        let (dir, pool, _) = fresh_db().await;
+        let root = dir.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        let mut repos = Vec::new();
+        for name in ["one", "two"] {
+            let source = dir.path().join(name);
+            std::fs::create_dir(&source).unwrap();
+            git(&source, &["init", "-q", "-b", "main"]);
+            git(&source, &["commit", "-q", "--allow-empty", "-m", "init"]);
+            let checkout = root.join(name);
+            git(
+                &source,
+                &[
+                    "worktree",
+                    "add",
+                    "-qb",
+                    "fixture",
+                    checkout.to_str().unwrap(),
+                ],
+            );
+            repos.push(Repo::find_or_create(&pool, &source, name).await.unwrap());
+        }
+        let git = GitService::new();
+        let resolve = |repos: &[Repo], root: &Path, cwd: &Path, in_place| {
+            opencode_workspace_repo(&git, repos, root, cwd, in_place).map(|repo| repo.id)
+        };
+        assert_eq!(resolve(&repos, &root, &root, false), None);
+        assert_eq!(resolve(&repos[..1], &root, &root, false), Some(repos[0].id));
+        assert_eq!(
+            resolve(&repos, &root, &root.join("two"), false),
+            Some(repos[1].id)
+        );
+        assert_eq!(
+            resolve(&repos[..1], &repos[0].path, &repos[0].path, true),
+            Some(repos[0].id)
+        );
+        assert_eq!(resolve(&repos[..1], &root, &root.join("two"), false), None);
     }
 
     async fn workspace_without_repos(pool: &sqlx::SqlitePool) -> Workspace {

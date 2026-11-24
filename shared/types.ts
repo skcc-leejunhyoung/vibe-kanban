@@ -1421,7 +1421,11 @@ export type AgentMemoryScope = "user_global" | "repository";
 
 export type AgentMemoryMutationOperation = "update" | "delete";
 
-export type AgentMemoryMutation = { id: string, memory_id: string, generation: number, operation: AgentMemoryMutationOperation, scope: AgentMemoryScope, scope_key: string | null, match_text: string, replacement_text: string | null, created_at: string, receipt_count: number, };
+export type AgentMemoryMutation = { id: string, memory_id: string, generation: number, operation: AgentMemoryMutationOperation, scope: AgentMemoryScope, scope_key: string | null, match_text: string,
+/**
+ * Match text from older generations, which can survive in unmarked snapshots.
+ */
+prior_match_texts: Array<string>, replacement_text: string | null, created_at: string, receipt_count: number, };
 
 export type CreateAgentMemoryMutationRequest = { memory_id: string | null, expected_generation: number | null, operation: AgentMemoryMutationOperation, scope: AgentMemoryScope, scope_key: string | null, match_text: string, replacement_text: string | null, };
 

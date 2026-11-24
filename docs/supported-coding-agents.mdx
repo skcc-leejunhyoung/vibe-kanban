@@ -59,13 +59,13 @@ OpenCode v2 supports native session resume, interruption and tool approval. Inte
 
 ### Sync repository memory
 
-In **Settings → Automation → Agent Memory Sync**, enable reconciliation and select **OpenCode v2** on each participating host. The first sync creates a [project skill](https://opencode.ai/docs/skills/) at `.opencode/skills/vibe-repository-memory/SKILL.md` in the registered checkout. OpenCode discovers it as `@vibe-repository-memory` when you run from that checkout.
+In **Settings → Automation → Agent Memory Sync**, enable reconciliation and select **OpenCode v2** on each participating host. The first sync creates a [project skill](https://opencode.ai/docs/skills/) at `.opencode/skills/vibe-repository-memory/SKILL.md` in the registered checkout. OpenCode discovers it as `@vibe-repository-memory` in that checkout and in Vibe Kanban sessions for the same repository. In a workspace with several repositories, start the session in the worktree for the repository you want.
 
-- To share new knowledge, add a `## Topic` section to that skill. Include only durable information you want to share with the other executors.
+- To share new knowledge, add a `## Topic` section to the skill in the registered checkout, not a copy in the worktree. Include only durable information you want to share with the other executors.
 - To correct or delete an authored topic, edit its body or remove its section, then sync again. Leave the skill frontmatter, scope comment, and identifiers for retained topics in place. Removing the entire file is treated as a missing local copy, not a request to delete remote memory.
 - To read imported memory, use `@vibe-shared-repository-memory`. Do not edit the generated skill. To change an imported topic, use **Memory corrections and deletions → One repository** in the same settings.
 
-Keep both skill directories out of Git, for example by excluding them in your checkout's `.git/info/exclude`. If you register the same repository more than once on a host, sync uses the first registered checkout. Other checkouts and linked worktrees do not automatically contain these local files. Sync does not read OpenCode's global instructions, global skills, plugins, session database or conversation history. For self-hosted installations, update the central server and all participating hosts before selecting OpenCode v2.
+Sync keeps the two memory files out of Git through a local exclude rule and refuses to use tracked paths. If you register the same repository more than once on a host, sync uses the first registered checkout. Vibe Kanban uses those same files rather than copying them into linked worktrees. Sync does not read OpenCode's global instructions, global skills, plugins, session database or conversation history. For self-hosted installations, update the central server and all participating hosts before selecting OpenCode v2.
 
 ## Pi
 

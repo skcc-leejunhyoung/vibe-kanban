@@ -1,6 +1,24 @@
 //! Repository identity from git remote and PR URLs, so a PR can be matched to
 //! the local clone it belongs to (HTTPS, SSH and Azure DevOps forms alike).
 
+/// Preserve the case-sensitive repository path used by existing memory snapshots.
+pub fn memory_repo_key(raw: &str) -> String {
+    let raw = raw.trim();
+    let normalized = if let Ok(url) = url::Url::parse(raw) {
+        let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+        format!("{host}/{}", url.path().trim_matches('/'))
+    } else if let Some((user_host, path)) = raw.split_once(':') {
+        let host = user_host.rsplit('@').next().unwrap_or(user_host);
+        format!("{}/{}", host.to_ascii_lowercase(), path.trim_matches('/'))
+    } else {
+        raw.trim_matches('/').to_string()
+    };
+    normalized
+        .strip_suffix(".git")
+        .unwrap_or(&normalized)
+        .to_string()
+}
+
 /// `host/owner/repo` (lowercase, no `.git`) for a remote or repository URL.
 pub fn normalized_repo_key(url: &str) -> String {
     let mut normalized = if let Ok(url) = url::Url::parse(url.trim()) {

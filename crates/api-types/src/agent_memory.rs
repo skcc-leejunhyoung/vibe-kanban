@@ -122,10 +122,20 @@ pub struct AgentMemoryMutation {
     pub scope: AgentMemoryScope,
     pub scope_key: Option<String>,
     pub match_text: String,
+    /// Match text from older generations, which can survive in unmarked snapshots.
+    #[serde(default)]
+    pub prior_match_texts: Vec<String>,
     pub replacement_text: Option<String>,
     pub created_at: DateTime<Utc>,
     #[ts(type = "number")]
     pub receipt_count: i64,
+}
+
+impl AgentMemoryMutation {
+    pub fn obsolete_texts(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.match_text.as_str())
+            .chain(self.prior_match_texts.iter().map(String::as_str))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

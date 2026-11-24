@@ -84,6 +84,8 @@ pub struct ExecutionEnv {
     /// Session-wide rules for executors with a system channel. Only executors
     /// that apply them receive them; everyone else gets them in the prompt.
     pub system_instructions: Option<String>,
+    /// Verified, repository-scoped paths for this OpenCode v2 execution only.
+    pub opencode_memory_skills: Vec<PathBuf>,
 }
 
 impl ExecutionEnv {
@@ -98,6 +100,7 @@ impl ExecutionEnv {
             commit_reminder,
             commit_reminder_prompt,
             system_instructions: None,
+            opencode_memory_skills: Vec::new(),
         }
     }
 
