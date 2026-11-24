@@ -50,6 +50,8 @@ pids
 *.seed
 *.pid.lock
 .vibe-memory-sync-*
+/.opencode/skills/vibe-repository-memory/
+/.opencode/skills/vibe-shared-repository-memory/
 
 # Private work data, usage snapshots, and copied agent runtime state
 /.private/

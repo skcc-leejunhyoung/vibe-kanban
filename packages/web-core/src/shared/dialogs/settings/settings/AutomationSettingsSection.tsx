@@ -1295,7 +1295,7 @@ export function AutomationSettingsSection() {
           )}
           description={t(
             'settings.automation.memory.enabledHelper',
-            'Agents update their own native memory; Vibe Kanban stores only shareable snapshots and operational logs.'
+            'Sync shareable memory, never conversation history. OpenCode v2 syncs repository skills only, not user-wide memory.'
           )}
           checked={memoryConfig?.enabled ?? false}
           onChange={(enabled) =>
@@ -1328,24 +1328,27 @@ export function AutomationSettingsSection() {
           />
         </SettingsField>
         <div className="grid grid-cols-2 gap-2">
-          {[
-            ['claude_code', 'Claude Code'],
-            ['codex', 'Codex'],
-          ].map(([agent, label]) => {
+          {(
+            [
+              ['claude_code', 'Claude Code'],
+              ['codex', 'Codex'],
+              ['opencode_v2', 'OpenCode v2'],
+            ] satisfies [AgentMemoryKind, string][]
+          ).map(([agent, label]) => {
             const selected = memoryConfig?.agents ?? [];
             return (
               <SettingsCheckbox
                 key={agent}
                 id={`agent-memory-sync-${agent}`}
                 label={label}
-                checked={selected.includes(agent as AgentMemoryKind)}
+                checked={selected.includes(agent)}
                 disabled={!memoryConfig?.enabled}
                 onChange={(checked) =>
                   setMemoryConfig((current) => ({
                     enabled: current?.enabled ?? false,
                     daily_local_time: current?.daily_local_time ?? '03:00',
                     agents: checked
-                      ? [...selected, agent as AgentMemoryKind]
+                      ? [...new Set([...selected, agent])]
                       : selected.filter((item) => item !== agent),
                   }))
                 }

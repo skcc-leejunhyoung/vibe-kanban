@@ -59,7 +59,7 @@ async fn register_sync_target(
     Extension(ctx): Extension<RequestContext>,
     Json(payload): Json<RegisterAgentMemorySyncTargetRequest>,
 ) -> Result<Json<AgentMemorySyncTarget>, ErrorResponse> {
-    if payload.agents.len() > 2
+    if payload.agents.len() > AgentMemoryKind::ALL.len()
         || payload.repository_keys.len() > 500
         || payload.repository_keys.iter().any(|key| key.len() > 2_048)
     {
@@ -270,6 +270,7 @@ async fn mutation_inbox(
 ) -> Result<Json<AgentMemoryMutationInboxResponse>, ErrorResponse> {
     ensure_owned_host(&state, ctx.user.id, query.target_host_id).await?;
     validate_scope(query.scope, query.scope_key.as_deref())?;
+    validate_agent_scope(query.target_agent, query.scope)?;
     agent_memory::mutation_inbox(
         state.pool(),
         ctx.user.id,
@@ -332,6 +333,7 @@ async fn upsert_snapshot(
         ));
     }
     validate_scope(payload.scope, payload.scope_key.as_deref())?;
+    validate_agent_scope(payload.source_agent, payload.scope)?;
     payload.content_hash = hex::encode(Sha256::digest(payload.content.as_bytes()));
 
     agent_memory::upsert_snapshot(state.pool(), ctx.user.id, &payload)
@@ -352,6 +354,8 @@ struct InboxQuery {
     target_agent: AgentMemoryKind,
     scope: AgentMemoryScope,
     scope_key: Option<String>,
+    #[serde(default)]
+    include_processed: bool,
 }
 
 #[derive(Deserialize)]
@@ -369,6 +373,7 @@ async fn get_snapshot(
 ) -> Result<Json<api_types::AgentMemorySnapshot>, ErrorResponse> {
     ensure_owned_host(&state, ctx.user.id, query.source_host_id).await?;
     validate_scope(query.scope, query.scope_key.as_deref())?;
+    validate_agent_scope(query.source_agent, query.scope)?;
     agent_memory::find_snapshot(
         state.pool(),
         ctx.user.id,
@@ -396,6 +401,7 @@ async fn inbox(
 ) -> Result<Json<AgentMemoryInboxResponse>, ErrorResponse> {
     ensure_owned_host(&state, ctx.user.id, query.target_host_id).await?;
     validate_scope(query.scope, query.scope_key.as_deref())?;
+    validate_agent_scope(query.target_agent, query.scope)?;
 
     agent_memory::inbox(
         state.pool(),
@@ -404,6 +410,7 @@ async fn inbox(
         query.target_agent,
         query.scope,
         query.scope_key.as_deref(),
+        query.include_processed && query.target_agent == AgentMemoryKind::OpencodeV2,
     )
     .await
     .map(Json)
@@ -479,6 +486,20 @@ fn validate_scope(scope: AgentMemoryScope, scope_key: Option<&str>) -> Result<()
     Ok(())
 }
 
+fn validate_agent_scope(
+    agent: AgentMemoryKind,
+    scope: AgentMemoryScope,
+) -> Result<(), ErrorResponse> {
+    if agent.supports_scope(scope) {
+        Ok(())
+    } else {
+        Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "this agent only supports repository memory",
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +510,17 @@ mod tests {
         assert!(validate_scope(AgentMemoryScope::Repository, Some(" ")).is_err());
         assert!(validate_scope(AgentMemoryScope::Repository, Some("repo")).is_ok());
         assert!(validate_scope(AgentMemoryScope::UserGlobal, None).is_ok());
+    }
+
+    #[test]
+    fn opencode_is_repository_only_without_changing_legacy_agents() {
+        for agent in AgentMemoryKind::ALL {
+            assert!(validate_agent_scope(agent, AgentMemoryScope::Repository).is_ok());
+            assert_eq!(
+                validate_agent_scope(agent, AgentMemoryScope::UserGlobal).is_err(),
+                agent == AgentMemoryKind::OpencodeV2
+            );
+            assert_eq!(serde_json::to_value(agent).unwrap(), agent.as_str());
+        }
     }
 }

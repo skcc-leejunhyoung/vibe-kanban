@@ -1415,7 +1415,7 @@ export type NormalizedLogsPage = { execution_id: string, status: ExecutionProces
 
 export type CancelScheduledResumesResponse = { cancelled: bigint, };
 
-export type AgentMemoryKind = "claude_code" | "codex";
+export type AgentMemoryKind = "claude_code" | "codex" | "opencode_v2";
 
 export type AgentMemoryScope = "user_global" | "repository";
 

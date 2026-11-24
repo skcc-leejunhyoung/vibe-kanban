@@ -394,7 +394,7 @@ pub async fn record_mutation_receipt(
     request: &RecordAgentMemoryMutationReceiptRequest,
 ) -> anyhow::Result<bool> {
     let result = sqlx::query(
-        "INSERT INTO agent_memory_mutation_receipts (mutation_id, target_host_id, target_agent, target_scope_key, status, reason) SELECT m.id, $3, $4, $5, $6, $7 FROM agent_memory_mutations m WHERE m.id = $1 AND m.owner_user_id = $2 ON CONFLICT (mutation_id, target_host_id, target_agent, target_scope_key) DO UPDATE SET status = EXCLUDED.status, reason = EXCLUDED.reason, processed_at = NOW()",
+        "INSERT INTO agent_memory_mutation_receipts (mutation_id, target_host_id, target_agent, target_scope_key, status, reason) SELECT m.id, $3, $4, $5, $6, $7 FROM agent_memory_mutations m WHERE m.id = $1 AND m.owner_user_id = $2 AND ($4 <> 'opencode_v2' OR (m.scope = 'repository' AND m.scope_key = $5)) ON CONFLICT (mutation_id, target_host_id, target_agent, target_scope_key) DO UPDATE SET status = EXCLUDED.status, reason = EXCLUDED.reason, processed_at = NOW()",
     )
     .bind(request.mutation_id)
     .bind(owner_user_id)
@@ -481,6 +481,7 @@ pub async fn inbox(
     target_agent: AgentMemoryKind,
     scope: AgentMemoryScope,
     scope_key: Option<&str>,
+    include_processed: bool,
 ) -> anyhow::Result<AgentMemoryInboxResponse> {
     let scope_key = normalized_scope_key(scope, scope_key)?;
     let query = format!(
@@ -489,8 +490,8 @@ pub async fn inbox(
            AND r.target_host_id = $2 AND r.target_agent = $3 \
          WHERE s.owner_user_id = $1 AND s.scope = $4 AND s.scope_key = $5 \
            AND NOT (s.source_host_id = $2 AND s.source_agent = $3) \
-           AND (COALESCE(r.processed_revision, 0) < s.revision OR r.status = 'deferred') \
-         ORDER BY s.updated_at ASC LIMIT 3"
+           AND ($6 OR COALESCE(r.processed_revision, 0) < s.revision OR r.status = 'deferred') \
+         ORDER BY s.updated_at ASC, s.id LIMIT CASE WHEN $3 = 'opencode_v2' THEN NULL ELSE 3 END"
     );
     let rows = sqlx::query_as::<_, SnapshotRow>(&query)
         .bind(owner_user_id)
@@ -498,6 +499,7 @@ pub async fn inbox(
         .bind(agent_name(target_agent))
         .bind(scope_name(scope))
         .bind(scope_key)
+        .bind(include_processed)
         .fetch_all(pool)
         .await?;
 
@@ -556,6 +558,7 @@ pub async fn record_receipt(
          (snapshot_id, target_host_id, target_agent, processed_revision, status, reason) \
          SELECT s.id, $3, $4, $5, $6, $7 FROM agent_memory_snapshots s \
          WHERE s.id = $1 AND s.owner_user_id = $2 AND s.revision >= $5 \
+           AND ($4 <> 'opencode_v2' OR s.scope = 'repository') \
          ON CONFLICT (snapshot_id, target_host_id, target_agent) DO UPDATE SET \
            processed_revision = GREATEST(agent_memory_receipts.processed_revision, EXCLUDED.processed_revision), \
            status = EXCLUDED.status, reason = EXCLUDED.reason, processed_at = NOW() \
@@ -982,7 +985,7 @@ async fn sync_session_has_pending(
     session_id: Uuid,
 ) -> anyhow::Result<bool> {
     sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM agent_memory_sync_session_targets st INNER JOIN agent_memory_sync_targets target ON target.owner_user_id = $1 AND target.host_id = st.host_id CROSS JOIN LATERAL unnest(target.agents) agent CROSS JOIN LATERAL unnest(target.repository_keys) repo_key INNER JOIN agent_memory_snapshots snapshot ON snapshot.owner_user_id = $1 AND snapshot.scope = 'repository' AND snapshot.scope_key = repo_key AND NOT (snapshot.source_host_id = st.host_id AND snapshot.source_agent = agent) LEFT JOIN agent_memory_receipts receipt ON receipt.snapshot_id = snapshot.id AND receipt.target_host_id = st.host_id AND receipt.target_agent = agent WHERE st.session_id = $2 AND (receipt.snapshot_id IS NULL OR receipt.processed_revision < snapshot.revision OR receipt.status = 'deferred')) OR EXISTS(SELECT 1 FROM agent_memory_sync_session_targets st INNER JOIN agent_memory_sync_targets target ON target.owner_user_id = $1 AND target.host_id = st.host_id CROSS JOIN LATERAL unnest(target.agents) agent CROSS JOIN LATERAL unnest(target.repository_keys) repo_key INNER JOIN agent_memory_mutations mutation ON mutation.owner_user_id = $1 AND (mutation.scope = 'user_global' OR (mutation.scope = 'repository' AND mutation.scope_key = repo_key)) LEFT JOIN agent_memory_mutation_receipts receipt ON receipt.mutation_id = mutation.id AND receipt.target_host_id = st.host_id AND receipt.target_agent = agent AND receipt.target_scope_key = CASE WHEN mutation.scope = 'user_global' THEN '' ELSE repo_key END WHERE st.session_id = $2 AND NOT EXISTS (SELECT 1 FROM agent_memory_mutations newer WHERE newer.owner_user_id = mutation.owner_user_id AND newer.memory_id = mutation.memory_id AND newer.generation > mutation.generation) AND (receipt.mutation_id IS NULL OR receipt.status = 'deferred'))",
+        "SELECT EXISTS(SELECT 1 FROM agent_memory_sync_session_targets st INNER JOIN agent_memory_sync_targets target ON target.owner_user_id = $1 AND target.host_id = st.host_id CROSS JOIN LATERAL unnest(target.agents) agent CROSS JOIN LATERAL unnest(target.repository_keys) repo_key INNER JOIN agent_memory_snapshots snapshot ON snapshot.owner_user_id = $1 AND snapshot.scope = 'repository' AND snapshot.scope_key = repo_key AND NOT (snapshot.source_host_id = st.host_id AND snapshot.source_agent = agent) LEFT JOIN agent_memory_receipts receipt ON receipt.snapshot_id = snapshot.id AND receipt.target_host_id = st.host_id AND receipt.target_agent = agent WHERE st.session_id = $2 AND (receipt.snapshot_id IS NULL OR receipt.processed_revision < snapshot.revision OR receipt.status = 'deferred')) OR EXISTS(SELECT 1 FROM agent_memory_sync_session_targets st INNER JOIN agent_memory_sync_targets target ON target.owner_user_id = $1 AND target.host_id = st.host_id CROSS JOIN LATERAL unnest(target.agents) agent CROSS JOIN LATERAL unnest(target.repository_keys) repo_key INNER JOIN agent_memory_mutations mutation ON mutation.owner_user_id = $1 AND ((mutation.scope = 'user_global' AND agent <> 'opencode_v2') OR (mutation.scope = 'repository' AND mutation.scope_key = repo_key)) LEFT JOIN agent_memory_mutation_receipts receipt ON receipt.mutation_id = mutation.id AND receipt.target_host_id = st.host_id AND receipt.target_agent = agent AND receipt.target_scope_key = CASE WHEN mutation.scope = 'user_global' THEN '' ELSE repo_key END WHERE st.session_id = $2 AND NOT EXISTS (SELECT 1 FROM agent_memory_mutations newer WHERE newer.owner_user_id = mutation.owner_user_id AND newer.memory_id = mutation.memory_id AND newer.generation > mutation.generation) AND (receipt.mutation_id IS NULL OR receipt.status = 'deferred'))",
     )
     .bind(owner_user_id)
     .bind(session_id)
@@ -1018,10 +1021,7 @@ fn parse_mutation_operation(value: &str) -> anyhow::Result<AgentMemoryMutationOp
 }
 
 fn agent_name(agent: AgentMemoryKind) -> &'static str {
-    match agent {
-        AgentMemoryKind::ClaudeCode => "claude_code",
-        AgentMemoryKind::Codex => "codex",
-    }
+    agent.as_str()
 }
 
 fn scope_name(scope: AgentMemoryScope) -> &'static str {
@@ -1040,11 +1040,10 @@ fn receipt_status_name(status: AgentMemoryReceiptStatus) -> &'static str {
 }
 
 fn parse_agent(value: &str) -> anyhow::Result<AgentMemoryKind> {
-    match value {
-        "claude_code" => Ok(AgentMemoryKind::ClaudeCode),
-        "codex" => Ok(AgentMemoryKind::Codex),
-        _ => anyhow::bail!("unknown agent memory kind: {value}"),
-    }
+    AgentMemoryKind::ALL
+        .into_iter()
+        .find(|agent| agent.as_str() == value)
+        .ok_or_else(|| anyhow::anyhow!("unknown agent memory kind: {value}"))
 }
 
 fn parse_scope(value: &str) -> anyhow::Result<AgentMemoryScope> {

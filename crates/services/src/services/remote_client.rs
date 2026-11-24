@@ -1058,6 +1058,39 @@ impl RemoteClient {
         scope: AgentMemoryScope,
         scope_key: Option<&str>,
     ) -> Result<AgentMemoryInboxResponse, RemoteClientError> {
+        self.agent_memory_inbox_with_processed(
+            target_host_id,
+            target_agent,
+            scope,
+            scope_key,
+            false,
+        )
+        .await
+    }
+
+    pub async fn agent_memory_repository_sources(
+        &self,
+        target_host_id: Uuid,
+        scope_key: &str,
+    ) -> Result<AgentMemoryInboxResponse, RemoteClientError> {
+        self.agent_memory_inbox_with_processed(
+            target_host_id,
+            AgentMemoryKind::OpencodeV2,
+            AgentMemoryScope::Repository,
+            Some(scope_key),
+            true,
+        )
+        .await
+    }
+
+    async fn agent_memory_inbox_with_processed(
+        &self,
+        target_host_id: Uuid,
+        target_agent: AgentMemoryKind,
+        scope: AgentMemoryScope,
+        scope_key: Option<&str>,
+        include_processed: bool,
+    ) -> Result<AgentMemoryInboxResponse, RemoteClientError> {
         let target_agent = enum_query_value(target_agent)?;
         let scope = enum_query_value(scope)?;
         let path = {
@@ -1065,6 +1098,9 @@ impl RemoteClient {
             query.append_pair("target_host_id", &target_host_id.to_string());
             query.append_pair("target_agent", &target_agent);
             query.append_pair("scope", &scope);
+            if include_processed {
+                query.append_pair("include_processed", "true");
+            }
             if let Some(scope_key) = scope_key {
                 query.append_pair("scope_key", scope_key);
             }

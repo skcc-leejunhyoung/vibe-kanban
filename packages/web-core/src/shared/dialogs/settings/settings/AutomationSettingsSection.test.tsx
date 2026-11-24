@@ -34,6 +34,7 @@ const mock = vi.hoisted(() => ({
   checkboxes: new Map<string, CheckboxProps>(),
   cards: new Map<string, ReactNode>(),
   retry: null as (() => void) | null,
+  saveMemory: null as (() => void) | null,
 }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -79,11 +80,14 @@ vi.mock('@vibe/ui/components/PrimaryButton', () => ({
   PrimaryButton: ({
     onClick,
     children,
+    value,
   }: {
     onClick: () => void;
     children: ReactNode;
+    value?: string;
   }) => {
     if (children === 'Reload permissions') mock.retry = onClick;
+    if (value === 'Save schedule') mock.saveMemory = onClick;
     return null;
   },
 }));
@@ -240,6 +244,7 @@ beforeEach(() => {
   mock.checkboxes.clear();
   mock.cards.clear();
   mock.retry = null;
+  mock.saveMemory = null;
   mock.request.mockReset().mockImplementation(handleRequest);
   dom = installFakeDomReact();
 });
@@ -517,4 +522,32 @@ describe('Agent access through host selection and the machine client', () => {
     await act(() => enabled().onChange(!enabled().checked));
     expect(dirty).toBe(false);
   });
+});
+
+describe('OpenCode v2 memory sync', () => {
+  it.each(['local', 'remote'] as const)(
+    'is opt-in on the selected host in %s web',
+    async (runtime) => {
+      await mount(runtime);
+      const toggle = () =>
+        mock.checkboxes.get('agent-memory-sync-opencode_v2')!;
+      expect(toggle()).toMatchObject({ checked: false, disabled: true });
+      await act(() =>
+        mock.checkboxes.get('agent-memory-sync-enabled')!.onChange(true)
+      );
+      expect(toggle()).toMatchObject({ checked: false, disabled: false });
+      await act(() => toggle().onChange(true));
+      await act(() => mock.saveMemory!());
+      await flush();
+      expect(persisted.i9.agent_memory_sync.agents).toEqual([
+        'claude_code',
+        'codex',
+        'opencode_v2',
+      ]);
+      expect(persisted.main.agent_memory_sync.agents).toEqual([
+        'claude_code',
+        'codex',
+      ]);
+    }
+  );
 });

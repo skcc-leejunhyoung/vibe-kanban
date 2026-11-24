@@ -9,6 +9,26 @@ use uuid::Uuid;
 pub enum AgentMemoryKind {
     ClaudeCode,
     Codex,
+    OpencodeV2,
+}
+
+impl AgentMemoryKind {
+    pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::OpencodeV2];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude_code",
+            Self::Codex => "codex",
+            Self::OpencodeV2 => "opencode_v2",
+        }
+    }
+
+    pub const fn supports_scope(self, scope: AgentMemoryScope) -> bool {
+        !matches!(
+            (self, scope),
+            (Self::OpencodeV2, AgentMemoryScope::UserGlobal)
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
