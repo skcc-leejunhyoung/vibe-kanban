@@ -1514,8 +1514,7 @@ impl LocalContainerService {
             changed.iter().map(|(repo, _)| repo.name.clone()).collect(),
         );
         let changes = repo_context.check_uncommitted_changes().await;
-        let diff = commit_message::diff_excerpt(repo_context.repo_paths()).await;
-        let instructions = commit_message::instructions(&conventions, &changes, &diff, &issues);
+        let instructions = commit_message::instructions(&conventions, &changes, &issues);
         let env = ExecutionEnv::new(repo_context, false, String::new());
         let draft = tokio::time::timeout(
             COMMIT_MESSAGE_TIMEOUT,
