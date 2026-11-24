@@ -1,9 +1,24 @@
 import { useCallback, type MouseEvent } from 'react';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 
-export function useIssueMultiSelect() {
-  const selectedIssueIds = useIssueSelectionStore((s) => s.selectedIssueIds);
-  const isSelectionMode = useIssueSelectionStore((s) => s.isSelectionMode);
+const NO_SELECTION = new Set<string>();
+
+/**
+ * Split panes share one selection store. Only the board that owns it (the
+ * active pane whose project published the selection scope) sees it; other
+ * boards render no selection and no bulk bar, so a click never lands on a
+ * stale bar wired to another project.
+ */
+export function useIssueMultiSelect(scopeId: string, isActivePane: boolean) {
+  const ownsSelection = useIssueSelectionStore(
+    (s) => isActivePane && s.selectionScopeId === scopeId
+  );
+  const storeSelectedIssueIds = useIssueSelectionStore(
+    (s) => s.selectedIssueIds
+  );
+  const storeIsSelectionMode = useIssueSelectionStore((s) => s.isSelectionMode);
+  const selectedIssueIds = ownsSelection ? storeSelectedIssueIds : NO_SELECTION;
+  const isSelectionMode = ownsSelection && storeIsSelectionMode;
   const enterSelectionMode = useIssueSelectionStore(
     (s) => s.enterSelectionMode
   );

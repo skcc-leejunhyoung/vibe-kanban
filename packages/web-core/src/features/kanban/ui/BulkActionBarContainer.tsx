@@ -6,12 +6,13 @@ import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 
 interface BulkActionBarContainerProps {
   projectId: string;
+  issueIds: ReadonlySet<string>;
 }
 
 export function BulkActionBarContainer({
   projectId,
+  issueIds: selectedIssueIds,
 }: BulkActionBarContainerProps) {
-  const selectedIssueIds = useIssueSelectionStore((s) => s.selectedIssueIds);
   const clearSelection = useIssueSelectionStore((s) => s.clearSelection);
   const {
     executeAction,

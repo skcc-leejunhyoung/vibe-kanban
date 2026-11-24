@@ -1082,7 +1082,7 @@ export function KanbanContainer() {
     handleIssueClick,
     handleCheckboxChange,
     clearSelection,
-  } = useIssueMultiSelect();
+  } = useIssueMultiSelect(projectId, isActivePane);
   const setOrderedIssueIds = useIssueSelectionStore(
     (s) => s.setOrderedIssueIds
   );
@@ -2000,7 +2000,10 @@ export function KanbanContainer() {
       )}
 
       {isMultiSelectActive && selectedIssueIds.size > 0 && (
-        <BulkActionBarContainer projectId={projectId} />
+        <BulkActionBarContainer
+          projectId={projectId}
+          issueIds={selectedIssueIds}
+        />
       )}
     </div>
   );
