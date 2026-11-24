@@ -14,9 +14,48 @@ pub const SCRATCH_DIR_ENV: &str = "VK_SCRATCH_DIR";
 pub fn ensure_scratch_dir(workspace_root: &Path) -> std::io::Result<PathBuf> {
     let dir = workspace_root.join(VIBE_SCRATCH_DIR);
     std::fs::create_dir_all(&dir)?;
+    if std::fs::symlink_metadata(&dir)?.file_type().is_symlink() {
+        return Err(std::io::Error::other("scratch directory is a symlink"));
+    }
     let gitignore = dir.join(".gitignore");
-    if !gitignore.exists() {
-        std::fs::write(gitignore, "*\n")?;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&gitignore)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(b"*\n")?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    if !std::fs::symlink_metadata(&gitignore)?.file_type().is_file()
+        || std::fs::read(&gitignore)? != b"*\n"
+    {
+        return Err(std::io::Error::other("scratch ignore rule is unsafe"));
+    }
+    let in_repo = std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .env("LC_ALL", "C")
+        .current_dir(&dir)
+        .output()?;
+    if in_repo.status.success() {
+        let tracked = std::process::Command::new("git")
+            .args(["ls-files", "--", "."])
+            .current_dir(&dir)
+            .output()?;
+        let ignored = std::process::Command::new("git")
+            .args(["check-ignore", "--no-index", "--", ".gitignore"])
+            .current_dir(&dir)
+            .output()?;
+        if !tracked.status.success() || !tracked.stdout.is_empty() || !ignored.status.success() {
+            return Err(std::io::Error::other(
+                "scratch directory is not safely ignored",
+            ));
+        }
+    } else if !String::from_utf8_lossy(&in_repo.stderr).starts_with("fatal: not a git repository") {
+        return Err(std::io::Error::other("cannot check scratch repository"));
     }
     Ok(dir)
 }
@@ -216,6 +255,27 @@ mod tests {
         let status = git(&["status", "--porcelain", "--untracked-files=all"]);
         assert!(status.status.success());
         assert!(status.stdout.is_empty(), "{:?}", status);
+    }
+
+    #[test]
+    fn scratch_rejects_unsafe_existing_rules_and_tracked_files() {
+        let repo = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .unwrap()
+        };
+        assert!(git(&["init", "-q"]).status.success());
+        let dir = repo.path().join(VIBE_SCRATCH_DIR);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join(".gitignore"), "").unwrap();
+        assert!(ensure_scratch_dir(repo.path()).is_err());
+        std::fs::write(dir.join("tracked.txt"), "synthetic").unwrap();
+        assert!(git(&["add", ".vibe-scratch/tracked.txt"]).status.success());
+        std::fs::write(dir.join(".gitignore"), "*\n").unwrap();
+        assert!(ensure_scratch_dir(repo.path()).is_err());
     }
 
     #[test]
