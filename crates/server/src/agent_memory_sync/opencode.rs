@@ -815,8 +815,14 @@ mod tests {
         assert_eq!(render(&edited), first);
 
         let mut removed = Vec::new();
-        let mut changes =
-            plan_changes(host, KEY, &edited, &mut removed, &[update.clone()]).unwrap();
+        let mut changes = plan_changes(
+            host,
+            KEY,
+            &edited,
+            &mut removed,
+            std::slice::from_ref(&update),
+        )
+        .unwrap();
         let delete = guard(changes.pop().unwrap());
         assert_eq!(delete.memory_id, update.memory_id);
         assert_eq!(delete.generation, 2);
@@ -897,9 +903,15 @@ mod tests {
         );
         let mut remaining = topics(example).unwrap();
         let mut delete = guard(
-            plan_changes(host, KEY, &edited, &mut remaining, &[update.clone()])
-                .unwrap()
-                .remove(0),
+            plan_changes(
+                host,
+                KEY,
+                &edited,
+                &mut remaining,
+                std::slice::from_ref(&update),
+            )
+            .unwrap()
+            .remove(0),
         );
         delete.prior_match_texts = vec![update.match_text];
         shared = topics(INITIAL).unwrap();
