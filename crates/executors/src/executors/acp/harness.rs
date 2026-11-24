@@ -810,6 +810,10 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": request, "result": {"protocolVersion": 1, "agentCapabilities": {}}})
     elif method == "session/new":
         send({"jsonrpc": "2.0", "id": request, "result": {"sessionId": "sess-fixture"}})
+        update("usage_update", used=0, size=1000)
+    elif method == "session/set_config_option":
+        send({"jsonrpc": "2.0", "id": request, "result": {"configOptions": []}})
+        update("usage_update", used=0, size=2000)
     elif method == "session/prompt":
         prompts.append(message["params"]["prompt"][0]["text"])
         with open(sys.argv[1], "w") as log:
@@ -886,6 +890,10 @@ for line in sys.stdin:
     }
 
     fn check(prompts: &[String], events: &[AcpEvent]) {
+        check_with(prompts, events, 1000);
+    }
+
+    fn check_with(prompts: &[String], events: &[AcpEvent], window: u32) {
         assert_eq!(prompts.len(), 2, "the reminder is sent once: {prompts:?}");
         assert!(prompts[1].starts_with("Commit the changes.\n"));
         assert!(prompts[1].contains("left-over.txt"));
@@ -898,7 +906,8 @@ for line in sys.stdin:
                 _ => None,
             })
             .collect();
-        assert_eq!(usage, [(100, 1000), (200, 1000)]);
+        // The window the agent reported for the session and model, then each reply.
+        assert_eq!(usage, [(0, window), (100, 1000), (200, 1000)]);
     }
 
     #[tokio::test]
@@ -906,6 +915,24 @@ for line in sys.stdin:
     async fn native_session_reminds_once_and_reports_usage() {
         let (prompts, events) = run(AcpAgentHarness::new().with_native_sessions()).await;
         check(&prompts, &events);
+    }
+
+    #[tokio::test]
+    #[ignore = "runs a python3 ACP agent fixture"]
+    async fn native_session_starts_from_the_usage_reported_for_the_selected_model() {
+        let (prompts, events) = run(AcpAgentHarness::new()
+            .with_native_sessions()
+            .with_model("m2"))
+        .await;
+        let first = events.iter().find_map(|event| match event {
+            AcpEvent::TokenUsage(info) => Some(info.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            first.map(|info| (info.total_tokens, info.model_context_window)),
+            Some((0, 2000)),
+            "{prompts:?}"
+        );
     }
 
     #[tokio::test]

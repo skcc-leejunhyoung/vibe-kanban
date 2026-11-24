@@ -220,9 +220,14 @@ impl CodingAgent {
             Self::Gemini(_) | Self::QwenCode(_) => {
                 vec![BaseAgentCapability::SessionFork]
             }
-            Self::OpencodeV2(_) | Self::Pi(_) => vec![BaseAgentCapability::ContextUsage],
+            // Executors whose official events carry both the context in use and
+            // the selected model's window. The others stay off the gauge rather
+            // than show cumulative, per-turn or guessed numbers.
+            Self::OpencodeV2(_) | Self::Pi(_) | Self::ZCode(_) => {
+                vec![BaseAgentCapability::ContextUsage]
+            }
             Self::CursorAgent(_) => vec![BaseAgentCapability::SetupHelper],
-            Self::Amp(_) | Self::Copilot(_) | Self::Droid(_) | Self::ZCode(_) => vec![],
+            Self::Amp(_) | Self::Copilot(_) | Self::Droid(_) => vec![],
             #[cfg(feature = "qa-mode")]
             Self::QaMock(_) => vec![], // QA mock doesn't need special capabilities
         }
@@ -520,5 +525,60 @@ mod tests {
         let result: Result<BaseCodingAgent, _> = serde_json::from_str(r#""CURSOR""#);
         assert!(result.is_ok(), "CURSOR should deserialize via serde");
         assert_eq!(result.unwrap(), BaseCodingAgent::CursorAgent);
+    }
+
+    /// A policy an agent does not implement is refused with a message that
+    /// names it, before any process is started, instead of running as another
+    /// policy. Only refused combinations are spawned here; the accepted ones
+    /// are covered by each executor's own tests.
+    #[tokio::test]
+    async fn unsupported_permission_policies_are_refused_not_substituted() {
+        use crate::{
+            model_selector::PermissionPolicy::{Plan, Supervised},
+            profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
+        };
+        let refused = [
+            (BaseCodingAgent::Gemini, vec![Plan]),
+            (BaseCodingAgent::QwenCode, vec![Plan]),
+            (BaseCodingAgent::Copilot, vec![Plan]),
+            (BaseCodingAgent::Opencode, vec![Plan]),
+            (BaseCodingAgent::OpencodeV2, vec![Plan]),
+            (BaseCodingAgent::Pi, vec![Plan]),
+            (BaseCodingAgent::ZCode, vec![Plan]),
+            (BaseCodingAgent::Amp, vec![Supervised, Plan]),
+            (BaseCodingAgent::Droid, vec![Supervised, Plan]),
+            (BaseCodingAgent::CursorAgent, vec![Supervised]),
+        ];
+        let env = ExecutionEnv::new(Default::default(), false, String::new());
+        let cwd = std::env::temp_dir();
+        let profiles = ExecutorConfigs::from_defaults();
+        for (executor, policies) in refused {
+            for policy in policies {
+                let mut agent = profiles
+                    .get_coding_agent(&ExecutorProfileId::new(executor))
+                    .unwrap();
+                let mut config = ExecutorConfig::new(executor);
+                config.permission_policy = Some(policy.clone());
+                agent.apply_overrides(&config);
+                for follow_up in [false, true] {
+                    let result = if follow_up {
+                        agent
+                            .spawn_follow_up(&cwd, "work", "session", None, &env)
+                            .await
+                    } else {
+                        agent.spawn(&cwd, "work", &env).await
+                    };
+                    let message = match result {
+                        Ok(_) => panic!("{executor} ran under {policy:?}"),
+                        Err(err) => err.to_string(),
+                    };
+                    assert!(
+                        message.contains("permission polic")
+                            && message.contains(&format!("{policy:?}")),
+                        "{executor} under {policy:?}: {message}"
+                    );
+                }
+            }
+        }
     }
 }

@@ -240,11 +240,11 @@ impl ZCode {
         id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        if let Some(policy) = &self.unsupported_policy {
-            return Err(utils::agent_error(format!(
-                "ZCode in Vibe Kanban does not support the {policy:?} permission policy. Choose Supervised, Auto or Don't Ask."
-            )));
-        }
+        utils::refuse_unsupported(
+            "ZCode",
+            &self.unsupported_policy,
+            "Supervised, Auto or Don't Ask",
+        )?;
         let mut child = self.start_server(cwd, env).await?;
         let mut conn = Connection::new(&mut child);
         let mut writer = create_stdout_pipe_writer(&mut child)?;
@@ -360,6 +360,8 @@ impl ZCode {
         AcpEvent::TokenUsage(usage.info()).write_to(writer).await?;
         let mut prompt = prompt;
         loop {
+            let compacting = utils::parse_slash_command::<utils::SlashCommandCall<'_>>(&prompt)
+                .is_some_and(|command| command.name == "compact");
             let input_id = uuid::Uuid::new_v4().to_string();
             let request_id = conn
                 .send(
@@ -374,9 +376,14 @@ impl ZCode {
                 }
                 result = self.stream_turn(conn, writer, request_id, &id, &input_id, &mut usage, cancel) => result?,
             }
+            if compacting {
+                // The summary replaces the context; its size is known after the next reply.
+                usage.used = 0;
+                AcpEvent::TokenUsage(usage.info()).write_to(writer).await?;
+            }
             let next = match reminder.take() {
-                Some(reminder) => reminder.prompt().await,
-                None => None,
+                Some(reminder) if !compacting => reminder.prompt().await,
+                _ => None,
             };
             let Some(next) = next else {
                 return AcpEvent::Done("end_turn".into()).write_to(writer).await;
@@ -1144,5 +1151,276 @@ impl StandardCodingAgentExecutor for ZCode {
             }
             patch::executor_discovered_options(options)
         })))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod app_server_tests {
+    use std::path::PathBuf;
+
+    use async_trait::async_trait;
+    use tokio::io::AsyncReadExt;
+
+    use super::*;
+    use crate::{approvals::ExecutorApprovalError, env::RepoContext};
+
+    /// A minimal ZCode `app-server --stdio` in the legacy `session/*` protocol
+    /// of ZCode 0.17.0 (frames follow its published schemas).
+    const SERVER: &str = r#"
+import json, os, sys
+log_path, window_for = sys.argv[1], {"m1": 200000, "m2": 64000}
+model, sends, replies = "m1", [], []
+def out(frame):
+    sys.stdout.write(json.dumps(frame) + "\n"); sys.stdout.flush()
+def event(kind, payload):
+    out({"jsonrpc": "2.0", "method": "session/event",
+         "params": {"sessionId": "zc-sess", "type": kind, "payload": payload}})
+def save():
+    with open(log_path + ".tmp", "w") as log:
+        json.dump({"sends": sends, "replies": replies, "model": model}, log)
+    os.replace(log_path + ".tmp", log_path)
+catalog = {"current": {"providerId": "p", "modelId": "m1"},
+           "available": [{"ref": {"providerId": "p", "modelId": m}, "label": m, "providerLabel": "P",
+                          "disabledReason": None, "reasoning": {"levels": [], "defaultLevel": None}}
+                         for m in ("m1", "m2")]}
+snapshot = {"session": {"sessionId": "zc-sess"}, "settings": {"model": catalog},
+            "projection": {"mode": "build", "contextWindow": 200000, "contextUsed": 0},
+            "runtime": {"contextUsage": {"used": 1200, "size": 200000, "cost": None}},
+            "slashCommands": [
+                {"name": "init", "description": "Create AGENTS.md", "source": "builtin"},
+                {"name": "compact", "description": "Compact the context", "inputHint": "focus", "source": "builtin"}]}
+for line in sys.stdin:
+    message = json.loads(line)
+    method, request = message.get("method"), message.get("id")
+    if method in ("session/create", "session/resume"):
+        out({"id": request, "result": snapshot})
+    elif method == "session/setModel":
+        model = message["params"]["model"]["modelId"]
+        out({"id": request, "result": {}})
+    elif method in ("session/setMode", "session/subscribe", "session/stop"):
+        out({"id": request, "result": {}})
+    elif method == "session/send":
+        sends.append(message["params"]["content"])
+        out({"id": request, "result": {}})
+        if os.environ.get("ZCODE_FIXTURE_QUESTION") and len(sends) == 1:
+            out({"id": "srv-q", "method": "interaction/requestUserInput",
+                 "params": {"requestId": "r1", "sessionId": "zc-sess", "toolCallId": "call-q",
+                            "toolName": "AskUserQuestion",
+                            "questions": [{"question": "Which color?", "header": "Color",
+                                           "options": [{"value": "red", "label": "red"},
+                                                       {"value": "blue", "label": "blue"}]}]}})
+            for answer_line in sys.stdin:
+                answer = json.loads(answer_line)
+                if answer.get("id") == "srv-q":
+                    replies.append(answer["result"])
+                    break
+        count = len(sends)
+        save()
+        event("session.updated", {"content": "", "stopReason": "stop", "querySource": "main_turn",
+                                  "contextWindow": window_for[model],
+                                  "usage": {"inputTokens": 5000 * count, "outputTokens": 300}})
+        event("model.streaming", {"kind": "text_delta", "delta": "reply %d" % count})
+        event("turn.completed", {"resultType": "success", "response": "reply %d" % count})
+"#;
+
+    struct Approvals {
+        question: Option<QuestionStatus>,
+    }
+
+    #[async_trait]
+    impl ExecutorApprovalService for Approvals {
+        async fn create_tool_approval(&self, _: &str) -> Result<String, ExecutorApprovalError> {
+            Ok("tool".into())
+        }
+        async fn create_question_approval(
+            &self,
+            _: &str,
+            _: usize,
+        ) -> Result<String, ExecutorApprovalError> {
+            Ok("question".into())
+        }
+        async fn wait_tool_approval(
+            &self,
+            _: &str,
+            _: CancellationToken,
+        ) -> Result<ApprovalStatus, ExecutorApprovalError> {
+            Ok(ApprovalStatus::Approved)
+        }
+        async fn wait_question_answer(
+            &self,
+            _: &str,
+            _: CancellationToken,
+        ) -> Result<QuestionStatus, ExecutorApprovalError> {
+            self.question
+                .clone()
+                .ok_or(ExecutorApprovalError::ServiceUnavailable)
+        }
+    }
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        repo: PathBuf,
+        log: PathBuf,
+        zcode: ZCode,
+        env: ExecutionEnv,
+    }
+
+    fn fixture(
+        policy: PermissionPolicy,
+        question: Option<QuestionStatus>,
+        remind: bool,
+        model: Option<&str>,
+    ) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(repo.join("left-over.txt"), "fixture").unwrap();
+        let script = dir.path().join("app_server.py");
+        std::fs::write(&script, SERVER.replace("EOF_PLACEHOLDER\n", "")).unwrap();
+        let log = dir.path().join("log.json");
+        let mut zcode: ZCode = serde_json::from_value(json!({
+            "base_command_override": format!("python3 {} {}", script.display(), log.display()),
+            "env": {"ZCODE_FIXTURE_QUESTION": "1"},
+        }))
+        .unwrap();
+        let mut config = ExecutorConfig::new(BaseCodingAgent::ZCode);
+        config.permission_policy = Some(policy);
+        config.model_id = model.map(str::to_owned);
+        zcode.apply_overrides(&config);
+        zcode.use_approvals(Arc::new(Approvals { question }));
+        let env = ExecutionEnv::new(
+            RepoContext::new(dir.path().to_path_buf(), vec!["repo".into()]),
+            remind,
+            "Commit the changes.".into(),
+        );
+        Fixture {
+            _dir: dir,
+            repo,
+            log,
+            zcode,
+            env,
+        }
+    }
+
+    async fn run(fixture: &Fixture, prompt: &str) -> (Value, Vec<AcpEvent>) {
+        let mut spawned = fixture
+            .zcode
+            .spawn(&fixture.repo, prompt, &fixture.env)
+            .await
+            .unwrap();
+        let mut stdout = spawned.child.inner().stdout.take().unwrap();
+        let status =
+            tokio::time::timeout(Duration::from_secs(30), spawned.exit_signal.take().unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(matches!(status, ExecutorExitResult::Success));
+        let mut output = String::new();
+        let _ =
+            tokio::time::timeout(Duration::from_secs(2), stdout.read_to_string(&mut output)).await;
+        let _ = spawned.child.kill().await;
+        let log = serde_json::from_str(&std::fs::read_to_string(&fixture.log).unwrap()).unwrap();
+        let events = output
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        (log, events)
+    }
+
+    fn usages(events: &[AcpEvent]) -> Vec<(u32, u32)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AcpEvent::TokenUsage(info) => Some((info.total_tokens, info.model_context_window)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    #[ignore = "runs a python3 ZCode app-server fixture"]
+    async fn discovery_lists_session_commands_and_all_three_policies() {
+        let fixture = fixture(PermissionPolicy::Auto, None, false, None);
+        let (config, commands) = fixture.zcode.discover(fixture.repo.clone()).await.unwrap();
+        assert_eq!(
+            commands.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["compact", "init"]
+        );
+        assert_eq!(
+            commands[0].description.as_deref(),
+            Some("Compact the context (focus)")
+        );
+        assert_eq!(
+            config.permissions,
+            [
+                PermissionPolicy::Supervised,
+                PermissionPolicy::Auto,
+                PermissionPolicy::DontAsk
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "runs a python3 ZCode app-server fixture"]
+    async fn auto_shows_questions_reports_context_and_reminds_once() {
+        let answers = QuestionStatus::Answered {
+            answers: vec![workspace_utils::approvals::QuestionAnswer {
+                question: "Which color?".into(),
+                answer: vec!["blue".into()],
+            }],
+        };
+        let fixture = fixture(PermissionPolicy::Auto, Some(answers), true, None);
+        let (log, events) = run(&fixture, "Fix the fixture").await;
+        assert_eq!(
+            log["replies"],
+            json!([{"action": "accept", "content": {"answers": {"Which color?": "blue"}}}])
+        );
+        let sends = log["sends"].as_array().unwrap();
+        assert_eq!(sends.len(), 2, "the reminder is sent once: {sends:?}");
+        assert!(
+            sends[1]
+                .as_str()
+                .unwrap()
+                .starts_with("Commit the changes.\n")
+        );
+        assert!(sends[1].as_str().unwrap().contains("left-over.txt"));
+        // The snapshot's meter, then each main-turn model call.
+        assert_eq!(
+            usages(&events),
+            [(1200, 200000), (5300, 200000), (10300, 200000)]
+        );
+        assert!(events.iter().any(|event| matches!(event,
+            AcpEvent::QuestionAnswered { answers, .. } if answers[0].answer == ["blue"])));
+        assert!(events.iter().any(
+            |event| matches!(event, AcpEvent::System(text) if text == sends[1].as_str().unwrap())
+        ));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AcpEvent::Done(_)))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "runs a python3 ZCode app-server fixture"]
+    async fn dont_ask_declines_questions_and_a_model_switch_clears_the_old_window() {
+        let fixture = fixture(PermissionPolicy::DontAsk, None, false, Some("p/m2"));
+        let (log, events) = run(&fixture, "/compact focus").await;
+        assert_eq!(log["replies"][0]["action"], "decline");
+        assert_eq!(log["sends"], json!(["/compact focus"]));
+        assert_eq!(log["model"], "m2");
+        // Unknown for the switched model (not the old 200000 window), the new
+        // model's window with its reply, then unknown again after compaction.
+        assert_eq!(usages(&events), [(0, 0), (5300, 64000), (0, 0)]);
     }
 }

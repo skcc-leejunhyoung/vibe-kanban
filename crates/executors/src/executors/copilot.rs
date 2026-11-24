@@ -45,6 +45,12 @@ pub struct Copilot {
     #[ts(skip)]
     #[derivative(Debug = "ignore", PartialEq = "ignore")]
     pub approvals: Option<Arc<dyn ExecutorApprovalService>>,
+    /// A requested policy this executor does not implement; the turn is refused
+    /// instead of running under another policy.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[derivative(PartialEq = "ignore")]
+    pub unsupported_policy: Option<PermissionPolicy>,
 }
 
 impl Copilot {
@@ -97,6 +103,8 @@ impl StandardCodingAgentExecutor for Copilot {
         }
 
         if let Some(permission_policy) = &executor_config.permission_policy {
+            self.unsupported_policy =
+                (*permission_policy == PermissionPolicy::Plan).then_some(PermissionPolicy::Plan);
             self.allow_all_tools = Some(matches!(
                 permission_policy,
                 crate::model_selector::PermissionPolicy::Auto
@@ -111,6 +119,11 @@ impl StandardCodingAgentExecutor for Copilot {
         prompt: &str,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        super::utils::refuse_unsupported(
+            "GitHub Copilot CLI",
+            &self.unsupported_policy,
+            "Auto or Supervised",
+        )?;
         let harness = AcpAgentHarness::new();
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
         let copilot_command = self.build_command_builder()?.build_initial()?;
@@ -134,6 +147,11 @@ impl StandardCodingAgentExecutor for Copilot {
         _reset_to_message_id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        super::utils::refuse_unsupported(
+            "GitHub Copilot CLI",
+            &self.unsupported_policy,
+            "Auto or Supervised",
+        )?;
         let harness = AcpAgentHarness::new();
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
         let copilot_command = self.build_command_builder()?.build_follow_up(&[])?;

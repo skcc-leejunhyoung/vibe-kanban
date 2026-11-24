@@ -40,6 +40,9 @@ pub struct AcpClient {
     feedback_queue: Arc<Mutex<Vec<String>>>,
     cancel: CancellationToken,
     replaying: Arc<AtomicBool>,
+    /// The last usage reported while a session was being loaded or its model
+    /// selected, before the turn began. It is the turn's starting gauge.
+    setup_usage: Arc<std::sync::Mutex<Option<TokenUsageInfo>>>,
     /// Approve tool permissions without asking while user questions still
     /// reach the approval service (Auto under an agent that asks both ways).
     auto_approve_tools: bool,
@@ -58,6 +61,7 @@ impl AcpClient {
             feedback_queue: Arc::new(Mutex::new(Vec::new())),
             cancel,
             replaying: Arc::new(AtomicBool::new(false)),
+            setup_usage: Arc::default(),
             auto_approve_tools: false,
         }
     }
@@ -79,6 +83,18 @@ impl AcpClient {
         self.send_event(AcpEvent::SessionStart(session_id.0.to_string()));
         self.record_user_prompt_event(prompt);
         self.set_replaying(false);
+        // Start from what the agent reported for this session and model, or
+        // from unknown, never from the previous turn's (possibly other) model.
+        let starting = self
+            .setup_usage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .unwrap_or(TokenUsageInfo {
+                total_tokens: 0,
+                model_context_window: 0,
+            });
+        self.send_event(AcpEvent::TokenUsage(starting));
     }
 
     /// Reports an event of Vibe Kanban's own into the turn's log.
@@ -242,6 +258,14 @@ impl acp::Client for AcpClient {
 
     async fn session_notification(&self, args: acp::SessionNotification) -> Result<(), acp::Error> {
         if self.replaying.load(Ordering::Relaxed) {
+            if let acp::SessionUpdate::UsageUpdate(usage) = &args.update
+                && let AcpEvent::TokenUsage(info) = context_usage(usage)
+            {
+                *self
+                    .setup_usage
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(info);
+            }
             return Ok(());
         }
         // Convert to typed events

@@ -182,11 +182,11 @@ impl Pi {
         id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        if let Some(policy) = &self.unsupported_policy {
-            return Err(utils::agent_error(format!(
-                "Pi has no {policy:?} mode. Choose Supervised, Auto or Don't Ask."
-            )));
-        }
+        utils::refuse_unsupported(
+            "Pi",
+            &self.unsupported_policy,
+            "Supervised, Auto or Don't Ask",
+        )?;
         let command = self.checked_command(env).await?;
         let mut harness = AcpAgentHarness::new()
             .with_native_sessions()
@@ -372,9 +372,12 @@ impl StandardCodingAgentExecutor for Pi {
         let cwd = utils::discovery_dir(workdir, repo_path);
         let agent = self.clone();
         Ok(Box::pin(futures::stream::once(async move {
-            let mut options = ExecutorDiscoveredOptions {
-                ..Default::default()
-            };
+            let mut options = ExecutorDiscoveredOptions::default();
+            options.model_selector.permissions = vec![
+                PermissionPolicy::Supervised,
+                PermissionPolicy::Auto,
+                PermissionPolicy::DontAsk,
+            ];
             match agent.discover(cwd).await {
                 Ok((models, commands)) => {
                     options.slash_commands = commands;

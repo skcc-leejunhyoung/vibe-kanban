@@ -38,6 +38,12 @@ pub struct QwenCode {
     #[ts(skip)]
     #[derivative(Debug = "ignore", PartialEq = "ignore")]
     pub approvals: Option<Arc<dyn ExecutorApprovalService>>,
+    /// A requested policy this executor does not implement; the turn is refused
+    /// instead of running under another policy.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[derivative(PartialEq = "ignore")]
+    pub unsupported_policy: Option<PermissionPolicy>,
 }
 
 impl QwenCode {
@@ -67,6 +73,8 @@ impl StandardCodingAgentExecutor for QwenCode {
             self.agent = Some(agent_id.clone());
         }
         if let Some(permission_policy) = executor_config.permission_policy.clone() {
+            self.unsupported_policy =
+                (permission_policy == PermissionPolicy::Plan).then_some(PermissionPolicy::Plan);
             self.yolo = Some(matches!(
                 permission_policy,
                 crate::model_selector::PermissionPolicy::Auto
@@ -85,6 +93,11 @@ impl StandardCodingAgentExecutor for QwenCode {
         prompt: &str,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        super::utils::refuse_unsupported(
+            "Qwen Code",
+            &self.unsupported_policy,
+            "Auto or Supervised",
+        )?;
         let qwen_command = self.build_command_builder()?.build_initial()?;
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
         let mut harness = AcpAgentHarness::with_session_namespace("qwen_sessions");
@@ -119,6 +132,11 @@ impl StandardCodingAgentExecutor for QwenCode {
         _reset_to_message_id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        super::utils::refuse_unsupported(
+            "Qwen Code",
+            &self.unsupported_policy,
+            "Auto or Supervised",
+        )?;
         let qwen_command = self.build_command_builder()?.build_follow_up(&[])?;
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
         let mut harness = AcpAgentHarness::with_session_namespace("qwen_sessions");

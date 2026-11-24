@@ -67,6 +67,12 @@ pub struct Opencode {
     #[ts(skip)]
     #[derivative(Debug = "ignore", PartialEq = "ignore")]
     pub approvals: Option<Arc<dyn ExecutorApprovalService>>,
+    /// A requested policy this executor does not implement; the turn is refused
+    /// instead of running under another policy.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[derivative(PartialEq = "ignore")]
+    pub unsupported_policy: Option<PermissionPolicy>,
 }
 
 /// Represents a spawned OpenCode server with its base URL
@@ -165,6 +171,11 @@ impl Opencode {
         resume_session: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        super::utils::refuse_unsupported(
+            "OpenCode",
+            &self.unsupported_policy,
+            "Auto, Don't Ask or Supervised, or select the plan agent",
+        )?;
         let slash_command = OpencodeSlashCommand::parse(prompt);
         let combined_prompt = if slash_command.is_some() {
             prompt.to_string()
@@ -408,6 +419,8 @@ impl StandardCodingAgentExecutor for Opencode {
         }
 
         if let Some(permission_policy) = executor_config.permission_policy.clone() {
+            self.unsupported_policy =
+                (permission_policy == PermissionPolicy::Plan).then_some(PermissionPolicy::Plan);
             self.auto_approve = matches!(
                 permission_policy,
                 PermissionPolicy::Auto | PermissionPolicy::DontAsk

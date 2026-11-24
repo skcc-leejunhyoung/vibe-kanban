@@ -69,6 +69,14 @@ impl StandardCodingAgentExecutor for Amp {
                 PermissionPolicy::Supervised | PermissionPolicy::Plan
             )
             .then(|| policy.clone());
+            // Execute mode cannot ask: without this flag a tool that needs
+            // approval is rejected, so Auto has to be allow-all to be Auto.
+            if !matches!(
+                policy,
+                PermissionPolicy::Supervised | PermissionPolicy::Plan
+            ) {
+                self.dangerously_allow_all = Some(true);
+            }
         }
     }
 

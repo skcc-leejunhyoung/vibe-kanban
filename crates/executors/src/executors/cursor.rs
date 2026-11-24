@@ -717,6 +717,12 @@ impl StandardCodingAgentExecutor for CursorAgent {
         let options = ExecutorDiscoveredOptions {
             model_selector: ModelSelectorConfig {
                 models,
+                // Print mode has no per-tool approval (Supervised is refused) and
+                // never asks questions, so Auto already is Don't Ask.
+                permissions: vec![
+                    crate::model_selector::PermissionPolicy::Auto,
+                    crate::model_selector::PermissionPolicy::Plan,
+                ],
                 ..Default::default()
             },
             ..Default::default()

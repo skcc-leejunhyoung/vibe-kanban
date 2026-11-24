@@ -544,11 +544,11 @@ impl OpencodeV2 {
         id: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        if let Some(policy) = &self.unsupported_policy {
-            return Err(utils::agent_error(format!(
-                "OpenCode v2 does not support the {policy:?} permission policy. Choose Supervised, Auto or Don't Ask, or select OpenCode's plan agent."
-            )));
-        }
+        utils::refuse_unsupported(
+            "OpenCode v2",
+            &self.unsupported_policy,
+            "Supervised, Auto or Don't Ask, or select OpenCode's plan agent",
+        )?;
         let (mut child, password) = self.start_server(cwd, env).await?;
         let stdin = child.inner().stdin.take().expect("piped stdin");
         let stdout = child.inner().stdout.take().expect("piped stdout");
@@ -567,7 +567,7 @@ impl OpencodeV2 {
             },
             None => TurnInput::Prompt(self.append_prompt.combine_prompt(prompt)),
         };
-        let reminder = CommitReminder::from_env(env);
+        let reminder = reminder_for(&input, env);
         tokio::spawn(async move {
             let result = async {
                 let api = tokio::select! {
@@ -749,12 +749,35 @@ impl OpencodeV2 {
                 TurnInput::Command {
                     name, arguments, ..
                 } => {
-                    api.post(
-                        &format!("{path}/command"),
-                        json!({"name":name, "text":arguments, "delivery":"queue"}),
-                        "command",
-                    )
-                    .await?;
+                    let response = api
+                        .request(Method::POST, &format!("{path}/command"))
+                        .timeout(REQUEST_TIMEOUT)
+                        .json(&json!({"name":name, "text":arguments, "delivery":"queue"}))
+                        .send()
+                        .await
+                        .map_err(|_| {
+                            utils::agent_error(
+                                "OpenCode v2 command could not reach the local server.",
+                            )
+                        })?;
+                    let status = response.status();
+                    if !status.is_success() {
+                        // A command that rejects its input (for example `/goal pause`
+                        // with no goal) answers with its own message, not a login problem.
+                        let body: Value = response.json().await.unwrap_or(Value::Null);
+                        let Some(message) = (body["_tag"] == "CommandExecutionError")
+                            .then(|| body["message"].as_str())
+                            .flatten()
+                        else {
+                            return Err(utils::agent_error(format!(
+                                "OpenCode v2 command failed (HTTP {status})."
+                            )));
+                        };
+                        AcpEvent::text(&format!("_/{name}: {message}_"))
+                            .write_to(writer)
+                            .await?;
+                        return AcpEvent::Done("end_turn".into()).write_to(writer).await;
+                    }
                 }
             }
             while let Some(event) = events.next().await {
@@ -1058,6 +1081,12 @@ fn context_tokens(tokens: &Value) -> u64 {
 
 /// The context gauge for one turn: the last step's tokens against the window
 /// of the model that ran it.
+/// Compaction edits nothing, so there is nothing to remind about after it.
+fn reminder_for(input: &TurnInput, env: &ExecutionEnv) -> Option<CommitReminder> {
+    CommitReminder::from_env(env)
+        .filter(|_| !matches!(input, TurnInput::Command { name, .. } if name == COMPACT))
+}
+
 struct ContextUsage {
     limits: HashMap<ModelKey, u32>,
     step_models: HashMap<String, ModelKey>,
@@ -2271,6 +2300,133 @@ mod turn_tests {
     }
 
     #[tokio::test]
+    async fn auto_and_dont_ask_approve_remaining_asks_without_prompting_the_user() {
+        for policy in [PermissionPolicy::Auto, PermissionPolicy::DontAsk] {
+            let server = MockServer::start(Box::new(|request, events| {
+                let path = request.path.split('?').next().unwrap();
+                match (request.method.as_str(), path) {
+                    ("POST", "/api/session") => (200, json!({"data": {"id": "ses_fixture"}})),
+                    ("GET", "/api/model") => (200, models()),
+                    ("POST", "/api/session/ses_fixture/prompt") => {
+                        events
+                            .send(event(
+                                "permission.asked",
+                                json!({"id": "per_fixture", "sessionID": "ses_fixture", "action": "read",
+                                       "resources": ["/fixture/.env"]}),
+                            ))
+                            .unwrap();
+                        (200, json!({"data": {}}))
+                    }
+                    ("POST", "/api/session/ses_fixture/permission/per_fixture/reply") => {
+                        events.send(done()).unwrap();
+                        (204, Value::Null)
+                    }
+                    _ => (404, json!({"error": request.path})),
+                }
+            }))
+            .await;
+            // Approving would be denied if the user were asked.
+            let executor = executor(
+                policy,
+                Some(Approvals {
+                    tool: ApprovalStatus::Denied { reason: None },
+                    question: None,
+                }),
+            );
+            let mut writer = Vec::new();
+            executor
+                .run_turn(
+                    &server.api,
+                    Path::new("/fixture"),
+                    TurnInput::Prompt("Read it".into()),
+                    None,
+                    None,
+                    &CancellationToken::new(),
+                    &mut writer,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                server.requests(
+                    "POST",
+                    "/api/session/ses_fixture/permission/per_fixture/reply"
+                )[0]
+                .body,
+                json!({"decision": "once", "message": null})
+            );
+            assert!(
+                !output(&writer)
+                    .iter()
+                    .any(|event| matches!(event, AcpEvent::ApprovalRequested { .. }))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_or_interrupted_turns_send_no_commit_reminder() {
+        for kind in ["session.execution.failed", "session.execution.interrupted"] {
+            let server = MockServer::start(Box::new(move |request, events| {
+                let path = request.path.split('?').next().unwrap();
+                match (request.method.as_str(), path) {
+                    ("POST", "/api/session") => (200, json!({"data": {"id": "ses_fixture"}})),
+                    ("GET", "/api/model") => (200, models()),
+                    ("POST", "/api/session/ses_fixture/prompt") => {
+                        events
+                            .send(event(
+                                kind,
+                                json!({"sessionID": "ses_fixture", "error": {"type": "provider.auth"}}),
+                            ))
+                            .unwrap();
+                        (200, json!({"data": {}}))
+                    }
+                    _ => (404, json!({"error": request.path})),
+                }
+            }))
+            .await;
+            let (_root, repo) = dirty_repo();
+            let mut writer = Vec::new();
+            let result = executor(PermissionPolicy::Auto, None)
+                .run_turn(
+                    &server.api,
+                    Path::new("/fixture"),
+                    TurnInput::Prompt("Work".into()),
+                    None,
+                    Some(CommitReminder {
+                        repo,
+                        prompt: "Commit.".into(),
+                    }),
+                    &CancellationToken::new(),
+                    &mut writer,
+                )
+                .await;
+            assert!(result.is_err(), "{kind}");
+            assert_eq!(
+                server
+                    .requests("POST", "/api/session/ses_fixture/prompt")
+                    .len(),
+                1,
+                "{kind}: no reminder after a failed turn"
+            );
+        }
+    }
+
+    #[test]
+    fn only_compaction_skips_the_commit_reminder() {
+        let (_root, repo) = dirty_repo();
+        let env = ExecutionEnv::new(repo, true, "Commit.".into());
+        let command = |name: &str| TurnInput::Command {
+            text: format!("/{name}"),
+            name: name.into(),
+            arguments: String::new(),
+        };
+        assert!(reminder_for(&TurnInput::Prompt("work".into()), &env).is_some());
+        assert!(reminder_for(&command("hello"), &env).is_some());
+        assert!(reminder_for(&command(COMPACT), &env).is_none());
+        let off = ExecutionEnv::new(RepoContext::default(), false, String::new());
+        assert!(reminder_for(&TurnInput::Prompt("work".into()), &off).is_none());
+    }
+
+    #[tokio::test]
     async fn auto_answers_forms_with_option_values() {
         let server = MockServer::start(Box::new(|request, events| {
             let path = request.path.split('?').next().unwrap();
@@ -2347,7 +2503,7 @@ mod turn_tests {
                 ("GET", "/api/command") => (
                     200,
                     json!({"location": {"directory": "/fixture"},
-                           "data": [{"name": "review"}, {"name": "hello", "description": "Fixture"}]}),
+                           "data": [{"name": "review"}, {"name": "goal"}, {"name": "hello", "description": "Fixture"}]}),
                 ),
                 ("GET", "/api/session/ses_fixture") => (
                     200,
@@ -2356,6 +2512,15 @@ mod turn_tests {
                 ("GET", "/api/model") => (200, models()),
                 ("GET", "/api/session/ses_fixture/context") => (200, json!({"data": []})),
                 ("PATCH", "/api/session/ses_fixture") => (200, json!({"data": {}})),
+                ("POST", "/api/session/ses_fixture/command")
+                    if request.body["name"] == "goal" =>
+                {
+                    (
+                        500,
+                        json!({"_tag": "CommandExecutionError", "command": "goal",
+                               "message": "No active goal to pause."}),
+                    )
+                }
                 ("POST", "/api/session/ses_fixture/command")
                 | ("POST", "/api/session/ses_fixture/compact") => {
                     events.send(done()).unwrap();
@@ -2403,6 +2568,11 @@ mod turn_tests {
                 .len(),
             1
         );
+        let events = run("/goal pause", Some("ses_fixture")).await;
+        assert!(events.iter().any(|event| matches!(event,
+            AcpEvent::Message(agent_client_protocol::ContentBlock::Text(t))
+                if t.text == "_/goal: No active goal to pause._")));
+        assert!(matches!(events.last(), Some(AcpEvent::Done(_))));
         for (text, message) in [
             ("/compact", "No session available"),
             ("/missing arg", "Command not found: `/missing`"),

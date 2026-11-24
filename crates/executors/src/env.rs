@@ -232,4 +232,48 @@ mod tests {
             assert_eq!(actual, safe);
         }
     }
+
+    fn git_repo(root: &std::path::Path, name: &str, dirty: bool) {
+        let dir = root.join(name);
+        std::fs::create_dir(&dir).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&dir)
+                .status()
+                .unwrap()
+                .success()
+        );
+        if dirty {
+            std::fs::write(dir.join("left-over.txt"), name).unwrap();
+        }
+    }
+
+    /// The reminder covers every repository of the workspace and is empty
+    /// only when all of them are clean.
+    #[tokio::test]
+    async fn reminder_lists_each_repository_with_changes() {
+        let root = tempfile::tempdir().unwrap();
+        for (name, dirty) in [("first", true), ("second", false), ("third", true)] {
+            git_repo(root.path(), name, dirty);
+        }
+        let names = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();
+        let all = CommitReminder {
+            repo: RepoContext::new(
+                root.path().to_path_buf(),
+                names(&["first", "second", "third"]),
+            ),
+            prompt: "Commit.".into(),
+        };
+        let text = all.prompt().await.unwrap();
+        assert!(text.starts_with("Commit.\n"));
+        assert!(text.contains("/first") && text.contains("/third") && !text.contains("/second"));
+        let clean = CommitReminder {
+            repo: RepoContext::new(root.path().to_path_buf(), names(&["second"])),
+            prompt: "Commit.".into(),
+        };
+        assert_eq!(clean.prompt().await, None);
+        let off = ExecutionEnv::new(RepoContext::default(), false, String::new());
+        assert!(CommitReminder::from_env(&off).is_none());
+    }
 }

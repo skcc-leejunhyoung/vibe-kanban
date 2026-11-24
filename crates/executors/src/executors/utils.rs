@@ -43,6 +43,18 @@ pub(super) fn unsupported_policy(
     ))
 }
 
+/// Refuses the turn when the requested policy is one the agent does not implement.
+pub(super) fn refuse_unsupported(
+    agent: &str,
+    policy: &Option<crate::model_selector::PermissionPolicy>,
+    supported: &str,
+) -> Result<(), super::ExecutorError> {
+    match policy {
+        Some(policy) => Err(unsupported_policy(agent, policy, supported)),
+        None => Ok(()),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommandCall<'a> {
     /// The command name in lowercase (without the leading slash)

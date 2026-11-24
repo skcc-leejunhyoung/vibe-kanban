@@ -18,6 +18,11 @@ static ISSUE_REFERENCE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"#(\d+)\b").expect("valid regex"));
 static PARENTHESIZED_ISSUE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s*\(\s*#(\d+)\s*\)").expect("valid regex"));
+/// The template's own placeholder, echoed back instead of a number.
+static ISSUE_PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\s*\(?\s*#\{?\s*(?:issue[_ -]?number|issue[_ -]?id|number)\s*\}?\s*\)?")
+        .expect("valid regex")
+});
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\S) {2,}").expect("valid regex"));
 static ISSUE_URL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"/(?:issues|pull)/(\d+)\b").expect("valid regex"));
@@ -125,7 +130,8 @@ fn unfence(text: &str) -> String {
 }
 
 fn clean_references(line: &str, issues: &BTreeSet<String>) -> String {
-    let mut removed = false;
+    let stripped = ISSUE_PLACEHOLDER.replace_all(line, "");
+    let mut removed = stripped.len() != line.len();
     let mut keep = |capture: &regex::Captures| {
         if issues.contains(&capture[1]) {
             capture[0].to_string()
@@ -135,7 +141,7 @@ fn clean_references(line: &str, issues: &BTreeSet<String>) -> String {
         }
     };
     let line = PARENTHESIZED_ISSUE
-        .replace_all(line, &mut keep)
+        .replace_all(&stripped, &mut keep)
         .into_owned();
     let line = ISSUE_REFERENCE.replace_all(&line, &mut keep).into_owned();
     if !removed {
@@ -161,6 +167,21 @@ mod tests {
             ]),
             issues(&["12", "34"])
         );
+    }
+
+    #[test]
+    fn removes_the_template_placeholder_when_no_issue_was_given() {
+        for echoed in [
+            "feat(common): 정책 추가 (#{issue_number})",
+            "feat(common): 정책 추가 (#issue_number)",
+            "feat(common): 정책 추가 #{issue_number}",
+        ] {
+            assert_eq!(
+                sanitize(echoed, &issues(&[])).as_deref(),
+                Some("feat(common): 정책 추가"),
+                "{echoed}"
+            );
+        }
     }
 
     #[test]

@@ -81,3 +81,30 @@ Use the Z.ai ZCode CLI from the [FrontierHarness Eval source build](https://gith
 Configure a model and credentials on the execution host using ZCode's personal provider configuration. You can pass the configuration path as `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` in the executor environment. Use a provider that supports tool calls for coding tasks. Models use `provider/model` identifiers. [ZCode provider configuration](https://github.com/zai-org/ZCode/blob/3c5b227649371507ddc4eb46ac5133afe6db1cab/apps/zcode-cli/docs/usage/03-config.md)
 
 Select **ZCode** in the workspace or session, or use `--executor ZCODE` in `vk`. ZCode's stdio app server provides streaming, native session resume, interruption, tool approval, the context usage gauge, the commit reminder and the commands listed by the session in the chat's `/` menu. Vibe Kanban runs ZCode in build mode and approves requests itself under **Auto** and **Don't Ask**, so ZCode's deny rules still apply. **Auto** shows the agent's questions in the chat; **Don't Ask** declines them. The **Plan** permission policy is refused. Message-level rewind is unavailable.
+
+## Chat features by agent
+
+The context gauge shows the tokens currently in the conversation against the context window of the model that produced them. It is never filled from cumulative usage, cost, per-turn totals or an estimated limit. When an agent does not report both values, or the value is unknown after a model change or compaction, the gauge shows a placeholder instead of 0%.
+
+The `/` menu lists only commands that the agent can run from chat. Commands that exist only in an agent's terminal interface, and `@` skill mentions, are not offered unless the agent's own protocol runs them from a prompt.
+
+| Agent | Context gauge | `/` commands | Permission policies | Commit reminder |
+| --- | --- | --- | --- | --- |
+| Claude Code | Supported | Supported | Auto, Don't Ask, Supervised, Plan | Supported |
+| OpenAI Codex | Supported | Supported | Auto, Don't Ask, Supervised, Plan | Supported |
+| OpenCode | Supported | Supported | Auto, Don't Ask, Supervised. **Plan** is refused; choose OpenCode's plan agent | Supported |
+| OpenCode v2 | Supported | Supported, including your project and user commands and `/compact` | Supervised, Auto, Don't Ask. **Plan** is refused; choose OpenCode's plan agent | Supported |
+| Pi | Supported | Commands that Pi announces, including `/skill:name` | Supervised, Auto, Don't Ask. **Plan** is refused | Supported |
+| ZCode | Supported | Commands that the session lists | Supervised, Auto, Don't Ask. **Plan** is refused | Supported |
+| Gemini CLI | Not supported: version 0.29.3 reports no usage | Not supported: no command list over ACP in 0.29.3 | Auto, Supervised. Over ACP it cannot receive answers to questions, so Auto and Don't Ask behave the same. **Plan** is refused | Supported |
+| Qwen Code | Not supported: version 0.9.1 reports no `usage_update` | Not supported: command output arrives only through a private notification | Auto, Supervised. It has no question tool, so Auto and Don't Ask behave the same. **Plan** is refused | Supported |
+| GitHub Copilot CLI | Not supported: version 0.0.403 discards usage events | Not supported: no commands over ACP in 0.0.403 | Auto, Supervised. It has no question tool over ACP, so Auto and Don't Ask behave the same. **Plan** is refused | Supported |
+| Amp | Not supported: no documented context window | Not supported: execute mode has no commands | Auto and Don't Ask run with `--dangerously-allow-all`, because execute mode cannot ask. **Supervised** and **Plan** are refused | Not supported: needs an Amp plugin |
+| Cursor Agent | Not supported: stream-json has no context window | Not supported: no command list | Auto (print mode never asks, so Don't Ask is the same) and Plan (`--mode plan`). **Supervised** is refused | Not supported: its stop hook is unverified in print mode |
+| Factory Droid | Not supported: stream-json has only cumulative totals | Not supported: no command list | Auto and Don't Ask (skip permissions). **Supervised** and **Plan** are refused | Not supported: needs a Stop hook |
+
+A refused policy fails the turn with a message that names it. Vibe Kanban never runs the turn under a different policy.
+
+<Note>
+When an agent leaves uncommitted changes and does not receive the commit reminder, Vibe Kanban commits them itself after a normal exit. It does not use the agent's final reply for the commit message. Agents that can generate text without adding to the conversation (currently OpenCode v2) write the message from your commit conventions and only reference issue numbers that you wrote in the session. For the others, the commit uses a default message. A quick chat never commits your working tree.
+</Note>

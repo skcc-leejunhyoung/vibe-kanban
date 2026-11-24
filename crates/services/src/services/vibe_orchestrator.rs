@@ -532,9 +532,8 @@ pub fn parse_vibe_result(text: &str) -> VibeResult {
 }
 
 /// Strip any `VIBE_RESULT:` sentinel line(s) from an agent message so the
-/// orchestration marker never leaks into user-facing text — most importantly the
-/// auto-commit message, which is built verbatim from the turn summary (the
-/// agent's final message). Mirrors the tolerant matching in [`parse_vibe_result`]:
+/// orchestration marker never leaks into user-facing text, such as turn
+/// summaries and generated commit messages. Mirrors the tolerant matching in [`parse_vibe_result`]:
 /// any line mentioning the marker (case-insensitive, markdown-wrapped) is
 /// dropped, and trailing blank lines left behind are trimmed.
 pub fn strip_result_sentinel(text: &str) -> String {
