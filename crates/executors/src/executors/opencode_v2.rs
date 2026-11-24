@@ -892,7 +892,7 @@ mod tests {
         .unwrap();
         assert!(memory_skill_dirs(repo.path(), "example.test/fixtures/two").is_empty());
         let dirs = memory_skill_dirs(repo.path(), key);
-        assert_eq!(dirs, [dir.clone()]);
+        assert_eq!(dirs, std::slice::from_ref(&dir));
         let existing = Some(
             "{/* keep settings */ \"model\": \"fixture/model\", \"skills\": [\"./existing\"],}",
         );
