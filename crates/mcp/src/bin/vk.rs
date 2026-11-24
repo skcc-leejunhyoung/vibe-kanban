@@ -169,7 +169,7 @@ const QUERY: ArgSpec = opt(
 );
 const EXECUTOR: ArgSpec = opt(
     "executor",
-    "Coding agent: CLAUDE_CODE, CODEX, GEMINI, AMP, OPENCODE, CURSOR_AGENT, QWEN_CODE, COPILOT, DROID",
+    "Coding agent: CLAUDE_CODE, CODEX, GEMINI, AMP, OPENCODE, OPENCODE_V2, PI, ZCODE, CURSOR_AGENT, QWEN_CODE, COPILOT, DROID",
     Where::Local,
     Kind::Str,
 );

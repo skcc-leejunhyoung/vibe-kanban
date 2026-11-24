@@ -48,3 +48,25 @@ Claude Code Router - orchestrate multiple models
 Qwen Code CLI
 </Card>
 </CardGroup>
+
+## OpenCode v2
+
+Install `@opencode/cli@2.4.1` in a separate npm prefix on the execution host. In **Settings → Agents**, set the OpenCode v2 base command to the absolute path to that installation’s `opencode2` executable. This keeps the `opencode` command for existing v1 profiles. Select **OpenCode v2** in the workspace or session, or use `--executor OPENCODE_V2` in `vk`.
+
+You can use provider API keys carried in the executor environment. To use credentials from `/connect`, set a dedicated `XDG_DATA_HOME` in the OpenCode v2 profile and run `opencode2` with that same setting. Vibe Kanban otherwise uses its own v2 data directory. Keep your OpenCode configuration compatible with v1 if both versions read it. [OpenCode v2 migration and configuration](https://opencode.ai/docs/migrate-v1/)
+
+OpenCode v2 supports native session resume, interruption and tool approval. Interactive forms and message-level rewind are unavailable in this integration. Choose **OpenCode** to continue existing v1 sessions and profiles.
+
+## Pi
+
+Install `@earendil-works/pi-coding-agent@1.4.0` and `pi-acp@0.0.35` on the execution host. Sign in through Pi's `/login` command or provide a model provider's API key through the executor environment. Select **Pi** in the workspace or session, or use `--executor PI` in `vk`. [Pi ACP adapter](https://zed.dev/acp/agent/pi)
+
+Pi supports model selection, streaming, native session resume and interruption. Vibe Kanban presents ACP confirmation requests from Pi extensions. Pi extensions control which tools require a confirmation. Message-level rewind is unavailable.
+
+## ZCode
+
+Use the Z.ai ZCode CLI from the [FrontierHarness Eval source build](https://github.com/frontier-harness-eval/eval/blob/84a29789534af5b316df642be279c23c84caa2e4/suites/baseten-eval.json). The verified CLI is 0.17.0 at commit `3c5b227649371507ddc4eb46ac5133afe6db1cab`. Put its `zcode` command on PATH or set a base command override that runs the built `zcode.cjs` with Node.
+
+Configure a model and credentials on the execution host using ZCode's personal provider configuration. You can pass the configuration path as `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` in the executor environment. Use a provider that supports tool calls for coding tasks. Models use `provider/model` identifiers. [ZCode provider configuration](https://github.com/zai-org/ZCode/blob/3c5b227649371507ddc4eb46ac5133afe6db1cab/apps/zcode-cli/docs/usage/03-config.md)
+
+Select **ZCode** in the workspace or session, or use `--executor ZCODE` in `vk`. ZCode's stdio app server provides streaming, native session resume, interruption and tool approval. Interactive questions and message-level rewind are unavailable in this integration.

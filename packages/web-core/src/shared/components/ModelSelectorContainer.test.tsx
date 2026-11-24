@@ -46,11 +46,12 @@ const modelConfig: ModelSelectorConfig = {
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
+const discovery = vi.hoisted(() => ({ error: null as string | null }));
 vi.mock('@/shared/hooks/useExecutorDiscovery', () => ({
   useModelSelectorConfig: () => ({
-    config: modelConfig,
+    config: discovery.error ? { ...modelConfig, models: [] } : modelConfig,
     loadingModels: false,
-    error: null,
+    error: discovery.error,
   }),
 }));
 vi.mock('@/shared/hooks/usePresetOptions', () => ({
@@ -99,6 +100,7 @@ vi.mock('@/shared/lib/api', () => ({
 
 // Render no DOM: capture the popover props and dropdown item handlers instead.
 type PopoverProps = {
+  error?: string | null;
   selectedModelId: string | null;
   selectedReasoningId: string | null;
   onModelSelect: (id: string, providerId?: string) => void;
@@ -155,6 +157,7 @@ beforeEach(() => {
   });
   root = createRoot(container as unknown as HTMLElement);
   menuItems.clear();
+  discovery.error = null;
   hostSystems.byHost.clear();
   hostSystems.contextHostId = null;
   updateRecentModels.mockClear();
@@ -221,6 +224,19 @@ describe('ModelSelectorContainer with session overrides', () => {
       reasoning_id: null,
       permission_policy: PermissionPolicy.PLAN,
     });
+  });
+
+  it('exposes an actionable discovery error with an empty model catalogue', async () => {
+    discovery.error = 'Install the agent on the execution host.';
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    try {
+      await act(() => root.render(<Chat lastUsed={lastUsed} />));
+      expect(popover.error).toBe(discovery.error);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('keeps the effort when Fast is toggled on and off', async () => {

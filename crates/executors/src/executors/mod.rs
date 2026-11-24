@@ -23,7 +23,8 @@ use crate::{
     env::ExecutionEnv,
     executors::{
         amp::Amp, claude::ClaudeCode, codex::Codex, copilot::Copilot, cursor::CursorAgent,
-        droid::Droid, gemini::Gemini, opencode::Opencode, qwen::QwenCode,
+        droid::Droid, gemini::Gemini, opencode::Opencode, opencode_v2::OpencodeV2, pi::Pi,
+        qwen::QwenCode, zcode::ZCode,
     },
     logs::utils::patch,
     mcp_config::McpConfig,
@@ -39,10 +40,13 @@ pub mod cursor;
 pub mod droid;
 pub mod gemini;
 pub mod opencode;
+pub mod opencode_v2;
+pub mod pi;
 #[cfg(feature = "qa-mode")]
 pub mod qa_mock;
 pub mod qwen;
 pub mod utils;
+pub mod zcode;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct SlashCommandDescription {
@@ -112,6 +116,19 @@ pub enum CodingAgent {
     Gemini,
     Codex,
     Opencode,
+    #[serde(rename = "OPENCODE_V2")]
+    #[strum(serialize = "OPENCODE_V2")]
+    #[strum_discriminants(serde(rename = "OPENCODE_V2"))]
+    #[strum_discriminants(strum(serialize = "OPENCODE_V2"))]
+    #[strum_discriminants(sqlx(rename = "OPENCODE_V2"))]
+    OpencodeV2,
+    Pi,
+    #[serde(rename = "ZCODE")]
+    #[strum(serialize = "ZCODE")]
+    #[strum_discriminants(serde(rename = "ZCODE"))]
+    #[strum_discriminants(strum(serialize = "ZCODE"))]
+    #[strum_discriminants(sqlx(rename = "ZCODE"))]
+    ZCode,
     #[serde(alias = "CURSOR")]
     #[strum_discriminants(serde(alias = "CURSOR"))]
     #[strum_discriminants(strum(serialize = "CURSOR", serialize = "CURSOR_AGENT"))]
@@ -204,7 +221,12 @@ impl CodingAgent {
                 vec![BaseAgentCapability::SessionFork]
             }
             Self::CursorAgent(_) => vec![BaseAgentCapability::SetupHelper],
-            Self::Amp(_) | Self::Copilot(_) | Self::Droid(_) => vec![],
+            Self::Amp(_)
+            | Self::Copilot(_)
+            | Self::Droid(_)
+            | Self::Pi(_)
+            | Self::ZCode(_)
+            | Self::OpencodeV2(_) => vec![],
             #[cfg(feature = "qa-mode")]
             Self::QaMock(_) => vec![], // QA mock doesn't need special capabilities
         }

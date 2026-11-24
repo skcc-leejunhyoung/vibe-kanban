@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use agent_client_protocol::{self as acp};
 use async_trait::async_trait;
@@ -19,6 +22,7 @@ pub struct AcpClient {
     approvals: Option<Arc<dyn ExecutorApprovalService>>,
     feedback_queue: Arc<Mutex<Vec<String>>>,
     cancel: CancellationToken,
+    replaying: Arc<AtomicBool>,
 }
 
 impl AcpClient {
@@ -33,11 +37,28 @@ impl AcpClient {
             approvals,
             feedback_queue: Arc::new(Mutex::new(Vec::new())),
             cancel,
+            replaying: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn record_user_prompt_event(&self, prompt: &str) {
         self.send_event(AcpEvent::User(prompt.to_string()));
+    }
+
+    pub(super) fn set_replaying(&self, replaying: bool) {
+        self.replaying.store(replaying, Ordering::Relaxed);
+    }
+
+    pub(super) fn start_turn(&self, session_id: &acp::SessionId, prompt: &str) {
+        self.send_event(AcpEvent::SessionStart(session_id.0.to_string()));
+        self.record_user_prompt_event(prompt);
+        self.set_replaying(false);
+    }
+
+    pub(super) fn finish_turn(&self, reason: &acp::StopReason) {
+        self.send_event(AcpEvent::Done(
+            serde_json::to_string(reason).unwrap_or_default(),
+        ));
     }
 
     /// Send an event to the event channel
@@ -177,6 +198,9 @@ impl acp::Client for AcpClient {
     }
 
     async fn session_notification(&self, args: acp::SessionNotification) -> Result<(), acp::Error> {
+        if self.replaying.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         // Convert to typed events
         let event = match args.update {
             acp::SessionUpdate::AgentMessageChunk(chunk) => Some(AcpEvent::Message(chunk.content)),

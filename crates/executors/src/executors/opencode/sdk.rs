@@ -97,7 +97,7 @@ pub(super) struct RunConfig {
 }
 
 /// Generate a cryptographically secure random password for OpenCode server auth.
-pub(super) fn generate_server_password() -> String {
+pub(in crate::executors) fn generate_server_password() -> String {
     rand::thread_rng()
         .sample_iter(&Alphanumeric)
         .take(32)

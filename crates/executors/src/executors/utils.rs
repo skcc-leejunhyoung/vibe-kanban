@@ -246,6 +246,56 @@ pub async fn preload_global_executor_options_cache() {
     }
 }
 
+pub(super) fn agent_error(message: impl Into<String>) -> super::ExecutorError {
+    super::ExecutorError::Io(std::io::Error::other(message.into()))
+}
+
+pub(super) fn installation_error(
+    error: super::ExecutorError,
+    install: &str,
+) -> super::ExecutorError {
+    match error {
+        super::ExecutorError::ExecutableNotFound { .. } => agent_error(install),
+        other => other,
+    }
+}
+
+pub(super) fn agent_command(
+    base: &str,
+    overrides: &crate::command::CmdOverrides,
+) -> Result<crate::command::CommandParts, super::ExecutorError> {
+    Ok(
+        crate::command::apply_overrides(crate::command::CommandBuilder::new(base), overrides)?
+            .build_initial()?,
+    )
+}
+
+pub(super) fn agent_availability(
+    base: &str,
+    overrides: &crate::command::CmdOverrides,
+) -> super::AvailabilityInfo {
+    // Availability checks are synchronous; an actual launch refreshes the login-shell PATH.
+    if agent_command(base, overrides)
+        .ok()
+        .is_some_and(|parts| parts.is_available())
+    {
+        super::AvailabilityInfo::InstallationFound
+    } else {
+        super::AvailabilityInfo::NotFound
+    }
+}
+
+pub(super) fn discovery_dir(
+    workdir: Option<&std::path::Path>,
+    repo_path: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    workdir
+        .or(repo_path)
+        .map(std::path::Path::to_path_buf)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

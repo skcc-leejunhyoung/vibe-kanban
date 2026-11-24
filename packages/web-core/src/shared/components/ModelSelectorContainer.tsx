@@ -587,7 +587,8 @@ export function ModelSelectorContainer({
   // as "loading" when there is nothing to show — otherwise the picker stays
   // live on the cached list and swaps in the fresh one when it lands.
   const modelsPending = loadingModels && config.models.length === 0;
-  const showModelSelector = modelsPending || config.models.length > 0;
+  const showModelSelector =
+    modelsPending || config.models.length > 0 || Boolean(streamError);
   const showDefaultOption = !config.default_model && config.models.length > 0;
   const displaySelectedModel = showModelSelector
     ? getSelectedModel(config.models, selectedProviderId, selectedModelId)
@@ -672,7 +673,7 @@ export function ModelSelectorContainer({
               // the desktop composer still spells the model out. Roomier
               // surfaces (Settings, Create PR) keep the plain, uncapped label.
               label={variant === 'ghost' ? undefined : modelLabel}
-              title={modelLabel}
+              title={streamError ?? modelLabel}
               disabled={modelsPending}
             >
               {variant === 'ghost' && (

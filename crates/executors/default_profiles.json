@@ -35,6 +35,21 @@
         }
       }
     },
+    "OPENCODE_V2": {
+      "DEFAULT": {
+        "OPENCODE_V2": {}
+      }
+    },
+    "PI": {
+      "DEFAULT": {
+        "PI": {}
+      }
+    },
+    "ZCODE": {
+      "DEFAULT": {
+        "ZCODE": {}
+      }
+    },
     "QWEN_CODE": {
       "DEFAULT": {
         "QWEN_CODE": {

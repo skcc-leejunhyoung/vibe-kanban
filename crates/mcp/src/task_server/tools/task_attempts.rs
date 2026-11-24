@@ -31,7 +31,7 @@ struct StartWorkspaceRequest {
     )]
     prompt: Option<String>,
     #[schemars(
-        description = "The coding agent executor to run ('CLAUDE_CODE', 'AMP', 'GEMINI', 'CODEX', 'OPENCODE', 'CURSOR_AGENT', 'QWEN_CODE', 'COPILOT', 'DROID')"
+        description = "The coding agent executor to run ('CLAUDE_CODE', 'AMP', 'GEMINI', 'CODEX', 'OPENCODE', 'OPENCODE_V2', 'PI', 'ZCODE', 'CURSOR_AGENT', 'QWEN_CODE', 'COPILOT', 'DROID')"
     )]
     executor: String,
     #[schemars(description = "Optional executor variant, if needed")]
@@ -73,7 +73,7 @@ struct ReviewWorkspaceRequest {
     )]
     repo_id: Option<Uuid>,
     #[schemars(
-        description = "The coding agent that reviews ('CLAUDE_CODE', 'CODEX', 'GEMINI', 'AMP', 'OPENCODE', 'CURSOR_AGENT', 'QWEN_CODE', 'COPILOT', 'DROID')"
+        description = "The coding agent that reviews ('CLAUDE_CODE', 'CODEX', 'GEMINI', 'AMP', 'OPENCODE', 'OPENCODE_V2', 'PI', 'ZCODE', 'CURSOR_AGENT', 'QWEN_CODE', 'COPILOT', 'DROID')"
     )]
     executor: String,
     #[schemars(description = "Executor variant/preset")]

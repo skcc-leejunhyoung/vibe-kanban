@@ -46,7 +46,7 @@ use executors::{
     logs::{NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch},
     profile::ExecutorConfig,
 };
-use futures::{FutureExt, TryStreamExt, stream::select};
+use futures::{FutureExt, StreamExt, TryStreamExt, stream::select};
 use git::{GitService, GitServiceError};
 use services::services::{
     agent_journal,
@@ -1875,10 +1875,11 @@ impl LocalContainerService {
             .await
             .ok_or_else(|| ContainerError::Other(anyhow!("MsgStore not found for execution")))?;
         let out = child.inner().stdout.take().expect("no stdout");
-        let err = child.inner().stderr.take().expect("no stderr");
+        let err = child.inner().stderr.take();
 
         let out = decoded_log_stream(out, LogMsg::Stdout);
-        let err = decoded_log_stream(err, LogMsg::Stderr);
+        let err =
+            futures::stream::iter(err).flat_map(|err| decoded_log_stream(err, LogMsg::Stderr));
 
         // If you have a JSON Patch source, map it to LogMsg::JsonPatch too, then select all three.
 
@@ -4233,7 +4234,10 @@ impl ContainerService for LocalContainerService {
                     | BaseCodingAgent::ClaudeCode
                     | BaseCodingAgent::Gemini
                     | BaseCodingAgent::QwenCode
-                    | BaseCodingAgent::Opencode,
+                    | BaseCodingAgent::Opencode
+                    | BaseCodingAgent::OpencodeV2
+                    | BaseCodingAgent::Pi
+                    | BaseCodingAgent::ZCode,
                 ) => ExecutorApprovalBridge::new(
                     self.approvals.clone(),
                     self.db.clone(),

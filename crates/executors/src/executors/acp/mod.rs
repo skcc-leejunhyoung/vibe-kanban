@@ -54,3 +54,29 @@ pub struct ApprovalResponse {
     pub tool_call_id: String,
     pub status: ApprovalStatus,
 }
+
+impl AcpEvent {
+    pub(super) fn text(text: &str) -> Self {
+        Self::Message(agent_client_protocol::ContentBlock::Text(
+            agent_client_protocol::TextContent::new(text.to_owned()),
+        ))
+    }
+
+    pub(super) fn thought(text: &str) -> Self {
+        Self::Thought(agent_client_protocol::ContentBlock::Text(
+            agent_client_protocol::TextContent::new(text.to_owned()),
+        ))
+    }
+
+    pub(super) async fn write_to(
+        &self,
+        writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    ) -> Result<(), super::ExecutorError> {
+        use tokio::io::AsyncWriteExt as _;
+        writer
+            .write_all(format!("{self}\n").as_bytes())
+            .await
+            .map_err(super::ExecutorError::Io)?;
+        writer.flush().await.map_err(super::ExecutorError::Io)
+    }
+}

@@ -28,12 +28,15 @@ const REASONING_FIELD: Partial<Record<BaseCodingAgent, string>> = {
   [BaseCodingAgent.CODEX]: 'model_reasoning_effort',
   [BaseCodingAgent.CURSOR_AGENT]: 'reasoning',
   [BaseCodingAgent.OPENCODE]: 'variant',
+  [BaseCodingAgent.OPENCODE_V2]: 'variant',
+  [BaseCodingAgent.ZCODE]: 'reasoning',
 };
 
 /** Per-executor profile field that stores the agent-mode override. */
 const AGENT_FIELD: Partial<Record<BaseCodingAgent, string>> = {
   [BaseCodingAgent.CLAUDE_CODE]: 'agent',
   [BaseCodingAgent.OPENCODE]: 'agent',
+  [BaseCodingAgent.OPENCODE_V2]: 'agent',
   [BaseCodingAgent.QWEN_CODE]: 'agent',
 };
 

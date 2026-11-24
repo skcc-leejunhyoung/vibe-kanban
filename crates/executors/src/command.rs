@@ -31,6 +31,10 @@ impl CommandParts {
         Self { program, args }
     }
 
+    pub(crate) fn is_available(&self) -> bool {
+        workspace_utils::shell::resolve_executable_path_blocking(&self.program).is_some()
+    }
+
     pub async fn into_resolved(self) -> Result<(PathBuf, Vec<String>), ExecutorError> {
         let CommandParts { program, args } = self;
         let executable = resolve_executable_path(&program)

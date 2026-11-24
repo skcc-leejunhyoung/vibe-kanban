@@ -34,6 +34,7 @@ pub struct AcpAgentHarness {
     session_namespace: String,
     model: Option<String>,
     mode: Option<String>,
+    native_sessions: bool,
 }
 
 impl Default for AcpAgentHarness {
@@ -50,6 +51,7 @@ impl AcpAgentHarness {
             session_namespace: "gemini_sessions".to_string(),
             model: None,
             mode: None,
+            native_sessions: false,
         }
     }
 
@@ -59,7 +61,13 @@ impl AcpAgentHarness {
             session_namespace: namespace.into(),
             model: None,
             mode: None,
+            native_sessions: false,
         }
+    }
+
+    pub fn with_native_sessions(mut self) -> Self {
+        self.native_sessions = true;
+        self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -97,7 +105,11 @@ impl AcpAgentHarness {
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(if self.native_sessions {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            })
             .current_dir(current_dir)
             .env("NPM_CONFIG_LOGLEVEL", "error")
             .env("NODE_NO_WARNINGS", "1")
@@ -119,6 +131,7 @@ impl AcpAgentHarness {
             prompt,
             Some(exit_tx),
             self.session_namespace.clone(),
+            self.native_sessions,
             self.model.clone(),
             self.mode.clone(),
             approvals,
@@ -151,7 +164,11 @@ impl AcpAgentHarness {
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(if self.native_sessions {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            })
             .current_dir(current_dir)
             .env("NPM_CONFIG_LOGLEVEL", "error")
             .env("NODE_NO_WARNINGS", "1")
@@ -173,6 +190,7 @@ impl AcpAgentHarness {
             prompt,
             Some(exit_tx),
             self.session_namespace.clone(),
+            self.native_sessions,
             self.model.clone(),
             self.mode.clone(),
             approvals,
@@ -196,6 +214,7 @@ impl AcpAgentHarness {
         prompt: String,
         exit_signal: Option<tokio::sync::oneshot::Sender<ExecutorExitResult>>,
         session_namespace: String,
+        native_sessions: bool,
         model: Option<String>,
         mode: Option<String>,
         approvals: Option<std::sync::Arc<dyn ExecutorApprovalService>>,
@@ -307,6 +326,70 @@ impl AcpAgentHarness {
                         // Typed events available for future use; raw lines forwarded and persisted
                         let (event_tx, mut event_rx) =
                             mpsc::unbounded_channel::<crate::executors::acp::AcpEvent>();
+
+                        if native_sessions {
+                            let client = AcpClient::new(event_tx, approvals, cancel.clone());
+                            // Native load replays prior messages. Keep them out of this turn.
+                            client.set_replaying(true);
+                            let (conn, io_fut) = proto::ClientSideConnection::new(
+                                client.clone(),
+                                outgoing,
+                                incoming,
+                                |fut| {
+                                    tokio::task::spawn_local(fut);
+                                },
+                            );
+                            let io_handle = tokio::task::spawn_local(async move {
+                                let _ = io_fut.await;
+                            });
+                            let mut turn = Box::pin(run_native_turn(
+                                &conn,
+                                &client,
+                                cwd,
+                                existing_session,
+                                model,
+                                prompt,
+                                &cancel,
+                            ));
+                            let mut produced_output = false;
+                            let result = loop {
+                                let event = tokio::select! {
+                                    result = &mut turn => break result,
+                                    Some(event) = event_rx.recv() => event,
+                                };
+                                produced_output |= matches!(event, AcpEvent::Message(_) | AcpEvent::ToolCall(_));
+                                let _ = log_tx.send(event.to_string());
+                            };
+                            while let Ok(event) = event_rx.try_recv() {
+                                produced_output |= matches!(event, AcpEvent::Message(_) | AcpEvent::ToolCall(_));
+                                let _ = log_tx.send(event.to_string());
+                            }
+                            // pi-acp can return end_turn after Pi's provider rejected the request.
+                            let result = result.and_then(|_| {
+                                if produced_output || cancel.is_cancelled() {
+                                    Ok(())
+                                } else {
+                                    Err(crate::executors::utils::agent_error(
+                                        "Pi returned no response. Check the selected model and provider credentials, then retry.",
+                                    ))
+                                }
+                            });
+                            let status = match result {
+                                Ok(()) => ExecutorExitResult::Success,
+                                Err(err) => {
+                                    let _ =
+                                        log_tx.send(AcpEvent::Error(err.to_string()).to_string());
+                                    ExecutorExitResult::Failure
+                                }
+                            };
+                            io_handle.abort();
+                            let _ = shutdown_tx.send(true);
+                            drop(log_tx);
+                            if let Some(tx) = exit_signal_tx.take() {
+                                let _ = tx.send(status);
+                            }
+                            return;
+                        }
 
                         // Create session manager
                         let session_manager = match SessionManager::new(session_namespace) {
@@ -492,7 +575,7 @@ impl AcpAgentHarness {
                                 Err(e) => {
                                     tracing::debug!("error {} {e} {:?}", e.code, e.data);
                                     if e.code
-                                        == agent_client_protocol::ErrorCode::INTERNAL_ERROR.code
+                                        == proto::ErrorCode::InternalError
                                         && e.data
                                             .as_ref()
                                             .is_some_and(|d| d == "server shut down unexpectedly")
@@ -549,4 +632,74 @@ impl AcpAgentHarness {
 
         Ok(())
     }
+}
+
+pub(in crate::executors) fn pi_error(stage: &str, error: proto::Error) -> ExecutorError {
+    if error.code == proto::ErrorCode::AuthRequired {
+        return ExecutorError::AuthRequired(
+            "Pi needs a provider. Run pi and use /login, or set a provider API key in the executor environment."
+                .to_string(),
+        );
+    }
+    ExecutorError::Io(std::io::Error::other(format!(
+        "Pi ACP {stage} failed (code {}). Check the configured model and Pi installation.",
+        i32::from(error.code)
+    )))
+}
+
+async fn run_native_turn(
+    conn: &proto::ClientSideConnection,
+    client: &AcpClient,
+    cwd: PathBuf,
+    existing_session: Option<String>,
+    model: Option<String>,
+    prompt: String,
+    cancel: &CancellationToken,
+) -> Result<(), ExecutorError> {
+    let session_id = tokio::select! {
+        _ = cancel.cancelled() => return Ok(()),
+        result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let initialized = conn.initialize(proto::InitializeRequest::new(proto::ProtocolVersion::V1))
+                .await.map_err(|e| pi_error("initialization", e))?;
+            let session_id = if let Some(id) = existing_session {
+                let id = proto::SessionId::new(id);
+                if !initialized.agent_capabilities.load_session {
+                    return Err(ExecutorError::FollowUpNotSupported(
+                        "The installed pi-acp adapter does not support session/load. Install pi-acp@0.0.35.".into(),
+                    ));
+                }
+                conn.load_session(proto::LoadSessionRequest::new(id.clone(), cwd))
+                    .await.map_err(|e| pi_error("session resume", e))?;
+                id
+            } else {
+                conn.new_session(proto::NewSessionRequest::new(cwd))
+                    .await.map_err(|e| pi_error("session creation", e))?.session_id
+            };
+            if let Some(model) = model {
+                conn.set_session_config_option(proto::SetSessionConfigOptionRequest::new(session_id.clone(), "model", model))
+                    .await.map_err(|e| pi_error("model selection", e))?;
+            }
+            Ok::<_, ExecutorError>(session_id)
+        }) => result.map_err(|_| ExecutorError::Io(std::io::Error::other("Pi ACP setup timed out. Check that pi-acp and Pi start on this host.")))??,
+    };
+
+    client.start_turn(&session_id, &prompt);
+    let response = conn.prompt(proto::PromptRequest::new(
+        session_id.clone(),
+        vec![proto::ContentBlock::Text(proto::TextContent::new(prompt))],
+    ));
+    tokio::pin!(response);
+    tokio::select! {
+        result = &mut response => {
+            let result = result.map_err(|e| pi_error("prompt", e))?;
+            client.finish_turn(&result.stop_reason);
+        }
+        _ = cancel.cancelled() => {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                conn.cancel(proto::CancelNotification::new(session_id)).await?;
+                response.await
+            }).await;
+        }
+    }
+    Ok(())
 }
