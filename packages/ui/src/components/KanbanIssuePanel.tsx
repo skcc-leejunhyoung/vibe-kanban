@@ -10,7 +10,7 @@ import { useTranslation } from 'react-i18next';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
 import { cn } from '../lib/cn';
 import { isPlainEscape } from '../lib/dialog-keyboard';
-import { isModalKeyboardActive } from '../lib/modal-keyboard';
+import { handleIssuePanelKeyDown } from '../lib/issue-panel-keyboard';
 import { isInInactiveWorkspacePane } from '../lib/workspace-pane';
 import {
   XIcon,
@@ -350,68 +350,16 @@ export function KanbanIssuePanel({
   }, [isCreateMode, issueId]);
 
   useEffect(() => {
-    const handleUnfocusedPanelKeyDown = (event: KeyboardEvent) => {
-      if (isModalKeyboardActive()) return;
-      if (
-        event.defaultPrevented ||
-        event.isComposing ||
-        event.metaKey ||
-        event.ctrlKey ||
-        event.altKey ||
-        event.shiftKey
-      ) {
-        return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const panel = panelRootRef.current;
+      const scroller = contentScrollRef.current;
+      if (panel && scroller) {
+        handleIssuePanelKeyDown(event, panel, scroller, titleInputRef.current);
       }
-
-      const activeElement = document.activeElement;
-      const panelRoot = panelRootRef.current;
-
-      if (event.key === 'Enter') {
-        // Enter on the focused panel edits the issue title. Keyboard pane
-        // switching focuses the pane shell around the panel instead of the
-        // panel root, and that keydown never reaches the panel's own handlers.
-        const isPanelFocused =
-          activeElement === panelRoot ||
-          (activeElement?.hasAttribute('data-workspace-pane') === true &&
-            activeElement.contains(panelRoot));
-        if (!isPanelFocused) return;
-
-        titleInputRef.current?.focus();
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        return;
-      }
-
-      const hasNoFocusedControl =
-        activeElement === null ||
-        activeElement === document.body ||
-        activeElement === document.documentElement ||
-        // The panel root receives focus when an issue opens. It is not an
-        // editable control, so arrow keys still belong to the panel rather
-        // than the board behind it.
-        activeElement === panelRoot;
-      if (!hasNoFocusedControl) return;
-      // With nothing focused every open issue panel hears the key; only the
-      // panel in the active pane may scroll and swallow it.
-      if (isInInactiveWorkspacePane(panelRoot)) return;
-
-      const delta =
-        event.key === 'ArrowUp' ? -80 : event.key === 'ArrowDown' ? 80 : null;
-      if (delta === null) return;
-
-      contentScrollRef.current?.scrollBy({ top: delta });
-      // The open issue panel owns unfocused arrow keys before the project
-      // board's document-level navigation listener can move its card cursor.
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
     };
 
-    window.addEventListener('keydown', handleUnfocusedPanelKeyDown, true);
-    return () => {
-      window.removeEventListener('keydown', handleUnfocusedPanelKeyDown, true);
-    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [titleInputRef]);
 
   // Click outside the description area to exit editing
@@ -524,7 +472,11 @@ export function KanbanIssuePanel({
       </div>
 
       {/* Scrollable Content */}
-      <div ref={contentScrollRef} className="flex-1 overflow-y-auto">
+      <div
+        ref={contentScrollRef}
+        tabIndex={-1}
+        className="flex-1 overflow-y-auto"
+      >
         {/* Property Row */}
         <div className="px-base py-base border-b">
           <IssuePropertyRow
