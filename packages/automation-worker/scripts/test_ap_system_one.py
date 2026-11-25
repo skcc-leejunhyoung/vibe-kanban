@@ -14,6 +14,50 @@ adapter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(adapter)
 
 
+class AutopilotExecutorTests(unittest.TestCase):
+    def setUp(self):
+        self.usage = {'claude': 'over', 'codex': 'over'}
+        self.current = {'executor': 'OPENCODE_V2', 'model_id': 'openai/example-sol',
+                        'permission_policy': 'SUPERVISED', 'reasoning_id': 'low'}
+        self.ap = {
+            'HOSTS': {'synthetic-host': []},
+            'usage_snapshot': lambda host: self.usage,
+            'vk': lambda *args: {},
+            'stage_of': lambda executor, model: 'policy' if model == 'openai/example-sol' else None,
+            'profile_reasoning': lambda profiles, source: None,
+            'select_for': self.select,
+        }
+
+    def select(self, host, usage, profiles, *, own, requested=None, source=None, latest=None, **kwargs):
+        target = requested or (source if own or usage['codex'] == 'over' else 'CODEX')
+        return {'ok': True, 'executor': target,
+                'model': 'gpt-5.6-sol-fast' if target == 'CODEX' else latest['model_id'],
+                'permissions': ['SUPERVISED'], 'model_info': {'reasoning_options': [{'id': 'low'}]}}
+
+    def test_event_and_gate_pick_codex_sol_fast_on_the_next_automatic_send(self):
+        adapter.install_automatic_routing(self.ap)
+        def gate_pick(**kwargs):
+            return self.ap['select_for']('synthetic-host', self.usage, {},
+                                         source=self.current['executor'], latest=self.current, own=True, **kwargs)
+
+        self.assertEqual(gate_pick()['executor'], 'OPENCODE_V2')
+        self.assertEqual(adapter.probe_executor(self.ap, 'synthetic-host', self.current)['executor'], 'OPENCODE_V2')
+        self.usage['codex'] = 'ok'  # Claude still over its weekly limit.
+        self.assertEqual(gate_pick()['model'], 'gpt-5.6-sol-fast')
+        self.assertEqual(adapter.probe_executor(self.ap, 'synthetic-host', self.current),
+                         {'executor': 'CODEX', 'model_id': 'gpt-5.6-sol-fast', 'reasoning_id': 'low'})
+        self.assertEqual(gate_pick(requested='OPENCODE_V2')['executor'], 'OPENCODE_V2')
+
+    def test_user_model_and_session_security_settings_are_not_replaced(self):
+        self.usage['codex'] = 'ok'
+        for override in ({'model_id': 'example/pinned'}, {'variant': 'CUSTOM'}, {'sandbox_policy': 'read-only'},
+                         {'agent_id': 'custom-mode'}, {'permission_policy': None}):
+            with self.subTest(override=override):
+                self.assertIsNone(adapter.probe_executor(self.ap, 'synthetic-host', {**self.current, **override}))
+        with self.assertRaisesRegex(ValueError, 'cannot preserve permission'):
+            adapter.probe_executor(self.ap, 'synthetic-host', {**self.current, 'permission_policy': 'PLAN'})
+
+
 class PeriodicTests(unittest.TestCase):
     def fixture(self, decision='would_delegate', report=None, checkpoint=0, prompt=False):
         values = {'schedule': {key: [] for key in ('pending_admissions',)}, 'board': {'rows': {}}, 'dispatch': {'requests': {}}, 'deleg': {'tasks': {}}, 'inbox': {'items': {}}}

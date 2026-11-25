@@ -374,6 +374,7 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
         delivery.payload = {
           message: delivery.payload.message ?? delivery.payload.prompt,
           executor_config: delivery.payload.executor_config,
+          ...(delivery.payload.handoff === true && { handoff: true }),
         };
         await request(routine, items[0], "handoff", {
           handoff_key: delivery.meta.idempotencyKey,

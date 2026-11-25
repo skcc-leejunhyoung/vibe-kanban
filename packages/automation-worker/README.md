@@ -210,6 +210,36 @@ p50/p90 of the whole gate cycle, and adapter fallback attempts by reason
 separately from admissions. Malformed JSONL fails rather than reporting a
 partial total.
 
+### Re-evaluate the executor for the next Autopilot turn
+
+This is opt-in per host. Set `executorPolicyHost` in the private config for
+`scripts/ap-system-one.py` to the installed `ap` selector's name for this host.
+Run the scheduled `gate` with that entrypoint as above; its normal due-work,
+resource, cancellation, and deduplication checks still decide whether to send.
+The adapter also covers `sample` when run through the entrypoint.
+
+For queued `send_prompt` routines with `target: "autopilot"`, set
+`VIBE_AUTOPILOT_EXECUTOR_POLICY` in the **Vibe host server's** environment to the
+absolute path to a trusted executable outside the Autopilot workspace. For an
+installed `ap`, the executable can be a launcher:
+
+```sh
+#!/bin/sh
+exec /path/to/python3 /path/to/ap-system-one.py \
+  --ap /path/to/installed/ap --config /path/to/private-config.json executor-policy "$@"
+```
+
+The host passes the active session ID and its current executor config as two
+arguments. The launcher is read-only: it prints `null` to keep the current config
+or `{ "executor": "...", "model_id": "...", "reasoning_id": "..." }` to select a
+model. An error holds the routine delivery rather than sending with a stale
+choice. The host keeps the session's permission settings and the worker uses
+the normal queue handoff, including for claimed notifications. No usage check
+alone can wake a session; a turn already running is not interrupted, and a
+message already queued is not replaced. Explicit routine `executor_config`
+values remain pinned. Remove `executorPolicyHost` and unset the server variable
+to keep the Autopilot on its current executor.
+
 ## Retry Queue
 
 A rule throwing (e.g. the source event was fetched fine, but creating the Vibe

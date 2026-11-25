@@ -108,16 +108,23 @@ function harness({
     h.calls.push({ method, endpoint, baseUrl });
     if (h.fail) throw new Error('synthetic offline');
     if (endpoint === '/api/automation-actions/status')
-      return { hostId: h.hostId || 'host' };
+      return {
+        hostId: h.hostId || 'host',
+        autopilotExecutorPolicy: Boolean(h.policy),
+      };
     if (endpoint === '/api/workspaces/autopilot')
       return h.noAutopilot
         ? { data: null }
         : {
             data: {
               session: { id: h.sessionId || 'session' },
-              executor_config: { executor: 'CODEX' },
+              executor_config: h.currentExecutor || { executor: 'CODEX' },
             },
           };
+    if (
+      endpoint === `/api/automation-actions/autopilot-executor/${h.sessionId || 'session'}`
+    )
+      return h.policy();
     if (endpoint.startsWith('/api/automation-actions/receipts/'))
       return (
         store.receipts.get(decodeURIComponent(endpoint.split('/').at(-1))) || {
@@ -162,6 +169,7 @@ function harness({
     vm,
     URL,
     Date,
+    AbortSignal,
     createHash,
     randomUUID,
     structuredClone,
@@ -680,6 +688,90 @@ test('an uncertain prior queue admission blocks new sends until its outcome is k
   assert.equal(h.posts, 0);
 });
 
+test('the next automatic prompt queues the recovered executor in the same Autopilot session', async () => {
+  const h = harness();
+  const r = routine({ trigger: { type: 'vk_event' } });
+  h.state.routines.push(r);
+  h.currentExecutor = {
+    executor: 'OPENCODE_V2',
+    permission_policy: 'SUPERVISED',
+  };
+  const codex = {
+    ...h.currentExecutor,
+    executor: 'CODEX',
+    model_id: 'gpt-5.6-sol-fast',
+  };
+  let decision = { executor_config: h.currentExecutor, handoff: false };
+  let probes = 0;
+  h.policy = () => {
+    probes += 1;
+    return decision;
+  };
+  await h.run(r, { count: 1 }, 'before-recovery');
+  assert.deepEqual(h.store.queue[0].data.executor_config, h.currentExecutor);
+
+  decision = { executor_config: codex, handoff: true };
+  // An already queued prompt is not replaced just because usage recovered.
+  await h.run(r, { count: 2 }, 'still-queued');
+  assert.equal(probes, 1);
+  assert.equal(h.posts, 1);
+  h.store.queue.shift();
+  await h.run(r, { count: 3 }, 'after-recovery');
+  assert.deepEqual(h.store.queue[0].data, {
+    message: 'Synthetic check 3',
+    executor_config: codex,
+    handoff: true,
+  });
+  assert.deepEqual(
+    h.calls.filter(({ method }) => method === 'POST').map(({ endpoint }) => endpoint),
+    ['/api/sessions/session/queue', '/api/sessions/session/queue']
+  );
+
+  // Cancelling that queue entry doesn't recreate it on event redelivery.
+  h.store.queue.shift();
+  await h.run(r, { count: 3 }, 'after-recovery');
+  assert.equal(h.posts, 2);
+  assert.equal(probes, 2);
+});
+
+test('an explicit pin is not evaluated by the host executor policy', async () => {
+  const h = harness();
+  const r = routine();
+  const pinned = { executor: 'OPENCODE_V2', model_id: 'example/pinned' };
+  r.action.input.executor_config = pinned;
+  h.state.routines.push(r);
+  h.policy = () => assert.fail('must not read the policy for an explicit pin');
+  await h.run(r, {}, 'pinned');
+  assert.deepEqual(h.store.queue[0].data.executor_config, pinned);
+  assert.equal(h.store.queue[0].data.handoff, undefined);
+});
+
+test('a policy failure neither sends the stale choice nor reserves a queue intent', async () => {
+  const h = harness();
+  const r = routine();
+  h.state.routines.push(r);
+  h.policy = () => {
+    throw new Error('synthetic policy unavailable');
+  };
+  const result = await h.run(r, {}, 'policy-failure');
+  assert.equal(result.run.status, 'retrying');
+  assert.equal(h.posts, 0);
+  assert.equal(h.state.routineQueuedPrompts[r.id], undefined);
+});
+
+test('a stop during policy evaluation cancels delivery without retrying it', async () => {
+  const h = harness();
+  const r = routine();
+  h.state.routines.push(r);
+  h.policy = () => null;
+  const first = await h.run(r, {}, 'cancelled');
+  assert.match(first.run.skipped, /cancelled/);
+  h.policy = () => assert.fail('a cancelled delivery must not be retried');
+  await h.run(r, {}, 'cancelled');
+  assert.equal(h.posts, 0);
+  assert.equal(h.state.retryQueue.length, 0);
+});
+
 for (const loseResponse of [false, true]) {
   test(`handoff message IDs survive queue edits with ${loseResponse ? 'a lost' : 'a bodyless'} response`, async () => {
     const h = harness();
@@ -719,6 +811,10 @@ test('a filtered notification batch keeps the sent prompt identity across a lost
   const r = routine({ trigger: { type: 'vk_event' } });
   h.state.routines.push(r);
   h.handoff = true;
+  h.policy = () => ({
+    executor_config: { executor: 'CODEX', model_id: 'gpt-5.6-sol-fast' },
+    handoff: true,
+  });
   let delivery;
   h.context.notificationRouting = createNotificationRouting({
     instanceId: 'synthetic-instance',
@@ -766,6 +862,7 @@ test('a filtered notification batch keeps the sent prompt identity across a lost
     'synthetic-first'
   );
   assert.equal(h.store.queue[0].data.message, 'Synthetic check 1');
+  assert.equal(h.store.queue[0].data.handoff, true);
   const restarted = harness({
     state: structuredClone(h.persisted),
     store: h.store,

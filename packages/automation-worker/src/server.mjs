@@ -2039,8 +2039,9 @@ async function executeRoutineAction(routine, event) {
       `target host offline or unconfigured: ${action.targetHostId}`
     );
   if (bridge) validateRoutineScope(bridge, input);
+  let host;
   if (bridge) {
-    const host = await vibeApi(
+    host = await vibeApi(
       connector,
       'GET',
       '/api/automation-actions/status',
@@ -2233,6 +2234,41 @@ async function executeRoutineAction(routine, event) {
         return { skipped: 'previous routine prompt is still queued' };
       }
     }
+    let handoff = false;
+    // Never reinterpret an explicitly pinned routine, and use the queue's
+    // official handoff rather than steering a busy session. Resolve after the
+    // receipt/duplicate checks but before freezing a notification delivery.
+    if (
+      !explicitSessionId &&
+      queue &&
+      !payload.executor_config &&
+      host?.autopilotExecutorPolicy
+    ) {
+      const decision = await vibeApi(
+        connector,
+        'GET',
+        `/api/automation-actions/autopilot-executor/${encodeURIComponent(sessionId)}`,
+        undefined,
+        bridge.baseUrl,
+        undefined,
+        AbortSignal.timeout(50000)
+      );
+      if (
+        decision === null ||
+        !state.routines.includes(routine) ||
+        (!routine.enabled && event.source !== 'manual')
+      ) {
+        await releaseClaimedNotifications(routine, event);
+        return { skipped: 'autopilot dispatch cancelled' };
+      }
+      if (
+        !decision?.executor_config?.executor ||
+        typeof decision.handoff !== 'boolean'
+      )
+        throw new Error('autopilot executor policy decision is unavailable');
+      executorConfig = decision.executor_config;
+      handoff = decision.handoff;
+    }
     let queuedPrompt;
     const build = async (event) => {
       const message = renderPromptTemplate(prompt, event);
@@ -2254,7 +2290,11 @@ async function executeRoutineAction(routine, event) {
       return {
         path: `/api/sessions/${encodeURIComponent(sessionId)}/${queue ? 'queue' : 'follow-up'}`,
         payload: queue
-          ? { message, executor_config: executorConfig }
+          ? {
+              message,
+              executor_config: executorConfig,
+              ...(handoff && { handoff }),
+            }
           : { ...payload, prompt: message, executor_config: executorConfig },
         meta,
       };

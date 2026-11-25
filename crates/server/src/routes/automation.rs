@@ -10,7 +10,7 @@
 //! is reachable from both the local web app and the remote web app (the latter
 //! tunnels through the host relay), with no direct browser-to-worker traffic.
 
-use std::sync::OnceLock;
+use std::{sync::OnceLock, time::Duration};
 
 use axum::{
     Json, Router,
@@ -20,9 +20,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
-use db::models::execution_process::ExecutionProcess;
+use db::models::{execution_process::ExecutionProcess, session::Session, workspace::Workspace};
 use deployment::Deployment;
-use executors::actions::AutomationOrigin;
+use executors::{actions::AutomationOrigin, executors::BaseCodingAgent, profile::ExecutorConfig};
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use services::services::container::ContainerService;
@@ -32,6 +32,7 @@ use uuid::Uuid;
 use crate::{DeploymentImpl, error::ApiError};
 
 static HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+static AUTOPILOT_POLICY_RUNNING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn client() -> &'static Client {
     HTTP_CLIENT.get_or_init(|| {
@@ -145,6 +146,10 @@ pub fn router() -> Router<DeploymentImpl> {
             "/automation-actions/autopilot-sessions",
             get(autopilot_sessions),
         )
+        .route(
+            "/automation-actions/autopilot-executor/{session_id}",
+            get(autopilot_executor),
+        )
         .route("/automation-actions/receipts/{key}", get(action_receipt))
         .route("/automation-actions/notification", post(notification))
 }
@@ -169,7 +174,153 @@ async fn host_status(
         "hostId": deployment.user_id(),
         "busy": !running.is_empty(),
         "notificationProtocol": 2,
+        "autopilotExecutorPolicy": autopilot_policy_command().is_some(),
     })))
+}
+
+const AUTOPILOT_POLICY_TIMEOUT: Duration = Duration::from_secs(45);
+
+fn autopilot_policy_command() -> Option<std::path::PathBuf> {
+    std::env::var_os("VIBE_AUTOPILOT_EXECUTOR_POLICY")
+        .filter(|path| !path.is_empty())
+        .map(Into::into)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AutopilotExecutorSelection {
+    executor: BaseCodingAgent,
+    model_id: String,
+    reasoning_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AutopilotExecutorDecision {
+    executor_config: ExecutorConfig,
+    handoff: bool,
+}
+
+fn apply_autopilot_selection(
+    mut current: ExecutorConfig,
+    selection: AutopilotExecutorSelection,
+) -> ExecutorConfig {
+    // The policy cannot replace the user's permission, sandbox, or agent mode.
+    // A non-default preset or an implicit permission default cannot be
+    // translated safely to a different executor.
+    if current.executor != selection.executor
+        && (current.permission_policy.is_none()
+            || current.sandbox_policy.is_some()
+            || current.agent_id.is_some()
+            || !matches!(current.variant.as_deref(), None | Some("DEFAULT")))
+    {
+        return current;
+    }
+    if current.executor != selection.executor {
+        current.variant = None;
+    }
+    current.executor = selection.executor;
+    current.model_id = Some(selection.model_id);
+    current.reasoning_id = selection.reasoning_id.or(current.reasoning_id);
+    current
+}
+
+/// An opt-in host policy supplies a choice, not a prompt or a session action.
+/// Only the active Autopilot's own session is eligible.
+async fn autopilot_executor(
+    axum::extract::State(deployment): axum::extract::State<DeploymentImpl>,
+    Path(session_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let unavailable = || ApiError::BadGateway("Autopilot executor policy unavailable".into());
+    let command = autopilot_policy_command()
+        .filter(|path| path.is_absolute())
+        .ok_or_else(unavailable)?;
+    let pool = &deployment.db().pool;
+    let read_current = || async {
+        let conflict = || ApiError::Conflict("Active Autopilot session changed".into());
+        let workspace = Workspace::find_active_autopilot(pool)
+            .await?
+            .ok_or_else(conflict)?;
+        let session = Session::find_latest_by_workspace_id(pool, workspace.id)
+            .await?
+            .filter(|session| session.id == session_id)
+            .ok_or_else(conflict)?;
+        ExecutionProcess::latest_executor_config_for_session(pool, session.id)
+            .await?
+            .ok_or_else(conflict)
+    };
+    let _running = AUTOPILOT_POLICY_RUNNING
+        .try_lock()
+        .map_err(|_| unavailable())?;
+    let current = read_current().await?;
+    let mut stops = deployment.container().watch_session_stops(session_id);
+    let config = serde_json::to_string(&current).map_err(|_| unavailable())?;
+    // The executable is configured by the host operator, never by the request.
+    // No prompt, event, or caller-controlled command line is passed through.
+    let mut command = tokio::process::Command::new(command);
+    command
+        .arg(session_id.to_string())
+        .arg(config)
+        .kill_on_drop(true);
+    let probe = tokio::time::timeout(AUTOPILOT_POLICY_TIMEOUT, command.output());
+    let output = tokio::select! {
+        Ok(()) = stops.changed() => return Ok(StatusCode::NO_CONTENT.into_response()),
+        result = probe => result.map_err(|_| unavailable())?.map_err(|_| unavailable())?,
+    };
+    if !output.status.success() || output.stdout.len() > 4096 {
+        return Err(unavailable());
+    }
+    let selection: Option<AutopilotExecutorSelection> =
+        serde_json::from_slice(&output.stdout).map_err(|_| unavailable())?;
+    let fresh = read_current().await;
+    if stops.has_changed().unwrap_or(false) {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    if fresh? != current {
+        return Err(ApiError::Conflict(
+            "Autopilot executor config changed".into(),
+        ));
+    }
+    let source = current.executor;
+    let executor_config = match selection {
+        Some(selection) if !selection.model_id.trim().is_empty() => {
+            apply_autopilot_selection(current, selection)
+        }
+        Some(_) => return Err(unavailable()),
+        None => current,
+    };
+    Ok(Json(AutopilotExecutorDecision {
+        handoff: executor_config.executor != source,
+        executor_config,
+    })
+    .into_response())
+}
+
+#[cfg(test)]
+mod autopilot_executor_tests {
+    use super::*;
+
+    #[test]
+    fn selection_preserves_permission_and_does_not_replace_a_custom_preset() {
+        let mut current: ExecutorConfig = serde_json::from_value(serde_json::json!({
+            "executor": "OPENCODE_V2", "model_id": "example/sol",
+            "permission_policy": "SUPERVISED", "reasoning_id": "low",
+        }))
+        .unwrap();
+        let recovered = || AutopilotExecutorSelection {
+            executor: BaseCodingAgent::Codex,
+            model_id: "gpt-5.6-sol-fast".into(),
+            reasoning_id: None,
+        };
+        let next = apply_autopilot_selection(current.clone(), recovered());
+        assert_eq!(next.executor, BaseCodingAgent::Codex);
+        assert_eq!(next.permission_policy, current.permission_policy);
+        assert_eq!(next.reasoning_id, current.reasoning_id);
+        current.variant = Some("CUSTOM".into());
+        assert_eq!(
+            apply_autopilot_selection(current.clone(), recovered()),
+            current
+        );
+    }
 }
 
 async fn autopilot_snapshot(

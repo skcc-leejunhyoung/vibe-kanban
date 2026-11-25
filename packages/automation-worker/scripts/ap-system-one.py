@@ -11,6 +11,7 @@ import re
 import runpy
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 PR_URL = re.compile(r'https://github\.com/([^/]+/[^/]+)/pull/(\d+)')
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', re.I)
@@ -328,6 +329,71 @@ def install(ap, config):
         ap['periodic_prompt'] = periodic_prompt
 
 
+def custom_preset(current):
+    return (current.get('variant') not in (None, 'DEFAULT')
+            or current.get('agent_id') or current.get('sandbox_policy'))
+
+
+def managed_autopilot_config(ap, current):
+    """Only the policy's models and portable session settings can follow it."""
+    executor, model = current.get('executor'), current.get('model_id')
+    if not current.get('permission_policy') or custom_preset(current):
+        return False
+    if not ap['stage_of'](executor, model):
+        return False
+    if executor == 'CLAUDE_CODE' and model:
+        return model == 'opus' or model.startswith('claude-opus-')
+    if executor == 'CODEX' and model:
+        return 'sol' in model.lower() and model.endswith('-fast')
+    return True
+
+
+def automatic_selection(ap, select, host, usage, profiles, current, **kwargs):
+    source = current['executor']
+    plan = select(host, usage, profiles, source=source, latest=current, own=False, **kwargs)
+    if not plan['ok']:
+        return plan
+    target = plan['executor']
+    reasoning = current.get('reasoning_id')
+    if target != source:
+        permission = current['permission_policy']
+        allowed = plan.get('permissions') or ()
+        if permission not in allowed and not (target == 'OPENCODE_V2' and permission == 'DONT_ASK' and 'AUTO' in allowed):
+            return {**plan, 'ok': False, 'error': f'{target} cannot preserve permission policy {permission}'}
+        reasoning = reasoning or ap['profile_reasoning'](profiles, source)
+    if reasoning and reasoning not in [option['id'] for option in plan['model_info'].get('reasoning_options', [])]:
+        return {**plan, 'ok': False, 'error': f'{target} cannot preserve reasoning level {reasoning}'}
+    return {**plan, 'reasoning_id': reasoning}
+
+
+def install_automatic_routing(ap):
+    original = ap['select_for']
+
+    def select(host, usage, profiles, *, requested=None, source=None, latest=None, own=False, **kwargs):
+        if own and not requested and source and latest and latest.get('executor') == source:
+            if managed_autopilot_config(ap, latest):
+                return automatic_selection(ap, original, host, usage, profiles, latest, **kwargs)
+            if custom_preset(latest):
+                # The legacy ap sender doesn't forward these overrides.
+                plan = original(host, usage, profiles, source=source, latest=latest, own=True, **kwargs)
+                return {**plan, 'ok': False, 'error': 'Automatic wake cannot preserve the session preset'}
+        return original(host, usage, profiles, requested=requested, source=source, latest=latest, own=own, **kwargs)
+
+    ap['select_for'] = select
+
+
+def probe_executor(ap, host, current):
+    if not managed_autopilot_config(ap, current):
+        return None
+    with ThreadPoolExecutor(2) as pool:
+        usage = pool.submit(ap['usage_snapshot'], host)
+        profiles = pool.submit(ap['vk'], 'config', 'profiles', 'get', *ap['HOSTS'][host])
+        plan = automatic_selection(ap, ap['select_for'], host, usage.result(), profiles.result(), current)
+    if not plan['ok']:
+        raise ValueError(plan['error'])
+    return {'executor': plan['executor'], 'model_id': plan['model'], 'reasoning_id': plan['reasoning_id']}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ap', required=True)
@@ -338,6 +404,16 @@ def main():
         config = json.load(stream)
     namespace = runpy.run_path(os.path.abspath(args.ap), run_name='ap_system_one')
     ap = namespace['periodic_gate'].__globals__
+    host = config.get('executorPolicyHost')
+    command = next(iter(args.arguments), None)
+    if command == 'executor-policy':
+        if not host or len(args.arguments) != 3:
+            parser.error('executor-policy needs a configured host, session ID and current executor config')
+        # The host API already verified the active session and supplied its config.
+        print(json.dumps(probe_executor(ap, host, json.loads(args.arguments[2]))))
+        return 0
+    if host and command in ('gate', 'sample'):
+        install_automatic_routing(ap)
     if config.get('enabled') is True:
         install(ap, config)
     sys.argv = [args.ap, *args.arguments]
