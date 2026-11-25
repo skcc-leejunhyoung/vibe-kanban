@@ -161,6 +161,9 @@ pub struct OpencodeV2 {
     #[ts(skip)]
     #[derivative(PartialEq = "ignore")]
     pub unsupported_policy: Option<PermissionPolicy>,
+    #[serde(skip)]
+    #[ts(skip)]
+    pub discard_from: Option<String>,
 }
 
 #[derive(Clone)]
@@ -293,7 +296,7 @@ impl Api {
     /// attachment before admitting a prompt and refuses all of it (HTTP 400)
     /// for one it cannot use, such as a corrupt image. Nothing was admitted
     /// then, so the prompt goes once more as text, which still names each image.
-    async fn prompt(&self, path: &str, mut body: Value) -> Result<(), ExecutorError> {
+    async fn prompt(&self, path: &str, mut body: Value) -> Result<Option<String>, ExecutorError> {
         let label = "prompt";
         if body.get("files").is_some() {
             let response = Self::send(
@@ -304,15 +307,30 @@ impl Api {
             )
             .await?;
             if response.status() != reqwest::StatusCode::BAD_REQUEST {
-                return Self::accepted(response, label).map(drop);
+                return Ok(prompt_message_id(
+                    Self::accepted(response, label)?
+                        .json()
+                        .await
+                        .unwrap_or(Value::Null),
+                ));
             }
             tracing::warn!("OpenCode v2 refused the chat images; sending the prompt without them");
             if let Some(body) = body.as_object_mut() {
                 body.remove("files");
             }
         }
-        self.post(path, body, label).await.map(drop)
+        let response = self.post(path, body, label).await?;
+        Ok(prompt_message_id(
+            response.json().await.unwrap_or(Value::Null),
+        ))
     }
+}
+
+fn prompt_message_id(body: Value) -> Option<String> {
+    body["data"]["id"]
+        .as_str()
+        .filter(|id| valid_id(id))
+        .map(str::to_owned)
 }
 
 #[derive(Deserialize)]
@@ -721,7 +739,13 @@ impl OpencodeV2 {
             session = async {
                 if let Some(id) = id {
                     let path = session_path(&id)?;
-                    let session: Data<Session> = Api::read(api.request(Method::GET, &path), "session resume").await?;
+                    let session: Data<Session> = if let Some(before) = &self.discard_from {
+                        Api::read(api.request(Method::POST, &format!("{path}/fork"))
+                            .json(&json!({"before": before})), "message rewind").await?
+                    } else {
+                        Api::read(api.request(Method::GET, &path), "session resume").await?
+                    };
+                    let path = session_path(&session.data.id)?;
                     let model = resolve_turn_model(api, cwd, explicit_model, session.data.model.clone(), self.variant.as_deref()).await?;
                     if let Some(model) = &model {
                         api.post(&format!("{path}/model"), json!({"model":model}), "model selection").await?;
@@ -781,7 +805,9 @@ impl OpencodeV2 {
                     if !images.is_empty() {
                         body["files"] = Value::Array(images);
                     }
-                    api.prompt(&format!("{path}/prompt"), body).await?;
+                    if let Some(id) = api.prompt(&format!("{path}/prompt"), body).await? {
+                        AcpEvent::MessageId(id).write_to(writer).await?;
+                    }
                 }
                 TurnInput::Command { name, .. } if name == COMPACT => {
                     api.post(
@@ -1611,6 +1637,7 @@ mod tests {
             },
             approvals: None,
             unsupported_policy: None,
+            discard_from: None,
         };
         let mut env = ExecutionEnv::new(Default::default(), false, String::new());
         for key in [
@@ -1878,6 +1905,7 @@ mod attachment_tests {
             cmd: CmdOverrides::default(),
             approvals: None,
             unsupported_policy: None,
+            discard_from: None,
         }
     }
 
@@ -2328,13 +2356,14 @@ impl StandardCodingAgentExecutor for OpencodeV2 {
         cwd: &Path,
         prompt: &str,
         id: &str,
-        reset: Option<&str>,
+        _reset: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        if reset.is_some() {
-            return Err(ExecutorError::FollowUpNotSupported("OpenCode v2 supports native resume. Message-level rewind is unavailable in this executor.".into()));
-        }
         self.run(cwd, prompt, Some(id), env).await
+    }
+
+    fn discard_from_message(&mut self, message_id: &str) {
+        self.discard_from = Some(message_id.to_owned());
     }
 
     /// `generate` answers from the session's context without changing its
@@ -2643,6 +2672,7 @@ mod turn_tests {
             cmd: CmdOverrides::default(),
             approvals: approvals.map(|a| Arc::new(a) as Arc<dyn ExecutorApprovalService>),
             unsupported_policy: None,
+            discard_from: None,
         };
         let mut config = ExecutorConfig::new(BaseCodingAgent::OpencodeV2);
         config.permission_policy = Some(policy);
@@ -2682,6 +2712,57 @@ mod turn_tests {
         std::fs::write(repo.join("left-over.txt"), "fixture").unwrap();
         let context = RepoContext::new(root.path().to_path_buf(), vec!["repo".into()]);
         (root, context)
+    }
+
+    #[tokio::test]
+    async fn edited_prompt_forks_before_the_discarded_message() {
+        let server = MockServer::start(Box::new(|request, events| {
+            match (
+                request.method.as_str(),
+                request.path.split('?').next().unwrap(),
+            ) {
+                ("POST", "/api/session/ses_original/fork") => {
+                    assert_eq!(request.body, json!({"before": "msg_old"}));
+                    (200, json!({"data": {"id": "ses_fixture"}}))
+                }
+                ("GET", "/api/model") => (200, models()),
+                ("GET", "/api/session/ses_fixture/context") => (200, json!({"data": []})),
+                ("PATCH", "/api/session/ses_fixture") => (200, json!({"data": {}})),
+                ("POST", "/api/session/ses_fixture/prompt") => {
+                    assert_eq!(request.body["text"], "Revised prompt");
+                    events.send(done()).unwrap();
+                    (200, json!({"data": {"id": "msg_new"}}))
+                }
+                _ => (404, json!({"error": request.path})),
+            }
+        }))
+        .await;
+        let mut executor = executor(PermissionPolicy::Auto, None);
+        executor.discard_from_message("msg_old");
+        let mut writer = Vec::new();
+        executor
+            .run_turn(
+                &server.api,
+                Path::new("/fixture"),
+                TurnInput::Prompt("Revised prompt".into()),
+                Some("ses_original".into()),
+                None,
+                &CancellationToken::new(),
+                &mut writer,
+            )
+            .await
+            .unwrap();
+        let events = output(&writer);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AcpEvent::SessionStart(id) if id == "ses_fixture"))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AcpEvent::MessageId(id) if id == "msg_new"))
+        );
     }
 
     #[tokio::test]

@@ -75,6 +75,7 @@ impl SessionManager {
 
         match event {
             AcpEvent::SessionStart(..)
+            | AcpEvent::MessageId(..)
             | AcpEvent::Error(..)
             | AcpEvent::Done(..)
             | AcpEvent::TokenUsage(..)

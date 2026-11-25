@@ -70,6 +70,7 @@ pub fn normalize_logs_with_suppressed_stderr_patterns(
             if let Some(parsed) = AcpEventParser::parse_line(&line) {
                 tracing::trace!("Parsed ACP line: {:?}", parsed);
                 match parsed {
+                    AcpEvent::MessageId(id) => msg_store.push_message_id(id),
                     AcpEvent::SessionStart(id) => {
                         if !stored_session_id {
                             msg_store.push_session_id(id);

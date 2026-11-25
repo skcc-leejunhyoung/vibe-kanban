@@ -55,7 +55,12 @@ Install `@opencode/cli@2.4.1` in a separate npm prefix on the execution host. In
 
 You can use provider API keys carried in the executor environment. To use credentials from `/connect`, set a dedicated `XDG_DATA_HOME` in the OpenCode v2 profile and run `opencode2` with that same setting. Vibe Kanban otherwise uses its own v2 data directory. Keep your OpenCode configuration compatible with v1 if both versions read it. [OpenCode v2 migration and configuration](https://opencode.ai/docs/migrate-v1/)
 
-OpenCode v2 supports native session resume, interruption, the context usage gauge and the commands it lists, including your project and user commands, in the chat's `/` menu. `/compact` compacts the session. With **Supervised**, Vibe Kanban asks before edits, shell commands, web access and access outside the workspace, unless a rule in your OpenCode configuration already allows or denies the action. **Auto** approves the remaining requests and shows the agent's questions in the chat. **Don't Ask** also approves them but stops the agent from asking questions. In every mode, deny rules in your configuration still apply. OpenCode's plan agent is available in the agent selector; the **Plan** permission policy is refused. When the commit reminder is on and a turn leaves changes, Vibe Kanban sends the reminder once in the same session. Message-level rewind is unavailable. Choose **OpenCode** to continue existing v1 sessions and profiles.
+OpenCode v2 supports native session resume, interruption, the context usage gauge and the commands it lists, including your project and user commands, in the chat's `/` menu. `/compact` compacts the session. With **Supervised**, Vibe Kanban asks before edits, shell commands, web access and access outside the workspace, unless a rule in your OpenCode configuration already allows or denies the action. **Auto** approves the remaining requests and shows the agent's questions in the chat. **Don't Ask** also approves them but stops the agent from asking questions. In every mode, deny rules in your configuration still apply. OpenCode's plan agent is available in the agent selector; the **Plan** permission policy is refused. When the commit reminder is on and a turn leaves changes, Vibe Kanban sends the reminder once in the same session. Choose **OpenCode** to continue existing v1 sessions and profiles.
+
+In Vibe Kanban, editing or rewinding a prompt forks OpenCode v2's conversation
+before the selected prompt; it does not edit the original message in place.
+Vibe Kanban handles worktree restoration separately. Older turns and commands
+without a recorded native message ID cannot be rewound safely.
 
 ### Sync repository memory
 
@@ -84,6 +89,11 @@ Configure a model and credentials on the execution host using ZCode's personal p
 Select **ZCode** in the workspace or session, or use `--executor ZCODE` in `vk`. ZCode's stdio app server provides streaming, native session resume, interruption, tool approval, the context usage gauge, the commit reminder and the commands listed by the session in the chat's `/` menu. Vibe Kanban runs ZCode in build mode and approves requests itself under **Auto** and **Don't Ask**, so ZCode's deny rules still apply. **Auto** shows the agent's questions in the chat; **Don't Ask** declines them. The **Plan** permission policy is refused. Message-level rewind is unavailable.
 
 ## Chat features by agent
+
+Claude Code, Codex, OpenCode (v1), Gemini CLI and Qwen Code already offer
+prompt edit and retry through their existing session continuation paths.
+Vibe Kanban does not enable those actions for an executor solely because its
+interactive terminal supports undo or file checkpoints.
 
 The context gauge shows the tokens currently in the conversation against the context window of the model that produced them. It is never filled from cumulative usage, cost, per-turn totals or an estimated limit. When an agent does not report both values, or the value is unknown after a model change or compaction, the gauge shows a placeholder instead of 0%.
 

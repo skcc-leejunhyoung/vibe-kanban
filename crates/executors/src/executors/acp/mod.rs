@@ -18,6 +18,7 @@ use workspace_utils::approvals::ApprovalStatus;
 pub enum AcpEvent {
     User(String),
     SessionStart(String),
+    MessageId(String),
     Message(agent_client_protocol::ContentBlock),
     Thought(agent_client_protocol::ContentBlock),
     ToolCall(agent_client_protocol::ToolCall),
