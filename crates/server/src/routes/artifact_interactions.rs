@@ -638,6 +638,7 @@ pub async fn respond(
             ),
             executor_config,
             handoff: false,
+            autopilot_policy: false,
         };
         deployment
             .queued_message_service()

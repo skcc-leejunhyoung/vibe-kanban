@@ -27,12 +27,15 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
     instance_id: instanceId,
     ...extra,
   });
-  const request = (routine, item, action, extra) =>
+  const request = (routine, item, action, extra, canSend) =>
     api(
       routine,
       "POST",
       `/v1/notifications/${encodeURIComponent(item.notificationId)}/${action}`,
       body(item, extra),
+      undefined,
+      undefined,
+      canSend,
     );
   // False once the server no longer lets this worker hand the alert off: its
   // deadline returned it to the user, or a newer revision superseded it.
@@ -329,7 +332,12 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
     },
     // `build(event)` renders the delivery for the alerts this worker still owns,
     // so an expired member never blocks, or appears in, the rest of its batch.
-    async deliver(routine, event, build) {
+    async deliver(routine, event, build, canSend = () => true) {
+      const cancelled = async () => {
+        await this.release(routine, event);
+        return { skipped: "dispatch cancelled" };
+      };
+      if (!canSend()) return cancelled();
       const candidates = itemsOf(event);
       const renewed = new Map();
       for (const item of candidates) {
@@ -368,19 +376,24 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
           claim_token: item.notificationClaim.claim_token,
         })),
       };
+      // Once a notification is frozen, recovery must finish that immutable
+      // intent. Check enablement before freezing, not after.
+      if (!canSend()) return cancelled();
       if (items.length) {
         // Raw alerts always enter the durable queue, including an idle target.
         delivery.path = delivery.path.replace(/\/follow-up$/, '/queue');
         delivery.payload = {
           message: delivery.payload.message ?? delivery.payload.prompt,
-          executor_config: delivery.payload.executor_config,
-          ...(delivery.payload.handoff === true && { handoff: true }),
+          ...(delivery.payload.autopilot_policy === true
+            ? { autopilot_policy: true }
+            : { executor_config: delivery.payload.executor_config }),
         };
-        await request(routine, items[0], "handoff", {
+        const frozen = await request(routine, items[0], "handoff", {
           handoff_key: delivery.meta.idempotencyKey,
           handoff: delivery,
           members: delivery.members,
-        });
+        }, canSend);
+        if (frozen?.skipped === "dispatch cancelled") return cancelled();
       } else if (candidates.length) {
         // Every alert is gone. If an admission whose response was lost took
         // them, the host already queued these leftovers under this key and
@@ -395,6 +408,7 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
         if (receipt.status === "succeeded" && receipt.action === "notification_handoff")
           return receipt;
       }
+      if (!items.length && !canSend()) return cancelled();
       // The receiving host stages the exact body, then atomically admits every
       // member centrally before publishing any runnable queue entry.
       const result = await api(
@@ -406,7 +420,9 @@ export function createNotificationRouting({ api, instanceId, now = Date.now }) {
           : delivery.payload,
         true,
         delivery.meta,
+        items.length ? undefined : canSend,
       );
+      if (result?.skipped === "dispatch cancelled") return cancelled();
       for (const item of items) {
         known.delete(keyOf(item));
       }

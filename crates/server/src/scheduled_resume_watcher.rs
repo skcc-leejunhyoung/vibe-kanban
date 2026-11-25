@@ -66,6 +66,8 @@ async fn tick(deployment: &DeploymentImpl) -> anyhow::Result<()> {
 
 async fn process_one(deployment: &DeploymentImpl, row: &ScheduledResume) -> anyhow::Result<()> {
     let pool = &deployment.db().pool;
+    let container = deployment.container();
+    let mut stops = container.watch_session_stops(row.session_id);
 
     // Don't resume on top of a live run; leave the row pending and retry next
     // tick once the session goes idle. Use the broader "any non-dev-server
@@ -112,21 +114,39 @@ async fn process_one(deployment: &DeploymentImpl, row: &ScheduledResume) -> anyh
         ScheduledResume::mark_fired(pool, row.id).await?;
         return Ok(());
     };
-    let Some(executor_config) = latest_executor_config(pool, session.id).await? else {
-        tracing::warn!(
-            "scheduled_resume_watcher: no executor config for session {}; dropping resume {}",
-            session.id,
-            row.id
-        );
-        ScheduledResume::mark_fired(pool, row.id).await?;
-        return Ok(());
-    };
-
     deployment
         .container()
         .ensure_container_exists(&workspace)
         .await?;
 
+    let starting = container.lock_session_start(session.id).await;
+    if stops.has_changed().unwrap_or(false)
+        || ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
+            .await?
+    {
+        return Ok(());
+    }
+    let Some(executor_config) = latest_executor_config(pool, session.id).await? else {
+        ScheduledResume::mark_fired(pool, row.id).await?;
+        return Ok(());
+    };
+    let executor_config = if workspace.autopilot {
+        tokio::select! {
+            biased;
+            Ok(()) = stops.changed() => return Ok(()),
+            config = container.select_autopilot_executor(session.id, executor_config) => config?,
+        }
+    } else {
+        executor_config
+    };
+    if !ScheduledResume::find_pending_for_session(pool, session.id)
+        .await?
+        .iter()
+        .any(|pending| pending.id == row.id && pending.next_fire_at == row.next_fire_at)
+        || stops.has_changed().unwrap_or(false)
+    {
+        return Ok(());
+    }
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
     // As the rate-limit resume: never another agent's native session.
@@ -135,14 +155,23 @@ async fn process_one(deployment: &DeploymentImpl, row: &ScheduledResume) -> anyh
         cleanup_action.map(Box::new),
     );
 
-    deployment
-        .container()
-        .start_execution(
+    let record = container
+        .create_execution_record(
             &workspace,
             &session,
             &action,
             &ExecutionProcessRunReason::CodingAgent,
         )
+        .await?;
+    if workspace.autopilot
+        && let Err(error) =
+            Session::update_executor(pool, session.id, &executor_config.executor.to_string()).await
+    {
+        tracing::warn!(%error, "Could not record the Autopilot resume executor");
+    }
+    drop(starting);
+    container
+        .finish_execution_spawn(&workspace, &session, &record, &action)
         .await?;
 
     tracing::info!(

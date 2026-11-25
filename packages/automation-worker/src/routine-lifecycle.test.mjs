@@ -110,7 +110,7 @@ function harness({
     if (endpoint === '/api/automation-actions/status')
       return {
         hostId: h.hostId || 'host',
-        autopilotExecutorPolicy: Boolean(h.policy),
+        autopilotQueuedPolicy: Boolean(h.policy),
       };
     if (endpoint === '/api/workspaces/autopilot')
       return h.noAutopilot
@@ -121,10 +121,6 @@ function harness({
               executor_config: h.currentExecutor || { executor: 'CODEX' },
             },
           };
-    if (
-      endpoint === `/api/automation-actions/autopilot-executor/${h.sessionId || 'session'}`
-    )
-      return h.policy();
     if (endpoint.startsWith('/api/automation-actions/receipts/'))
       return (
         store.receipts.get(decodeURIComponent(endpoint.split('/').at(-1))) || {
@@ -169,7 +165,6 @@ function harness({
     vm,
     URL,
     Date,
-    AbortSignal,
     createHash,
     randomUUID,
     structuredClone,
@@ -197,6 +192,7 @@ function harness({
       if (strict && h.failStrictWrite)
         throw new Error('synthetic storage failure');
       h.persisted = structuredClone(state);
+      if (strict) h.afterQueuePersist?.();
     },
     errorMessage: (error) => error.message,
     withTimeout: async (promise) => promise,
@@ -220,16 +216,18 @@ function harness({
       }),
     vibeApi: api,
     notificationRouting: {
-      deliver: async (routine, event, build) => {
-        const delivery = await build(event);
-        return api(
-          null,
-          'POST',
-          delivery.path,
-          delivery.payload,
-          'https://host.invalid',
-          delivery.meta
-        );
+      deliver: (...args) => {
+        const routing = createNotificationRouting({
+          instanceId: 'synthetic-instance',
+          api: async (_routine, method, endpoint, payload, _onHost, meta) => {
+            if (h.handoff && (endpoint.endsWith('/renew-claim') || endpoint.endsWith('/handoff')))
+              return {};
+            if (endpoint.endsWith('/notification-handoff'))
+              return api(null, method, payload.handoff.path, payload.handoff.payload, 'https://host.invalid', meta);
+            return api(null, method, endpoint, payload, 'https://host.invalid', meta);
+          },
+        });
+        return routing.deliver(...args);
       },
     },
   });
@@ -688,7 +686,7 @@ test('an uncertain prior queue admission blocks new sends until its outcome is k
   assert.equal(h.posts, 0);
 });
 
-test('the next automatic prompt queues the recovered executor in the same Autopilot session', async () => {
+test('automatic prompts queue only the policy intent, including formerly direct sends', async () => {
   const h = harness();
   const r = routine({ trigger: { type: 'vk_event' } });
   h.state.routines.push(r);
@@ -696,31 +694,18 @@ test('the next automatic prompt queues the recovered executor in the same Autopi
     executor: 'OPENCODE_V2',
     permission_policy: 'SUPERVISED',
   };
-  const codex = {
-    ...h.currentExecutor,
-    executor: 'CODEX',
-    model_id: 'gpt-5.6-sol-fast',
-  };
-  let decision = { executor_config: h.currentExecutor, handoff: false };
-  let probes = 0;
-  h.policy = () => {
-    probes += 1;
-    return decision;
-  };
+  delete r.action.input.queue;
+  h.policy = true;
   await h.run(r, { count: 1 }, 'before-recovery');
-  assert.deepEqual(h.store.queue[0].data.executor_config, h.currentExecutor);
-
-  decision = { executor_config: codex, handoff: true };
-  // An already queued prompt is not replaced just because usage recovered.
+  assert.equal(h.store.queue[0].data.autopilot_policy, true);
+  assert.equal(h.store.queue[0].data.handoff, undefined);
   await h.run(r, { count: 2 }, 'still-queued');
-  assert.equal(probes, 1);
   assert.equal(h.posts, 1);
   h.store.queue.shift();
   await h.run(r, { count: 3 }, 'after-recovery');
   assert.deepEqual(h.store.queue[0].data, {
     message: 'Synthetic check 3',
-    executor_config: codex,
-    handoff: true,
+    autopilot_policy: true,
   });
   assert.deepEqual(
     h.calls.filter(({ method }) => method === 'POST').map(({ endpoint }) => endpoint),
@@ -731,7 +716,6 @@ test('the next automatic prompt queues the recovered executor in the same Autopi
   h.store.queue.shift();
   await h.run(r, { count: 3 }, 'after-recovery');
   assert.equal(h.posts, 2);
-  assert.equal(probes, 2);
 });
 
 test('an explicit pin is not evaluated by the host executor policy', async () => {
@@ -740,36 +724,24 @@ test('an explicit pin is not evaluated by the host executor policy', async () =>
   const pinned = { executor: 'OPENCODE_V2', model_id: 'example/pinned' };
   r.action.input.executor_config = pinned;
   h.state.routines.push(r);
-  h.policy = () => assert.fail('must not read the policy for an explicit pin');
+  h.policy = true;
   await h.run(r, {}, 'pinned');
   assert.deepEqual(h.store.queue[0].data.executor_config, pinned);
-  assert.equal(h.store.queue[0].data.handoff, undefined);
+  assert.equal(h.store.queue[0].data.autopilot_policy, undefined);
 });
 
-test('a policy failure neither sends the stale choice nor reserves a queue intent', async () => {
+test('disabling a routine during persistence cancels delivery before the queue POST', async () => {
   const h = harness();
   const r = routine();
   h.state.routines.push(r);
-  h.policy = () => {
-    throw new Error('synthetic policy unavailable');
-  };
-  const result = await h.run(r, {}, 'policy-failure');
-  assert.equal(result.run.status, 'retrying');
-  assert.equal(h.posts, 0);
-  assert.equal(h.state.routineQueuedPrompts[r.id], undefined);
-});
-
-test('a stop during policy evaluation cancels delivery without retrying it', async () => {
-  const h = harness();
-  const r = routine();
-  h.state.routines.push(r);
-  h.policy = () => null;
+  h.policy = true;
+  h.afterQueuePersist = () => { r.enabled = false; };
   const first = await h.run(r, {}, 'cancelled');
   assert.match(first.run.skipped, /cancelled/);
-  h.policy = () => assert.fail('a cancelled delivery must not be retried');
   await h.run(r, {}, 'cancelled');
   assert.equal(h.posts, 0);
   assert.equal(h.state.retryQueue.length, 0);
+  assert.equal(h.state.routineQueuedPrompts[r.id], undefined);
 });
 
 for (const loseResponse of [false, true]) {
@@ -811,10 +783,7 @@ test('a filtered notification batch keeps the sent prompt identity across a lost
   const r = routine({ trigger: { type: 'vk_event' } });
   h.state.routines.push(r);
   h.handoff = true;
-  h.policy = () => ({
-    executor_config: { executor: 'CODEX', model_id: 'gpt-5.6-sol-fast' },
-    handoff: true,
-  });
+  h.policy = true;
   let delivery;
   h.context.notificationRouting = createNotificationRouting({
     instanceId: 'synthetic-instance',
@@ -862,7 +831,7 @@ test('a filtered notification batch keeps the sent prompt identity across a lost
     'synthetic-first'
   );
   assert.equal(h.store.queue[0].data.message, 'Synthetic check 1');
-  assert.equal(h.store.queue[0].data.handoff, true);
+  assert.equal(h.store.queue[0].data.autopilot_policy, true);
   const restarted = harness({
     state: structuredClone(h.persisted),
     store: h.store,
@@ -888,7 +857,12 @@ for (const loseResponse of [false, true]) {
     h.failStrictWrite = true;
     await h.run(
       r,
-      { count: 1, notificationClaim: { lease_id: 'synthetic-lease' } },
+      {
+        count: 1,
+        notificationId: 'synthetic-alert',
+        notificationRevision: 1,
+        notificationClaim: { lease_id: 'synthetic-lease', claim_token: 'synthetic-claim' },
+      },
       'synthetic-first'
     );
     assert.equal(h.store.queue.length, 1);

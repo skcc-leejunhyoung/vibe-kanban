@@ -70,6 +70,8 @@ async fn process_one(
     row: &PendingRateLimitResume,
     pool: &sqlx::SqlitePool,
 ) -> anyhow::Result<()> {
+    let container = deployment.container();
+    let mut stops = container.watch_session_stops(row.session_id);
     let _ = PendingRateLimitResume::touch_checked(pool, row.session_id).await;
 
     let session = match Session::find_by_id(pool, row.session_id).await? {
@@ -163,24 +165,68 @@ async fn process_one(
         .ensure_container_exists(&workspace)
         .await?;
 
+    let starting = container.lock_session_start(session.id).await;
+    if stops.has_changed().unwrap_or(false)
+        || ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
+            .await?
+    {
+        return Ok(());
+    }
+    let executor_config = if workspace.autopilot {
+        let Some(current) =
+            ExecutionProcess::latest_executor_config_for_session(pool, session.id).await?
+        else {
+            return Ok(());
+        };
+        tokio::select! {
+            biased;
+            Ok(()) = stops.changed() => return Ok(()),
+            config = container.select_autopilot_executor(session.id, current) => config?,
+        }
+    } else {
+        executor_config
+    };
+    if PendingRateLimitResume::find_by_session_id(pool, session.id)
+        .await?
+        .is_none_or(|pending| {
+            pending.id != row.id
+                || pending.resume_at != row.resume_at
+                || pending.execution_process_id != row.execution_process_id
+        })
+        || !Session::find_by_id(pool, session.id)
+            .await?
+            .is_some_and(|session| session.auto_resume_enabled)
+        || stops.has_changed().unwrap_or(false)
+    {
+        return Ok(());
+    }
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
 
-    // Resumes the agent's own session; the handoff again if that agent's turn
-    // was a handoff that never started a session of its own.
+    // A due resume may take the Autopilot's official handoff. It never
+    // resumes another executor's native session.
     let action = ExecutorAction::new(
         coding_turn_request(pool, &session, &row.resume_prompt, &executor_config, false).await?,
         cleanup_action.map(Box::new),
     );
 
-    deployment
-        .container()
-        .start_execution(
+    let record = container
+        .create_execution_record(
             &workspace,
             &session,
             &action,
             &ExecutionProcessRunReason::CodingAgent,
         )
+        .await?;
+    if workspace.autopilot
+        && let Err(error) =
+            Session::update_executor(pool, session.id, &executor_config.executor.to_string()).await
+    {
+        tracing::warn!(%error, "Could not record the Autopilot resume executor");
+    }
+    drop(starting);
+    container
+        .finish_execution_spawn(&workspace, &session, &record, &action)
         .await?;
 
     PendingRateLimitResume::delete_by_session_id(pool, row.session_id).await?;

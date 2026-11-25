@@ -289,7 +289,14 @@ pub async fn stop_workspace_execution(
             .map(|session| session.id)
             .collect(),
     };
+    let holds: Vec<_> = stopped_sessions
+        .iter()
+        .map(|&session_id| deployment.queued_message_service().hold_drain(session_id))
+        .collect();
     for &session_id in &stopped_sessions {
+        if workspace.autopilot {
+            deployment.container().signal_session_stops(session_id);
+        }
         deployment
             .container()
             .cancel_session_starts(session_id)
@@ -300,6 +307,7 @@ pub async fn stop_workspace_execution(
         .container()
         .try_stop(&workspace, false, only_session)
         .await?;
+    drop(holds);
 
     // A message sent while the stop ran (no turn running, drain held: the
     // follow-up route queued it) may have nobody else to start it. Only here,

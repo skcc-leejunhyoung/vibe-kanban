@@ -1,6 +1,9 @@
 //! Persist the prompt before choosing between Autopilot acceptance and user fallback.
 use api_types::{AcceptNotificationHandoff, NotificationHandoff};
-use db::models::{scratch::DraftFollowUpData, session::Session, workspace::Workspace};
+use db::models::{
+    execution_process::ExecutionProcess, scratch::DraftFollowUpData, session::Session,
+    workspace::Workspace,
+};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -35,7 +38,18 @@ pub async fn receive(
         "invalid notification handoff destination"
     );
     let session = Uuid::parse_str(parts[3])?;
-    let data: DraftFollowUpData = serde_json::from_value(request.handoff["payload"].clone())?;
+    let mut payload = request.handoff["payload"].clone();
+    if payload["autopilot_policy"].as_bool() == Some(true) {
+        // Store a display config locally without making it part of the frozen
+        // notification body. Retrying the same event cannot change that body
+        // just because a different executor has run in the meantime.
+        payload["executor_config"] = serde_json::to_value(
+            ExecutionProcess::latest_executor_config_for_session(pool, session)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Autopilot has no current executor"))?,
+        )?;
+    }
+    let data: DraftFollowUpData = serde_json::from_value(payload)?;
     let owner = client
         .notification_account()
         .await
@@ -56,6 +70,11 @@ pub async fn receive(
             "notification handoff changed"
         );
     } else {
+        if data.autopilot_policy {
+            let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=? AND w.autopilot=1 AND w.archived=0)")
+                .bind(session).fetch_one(&mut *tx).await?;
+            anyhow::ensure!(active, "Autopilot session is no longer active");
+        }
         let claimed = sqlx::query("INSERT OR IGNORE INTO automation_action_receipts(idempotency_key,action,status) VALUES(?,'notification_handoff','running')")
             .bind(key).execute(&mut *tx).await?;
         anyhow::ensure!(

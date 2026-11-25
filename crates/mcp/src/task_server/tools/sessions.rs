@@ -293,6 +293,7 @@ impl McpServer {
         }
         let options = SendPromptOptions {
             queue: queue.unwrap_or(false),
+            autopilot_policy: false,
             steer: steer.unwrap_or(false),
             executor,
             variant,

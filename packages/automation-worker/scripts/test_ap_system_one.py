@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location('ap_system_one', os.path.join(os.path.dirname(__file__), 'ap-system-one.py'))
 adapter = importlib.util.module_from_spec(spec)
@@ -56,6 +57,36 @@ class AutopilotExecutorTests(unittest.TestCase):
                 self.assertIsNone(adapter.probe_executor(self.ap, 'synthetic-host', {**self.current, **override}))
         with self.assertRaisesRegex(ValueError, 'cannot preserve permission'):
             adapter.probe_executor(self.ap, 'synthetic-host', {**self.current, 'permission_policy': 'PLAN'})
+
+    def test_gate_and_observation_children_keep_the_host_policy_and_manual_send_does_not(self):
+        calls = []
+        self.ap.update(__file__='/synthetic/bin/ap', subprocess=SimpleNamespace(Popen=lambda args, **_: calls.append(args)),
+                       handoff_note=lambda *args: 'legacy note',
+                       vk=lambda *args, **_: calls.append(args))
+
+        def send(session, message, host, **kwargs):
+            return self.ap['vk']('session', 'send', session, '-m', message,
+                                 '--executor', 'OPENCODE_V2', '--queue')
+
+        self.ap['guarded_send'] = send
+        argv = ['/synthetic/adapter.py', '--ap', '/synthetic/bin/ap', '--config', '/synthetic/config']
+        adapter.wire_automatic_sends(self.ap, argv)
+        self.ap['subprocess'].Popen([sys.executable, '-I', '/synthetic/bin/ap', 'sample', '--exec', 'synthetic-exec'])
+        self.assertEqual(calls.pop(), [sys.executable, '-I', *argv, 'sample', '--exec', 'synthetic-exec'])
+        for key in ('gate:synthetic', 'observation:synthetic'):
+            self.ap['guarded_send']('synthetic-session', 'synthetic prompt', 'synthetic-host', key=key, queue=True)
+            self.assertEqual(calls.pop(), ('session', 'send', 'synthetic-session', '-m', 'synthetic prompt',
+                                           '--queue', '--autopilot-policy'))
+        self.ap['guarded_send']('synthetic-session', 'synthetic prompt', 'synthetic-host',
+                                key='manual:synthetic', requested='OPENCODE_V2', queue=True)
+        self.assertIn('--executor', calls.pop())
+
+    def test_explicit_session_pin_wins_even_when_it_matches_a_policy_model(self):
+        self.usage['codex'] = 'ok'
+        adapter.install_automatic_routing(self.ap, pinned=True)
+        pinned = self.ap['select_for']('synthetic-host', self.usage, {}, own=True,
+                                       source=self.current['executor'], latest=self.current)
+        self.assertEqual(pinned['executor'], 'OPENCODE_V2')
 
 
 class PeriodicTests(unittest.TestCase):

@@ -1173,6 +1173,13 @@ pub trait ContainerService {
     /// already (the stop then kills it) or sees this at its check.
     async fn cancel_session_starts(&self, session_id: Uuid) {
         let _starting = self.lock_session_start(session_id).await;
+        self.signal_session_stops(session_id);
+    }
+
+    /// A user stop of an Autopilot can interrupt its slow, read-only probe
+    /// before waiting on the start lock. It still calls `cancel_session_starts`
+    /// afterward to synchronize with creation of the next process row.
+    fn signal_session_stops(&self, session_id: Uuid) {
         if let Some(sender) = self
             .session_stop_signals()
             .lock()
@@ -2027,37 +2034,73 @@ pub trait ContainerService {
         session: &Session,
         workspace: &Workspace,
     ) -> Result<Option<ExecutionProcess>, ContainerError> {
+        self.start_next_queued_followup(session, workspace, false)
+            .await
+    }
+
+    /// The previous turn's finalizer may drain under its own drain hold.
+    async fn start_next_queued_followup(
+        &self,
+        session: &Session,
+        workspace: &Workspace,
+        finalizing: bool,
+    ) -> Result<Option<ExecutionProcess>, ContainerError> {
         let queue = self.queued_message_service();
-        if !queue.can_drain_now(session.id) {
+        if !finalizing && !queue.can_drain_now(session.id) {
             return Ok(None);
         }
+        let mut stops = self.watch_session_stops(session.id);
         self.wait_for_session_ready(session.id).await;
         let starting = self.lock_session_start(session.id).await;
         let pool = &self.db().pool;
-        if !queue.can_drain_now(session.id)
+        if stops.has_changed().unwrap_or(false)
+            || (!finalizing && !queue.can_drain_now(session.id))
             || ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session.id)
                 .await?
-            || PendingRateLimitResume::find_by_session_id(pool, session.id)
-                .await
-                .map_err(|e| ContainerError::Other(anyhow!(e)))?
-                .is_some()
+            || (!finalizing
+                && PendingRateLimitResume::find_by_session_id(pool, session.id)
+                    .await
+                    .map_err(|e| ContainerError::Other(anyhow!(e)))?
+                    .is_some())
         {
             return Ok(None);
         }
-        let Some(queued) = queue.take_next(session.id) else {
-            return Ok(None);
+        let (queued, data) = loop {
+            let Some(front) = queue.ready_front(session.id) else {
+                return Ok(None);
+            };
+            // Keep the front visible and cancelable during usage/model reads.
+            // The start lock protects the live source config until the new row
+            // is created. No worker makes an executor reservation in advance.
+            let data = tokio::select! {
+                biased;
+                Ok(()) = stops.changed() => return Ok(None),
+                data = self.prepare_queued_followup(session, workspace, &front.data) => data,
+            };
+            if stops.has_changed().unwrap_or(false) {
+                return Ok(None);
+            }
+            if let Some(queued) =
+                queue.take_next_if(session.id, |m| m.id == front.id && m.data == front.data)
+            {
+                break (queued, data);
+            }
         };
         // Hold the drain until the start settles, as `start_queued_followup`
         // does.
         let hold = queue.hold_drain(session.id);
-        let created = self
-            .create_followup_record(
-                session,
-                workspace,
-                &queued.data,
-                queued.artifact_request.as_ref(),
-            )
-            .await;
+        let created = match data {
+            Ok(data) => {
+                self.create_followup_record(
+                    session,
+                    workspace,
+                    &data,
+                    queued.artifact_request.as_ref(),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
         if let (Ok((record, _)), Some(agent_session)) = (&created, queued.agent_session)
             && let Err(e) =
                 super::autopilot::record_agent_origin(&self.db().pool, record.id, agent_session)
@@ -2093,6 +2136,43 @@ pub trait ContainerService {
         Ok(record)
     }
 
+    async fn prepare_queued_followup(
+        &self,
+        session: &Session,
+        workspace: &Workspace,
+        data: &DraftFollowUpData,
+    ) -> Result<DraftFollowUpData, ContainerError> {
+        if !data.autopilot_policy {
+            return Ok(data.clone());
+        }
+        let pool = &self.db().pool;
+        if !Workspace::find_active_autopilot(pool)
+            .await?
+            .is_some_and(|active| active.id == workspace.id)
+        {
+            return Err(ContainerError::Other(anyhow!("Autopilot is not active")));
+        }
+        let current = ExecutionProcess::latest_executor_config_for_session(pool, session.id)
+            .await?
+            .ok_or_else(|| anyhow!("Autopilot has no current executor"))?;
+        let source = current.executor;
+        let executor_config = self.select_autopilot_executor(session.id, current).await?;
+        Ok(DraftFollowUpData {
+            handoff: executor_config.executor != source,
+            executor_config,
+            autopilot_policy: false,
+            ..data.clone()
+        })
+    }
+
+    async fn select_autopilot_executor(
+        &self,
+        session_id: Uuid,
+        current: ExecutorConfig,
+    ) -> anyhow::Result<ExecutorConfig> {
+        super::autopilot::resolve_executor(session_id, current).await
+    }
+
     /// Create the row for a follow-up turn running `data`. Call with the
     /// session start lock held and no turn running.
     async fn create_followup_record(
@@ -2102,6 +2182,25 @@ pub trait ContainerService {
         data: &DraftFollowUpData,
         artifact_request: Option<&super::artifact_interactions::ArtifactInteractionRef>,
     ) -> Result<(ExecutionProcess, ExecutorAction), ContainerError> {
+        // An explicit "send now" takes a message before starting it. Run that
+        // user action with live session settings, not with an automatic probe.
+        let manual;
+        let data = if data.autopilot_policy {
+            manual = DraftFollowUpData {
+                executor_config: ExecutionProcess::latest_executor_config_for_session(
+                    &self.db().pool,
+                    session.id,
+                )
+                .await?
+                .ok_or_else(|| anyhow!("Autopilot has no current executor"))?,
+                handoff: false,
+                autopilot_policy: false,
+                ..data.clone()
+            };
+            &manual
+        } else {
+            data
+        };
         // A message whose sender didn't pick its agent (automation, an artifact
         // response, a bare CLI send) keeps the old rule: for another agent than
         // the session's, it waits with the mismatch instead of handing off.

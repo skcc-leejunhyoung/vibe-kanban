@@ -1425,6 +1425,7 @@ impl LocalContainerService {
             message,
             executor_config: config,
             handoff: false,
+            autopilot_policy: false,
         };
         // Nothing queued starts ahead of the reminder.
         let hold = self.queued_message_service.hold_drain(ctx.session.id);
@@ -2801,7 +2802,11 @@ impl LocalContainerService {
             }
             self.finalize_task(ctx).await;
             self.vibe_on_finalize(ctx).await;
-        } else if let Some(queued_msg) = self.queued_message_service.take_next(ctx.session.id) {
+        } else if self
+            .queued_message_service
+            .ready_front(ctx.session.id)
+            .is_some()
+        {
             tracing::info!(
                 "Found queued message for session {}, starting follow-up execution",
                 ctx.session.id
@@ -2809,14 +2814,22 @@ impl LocalContainerService {
 
             // Execute the queued follow-up
             match self
-                .start_queued_followup(&ctx.session, &ctx.workspace, queued_msg)
+                .start_next_queued_followup(&ctx.session, &ctx.workspace, true)
                 .await
             {
                 Ok(Some(_)) => started_queued_follow_up = true,
                 Ok(None) => {
-                    self.defer_finalization(ctx, has_chained_follow_up, keep_queue)
-                        .await;
-                    return;
+                    if self
+                        .queued_message_service
+                        .ready_front(ctx.session.id)
+                        .is_some()
+                    {
+                        self.defer_finalization(ctx, has_chained_follow_up, keep_queue)
+                            .await;
+                        return;
+                    }
+                    self.finalize_task(ctx).await;
+                    self.vibe_on_finalize(ctx).await;
                 }
                 Err(e) => {
                     tracing::error!("Failed to start queued follow-up: {}", e);
@@ -4032,6 +4045,27 @@ fn failure_exit_status() -> std::process::ExitStatus {
 
 #[async_trait]
 impl ContainerService for LocalContainerService {
+    #[cfg(test)]
+    async fn select_autopilot_executor(
+        &self,
+        session_id: Uuid,
+        current: ExecutorConfig,
+    ) -> anyhow::Result<ExecutorConfig> {
+        let probe = tests::AUTOPILOT_PROBES
+            .lock()
+            .unwrap()
+            .get(&session_id)
+            .cloned();
+        if let Some(probe) = probe {
+            let (result, reply) = tokio::sync::oneshot::channel();
+            probe
+                .send((current, result))
+                .map_err(|_| anyhow::anyhow!("test probe closed"))?;
+            return Ok(reply.await?);
+        }
+        services::services::autopilot::resolve_executor(session_id, current).await
+    }
+
     async fn resume_deferred_finalization(&self, session_id: Uuid) -> Result<(), ContainerError> {
         LocalContainerService::resume_deferred_finalization(self, session_id).await
     }
@@ -5618,6 +5652,7 @@ done
                 message: "next".into(),
                 executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
                 handoff: false,
+                autopilot_policy: false,
             },
         );
 
@@ -7085,6 +7120,7 @@ done
             message: message.into(),
             executor_config: ExecutorConfig::new(agent),
             handoff: false,
+            autopilot_policy: false,
         }
     }
 
@@ -7956,8 +7992,25 @@ done
         workspace: &Workspace,
         session: &Session,
     ) -> (Session, ExecutionProcess) {
+        agent_mid_turn(
+            container,
+            workspace,
+            session,
+            ExecutorConfig::new(BaseCodingAgent::Codex),
+            "codex-thread",
+        )
+        .await
+    }
+
+    async fn agent_mid_turn(
+        container: &LocalContainerService,
+        workspace: &Workspace,
+        session: &Session,
+        config: ExecutorConfig,
+        native: &str,
+    ) -> (Session, ExecutionProcess) {
         let pool = &container.db.pool;
-        Session::update_executor(pool, session.id, "CODEX")
+        Session::update_executor(pool, session.id, &config.executor.to_string())
             .await
             .unwrap();
         let session = Session::find_by_id(pool, session.id)
@@ -7970,8 +8023,8 @@ done
                 &session,
                 &ExecutorAction::new(
                     ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
-                        prompt: "codex work".into(),
-                        executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                        prompt: "synthetic work".into(),
+                        executor_config: config,
                         working_dir: None,
                         handoff_from: None,
                         handoff_session_id: None,
@@ -7983,10 +8036,189 @@ done
             )
             .await
             .unwrap();
-        CodingAgentTurn::update_agent_session_id(pool, codex.id, "codex-thread")
+        CodingAgentTurn::update_agent_session_id(pool, codex.id, native)
             .await
             .unwrap();
         (session, codex)
+    }
+
+    type AutopilotProbe = (ExecutorConfig, tokio::sync::oneshot::Sender<ExecutorConfig>);
+    pub(super) static AUTOPILOT_PROBES: std::sync::LazyLock<
+        std::sync::Mutex<HashMap<Uuid, tokio::sync::mpsc::UnboundedSender<AutopilotProbe>>>,
+    > = std::sync::LazyLock::new(Default::default);
+
+    async fn autopilot_queue_fixture()
+    -> (LocalContainerService, Session, Workspace, ExecutionProcess) {
+        let (container, session, mut workspace) = queue_test_container().await;
+        add_test_repo(&container, &workspace).await;
+        sqlx::query("UPDATE workspaces SET autopilot=1 WHERE id=?")
+            .bind(workspace.id)
+            .execute(&container.db.pool)
+            .await
+            .unwrap();
+        workspace.autopilot = true;
+        let mut config = ExecutorConfig::new(BaseCodingAgent::OpencodeV2);
+        config.permission_policy = Some(executors::model_selector::PermissionPolicy::Supervised);
+        let (session, turn) = agent_mid_turn(
+            &container,
+            &workspace,
+            &session,
+            config,
+            "synthetic-opencode",
+        )
+        .await;
+        (container, session, workspace, turn)
+    }
+
+    fn automatic(message: &str) -> DraftFollowUpData {
+        DraftFollowUpData {
+            autopilot_policy: true,
+            ..follow_up(message, BaseCodingAgent::OpencodeV2)
+        }
+    }
+
+    #[tokio::test]
+    async fn autopilot_queue_recovers_on_next_turn_and_resolves_queued_messages_in_order() {
+        let (container, session, workspace, running) = autopilot_queue_fixture().await;
+        let _logs = SessionLogDir(session.id);
+        let pool = &container.db.pool;
+        let queue = &container.queued_message_service;
+        let (probe, mut probes) = tokio::sync::mpsc::unbounded_channel();
+        AUTOPILOT_PROBES.lock().unwrap().insert(session.id, probe);
+        assert!(
+            container
+                .drain_queue_if_idle(&session, &workspace)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let first = queue.enqueue(session.id, automatic("first automatic prompt"));
+        let second = queue.enqueue(session.id, automatic("second automatic prompt"));
+        assert!(
+            container
+                .drain_queue_if_idle(&session, &workspace)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            probes.try_recv().is_err(),
+            "a busy session does not probe or interrupt"
+        );
+        ExecutionProcess::update_completion(
+            pool,
+            running.id,
+            ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+
+        let managed = async {
+            let (mut live, select) = probes.recv().await.unwrap();
+            assert_eq!(live.executor, BaseCodingAgent::OpencodeV2);
+            assert_eq!(
+                live.permission_policy,
+                Some(executors::model_selector::PermissionPolicy::Supervised)
+            );
+            live.executor = BaseCodingAgent::Codex;
+            live.model_id = Some("gpt-5.6-sol-fast".into());
+            select.send(live).unwrap();
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(container.drain_queue_if_idle(&session, &workspace), managed)
+        })
+        .await
+        .unwrap();
+        assert!(
+            result.is_err(),
+            "no worktree is available to launch a real agent"
+        );
+        let requests = coding_requests(&container, session.id).await;
+        assert_eq!(requests.len(), 2);
+        assert_handoff(
+            &requests[1].1,
+            BaseCodingAgent::OpencodeV2,
+            "synthetic-opencode",
+        );
+        let ExecutorActionType::CodingAgentInitialRequest(handoff) = &requests[1].1 else {
+            unreachable!()
+        };
+        assert_eq!(
+            handoff.executor_config.model_id.as_deref(),
+            Some("gpt-5.6-sol-fast")
+        );
+        CodingAgentTurn::update_agent_session_id(pool, requests[1].0, "synthetic-codex")
+            .await
+            .unwrap();
+        queue.cancel_message(session.id, first.id).await.unwrap();
+        let managed = async {
+            let (live, select) = probes.recv().await.unwrap();
+            assert_eq!(live, handoff.executor_config);
+            select.send(live).unwrap();
+        };
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(container.drain_queue_if_idle(&session, &workspace), managed)
+        })
+        .await
+        .unwrap();
+        AUTOPILOT_PROBES.lock().unwrap().remove(&session.id);
+        let requests = coding_requests(&container, session.id).await;
+        assert_eq!(requests.len(), 3);
+        let ExecutorActionType::CodingAgentFollowUpRequest(followup) = &requests[2].1 else {
+            panic!("expected a Codex continuation");
+        };
+        assert_eq!(followup.session_id, "synthetic-codex");
+        assert_eq!(followup.prompt, second.data.message);
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_autopilot_prompt_during_policy_does_not_start_it() {
+        for stop_session in [false, true] {
+            let (container, session, workspace, running) = autopilot_queue_fixture().await;
+            let _logs = SessionLogDir(session.id);
+            ExecutionProcess::update_completion(
+                &container.db.pool,
+                running.id,
+                ExecutionProcessStatus::Completed,
+                Some(0),
+            )
+            .await
+            .unwrap();
+            let queue = &container.queued_message_service;
+            let queued = queue.enqueue(session.id, automatic("cancel this"));
+            let (probe, mut probes) = tokio::sync::mpsc::unbounded_channel();
+            AUTOPILOT_PROBES.lock().unwrap().insert(session.id, probe);
+            let cancel = async {
+                let (live, select) = probes.recv().await.unwrap();
+                assert_eq!(queue.get_queued(session.id)[0].id, queued.id);
+                if stop_session {
+                    let _hold = queue.hold_drain(session.id);
+                    container.signal_session_stops(session.id);
+                    container.cancel_session_starts(session.id).await;
+                    queue.clear_queue(session.id).await.unwrap();
+                    assert!(select.send(live).is_err(), "stop aborted policy lookup");
+                } else {
+                    assert!(
+                        queue
+                            .cancel_message(session.id, queued.id)
+                            .await
+                            .unwrap()
+                            .is_some()
+                    );
+                    select.send(live).unwrap();
+                }
+            };
+            let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::join!(container.drain_queue_if_idle(&session, &workspace), cancel)
+            })
+            .await
+            .unwrap();
+            AUTOPILOT_PROBES.lock().unwrap().remove(&session.id);
+            assert!(result.unwrap().is_none());
+            assert!(!queue.has_queued(session.id));
+            assert_eq!(coding_requests(&container, session.id).await.len(), 1);
+        }
     }
 
     /// A message whose sender picked another agent (a handoff reservation).
@@ -9691,6 +9923,7 @@ mod cleanup_failure_queue_tests {
                 // executor check instead of launching a real agent.
                 executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
                 handoff: false,
+                autopilot_policy: false,
             },
         );
 

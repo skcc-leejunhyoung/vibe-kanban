@@ -214,14 +214,19 @@ partial total.
 
 This is opt-in per host. Set `executorPolicyHost` in the private config for
 `scripts/ap-system-one.py` to the installed `ap` selector's name for this host.
-Run the scheduled `gate` with that entrypoint as above; its normal due-work,
-resource, cancellation, and deduplication checks still decide whether to send.
-The adapter also covers `sample` when run through the entrypoint.
+Use the adapter as the entrypoint for `ap` commands on that host, including the
+scheduled `gate` and operator/agent invocations. Keep the original `ap` script
+under a different name in the same directory if installing a launcher at its
+old path. The adapter carries its config through the spawned `sample` and
+`watch-send` children. The existing due-work, resource, and duplicate checks
+still decide whether to send. Use a `vk` build that supports
+`vk session send --queue --autopilot-policy`.
 
-For queued `send_prompt` routines with `target: "autopilot"`, set
+Set
 `VIBE_AUTOPILOT_EXECUTOR_POLICY` in the **Vibe host server's** environment to the
 absolute path to a trusted executable outside the Autopilot workspace. For an
-installed `ap`, the executable can be a launcher:
+installed `ap`, the executable can be a launcher (ensure its PATH includes the
+host's `vk`):
 
 ```sh
 #!/bin/sh
@@ -232,13 +237,21 @@ exec /path/to/python3 /path/to/ap-system-one.py \
 The host passes the active session ID and its current executor config as two
 arguments. The launcher is read-only: it prints `null` to keep the current config
 or `{ "executor": "...", "model_id": "...", "reasoning_id": "..." }` to select a
-model. An error holds the routine delivery rather than sending with a stale
-choice. The host keeps the session's permission settings and the worker uses
-the normal queue handoff, including for claimed notifications. No usage check
-alone can wake a session; a turn already running is not interrupted, and a
-message already queued is not replaced. Explicit routine `executor_config`
-values remain pinned. Remove `executorPolicyHost` and unset the server variable
-to keep the Autopilot on its current executor.
+model. Routines targeting `"autopilot"` without an explicit executor use the
+normal queue, including for claimed notifications. A message carries the
+policy intent, not a reserved executor: the host resolves it using the live
+session configuration when the message reaches the front. An error holds the
+queued message rather than starting it with a stale choice. Already-due
+scheduled or usage-limit resumes use the same selection and respect their
+existing cancellation controls. No usage check by itself can wake a session
+or interrupt a running turn.
+
+Explicit routine `executor_config` values remain pinned. To pin the active
+Autopilot session's chosen model even when it is a policy model, set
+`executorPolicyPinned: true` in the same private config. A model outside the
+policy and custom permission/agent presets are also kept. Deploy the host,
+worker and CLI before activating the policy; removing the setting and
+unsetting the server variable reverts to the existing fixed behavior.
 
 ## Retry Queue
 

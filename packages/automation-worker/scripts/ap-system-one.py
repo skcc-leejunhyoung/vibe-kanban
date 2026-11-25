@@ -12,6 +12,7 @@ import runpy
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 PR_URL = re.compile(r'https://github\.com/([^/]+/[^/]+)/pull/(\d+)')
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', re.I)
@@ -366,12 +367,12 @@ def automatic_selection(ap, select, host, usage, profiles, current, **kwargs):
     return {**plan, 'reasoning_id': reasoning}
 
 
-def install_automatic_routing(ap):
+def install_automatic_routing(ap, pinned=False):
     original = ap['select_for']
 
     def select(host, usage, profiles, *, requested=None, source=None, latest=None, own=False, **kwargs):
         if own and not requested and source and latest and latest.get('executor') == source:
-            if managed_autopilot_config(ap, latest):
+            if not pinned and managed_autopilot_config(ap, latest):
                 return automatic_selection(ap, original, host, usage, profiles, latest, **kwargs)
             if custom_preset(latest):
                 # The legacy ap sender doesn't forward these overrides.
@@ -380,6 +381,45 @@ def install_automatic_routing(ap):
         return original(host, usage, profiles, requested=requested, source=source, latest=latest, own=own, **kwargs)
 
     ap['select_for'] = select
+
+
+def wire_automatic_sends(ap, adapter_args):
+    original_send = ap['guarded_send']
+    original_vk = ap['vk']
+    original_note = ap['handoff_note']
+    child = ap['subprocess']
+
+    def popen(args, *rest, **kwargs):
+        # The installed script starts these children by its own filename.
+        # Carry the adapter through the real observation/watch launch, too.
+        if (isinstance(args, list) and args[:3] == [sys.executable, '-I', os.path.abspath(ap['__file__'])]
+                and len(args) > 3 and args[3] in ('sample', 'watch-send')):
+            args = [sys.executable, '-I', *adapter_args, *args[3:]]
+        return child.Popen(args, *rest, **kwargs)
+
+    def send(session, message, host, **kwargs):
+        key = kwargs.get('key') or ''
+        if not (kwargs.get('queue') and not kwargs.get('requested')
+                and key.startswith(('gate:', 'observation:'))):
+            return original_send(session, message, host, **kwargs)
+
+        def managed_vk(*args, **options):
+            if args[:3] == ('session', 'send', session):
+                # The host re-evaluates against the live config at start. Do
+                # not send legacy profile overrides as if they were user pins.
+                args = (*args[:5], '--queue', '--autopilot-policy', *ap['HOSTS'][host])
+            return original_vk(*args, **options)
+
+        ap['vk'] = managed_vk
+        ap['handoff_note'] = lambda *args: 'If the executor changes, continue in this session using the existing work and conversation history.'
+        try:
+            return original_send(session, message, host, **kwargs)
+        finally:
+            ap['vk'] = original_vk
+            ap['handoff_note'] = original_note
+
+    ap['subprocess'] = SimpleNamespace(**{**vars(child), 'Popen': popen})
+    ap['guarded_send'] = send
 
 
 def probe_executor(ap, host, current):
@@ -410,10 +450,16 @@ def main():
         if not host or len(args.arguments) != 3:
             parser.error('executor-policy needs a configured host, session ID and current executor config')
         # The host API already verified the active session and supplied its config.
-        print(json.dumps(probe_executor(ap, host, json.loads(args.arguments[2]))))
+        print(json.dumps(None if config.get('executorPolicyPinned') is True
+                         else probe_executor(ap, host, json.loads(args.arguments[2]))))
         return 0
-    if host and command in ('gate', 'sample'):
-        install_automatic_routing(ap)
+    if host:
+        # All background children must carry the adapter when the host opts in.
+        install_automatic_routing(ap, pinned=config.get('executorPolicyPinned') is True)
+        wire_automatic_sends(ap, [
+            os.path.abspath(__file__), '--ap', os.path.abspath(args.ap),
+            '--config', os.path.abspath(args.config),
+        ])
     if config.get('enabled') is True:
         install(ap, config)
     sys.argv = [args.ap, *args.arguments]

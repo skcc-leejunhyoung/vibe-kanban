@@ -820,6 +820,12 @@ const COMMANDS: &[Cmd] = &[
                 Kind::Flag,
             ),
             opt(
+                "autopilot-policy",
+                "Use the host's Autopilot executor policy when this queued message starts",
+                Where::Local,
+                Kind::Flag,
+            ),
+            opt(
                 "steer",
                 "Interrupt the running turn and run this next",
                 Where::Local,
@@ -4271,6 +4277,7 @@ impl Ctx {
     fn send_options(m: &ArgMatches) -> SendPromptOptions {
         SendPromptOptions {
             queue: arg_flag(m, "queue"),
+            autopilot_policy: arg_flag(m, "autopilot-policy"),
             steer: arg_flag(m, "steer"),
             executor: arg_str(m, "executor"),
             variant: arg_str(m, "variant"),

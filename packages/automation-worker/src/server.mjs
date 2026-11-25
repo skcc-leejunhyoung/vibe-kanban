@@ -376,7 +376,7 @@ const routineHostInFlight = new Set();
 // flush (see flushCoalescedRoutine). Declared before bootstrap like the caches.
 const notificationRouting = createNotificationRouting({
   instanceId: randomUUID(),
-  api(routine, method, path, input, onHost, meta) {
+  api(routine, method, path, input, onHost, meta, canSend) {
     const { connector, bridge } = autopilotTarget(routine);
     return vibeApi(
       connector,
@@ -385,6 +385,8 @@ const notificationRouting = createNotificationRouting({
       input,
       onHost ? bridge.baseUrl : undefined,
       meta,
+      undefined,
+      canSend,
     );
   },
 });
@@ -2112,7 +2114,7 @@ async function executeRoutineAction(routine, event) {
       sessionId: explicitSessionId,
       target,
       scope: _scope,
-      queue,
+      queue: queueRequested,
       prompt,
       ...payload
     } = input;
@@ -2153,11 +2155,18 @@ async function executeRoutineAction(routine, event) {
       }
       sessionId = autopilot.data.session.id;
       executorConfig ||= autopilot.data.executor_config;
-      if (!executorConfig?.executor)
-        throw new Error(
-          'autopilot executor config is unavailable; set input.executor_config'
-        );
     }
+    const autopilotPolicy = Boolean(
+      !explicitSessionId && !payload.executor_config && host?.autopilotQueuedPolicy
+    );
+    if (!executorConfig?.executor && !autopilotPolicy)
+      throw new Error('autopilot executor config is unavailable; set input.executor_config');
+    // A managed automatic send never steals the current turn, even for a
+    // routine which previously used a direct follow-up when idle.
+    const queue = queueRequested || autopilotPolicy;
+    const canSend = () =>
+      state.routines.includes(routine) &&
+      ((state.enabled !== false && routine.enabled) || event.source === 'manual');
     const queued = state.routineQueuedPrompts[routine.id];
     if (
       queue &&
@@ -2234,41 +2243,6 @@ async function executeRoutineAction(routine, event) {
         return { skipped: 'previous routine prompt is still queued' };
       }
     }
-    let handoff = false;
-    // Never reinterpret an explicitly pinned routine, and use the queue's
-    // official handoff rather than steering a busy session. Resolve after the
-    // receipt/duplicate checks but before freezing a notification delivery.
-    if (
-      !explicitSessionId &&
-      queue &&
-      !payload.executor_config &&
-      host?.autopilotExecutorPolicy
-    ) {
-      const decision = await vibeApi(
-        connector,
-        'GET',
-        `/api/automation-actions/autopilot-executor/${encodeURIComponent(sessionId)}`,
-        undefined,
-        bridge.baseUrl,
-        undefined,
-        AbortSignal.timeout(50000)
-      );
-      if (
-        decision === null ||
-        !state.routines.includes(routine) ||
-        (!routine.enabled && event.source !== 'manual')
-      ) {
-        await releaseClaimedNotifications(routine, event);
-        return { skipped: 'autopilot dispatch cancelled' };
-      }
-      if (
-        !decision?.executor_config?.executor ||
-        typeof decision.handoff !== 'boolean'
-      )
-        throw new Error('autopilot executor policy decision is unavailable');
-      executorConfig = decision.executor_config;
-      handoff = decision.handoff;
-    }
     let queuedPrompt;
     const build = async (event) => {
       const message = renderPromptTemplate(prompt, event);
@@ -2292,8 +2266,9 @@ async function executeRoutineAction(routine, event) {
         payload: queue
           ? {
               message,
-              executor_config: executorConfig,
-              ...(handoff && { handoff }),
+              ...(autopilotPolicy
+                ? { autopilot_policy: true }
+                : { executor_config: executorConfig }),
             }
           : { ...payload, prompt: message, executor_config: executorConfig },
         meta,
@@ -2301,7 +2276,7 @@ async function executeRoutineAction(routine, event) {
     };
     const delivery = explicitSessionId && (await build(event));
     const result = !explicitSessionId
-      ? await notificationRouting.deliver(routine, event, build)
+      ? await notificationRouting.deliver(routine, event, build, canSend)
       : await vibeApi(
           connector,
           'POST',
@@ -2310,10 +2285,14 @@ async function executeRoutineAction(routine, event) {
           bridge.baseUrl,
           meta
         );
-    if (result?.skipped)
+    if (result?.skipped) {
+      if (result.skipped === 'dispatch cancelled' &&
+          state.routineQueuedPrompts[routine.id]?.idempotencyKey === meta.idempotencyKey)
+        delete state.routineQueuedPrompts[routine.id];
       await log('info', `send_prompt skipped: ${result.skipped}`, {
         routineId: routine.id,
       });
+    }
     if (queue && !result?.skipped) {
       const receipt =
         !result?.data &&
@@ -6617,7 +6596,8 @@ async function vibeApi(
   payload,
   baseUrlOverride,
   routineMeta,
-  signal
+  signal,
+  canSend
 ) {
   const config = connector.config || {};
   const baseUrl = String(baseUrlOverride || config.baseUrl || '').replace(/\/+$/, '');
@@ -6625,6 +6605,7 @@ async function vibeApi(
     signal?.throwIfAborted();
     const accessToken = await getVibeAccessToken(connector, attempt > 0, signal);
     signal?.throwIfAborted();
+    if (canSend && !canSend()) return { skipped: 'dispatch cancelled' };
     const headers = { 'content-type': 'application/json' };
     if (accessToken) headers.authorization = `Bearer ${accessToken}`;
     if (config.authHeaderName && config.authHeaderValue) {

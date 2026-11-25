@@ -1,4 +1,5 @@
 //! Read-only Autopilot facts. This never changes a task, review, or workspace status.
+use executors::{executors::BaseCodingAgent, profile::ExecutorConfig};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
@@ -307,4 +308,84 @@ mod tests {
             .unwrap();
         assert_eq!(previous, reconciliation_snapshot(&pool).await.unwrap());
     }
+}
+pub fn executor_policy_command() -> Option<std::path::PathBuf> {
+    std::env::var_os("VIBE_AUTOPILOT_EXECUTOR_POLICY")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutorSelection {
+    executor: BaseCodingAgent,
+    model_id: String,
+    reasoning_id: Option<String>,
+}
+
+impl ExecutorSelection {
+    fn apply(self, mut current: ExecutorConfig) -> ExecutorConfig {
+        // Never translate implicit permissions or executor-specific overrides.
+        if current.permission_policy.is_none()
+            || current.sandbox_policy.is_some()
+            || current.agent_id.is_some()
+            || !matches!(current.variant.as_deref(), None | Some("DEFAULT"))
+        {
+            return current;
+        }
+        if self.executor != current.executor {
+            current.variant = None;
+        }
+        current.executor = self.executor;
+        current.model_id = Some(self.model_id);
+        current.reasoning_id = self.reasoning_id.or(current.reasoning_id);
+        current
+    }
+}
+
+pub async fn resolve_executor(
+    session_id: Uuid,
+    current: ExecutorConfig,
+) -> anyhow::Result<ExecutorConfig> {
+    let Some(command) = executor_policy_command() else {
+        return Ok(current);
+    };
+    // Only a host-configured executable, with no caller-supplied prompt or command.
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(45),
+        tokio::process::Command::new(command)
+            .arg(session_id.to_string())
+            .arg(serde_json::to_string(&current)?)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await??;
+    anyhow::ensure!(
+        output.status.success() && output.stdout.len() <= 4096,
+        "Autopilot executor policy unavailable"
+    );
+    match serde_json::from_slice::<Option<ExecutorSelection>>(&output.stdout)? {
+        Some(selection) if !selection.model_id.trim().is_empty() => Ok(selection.apply(current)),
+        Some(_) => anyhow::bail!("Autopilot executor policy did not select a model"),
+        None => Ok(current),
+    }
+}
+#[test]
+fn automatic_selection_preserves_permission_and_honors_a_session_preset() {
+    use executors::model_selector::PermissionPolicy;
+
+    let mut current = ExecutorConfig::new(BaseCodingAgent::OpencodeV2);
+    current.permission_policy = Some(PermissionPolicy::Supervised);
+    current.reasoning_id = Some("low".into());
+    let selection = || ExecutorSelection {
+        executor: BaseCodingAgent::Codex,
+        model_id: "gpt-5.6-sol-fast".into(),
+        reasoning_id: None,
+    };
+    let next = selection().apply(current.clone());
+    assert_eq!(next.executor, BaseCodingAgent::Codex);
+    assert_eq!(next.permission_policy, current.permission_policy);
+    assert_eq!(next.reasoning_id, current.reasoning_id);
+    current.variant = Some("SYNTHETIC_PIN".into());
+    assert_eq!(selection().apply(current.clone()), current);
 }

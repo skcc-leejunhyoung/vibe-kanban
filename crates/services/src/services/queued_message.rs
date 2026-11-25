@@ -453,10 +453,31 @@ impl QueuedMessageService {
     /// Remove and return the front (oldest) message for a session, if any.
     /// Used by the finalization flow to consume the next queued message.
     pub fn take_next(&self, session_id: Uuid) -> Option<QueuedMessage> {
-        let msg = self
-            .queue
-            .get_mut(&session_id)
-            .and_then(|mut q| self.pop_ready(&mut q));
+        self.take_next_if(session_id, |_| true)
+    }
+
+    pub fn ready_front(&self, session_id: Uuid) -> Option<QueuedMessage> {
+        let queue = self.queue.get(&session_id)?;
+        let front = queue.front()?;
+        (!self.is_shutting_down()
+            && front.start_error.is_none()
+            && !self.pending_persistence.contains_key(&front.id))
+        .then(|| front.clone())
+    }
+
+    /// Do not take a different, edited, or cancelled message after preparing an automatic start.
+    pub fn take_next_if(
+        &self,
+        session_id: Uuid,
+        matches: impl FnOnce(&QueuedMessage) -> bool,
+    ) -> Option<QueuedMessage> {
+        let msg = self.queue.get_mut(&session_id).and_then(|mut q| {
+            if matches(q.front()?) {
+                self.pop_ready(&mut q)
+            } else {
+                None
+            }
+        });
         self.queue.remove_if(&session_id, |_, q| q.is_empty());
         if msg.is_some() {
             self.changed(session_id);
@@ -818,6 +839,7 @@ mod tests {
             message: message.to_string(),
             executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
             handoff: false,
+            autopilot_policy: false,
         }
     }
 

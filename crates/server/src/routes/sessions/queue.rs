@@ -31,11 +31,14 @@ use crate::{
 #[derive(Debug, Deserialize, TS)]
 struct QueueMessageRequest {
     pub message: String,
-    pub executor_config: ExecutorConfig,
+    pub executor_config: Option<ExecutorConfig>,
     /// The sender picked `executor_config`'s agent: if another one holds the
     /// session when the message runs, it is that agent's official handoff.
     #[serde(default)]
     pub handoff: bool,
+    #[serde(default)]
+    #[ts(skip)]
+    pub autopilot_policy: bool,
 }
 
 /// Optional `?message_id=` for `DELETE`: present cancels a single queued message,
@@ -112,17 +115,75 @@ async fn queue_message_inner(
     payload: QueueMessageRequest,
     agent_session: Option<Uuid>,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
+    if payload.autopilot_policy && (payload.executor_config.is_some() || payload.handoff) {
+        return Err(ApiError::BadRequest(
+            "Automatic policy and an explicit executor are mutually exclusive".into(),
+        ));
+    }
+    let queue = deployment.queued_message_service();
+    let stops = payload
+        .autopilot_policy
+        .then(|| deployment.container().watch_session_stops(session.id));
+    let start = if stops.is_some() {
+        Some(deployment.container().lock_session_start(session.id).await)
+    } else {
+        None
+    };
+    if payload.autopilot_policy
+        && !Workspace::find_active_autopilot(&deployment.db().pool)
+            .await?
+            .is_some_and(|workspace| workspace.id == session.workspace_id)
+    {
+        return Err(ApiError::Conflict(
+            "Autopilot session is no longer active".into(),
+        ));
+    }
+    let executor_config = if payload.autopilot_policy {
+        // Display-only until the live policy is evaluated at queue drain.
+        ExecutionProcess::latest_executor_config_for_session(&deployment.db().pool, session.id)
+            .await?
+            .ok_or_else(|| ApiError::Conflict("Autopilot has no current executor".into()))?
+    } else {
+        inherit_executor_config(
+            &deployment,
+            &session,
+            payload
+                .executor_config
+                .ok_or_else(|| ApiError::BadRequest("Executor config is required".into()))?,
+        )
+        .await?
+    };
     let data = DraftFollowUpData {
         message: payload.message,
-        executor_config: inherit_executor_config(&deployment, &session, payload.executor_config)
-            .await?,
+        executor_config,
         handoff: payload.handoff,
+        autopilot_policy: payload.autopilot_policy,
     };
+    if stops
+        .as_ref()
+        .is_some_and(|stops| stops.has_changed().unwrap_or(false))
+    {
+        return Ok(ResponseJson(ApiResponse::success(
+            queue.get_status(session.id),
+        )));
+    }
 
-    deployment
-        .queued_message_service()
+    let queued = queue
         .enqueue_durable_from(session.id, data, agent_session)
         .await?;
+    if stops
+        .as_ref()
+        .is_some_and(|stops| stops.has_changed().unwrap_or(false))
+    {
+        queue
+            .cancel_message(session.id, queued.id)
+            .await
+            .map_err(|error| ApiError::Io(std::io::Error::other(error)))?;
+        return Ok(ResponseJson(ApiResponse::success(
+            queue.get_status(session.id),
+        )));
+    }
+    drop(start);
 
     if let Err(e) = drain_idle_queue(&deployment, &session).await {
         // The message stays queued; the next turn's finish or "send now" runs it.
@@ -251,14 +312,26 @@ async fn steer_message(
     headers: HeaderMap,
     Json(payload): Json<QueueMessageRequest>,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
+    if payload.autopilot_policy {
+        return Err(ApiError::BadRequest(
+            "Automatic policy cannot interrupt a turn".into(),
+        ));
+    }
     let pool = &deployment.db().pool;
     let agent_session = crate::routes::automation::agent_session(&headers);
     let queue = deployment.queued_message_service();
     let data = DraftFollowUpData {
         message: payload.message,
-        executor_config: inherit_executor_config(&deployment, &session, payload.executor_config)
-            .await?,
+        executor_config: inherit_executor_config(
+            &deployment,
+            &session,
+            payload
+                .executor_config
+                .ok_or_else(|| ApiError::BadRequest("Executor config is required".into()))?,
+        )
+        .await?,
         handoff: payload.handoff,
+        autopilot_policy: false,
     };
 
     let workspace = Workspace::find_by_id(pool, session.workspace_id)
@@ -350,6 +423,7 @@ impl UpdateQueuedRequest {
             message: self.message,
             executor_config,
             handoff: self.handoff.unwrap_or(previous.handoff),
+            autopilot_policy: false,
         }
     }
 }
@@ -566,6 +640,7 @@ mod tests {
                 ..config.clone()
             },
             handoff: true,
+            autopilot_policy: false,
         };
         let edited = UpdateQueuedRequest {
             message_id: Uuid::new_v4(),

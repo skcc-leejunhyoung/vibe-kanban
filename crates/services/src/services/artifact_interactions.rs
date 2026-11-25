@@ -1511,6 +1511,7 @@ mod tests {
             message: "response".into(),
             executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
             handoff: false,
+            autopilot_policy: false,
         };
         let guard = LOCK.lock().await;
         save(&receipt).await.unwrap();

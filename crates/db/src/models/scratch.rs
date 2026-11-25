@@ -20,7 +20,7 @@ pub enum ScratchError {
 }
 
 /// Data for a draft follow-up scratch
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct DraftFollowUpData {
     pub message: String,
     #[serde(alias = "executor_profile_id", alias = "config")]
@@ -32,6 +32,10 @@ pub struct DraftFollowUpData {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     pub handoff: bool,
+    /// Resolve the host policy from the session's live config at queue drain.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(skip)]
+    pub autopilot_policy: bool,
 }
 
 /// Saved shortcut for the preview browser.

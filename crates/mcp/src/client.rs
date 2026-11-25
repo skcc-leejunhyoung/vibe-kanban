@@ -2019,6 +2019,8 @@ impl VkClient {
 pub struct SendPromptOptions {
     /// Append behind the running turn instead of failing when busy.
     pub queue: bool,
+    /// Resolve the active Autopilot's executor when the queued prompt starts.
+    pub autopilot_policy: bool,
     /// Interrupt the running turn and run this prompt next.
     pub steer: bool,
     pub executor: Option<String>,
@@ -2130,8 +2132,22 @@ impl VkClient {
         if prompt.is_empty() {
             return Err(VkError::message("prompt must not be empty"));
         }
+        if options.autopilot_policy
+            && (!options.queue
+                || options.steer
+                || options.executor.is_some()
+                || options.has_overrides())
+        {
+            return Err(VkError::message(
+                "--autopilot-policy requires --queue without --steer or executor overrides",
+            ));
+        }
         let session = self.session(session_id).await?;
-        let executor_config = self.executor_config_json(&session, options).await?;
+        let executor_config = if options.autopilot_policy {
+            Value::Null
+        } else {
+            self.executor_config_json(&session, options).await?
+        };
         // An executor named by the caller is a pick: when another agent holds
         // the session as the message runs, it is that agent's handoff. A bare
         // message keeps waiting on a mismatch instead.
@@ -2139,6 +2155,7 @@ impl VkClient {
             "message": prompt,
             "executor_config": executor_config,
             "handoff": options.executor.as_deref().is_some_and(|e| !e.trim().is_empty()),
+            "autopilot_policy": options.autopilot_policy,
         });
         if options.steer {
             let queue: Value = self
