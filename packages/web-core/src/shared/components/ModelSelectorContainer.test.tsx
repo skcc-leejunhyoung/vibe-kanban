@@ -9,6 +9,7 @@ import {
   type ModelSelectorConfig,
 } from 'shared/types';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
+import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import {
   applyModelConfigToProfile,
   profileToExecutorConfig,
@@ -92,9 +93,6 @@ vi.mock('@/shared/hooks/useTheme', () => ({
   useTheme: () => ({ theme: 'light' }),
   getResolvedTheme: () => 'light',
 }));
-vi.mock('@/shared/stores/useUiPreferencesStore', () => ({
-  useHiddenModels: () => ({ hiddenKeys: new Set(), isHidden: () => false }),
-}));
 const updateRecentModels = vi.hoisted(() =>
   vi.fn(async () => ({ content: '', path: '', revision: 'saved' }))
 );
@@ -108,6 +106,8 @@ type PopoverProps = {
   error?: string | null;
   selectedModelId: string | null;
   selectedReasoningId: string | null;
+  groupByProvider: boolean;
+  onGroupByProviderChange: (checked: boolean) => void;
   onModelSelect: (id: string, providerId?: string) => void;
   onReasoningSelect: (id: string | null) => void;
   onOpenChange: (open: boolean) => void;
@@ -138,6 +138,7 @@ vi.mock('@vibe/ui/components/Dropdown', () => ({
   DropdownMenuLabel: () => null,
   DropdownMenuSeparator: () => null,
   DropdownMenuTriggerButton: () => null,
+  DropdownTriggerButton: () => null,
 }));
 
 const profiles = {
@@ -162,6 +163,7 @@ beforeEach(() => {
     ownerDocument: document,
   });
   root = createRoot(container as unknown as HTMLElement);
+  useUiPreferencesStore.setState({ expanded: {} });
   menuItems.clear();
   discovery.error = null;
   discovery.config = null;
@@ -354,6 +356,18 @@ describe('ModelSelectorContainer with session overrides', () => {
       model_id: 'gpt-5.5-fast',
       reasoning_id: 'high',
     });
+  });
+
+  it('remembers the model grouping preference across selector mounts', async () => {
+    await act(() => root.render(<Chat lastUsed={lastUsed} />));
+    expect(popover.groupByProvider).toBe(true);
+
+    await act(() => popover.onGroupByProviderChange(false));
+    await act(() => root.render(null));
+    await act(() => root.render(<Chat lastUsed={lastUsed} />));
+
+    expect(popover.groupByProvider).toBe(false);
+    expect(current).toEqual(lastUsed);
   });
 });
 

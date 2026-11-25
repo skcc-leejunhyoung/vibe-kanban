@@ -745,6 +745,8 @@
     "agent": "Agent",
     "default": "Default",
     "model": "Model",
+    "groupByProvider": "Group by provider",
+    "filterModels": "Filter by name or ID…",
     "fast": "Fast",
     "fastOn": "Fast on",
     "fastOff": "Fast off"

@@ -1,4 +1,3 @@
-import type { KeyboardEvent, Ref } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BrainIcon, CaretDownIcon, CheckIcon } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
@@ -116,36 +115,67 @@ function ReasoningDropdown({
 
 export interface ModelListProps {
   models: ModelListModel[];
-  selectedModelId: string | null;
+  selectedModel: ModelListModel | null;
+  providerNames?: ReadonlyMap<string, string>;
   searchQuery: string;
   onSelect: (id: string, providerId?: string) => void;
-  reasoningOptions: ModelReasoningOption[];
   selectedReasoningId: string | null;
   onReasoningSelect: (reasoningId: string | null) => void;
   justifyEnd?: boolean;
   className?: string;
   showDefaultOption?: boolean;
+  isDefaultSelected?: boolean;
   onSelectDefault?: () => void;
-  scrollRef?: Ref<HTMLDivElement>;
   onSelectionComplete?: () => void;
+}
+
+export function ModelDefaultOption({
+  selected,
+  onSelect,
+  onSelectionComplete,
+}: {
+  selected: boolean;
+  onSelect?: () => void;
+  onSelectionComplete?: () => void;
+}) {
+  const { t } = useTranslation('common');
+  return (
+    <button
+      type="button"
+      data-model-selector-option
+      data-selected={selected || undefined}
+      onClick={(event) => {
+        onSelect?.();
+        if (event.detail === 0) onSelectionComplete?.();
+      }}
+      className={cn(
+        'mx-half rounded-sm py-half px-base text-left text-sm truncate',
+        'transition-colors duration-100 focus:bg-secondary',
+        selected
+          ? 'bg-secondary text-high font-semibold'
+          : 'text-normal hover:bg-secondary/60'
+      )}
+    >
+      {t('modelSelector.default')}
+    </button>
+  );
 }
 
 export function ModelList({
   models,
-  selectedModelId,
+  selectedModel,
+  providerNames,
   searchQuery,
   onSelect,
-  reasoningOptions,
   selectedReasoningId,
   onReasoningSelect,
   justifyEnd = false,
   className,
   showDefaultOption = false,
+  isDefaultSelected = false,
   onSelectDefault,
-  scrollRef,
   onSelectionComplete,
 }: ModelListProps) {
-  const { t } = useTranslation('common');
   const normalizedSearch = searchQuery.trim().toLowerCase();
 
   const filteredModels = normalizedSearch
@@ -155,75 +185,9 @@ export function ModelList({
     : models;
 
   const showEmptyState = filteredModels.length === 0 && !showDefaultOption;
-  const isDefaultSelected = selectedModelId === null;
-  const normalizedSelectedId = selectedModelId?.toLowerCase() ?? null;
-
-  const focusAdjacentModel = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-
-    const popover = event.currentTarget.closest(
-      '[data-model-selector-popover]'
-    );
-    if (!popover) return;
-    const options = Array.from(
-      popover.querySelectorAll<HTMLButtonElement>(
-        '[data-model-selector-option]:not([disabled])'
-      )
-    );
-    const currentIndex = options.indexOf(event.currentTarget);
-    if (currentIndex === -1 || options.length === 0) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    const offset = event.key === 'ArrowDown' ? 1 : -1;
-    options[(currentIndex + offset + options.length) % options.length]?.focus();
-  };
-
-  const defaultRow = showDefaultOption ? (
-    <div
-      key="__default__"
-      className={cn(
-        'group flex items-center rounded-sm mx-half',
-        'transition-colors duration-100',
-        'focus-within:bg-secondary',
-        isDefaultSelected
-          ? 'bg-secondary text-high'
-          : cn('text-normal', 'hover:bg-secondary/60')
-      )}
-    >
-      <button
-        type="button"
-        data-model-selector-option
-        data-selected={isDefaultSelected || undefined}
-        onClick={() => onSelectDefault?.()}
-        onKeyDown={(event) => {
-          focusAdjacentModel(event);
-          if (event.key !== 'Enter') return;
-          event.preventDefault();
-          event.stopPropagation();
-          onSelectDefault?.();
-          onSelectionComplete?.();
-        }}
-        className={cn(
-          'flex-1 min-w-0 py-half pl-base pr-half text-left',
-          'focus:outline-none focus-visible:ring-1 focus-visible:ring-brand'
-        )}
-      >
-        <span
-          className={cn(
-            'block text-sm truncate',
-            isDefaultSelected && 'font-semibold'
-          )}
-        >
-          {t('modelSelector.default')}
-        </span>
-      </button>
-    </div>
-  ) : null;
 
   return (
     <div
-      ref={scrollRef}
       className={cn(
         'flex-1 min-h-0 overflow-y-auto overflow-x-hidden',
         className
@@ -242,14 +206,13 @@ export function ModelList({
         >
           {filteredModels.map((model) => {
             const modelKey = getModelKey(model);
-            const isSelected =
-              Boolean(normalizedSelectedId) &&
-              model.id.toLowerCase() === normalizedSelectedId;
+            const isSelected = model === selectedModel;
             const isReasoningConfigurable = model.reasoning_options.length > 0;
-            const showReasoningSelector =
-              isSelected &&
-              isReasoningConfigurable &&
-              reasoningOptions.length > 0;
+            const showReasoningSelector = isSelected && isReasoningConfigurable;
+            const providerName = model.provider_id
+              ? (providerNames?.get(model.provider_id) ??
+                (providerNames ? model.provider_id : undefined))
+              : undefined;
 
             return (
               <div
@@ -274,8 +237,12 @@ export function ModelList({
                     onSelect(model.id, model.provider_id ?? undefined)
                   }
                   onKeyDown={(event) => {
-                    focusAdjacentModel(event);
-                    if (event.key !== 'Enter') return;
+                    if (
+                      event.key !== 'Enter' ||
+                      event.nativeEvent.isComposing
+                    ) {
+                      return;
+                    }
 
                     event.preventDefault();
                     event.stopPropagation();
@@ -304,10 +271,7 @@ export function ModelList({
                     };
                     requestAnimationFrame(() => focusReasoningTrigger());
                   }}
-                  className={cn(
-                    'flex-1 min-w-0 py-half pl-base pr-half text-left',
-                    'focus:outline-none focus-visible:ring-1 focus-visible:ring-brand'
-                  )}
+                  className="flex-1 min-w-0 rounded-sm py-half pl-base pr-half text-left scroll-mt-8"
                 >
                   <span
                     className={cn(
@@ -318,11 +282,16 @@ export function ModelList({
                   >
                     {model.name}
                   </span>
+                  {providerName && (
+                    <span className="block truncate text-xs text-low">
+                      {providerName}
+                    </span>
+                  )}
                 </button>
                 <div className="flex items-center justify-end gap-half pr-base">
                   {showReasoningSelector && (
                     <ReasoningDropdown
-                      options={reasoningOptions}
+                      options={model.reasoning_options}
                       selectedId={selectedReasoningId}
                       onSelect={onReasoningSelect}
                       onSelectionComplete={onSelectionComplete}
@@ -344,7 +313,13 @@ export function ModelList({
               </div>
             );
           })}
-          {defaultRow}
+          {showDefaultOption && (
+            <ModelDefaultOption
+              selected={isDefaultSelected}
+              onSelect={onSelectDefault}
+              onSelectionComplete={onSelectionComplete}
+            />
+          )}
         </div>
       )}
     </div>

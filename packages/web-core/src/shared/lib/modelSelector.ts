@@ -42,13 +42,6 @@ export function getReasoningLabel(
   );
 }
 
-export function escapeAttributeValue(value: string): string {
-  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
-    return CSS.escape(value);
-  }
-  return value.replace(/["\\]/g, '\\$&');
-}
-
 export function parseModelId(
   value?: string | null,
   hasProviders?: boolean

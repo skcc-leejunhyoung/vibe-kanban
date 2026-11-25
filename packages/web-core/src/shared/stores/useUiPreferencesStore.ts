@@ -430,6 +430,7 @@ export const PERSIST_KEYS = {
   notesSection: 'notes-section',
   // GitHub comments toggle
   showGitHubComments: 'show-github-comments',
+  modelSelectorGroupByProvider: 'model-selector-group-by-provider',
   // Panel sizes
   rightMainPanel: 'right-main-panel',
   kanbanLeftPanel: 'kanban-left-panel',
@@ -461,6 +462,7 @@ export type PersistKey =
   | typeof PERSIST_KEYS.terminalSection
   | typeof PERSIST_KEYS.notesSection
   | typeof PERSIST_KEYS.showGitHubComments
+  | typeof PERSIST_KEYS.modelSelectorGroupByProvider
   | typeof PERSIST_KEYS.rightMainPanel
   | typeof PERSIST_KEYS.rightPanelprocesses
   | typeof PERSIST_KEYS.rightPanelPreview

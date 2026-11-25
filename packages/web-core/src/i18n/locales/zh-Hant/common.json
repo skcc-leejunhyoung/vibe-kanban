@@ -559,7 +559,9 @@
     "permissionPlan": "計畫",
     "agent": "代理",
     "default": "預設",
-    "model": "模型"
+    "model": "模型",
+    "groupByProvider": "依供應商分組",
+    "filterModels": "依名稱或 ID 篩選…"
   },
   "crashScreen": {
     "title": "發生了錯誤",

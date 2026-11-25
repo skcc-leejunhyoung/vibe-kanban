@@ -28,9 +28,8 @@ const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
 // Direct passthrough - inherits asChild support from Radix automatically
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 
-// Styled trigger button with icon/label/caret - use for default styled triggers
-interface DropdownMenuTriggerButtonProps
-  extends React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Trigger> {
+interface DropdownTriggerButtonProps
+  extends React.ComponentPropsWithoutRef<'button'> {
   icon?: Icon;
   label?: string;
   showCaret?: boolean;
@@ -55,9 +54,9 @@ const variantClasses = {
     'hover:bg-panel disabled:opacity-50 disabled:cursor-not-allowed',
 } as const;
 
-const DropdownMenuTriggerButton = React.forwardRef<
-  React.ElementRef<typeof DropdownMenuPrimitive.Trigger>,
-  DropdownMenuTriggerButtonProps
+const DropdownTriggerButton = React.forwardRef<
+  HTMLButtonElement,
+  DropdownTriggerButtonProps
 >(
   (
     {
@@ -72,7 +71,8 @@ const DropdownMenuTriggerButton = React.forwardRef<
     },
     ref
   ) => (
-    <DropdownMenuPrimitive.Trigger
+    <button
+      type="button"
       ref={ref}
       className={cn(variantClasses[variant], sizeClasses[size], className)}
       {...props}
@@ -97,9 +97,19 @@ const DropdownMenuTriggerButton = React.forwardRef<
           weight="bold"
         />
       )}
-    </DropdownMenuPrimitive.Trigger>
+    </button>
   )
 );
+DropdownTriggerButton.displayName = 'DropdownTriggerButton';
+
+const DropdownMenuTriggerButton = React.forwardRef<
+  HTMLButtonElement,
+  DropdownTriggerButtonProps
+>((props, ref) => (
+  <DropdownMenuTrigger asChild>
+    <DropdownTriggerButton ref={ref} {...props} />
+  </DropdownMenuTrigger>
+));
 DropdownMenuTriggerButton.displayName = 'DropdownMenuTriggerButton';
 
 const DropdownMenuSubTrigger = React.forwardRef<
@@ -380,6 +390,7 @@ export {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuTriggerButton,
+  DropdownTriggerButton,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuCheckboxItem,

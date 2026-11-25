@@ -559,7 +559,9 @@
     "permissionPlan": "計画",
     "agent": "エージェント",
     "default": "デフォルト",
-    "model": "モデル"
+    "model": "モデル",
+    "groupByProvider": "プロバイダー別にグループ化",
+    "filterModels": "名前または ID で絞り込み…"
   },
   "crashScreen": {
     "title": "問題が発生しました",

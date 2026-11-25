@@ -25,7 +25,6 @@ import {
 import {
   getReasoningLabel,
   getSelectedModel,
-  escapeAttributeValue,
   parseModelId,
   resolveDefaultModelId,
   isModelAvailable,
@@ -34,7 +33,11 @@ import {
   normalizeFastModelId,
   FAST_SUFFIX,
 } from '@/shared/lib/modelSelector';
-import { useHiddenModels } from '@/shared/stores/useUiPreferencesStore';
+import {
+  PERSIST_KEYS,
+  useHiddenModels,
+  usePersistedExpanded,
+} from '@/shared/stores/useUiPreferencesStore';
 import { isLegacyUnversionedRevision, profilesApi } from '@/shared/lib/api';
 import { useHostId } from '@/shared/providers/HostIdProvider';
 import { useHostUserSystem } from '@/shared/hooks/useHostUserSystem';
@@ -49,6 +52,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTriggerButton,
+  DropdownTriggerButton,
 } from '@vibe/ui/components/Dropdown';
 
 interface ModelSelectorContainerProps {
@@ -101,6 +105,9 @@ export function ModelSelectorContainer({
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedProviderId, setExpandedProviderId] = useState('');
+  const [groupByProvider, setGroupByProvider] = usePersistedExpanded(
+    PERSIST_KEYS.modelSelectorGroupByProvider
+  );
   const contextHostId = useHostId();
   const targetHostId = hostId === undefined ? contextHostId : hostId;
   // The recently-used list is read from, and saved back to, the profiles of
@@ -278,13 +285,11 @@ export function ModelSelectorContainer({
   // currently-selected model is always kept so the picker can show it.
   const displayConfig = useMemo(() => {
     if (!config || hiddenKeys.size === 0) return config;
-    const selLower = selectedModelId?.toLowerCase() ?? null;
-    const models = config.models.filter((model) => {
-      if (selLower && model.id.toLowerCase() === selLower) return true;
-      return !isHidden(getModelKey(model));
-    });
+    const models = config.models.filter(
+      (model) => model === selectedModel || !isHidden(getModelKey(model))
+    );
     return { ...config, models };
-  }, [config, hiddenKeys, isHidden, selectedModelId]);
+  }, [config, hiddenKeys, isHidden, selectedModel]);
 
   const recentReasoningByModel = getRecentReasoningByModel(profiles, agent);
 
@@ -528,41 +533,13 @@ export function ModelSelectorContainer({
     });
   };
 
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-
   useEffect(() => {
     setSearchQuery('');
   }, [selectedProviderId]);
 
   useEffect(() => {
-    if (!isOpen) {
-      setSearchQuery('');
-      return;
-    }
-    requestAnimationFrame(() => {
-      const node = scrollRef.current;
-      if (!node) return;
-      if (selectedModelId && config) {
-        const selected = getSelectedModel(
-          config.models,
-          selectedProviderId,
-          selectedModelId
-        );
-        if (selected) {
-          const key = getModelKey(selected);
-          const selector = `[data-model-key="${escapeAttributeValue(key)}"]`;
-          const target = node.querySelector(selector);
-          if (target instanceof HTMLElement) {
-            target.scrollIntoView({ block: 'nearest' });
-            return;
-          }
-        }
-      }
-      if (!selectedModelId) {
-        node.scrollTop = node.scrollHeight;
-      }
-    });
-  }, [config, isOpen, selectedModelId, selectedProviderId]);
+    if (!isOpen) setSearchQuery('');
+  }, [isOpen]);
 
   const handleOpenChange = (open: boolean) => {
     setIsOpen(open);
@@ -682,7 +659,7 @@ export function ModelSelectorContainer({
           isOpen={isOpen}
           onOpenChange={handleOpenChange}
           trigger={
-            <DropdownMenuTriggerButton
+            <DropdownTriggerButton
               variant={variant}
               size="sm"
               // The composer caps the name and the effort separately so one
@@ -710,7 +687,7 @@ export function ModelSelectorContainer({
                   )}
                 </>
               )}
-            </DropdownMenuTriggerButton>
+            </DropdownTriggerButton>
           }
           config={displayConfig ?? config}
           error={streamError}
@@ -722,9 +699,10 @@ export function ModelSelectorContainer({
           onModelSelect={handleModelSelect}
           onReasoningSelect={handleReasoningSelect}
           recentModelEntries={recentModelEntries}
+          groupByProvider={groupByProvider}
+          onGroupByProviderChange={setGroupByProvider}
           showDefaultOption={showDefaultOption}
           onSelectDefault={() => handleModelSelect(null)}
-          scrollRef={scrollRef}
           expandedProviderId={expandedProviderId}
           onExpandedProviderIdChange={setExpandedProviderId}
           resolvedTheme={resolvedTheme}

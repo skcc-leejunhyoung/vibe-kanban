@@ -559,7 +559,9 @@
     "permissionPlan": "Plan",
     "agent": "Agente",
     "default": "Predeterminado",
-    "model": "Modelo"
+    "model": "Modelo",
+    "groupByProvider": "Agrupar por proveedor",
+    "filterModels": "Filtrar por nombre o ID…"
   },
   "crashScreen": {
     "title": "Algo salió mal",

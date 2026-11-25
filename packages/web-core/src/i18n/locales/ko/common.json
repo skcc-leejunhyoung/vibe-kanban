@@ -731,6 +731,8 @@
     "agent": "에이전트",
     "default": "기본값",
     "model": "모델",
+    "groupByProvider": "공급자별 그룹화",
+    "filterModels": "이름 또는 ID로 필터링…",
     "fast": "Fast",
     "fastOn": "Fast 켜짐",
     "fastOff": "Fast 꺼짐"

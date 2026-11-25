@@ -559,7 +559,9 @@
     "permissionPlan": "Plan",
     "agent": "Agent",
     "default": "Par défaut",
-    "model": "Modèle"
+    "model": "Modèle",
+    "groupByProvider": "Grouper par fournisseur",
+    "filterModels": "Filtrer par nom ou ID…"
   },
   "crashScreen": {
     "title": "Une erreur est survenue",
