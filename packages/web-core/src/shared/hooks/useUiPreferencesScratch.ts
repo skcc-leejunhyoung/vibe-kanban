@@ -378,15 +378,20 @@ export function useUiPreferencesScratch() {
     }
   }, [updateScratch]);
 
-  const { debounced: debouncedSave } = useDebouncedCallback(saveToServer, 500);
+  const {
+    debounced: debouncedSave,
+    cancel: cancelDebouncedSave,
+    flush: flushDebouncedSave,
+  } = useDebouncedCallback(saveToServer, 500);
 
   // Another account took over this tab without a reload: read ITS blob
   // before saving again. Otherwise the next change — or a save still waiting
   // in the debounce — writes the previous account's preferences under the
   // new account's key. Declared before the initialization below on purpose.
   useEffect(() => {
+    cancelDebouncedSave();
     hasInitializedRef.current = false;
-  }, [owner]);
+  }, [owner, cancelDebouncedSave]);
 
   // Initialize store from server data when first loaded
   useEffect(() => {
@@ -400,56 +405,22 @@ export function useUiPreferencesScratch() {
       initializedOwnerRef.current !== owner;
     initializedOwnerRef.current = owner;
 
-    if (!scratchData && takenOver) {
+    if (!scratchData && !takenOver) return;
+
+    // Zustand notifies subscribers synchronously. Only suppress saves during
+    // hydration itself, not a user's first change after it finishes.
+    isApplyingServerDataRef.current = true;
+    if (scratchData) {
+      useUiPreferencesStore.setState(scratchDataToStore(scratchData));
+    } else {
       // Another account's first visit in this tab: it starts from defaults,
       // not from the previous account's preferences still in memory.
-      isApplyingServerDataRef.current = true;
       useUiPreferencesStore.setState(
         useUiPreferencesStore.getInitialState(),
         true
       );
-      setTimeout(() => {
-        isApplyingServerDataRef.current = false;
-      }, 100);
     }
-
-    if (scratchData) {
-      // Server has data - apply it to store
-      isApplyingServerDataRef.current = true;
-      const serverState = scratchDataToStore(scratchData);
-
-      // Merge server state into the store
-      useUiPreferencesStore.setState({
-        repoActions: serverState.repoActions,
-        expanded: serverState.expanded,
-        contextBarPosition: serverState.contextBarPosition,
-        isContextBarVisible: serverState.isContextBarVisible,
-        paneSizes: serverState.paneSizes,
-        collapsedPaths: serverState.collapsedPaths,
-        fileSearchRepoId: serverState.fileSearchRepoId,
-        isLeftSidebarVisible: serverState.isLeftSidebarVisible,
-        isDrawerListVisible: serverState.isDrawerListVisible,
-        rightSidebarSectionOrder: serverState.rightSidebarSectionOrder,
-        workspacePanelStates: serverState.workspacePanelStates,
-        workspaceFilters: serverState.workspaceFilters,
-        workspaceSort: serverState.workspaceSort,
-        selectedOrgId: serverState.selectedOrgId,
-        selectedProjectId: serverState.selectedProjectId,
-        createDraftWorkspaceByDefault:
-          serverState.createDraftWorkspaceByDefault,
-        pullRequestDefaultFilters: serverState.pullRequestDefaultFilters,
-        kanbanProjectViewSelections: serverState.kanbanProjectViewSelections,
-        projectViewsById: serverState.projectViewsById,
-        kanbanProjectViewPreferences: serverState.kanbanProjectViewPreferences,
-        collapsedGroupsByProject: serverState.collapsedGroupsByProject,
-        previewShortcutsByProject: serverState.previewShortcutsByProject,
-      });
-
-      // Allow a brief delay for state to settle
-      setTimeout(() => {
-        isApplyingServerDataRef.current = false;
-      }, 100);
-    }
+    isApplyingServerDataRef.current = false;
   }, [isLoading, isConnected, scratchData, owner]);
 
   // Subscribe to store changes and save to server
@@ -460,8 +431,13 @@ export function useUiPreferencesScratch() {
       }
     });
 
-    return unsubscribe;
-  }, [debouncedSave]);
+    // Reloading before the debounce expires must not drop the last change.
+    window.addEventListener('pagehide', flushDebouncedSave);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('pagehide', flushDebouncedSave);
+    };
+  }, [debouncedSave, flushDebouncedSave]);
 
   return {
     isLoading,

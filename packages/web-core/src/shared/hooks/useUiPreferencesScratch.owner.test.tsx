@@ -2,7 +2,10 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Scratch, UpdateScratch } from 'shared/types';
 import { installDomlessReact } from '@/shared/lib/electric/electricTestKit';
-import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
+import {
+  PERSIST_KEYS,
+  useUiPreferencesStore,
+} from '@/shared/stores/useUiPreferencesStore';
 import {
   storeToScratchData,
   useUiPreferencesScratch,
@@ -76,6 +79,27 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+it('flushes the latest provider grouping preference on pagehide without waiting for the debounce', async () => {
+  await dom.render(<Probe />);
+  const key = PERSIST_KEYS.modelSelectorGroupByProvider;
+  const { setExpanded } = useUiPreferencesStore.getState();
+  act(() => {
+    setExpanded(key, true);
+    setExpanded(key, false);
+  });
+  expect(env.saves).toHaveLength(0);
+
+  act(() => {
+    window.dispatchEvent(new Event('pagehide'));
+    window.dispatchEvent(new Event('pagehide'));
+  });
+  expect(env.saves).toHaveLength(1);
+  expect(env.saves[0].owner).toBe('account-one');
+  expect(savedData(env.saves[0].update).expanded).toMatchObject({
+    [key]: false,
+  });
+});
+
 describe('UI preferences when another account takes over the tab', () => {
   it("loads the new account's preferences instead of saving the old ones", async () => {
     await dom.render(<Probe />);
@@ -89,17 +113,11 @@ describe('UI preferences when another account takes over the tab', () => {
     await dom.render(<Probe />);
     env.loading = false;
     await dom.render(<Probe />);
-    await wait(700);
+    act(() => window.dispatchEvent(new Event('pagehide')));
 
     expect(sidebarVisible()).toBe(true);
-    // Whatever the leftover debounce wrote under account two's key is
-    // account two's own state, not account one's pending change.
-    for (const save of env.saves.filter((s) => s.owner === 'account-two')) {
-      expect(savedData(save.update)).toMatchObject({
-        is_left_sidebar_visible: true,
-        is_drawer_list_visible: true,
-      });
-    }
+    // Neither a scheduled save nor pagehide should carry it to account two.
+    expect(env.saves).toHaveLength(0);
 
     // Account two's own changes are saved again.
     act(() => useUiPreferencesStore.setState({ isLeftSidebarVisible: false }));

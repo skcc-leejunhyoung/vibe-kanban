@@ -174,6 +174,7 @@ function ProviderAccordion({
           onValueChange={onExpandedProviderIdChange}
         >
           {providers.map((provider) => {
+            const isExpanded = provider.id === expandedProviderId;
             const providerModels = sortModelsAlphabetically(
               modelsByProvider.get(provider.id) ?? []
             );
@@ -190,7 +191,7 @@ function ProviderAccordion({
               <AccordionItem key={provider.id} value={provider.id}>
                 <AccordionTrigger
                   data-model-selector-option
-                  sticky={provider.id === expandedProviderId}
+                  sticky={isExpanded}
                   className={cn(
                     'group gap-2 px-base py-half rounded-sm',
                     'text-sm font-medium text-low',
@@ -212,7 +213,12 @@ function ProviderAccordion({
                     weight="bold"
                   />
                 </AccordionTrigger>
-                <AccordionContent data-model-selector-provider-content>
+                <AccordionContent
+                  data-model-selector-provider-content
+                  // Radix keeps the rows mounted while closing. React 18
+                  // needs a string to forward the native inert attribute.
+                  {...(isExpanded ? {} : { inert: '' })}
+                >
                   <div className="pl-1">
                     <ModelList
                       models={providerModels}
