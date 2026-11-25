@@ -93,6 +93,27 @@ const GIB: u64 = 1024 * 1024 * 1024;
 const DEFAULT_EXTRA_CARGO_CACHE_MAX_GIB: u64 = 60;
 const DEFAULT_MIN_FREE_DISK_GIB: u64 = 40;
 
+impl LocalContainerService {
+    /// Retry only queued automatic prompts; a failed lookup never started a turn.
+    pub async fn retry_autopilot_queue(&self) -> anyhow::Result<()> {
+        let pool = &self.db.pool;
+        let Some(workspace) = Workspace::find_active_autopilot(pool).await? else {
+            return Ok(());
+        };
+        for session in Session::find_by_workspace_id(pool, workspace.id).await? {
+            if self
+                .queued_message_service
+                .ready_front(session.id)
+                .is_some_and(|message| message.data.autopilot_policy)
+                && let Err(error) = self.drain_queue_if_idle(&session, &workspace).await
+            {
+                tracing::warn!(session_id = %session.id, %error, "Autopilot queue retry failed");
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 struct CargoCachePruneStats {
     removed_targets: usize,
@@ -2833,8 +2854,8 @@ impl LocalContainerService {
                 }
                 Err(e) => {
                     tracing::error!("Failed to start queued follow-up: {}", e);
-                    // The message is back in the queue, waiting for the user;
-                    // finalize this turn.
+                    // Failed starts wait for the user; an unstarted automatic
+                    // policy lookup stays runnable for the periodic retry.
                     self.finalize_task(ctx).await;
                     self.vibe_on_finalize(ctx).await;
                 }
@@ -4061,7 +4082,7 @@ impl ContainerService for LocalContainerService {
             probe
                 .send((current, result))
                 .map_err(|_| anyhow::anyhow!("test probe closed"))?;
-            return Ok(reply.await?);
+            return reply.await?;
         }
         services::services::autopilot::resolve_executor(session_id, current).await
     }
@@ -8042,7 +8063,10 @@ done
         (session, codex)
     }
 
-    type AutopilotProbe = (ExecutorConfig, tokio::sync::oneshot::Sender<ExecutorConfig>);
+    type AutopilotProbe = (
+        ExecutorConfig,
+        tokio::sync::oneshot::Sender<anyhow::Result<ExecutorConfig>>,
+    );
     pub(super) static AUTOPILOT_PROBES: std::sync::LazyLock<
         std::sync::Mutex<HashMap<Uuid, tokio::sync::mpsc::UnboundedSender<AutopilotProbe>>>,
     > = std::sync::LazyLock::new(Default::default);
@@ -8075,6 +8099,57 @@ done
             autopilot_policy: true,
             ..follow_up(message, BaseCodingAgent::OpencodeV2)
         }
+    }
+
+    #[tokio::test]
+    async fn failed_autopilot_lookup_is_retried_without_losing_the_prompt() {
+        let (container, session, workspace, running) = autopilot_queue_fixture().await;
+        let _logs = SessionLogDir(session.id);
+        ExecutionProcess::update_completion(
+            &container.db.pool,
+            running.id,
+            ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+        let queue = &container.queued_message_service;
+        let queued = queue.enqueue(session.id, automatic("retry this"));
+        let (probe, mut probes) = tokio::sync::mpsc::unbounded_channel();
+        AUTOPILOT_PROBES.lock().unwrap().insert(session.id, probe);
+        let failed_probe = async {
+            let (_, reply) = probes.recv().await.unwrap();
+            reply.send(Err(anyhow!("temporary usage failure"))).unwrap();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                container.drain_queue_if_idle(&session, &workspace),
+                failed_probe
+            )
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        assert_eq!(queue.ready_front(session.id).unwrap().id, queued.id);
+        assert_eq!(coding_requests(&container, session.id).await.len(), 1);
+
+        let recovered_probe = async {
+            let (live, reply) = probes.recv().await.unwrap();
+            reply.send(Ok(live)).unwrap();
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(container.retry_autopilot_queue(), recovered_probe).0
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        AUTOPILOT_PROBES.lock().unwrap().remove(&session.id);
+        let requests = coding_requests(&container, session.id).await;
+        assert_eq!(requests.len(), 2);
+        let ExecutorActionType::CodingAgentFollowUpRequest(followup) = &requests[1].1 else {
+            panic!("expected the retried follow-up");
+        };
+        assert_eq!(followup.prompt, "retry this");
     }
 
     #[tokio::test]
@@ -8123,7 +8198,7 @@ done
             );
             live.executor = BaseCodingAgent::Codex;
             live.model_id = Some("gpt-5.6-sol-fast".into());
-            select.send(live).unwrap();
+            select.send(Ok(live)).unwrap();
         };
         let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::join!(container.drain_queue_if_idle(&session, &workspace), managed)
@@ -8155,7 +8230,7 @@ done
         let managed = async {
             let (live, select) = probes.recv().await.unwrap();
             assert_eq!(live, handoff.executor_config);
-            select.send(live).unwrap();
+            select.send(Ok(live)).unwrap();
         };
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::join!(container.drain_queue_if_idle(&session, &workspace), managed)
@@ -8197,7 +8272,7 @@ done
                     container.signal_session_stops(session.id);
                     container.cancel_session_starts(session.id).await;
                     queue.clear_queue(session.id).await.unwrap();
-                    assert!(select.send(live).is_err(), "stop aborted policy lookup");
+                    assert!(select.send(Ok(live)).is_err(), "stop aborted policy lookup");
                 } else {
                     assert!(
                         queue
@@ -8206,7 +8281,7 @@ done
                             .unwrap()
                             .is_some()
                     );
-                    select.send(live).unwrap();
+                    select.send(Ok(live)).unwrap();
                 }
             };
             let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {

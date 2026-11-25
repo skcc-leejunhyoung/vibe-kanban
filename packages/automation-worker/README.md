@@ -240,8 +240,9 @@ or `{ "executor": "...", "model_id": "...", "reasoning_id": "..." }` to select a
 model. Routines targeting `"autopilot"` without an explicit executor use the
 normal queue, including for claimed notifications. A message carries the
 policy intent, not a reserved executor: the host resolves it using the live
-session configuration when the message reaches the front. An error holds the
-queued message rather than starting it with a stale choice. Already-due
+session configuration when the message reaches the front. A policy lookup
+error leaves the queued message in place and retries periodically rather than
+starting it with a stale choice. Already-due
 scheduled or usage-limit resumes use the same selection and respect their
 existing cancellation controls. No usage check by itself can wake a session
 or interrupt a running turn.

@@ -235,6 +235,23 @@ impl Deployment for LocalDeployment {
             remote_client.clone().ok(),
         )
         .await;
+        {
+            let container = container.clone();
+            let shutdown = shutdown.child_token();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        _ = interval.tick() => {
+                            if let Err(error) = container.retry_autopilot_queue().await {
+                                tracing::warn!(%error, "Autopilot queue retry check failed");
+                            }
+                        }
+                    }
+                }
+            });
+        }
         if let Ok(client) = remote_client.clone() {
             services::services::drawer_artifacts::spawn(
                 db.pool.clone(),

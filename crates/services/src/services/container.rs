@@ -2080,6 +2080,9 @@ pub trait ContainerService {
             if stops.has_changed().unwrap_or(false) {
                 return Ok(None);
             }
+            // No execution was created yet. Leave a failed policy lookup
+            // runnable so the periodic retry can re-evaluate it safely.
+            let data = data?;
             if let Some(queued) =
                 queue.take_next_if(session.id, |m| m.id == front.id && m.data == front.data)
             {
@@ -2089,18 +2092,9 @@ pub trait ContainerService {
         // Hold the drain until the start settles, as `start_queued_followup`
         // does.
         let hold = queue.hold_drain(session.id);
-        let created = match data {
-            Ok(data) => {
-                self.create_followup_record(
-                    session,
-                    workspace,
-                    &data,
-                    queued.artifact_request.as_ref(),
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        };
+        let created = self
+            .create_followup_record(session, workspace, &data, queued.artifact_request.as_ref())
+            .await;
         if let (Ok((record, _)), Some(agent_session)) = (&created, queued.agent_session)
             && let Err(e) =
                 super::autopilot::record_agent_origin(&self.db().pool, record.id, agent_session)
