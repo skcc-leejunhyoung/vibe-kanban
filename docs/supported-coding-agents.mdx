@@ -57,10 +57,9 @@ You can use provider API keys carried in the executor environment. To use creden
 
 OpenCode v2 supports native session resume, interruption, the context usage gauge and the commands it lists, including your project and user commands, in the chat's `/` menu. `/compact` compacts the session. With **Supervised**, Vibe Kanban asks before edits, shell commands, web access and access outside the workspace, unless a rule in your OpenCode configuration already allows or denies the action. **Auto** approves the remaining requests and shows the agent's questions in the chat. **Don't Ask** also approves them but stops the agent from asking questions. In every mode, deny rules in your configuration still apply. OpenCode's plan agent is available in the agent selector; the **Plan** permission policy is refused. When the commit reminder is on and a turn leaves changes, Vibe Kanban sends the reminder once in the same session. Choose **OpenCode** to continue existing v1 sessions and profiles.
 
-In Vibe Kanban, editing or rewinding a prompt forks OpenCode v2's conversation
-before the selected prompt; it does not edit the original message in place.
-Vibe Kanban handles worktree restoration separately. Older turns and commands
-without a recorded native message ID cannot be rewound safely.
+Vibe Kanban does not enable prompt editing or rewind for OpenCode v2. A native
+conversation fork must succeed before Vibe Kanban can safely restore the
+worktree or hide later turns.
 
 ### Sync repository memory
 

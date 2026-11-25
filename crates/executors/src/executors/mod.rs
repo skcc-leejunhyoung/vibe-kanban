@@ -217,7 +217,7 @@ impl CodingAgent {
                 BaseAgentCapability::SessionFork,
                 BaseAgentCapability::ContextUsage,
             ],
-            Self::Opencode(_) | Self::OpencodeV2(_) => vec![
+            Self::Opencode(_) => vec![
                 BaseAgentCapability::SessionFork,
                 BaseAgentCapability::ContextUsage,
             ],
@@ -232,7 +232,7 @@ impl CodingAgent {
             // Executors whose official events carry both the context in use and
             // the selected model's window. The others stay off the gauge rather
             // than show cumulative, per-turn or guessed numbers.
-            Self::Pi(_) | Self::ZCode(_) => {
+            Self::OpencodeV2(_) | Self::Pi(_) | Self::ZCode(_) => {
                 vec![BaseAgentCapability::ContextUsage]
             }
             Self::CursorAgent(_) => vec![BaseAgentCapability::SetupHelper],

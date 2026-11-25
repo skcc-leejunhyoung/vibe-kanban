@@ -968,12 +968,9 @@ pub trait ContainerService {
             .ok()
             .and_then(ExecutorAction::base_executor)
             == Some(executors::executors::BaseCodingAgent::OpencodeV2)
-            && CodingAgentTurn::find_by_execution_process_id(pool, target_process_id)
-                .await?
-                .is_none_or(|turn| turn.agent_message_id.is_none())
         {
             return Err(ContainerError::Other(anyhow!(
-                "This OpenCode v2 turn has no native message ID. It cannot be edited or rewound safely."
+                "OpenCode v2 turns cannot be edited or rewound safely yet."
             )));
         }
 

@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { isCodingAgent } from '@/shared/constants/processes';
+import { BaseCodingAgent } from 'shared/types';
 import { useResetProcessMutation } from './useResetProcessMutation';
 
 export interface UseResetProcessResult {
@@ -25,17 +26,34 @@ export function useResetProcess(
   const resetMutation = useResetProcessMutation(selectedSessionId ?? '');
   const isResetPending = resetMutation.isPending;
 
-  const hasCodingProcess = useMemo(
+  const resettableProcessIds = useMemo(
     () =>
-      processes.some(
-        (process) => !process.dropped && isCodingAgent(process.run_reason)
+      new Set(
+        processes
+          .filter((process) => {
+            if (process.dropped || !isCodingAgent(process.run_reason)) {
+              return false;
+            }
+            const action = process.executor_action?.typ;
+            if (
+              !action ||
+              typeof action !== 'object' ||
+              !('executor_config' in action)
+            ) {
+              return false;
+            }
+            const executor = action.executor_config?.executor;
+            return executor != null && executor !== BaseCodingAgent.OPENCODE_V2;
+          })
+          .map((process) => process.id)
       ),
     [processes]
   );
 
   const canResetProcess = useCallback(
-    (executionProcessId: string) => hasCodingProcess && !!executionProcessId,
-    [hasCodingProcess]
+    (executionProcessId: string) =>
+      resettableProcessIds.has(executionProcessId),
+    [resettableProcessIds]
   );
 
   const resetProcess = useCallback(

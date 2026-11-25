@@ -739,13 +739,7 @@ impl OpencodeV2 {
             session = async {
                 if let Some(id) = id {
                     let path = session_path(&id)?;
-                    let session: Data<Session> = if let Some(before) = &self.discard_from {
-                        Api::read(api.request(Method::POST, &format!("{path}/fork"))
-                            .json(&json!({"before": before})), "message rewind").await?
-                    } else {
-                        Api::read(api.request(Method::GET, &path), "session resume").await?
-                    };
-                    let path = session_path(&session.data.id)?;
+                    let session: Data<Session> = Api::read(api.request(Method::GET, &path), "session resume").await?;
                     let model = resolve_turn_model(api, cwd, explicit_model, session.data.model.clone(), self.variant.as_deref()).await?;
                     if let Some(model) = &model {
                         api.post(&format!("{path}/model"), json!({"model":model}), "model selection").await?;
@@ -2356,9 +2350,14 @@ impl StandardCodingAgentExecutor for OpencodeV2 {
         cwd: &Path,
         prompt: &str,
         id: &str,
-        _reset: Option<&str>,
+        reset: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        if reset.is_some() || self.discard_from.is_some() {
+            return Err(ExecutorError::FollowUpNotSupported(
+                "OpenCode v2 message rewind is not supported yet.".into(),
+            ));
+        }
         self.run(cwd, prompt, Some(id), env).await
     }
 
@@ -2715,54 +2714,26 @@ mod turn_tests {
     }
 
     #[tokio::test]
-    async fn edited_prompt_forks_before_the_discarded_message() {
-        let server = MockServer::start(Box::new(|request, events| {
-            match (
-                request.method.as_str(),
-                request.path.split('?').next().unwrap(),
-            ) {
-                ("POST", "/api/session/ses_original/fork") => {
-                    assert_eq!(request.body, json!({"before": "msg_old"}));
-                    (200, json!({"data": {"id": "ses_fixture"}}))
-                }
-                ("GET", "/api/model") => (200, models()),
-                ("GET", "/api/session/ses_fixture/context") => (200, json!({"data": []})),
-                ("PATCH", "/api/session/ses_fixture") => (200, json!({"data": {}})),
-                ("POST", "/api/session/ses_fixture/prompt") => {
-                    assert_eq!(request.body["text"], "Revised prompt");
-                    events.send(done()).unwrap();
-                    (200, json!({"data": {"id": "msg_new"}}))
-                }
-                _ => (404, json!({"error": request.path})),
-            }
-        }))
-        .await;
+    async fn rewind_is_rejected_before_launching_the_agent() {
         let mut executor = executor(PermissionPolicy::Auto, None);
-        executor.discard_from_message("msg_old");
-        let mut writer = Vec::new();
-        executor
-            .run_turn(
-                &server.api,
-                Path::new("/fixture"),
-                TurnInput::Prompt("Revised prompt".into()),
-                Some("ses_original".into()),
-                None,
-                &CancellationToken::new(),
-                &mut writer,
-            )
-            .await
-            .unwrap();
-        let events = output(&writer);
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, AcpEvent::SessionStart(id) if id == "ses_fixture"))
-        );
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, AcpEvent::MessageId(id) if id == "msg_new"))
-        );
+        let env = ExecutionEnv::new(Default::default(), false, String::new());
+        for reset in [Some("msg_old"), None] {
+            if reset.is_none() {
+                executor.discard_from_message("msg_old");
+            }
+            assert!(matches!(
+                executor
+                    .spawn_follow_up(
+                        Path::new("/fixture"),
+                        "Revised prompt",
+                        "ses_fixture",
+                        reset,
+                        &env,
+                    )
+                    .await,
+                Err(ExecutorError::FollowUpNotSupported(_))
+            ));
+        }
     }
 
     #[tokio::test]
@@ -2797,12 +2768,13 @@ mod turn_tests {
                                        "source": {"type": "tool", "messageID": "msg_a", "id": "call_a"}}),
                             ))
                             .unwrap();
+                        (200, json!({"data": {"id": "msg_user"}}))
                     } else {
                         events.send(step("msg_c", "small")).unwrap();
                         events.send(step_end("msg_c", 10, 600)).unwrap();
                         events.send(done()).unwrap();
+                        (200, json!({"data": {"id": "msg_reminder"}}))
                     }
-                    (200, json!({"data": {}}))
                 }
                 ("POST", "/api/session/ses_fixture/permission/per_fixture/reply") => {
                     events.send(step_end("msg_a", 300, 400)).unwrap();
@@ -2869,6 +2841,14 @@ mod turn_tests {
         );
 
         let events = output(&writer);
+        let message_ids: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                AcpEvent::MessageId(id) => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(message_ids, ["msg_user"]);
         // Resume baseline, the supervised step, then the reminder's step.
         assert_eq!(usages(&events), [(350, 1000), (735, 1000), (645, 1000)]);
         assert!(events.iter().any(|event| matches!(event,

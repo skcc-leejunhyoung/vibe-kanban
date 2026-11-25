@@ -880,9 +880,8 @@ function UserMessageEntry({
     !isInEditMode &&
     !isResetPending;
   // Edit/retry/reset is not supported when the executor doesn't have the fork capability
-  const canEdit = canShowActions && executorCanFork;
-  // Only show reset if we have a process ID, not in edit mode, and not pending
-  const canReset = canEdit && canResetProcess(executionProcessId);
+  const canEdit =
+    canShowActions && executorCanFork && canResetProcess(executionProcessId);
 
   return (
     <ChatUserMessage
@@ -891,7 +890,7 @@ function UserMessageEntry({
       onToggle={toggle}
       workspaceId={workspaceId}
       onEdit={canEdit ? handleEdit : undefined}
-      onReset={canReset ? handleReset : undefined}
+      onReset={canEdit ? handleReset : undefined}
       isGreyed={isGreyed}
       meta={timing?.text}
       metaTooltip={
