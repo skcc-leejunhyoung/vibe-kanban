@@ -636,6 +636,10 @@ pub(super) async fn sync(
     dedup_shared(&authored, &mut shared);
     let authored_body = render(&authored);
     let shared_body = render(&shared);
+    let imported = fit_imported(
+        &shared,
+        IMPORTED_HEADER.len() + binding.len() + IMPORTED_GUIDANCE.len(),
+    );
     let header = snapshot_header(key, AGENT);
     let mut snapshot = format!("{header}{authored_body}");
     if authored_body.is_empty() {
@@ -647,7 +651,7 @@ pub(super) async fn sync(
         "agent memory snapshot exceeds 256 KiB"
     );
     let validation = SyncResult {
-        snapshot: format!("{header}{authored_body}{shared_body}"),
+        snapshot: format!("{header}{authored_body}{imported}"),
         receipts: Vec::new(),
         mutation_receipts: Vec::new(),
     };
@@ -666,10 +670,6 @@ pub(super) async fn sync(
         &format!("{AUTHORED_HEADER}{binding}{authored_body}"),
     )?;
     if raw_shared.is_some() || !shared_body.is_empty() {
-        let imported = fit_imported(
-            &shared,
-            IMPORTED_HEADER.len() + binding.len() + IMPORTED_GUIDANCE.len(),
-        );
         write_skill(
             &repo.path,
             IMPORTED,
@@ -800,6 +800,47 @@ mod tests {
         let reversed = shared.iter().rev().cloned().collect::<Vec<_>>();
         assert_eq!(imported, fit_imported(&reversed, fixed));
         assert_eq!(fit_imported(&shared[..3], fixed), render(&shared[..3]));
+    }
+
+    #[test]
+    fn an_omitted_correction_is_not_acknowledged() {
+        let update = AgentMemoryMutation {
+            id: Uuid::new_v4(),
+            memory_id: Uuid::new_v4(),
+            generation: 1,
+            operation: AgentMemoryMutationOperation::Update,
+            scope: SCOPE,
+            scope_key: Some(KEY.to_string()),
+            match_text: "Old instruction".to_string(),
+            prior_match_texts: Vec::new(),
+            replacement_text: Some("New instruction".to_string()),
+            created_at: Utc::now(),
+            receipt_count: 0,
+        };
+        let mut shared = vec![Topic {
+            title: "A large topic".to_string(),
+            body: "x".repeat(MAX_SNAPSHOT_BYTES),
+        }];
+        let mut correction = Topic {
+            title: "Z correction".to_string(),
+            body: "New instruction".to_string(),
+        };
+        correction.set_marker(update.memory_id, update.generation);
+        shared.push(correction);
+        let fixed = IMPORTED_HEADER.len() + scope_binding(KEY).len() + IMPORTED_GUIDANCE.len();
+        let result = SyncResult {
+            snapshot: format!(
+                "{}{}",
+                snapshot_header(KEY, AGENT),
+                fit_imported(&shared, fixed)
+            ),
+            receipts: Vec::new(),
+            mutation_receipts: Vec::new(),
+        };
+        assert_eq!(
+            validate_mutation_result_basic(&[update], &result)[0].status,
+            AgentMemoryReceiptStatus::Deferred
+        );
     }
 
     fn guard(request: CreateAgentMemoryMutationRequest) -> AgentMemoryMutation {
