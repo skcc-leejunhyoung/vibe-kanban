@@ -2140,9 +2140,9 @@ pub trait ContainerService {
             return Ok(data.clone());
         }
         let pool = &self.db().pool;
-        if !Workspace::find_active_autopilot(pool)
+        if Workspace::find_active_autopilot(pool)
             .await?
-            .is_some_and(|active| active.id == workspace.id)
+            .is_none_or(|active| active.id != workspace.id)
         {
             return Err(ContainerError::Other(anyhow!("Autopilot is not active")));
         }
@@ -2151,9 +2151,9 @@ pub trait ContainerService {
             .ok_or_else(|| anyhow!("Autopilot has no current executor"))?;
         let source = current.executor;
         let executor_config = self.select_autopilot_executor(session.id, current).await?;
-        if !Workspace::find_active_autopilot(pool)
+        if Workspace::find_active_autopilot(pool)
             .await?
-            .is_some_and(|active| active.id == workspace.id)
+            .is_none_or(|active| active.id != workspace.id)
         {
             return Err(ContainerError::Other(anyhow!("Autopilot is not active")));
         }

@@ -130,9 +130,9 @@ async fn queue_message_inner(
         None
     };
     if payload.autopilot_policy
-        && !Workspace::find_active_autopilot(&deployment.db().pool)
+        && Workspace::find_active_autopilot(&deployment.db().pool)
             .await?
-            .is_some_and(|workspace| workspace.id == session.workspace_id)
+            .is_none_or(|workspace| workspace.id != session.workspace_id)
     {
         return Err(ApiError::Conflict(
             "Autopilot session is no longer active".into(),
