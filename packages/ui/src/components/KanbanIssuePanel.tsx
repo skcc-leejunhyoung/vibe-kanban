@@ -472,11 +472,7 @@ export function KanbanIssuePanel({
       </div>
 
       {/* Scrollable Content */}
-      <div
-        ref={contentScrollRef}
-        tabIndex={-1}
-        className="flex-1 overflow-y-auto"
-      >
+      <div ref={contentScrollRef} className="flex-1 overflow-y-auto">
         {/* Property Row */}
         <div className="px-base py-base border-b">
           <IssuePropertyRow

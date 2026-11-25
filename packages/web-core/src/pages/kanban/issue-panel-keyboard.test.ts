@@ -15,7 +15,12 @@ function setup({ active = true, reducedMotion = false } = {}) {
   const input = { ...control, closest: () => ({}) };
   const editor = { ...control, isContentEditable: true };
   const outside = { ...control };
-  const scroller = { scrollHeight: 1200, scrollTo: vi.fn(), focus: vi.fn() };
+  const scroller = {
+    scrollHeight: 1200,
+    scrollBy: vi.fn(),
+    scrollTo: vi.fn(),
+    focus: vi.fn(),
+  };
   const pane = {
     hasAttribute: (name: string) => name === 'data-workspace-pane',
     getAttribute: () => (active ? 'true' : null),
@@ -62,18 +67,21 @@ function setup({ active = true, reducedMotion = false } = {}) {
 }
 
 describe('issue panel scrolling keys', () => {
-  it('leaves the first arrow and repeats to native scrolling, not the board', () => {
+  it('scrolls on the first arrow and repeats without moving focus or the board', () => {
     const { doc, pane, scroller, keyDown } = setup();
     doc.activeElement = pane;
-    expect(keyDown('ArrowDown')).toEqual({ prevented: false, owned: true });
-    expect(scroller.focus).toHaveBeenCalledWith({ preventScroll: true });
-
-    doc.activeElement = scroller;
+    expect(keyDown('ArrowDown')).toEqual({ prevented: true, owned: true });
     expect(keyDown('ArrowDown', { repeat: true })).toEqual({
-      prevented: false,
+      prevented: true,
       owned: true,
     });
-    expect(scroller.focus).toHaveBeenCalledTimes(1);
+    keyDown('ArrowUp');
+    expect(scroller.scrollBy.mock.calls).toEqual([
+      [{ top: 80, behavior: 'smooth' }],
+      [{ top: 80, behavior: 'smooth' }],
+      [{ top: -80, behavior: 'smooth' }],
+    ]);
+    expect(scroller.focus).not.toHaveBeenCalled();
     expect(scroller.scrollTo).not.toHaveBeenCalled();
   });
 
@@ -95,6 +103,11 @@ describe('issue panel scrolling keys', () => {
 
   it('jumps without animation when reduced motion is preferred', () => {
     const { scroller, keyDown } = setup({ reducedMotion: true });
+    keyDown('ArrowUp');
+    expect(scroller.scrollBy).toHaveBeenCalledWith({
+      top: -80,
+      behavior: 'instant',
+    });
     keyDown('ArrowDown', { metaKey: true });
     expect(scroller.scrollTo).toHaveBeenCalledWith({
       top: 1200,
@@ -106,8 +119,10 @@ describe('issue panel scrolling keys', () => {
     const { doc, input, editor, outside, scroller, keyDown } = setup();
     for (const target of [input, editor, outside]) {
       doc.activeElement = target;
+      expect(keyDown('ArrowUp').owned).toBe(false);
       expect(keyDown('ArrowUp', { metaKey: true }).owned).toBe(false);
     }
+    expect(scroller.scrollBy).not.toHaveBeenCalled();
     expect(scroller.scrollTo).not.toHaveBeenCalled();
     const background = setup({ active: false });
     background.doc.activeElement = background.doc.body;
@@ -118,8 +133,8 @@ describe('issue panel scrolling keys', () => {
   });
 
   it('still focuses the title on plain Enter after scrolling', () => {
-    const { doc, scroller, title, keyDown } = setup();
-    doc.activeElement = scroller;
+    const { title, keyDown } = setup();
+    keyDown('ArrowDown');
     expect(keyDown('Enter', { metaKey: true }).owned).toBe(false);
     expect(keyDown('Enter').prevented).toBe(true);
     expect(title.focus).toHaveBeenCalledTimes(1);

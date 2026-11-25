@@ -24,7 +24,6 @@ export function handleIssuePanelKeyDown(
   // Keyboard pane switching focuses the pane shell, not the issue itself.
   const isPanelSurfaceFocused =
     focused === panel ||
-    focused === scroller ||
     (focused?.hasAttribute('data-workspace-pane') === true &&
       focused.contains(panel));
 
@@ -35,6 +34,7 @@ export function handleIssuePanelKeyDown(
   } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
     const isPanelScrollFocus =
       isPanelSurfaceFocused ||
+      focused === scroller ||
       !focused ||
       focused === doc.body ||
       focused === doc.documentElement;
@@ -51,28 +51,29 @@ export function handleIssuePanelKeyDown(
       ) {
         return;
       }
-
-      if (!event.repeat) {
-        const reduceMotion = doc.defaultView?.matchMedia(
-          '(prefers-reduced-motion: reduce)'
-        ).matches;
-        scroller.scrollTo({
-          top: event.key === 'ArrowUp' ? 0 : scroller.scrollHeight,
-          behavior: reduceMotion ? 'instant' : 'smooth',
-        });
-      }
-      event.preventDefault();
-    } else {
-      if (!isPanelScrollFocus) return;
-      // Let the browser scroll the focused element, including key repeat,
-      // instead of jumping a fixed distance on every keydown.
-      if (focused !== scroller) scroller.focus({ preventScroll: true });
+    } else if (!isPanelScrollFocus) {
+      return;
     }
+
+    if (!event.metaKey || !event.repeat) {
+      const behavior = doc.defaultView?.matchMedia(
+        '(prefers-reduced-motion: reduce)'
+      ).matches
+        ? 'instant'
+        : 'smooth';
+      const up = event.key === 'ArrowUp';
+      if (event.metaKey) {
+        scroller.scrollTo({ top: up ? 0 : scroller.scrollHeight, behavior });
+      } else {
+        // Scroll the content without moving focus past the header's Tab stops.
+        scroller.scrollBy({ top: up ? -80 : 80, behavior });
+      }
+    }
+    event.preventDefault();
   } else {
     return;
   }
 
-  // The issue panel owns these keys ahead of the board's navigation. Plain
-  // arrows still reach the browser's default action (not the app listeners).
+  // The issue panel owns these keys ahead of the board's navigation.
   event.stopImmediatePropagation();
 }
