@@ -1,6 +1,85 @@
 import { isModalKeyboardActive } from './modal-keyboard';
 import { isInInactiveWorkspacePane } from './workspace-pane';
 
+type ScrollAnimation = {
+  target: number;
+  position: number;
+  time: number | null;
+  frame: number;
+};
+
+const scrollAnimations = new WeakMap<HTMLDivElement, ScrollAnimation>();
+
+function stopScroll(scroller: HTMLDivElement, view: Window) {
+  const animation = scrollAnimations.get(scroller);
+  if (animation) view.cancelAnimationFrame(animation.frame);
+  scrollAnimations.delete(scroller);
+}
+
+function scrollBySmoothly(
+  scroller: HTMLDivElement,
+  view: Window,
+  delta: number
+) {
+  let animation = scrollAnimations.get(scroller);
+  if (animation && scroller.scrollTop !== animation.position) {
+    stopScroll(scroller, view);
+    animation = undefined;
+  }
+  if (!animation) {
+    // Cancel any native Cmd+arrow animation before taking over.
+    scroller.scrollTo({ top: scroller.scrollTop, behavior: 'instant' });
+    animation = {
+      target: scroller.scrollTop,
+      position: scroller.scrollTop,
+      time: null,
+      frame: 0,
+    };
+    scrollAnimations.set(scroller, animation);
+    const current = animation;
+    const step = (time: number) => {
+      if (scroller.scrollTop !== current.position) {
+        stopScroll(scroller, view);
+        return;
+      }
+      const elapsed =
+        current.time === null ? 16 : Math.min(time - current.time, 100);
+      current.time = time;
+      current.target = Math.min(
+        current.target,
+        Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+      );
+      const remaining = current.target - current.position;
+      const previous = current.position;
+      scroller.scrollTop =
+        Math.abs(remaining) < 3
+          ? current.target
+          : current.position + remaining * (1 - Math.exp(-elapsed / 65));
+      current.position = scroller.scrollTop;
+      if (
+        Math.abs(current.target - current.position) < 1 ||
+        current.position === previous
+      ) {
+        scroller.scrollTop = current.target;
+        scrollAnimations.delete(scroller);
+      } else {
+        current.frame = view.requestAnimationFrame(step);
+      }
+    };
+    current.frame = view.requestAnimationFrame(step);
+  }
+  if ((animation.target - animation.position) * delta < 0) {
+    animation.target = animation.position;
+  }
+  animation.target = Math.max(
+    0,
+    Math.min(
+      scroller.scrollHeight - scroller.clientHeight,
+      animation.target + delta
+    )
+  );
+}
+
 export function handleIssuePanelKeyDown(
   event: KeyboardEvent,
   panel: HTMLDivElement,
@@ -56,17 +135,20 @@ export function handleIssuePanelKeyDown(
     }
 
     if (!event.metaKey || !event.repeat) {
-      const behavior = doc.defaultView?.matchMedia(
-        '(prefers-reduced-motion: reduce)'
-      ).matches
+      const view = doc.defaultView;
+      const behavior = view?.matchMedia('(prefers-reduced-motion: reduce)')
+        .matches
         ? 'instant'
         : 'smooth';
       const up = event.key === 'ArrowUp';
       if (event.metaKey) {
+        if (view) stopScroll(scroller, view);
         scroller.scrollTo({ top: up ? 0 : scroller.scrollHeight, behavior });
-      } else {
-        // Scroll the content without moving focus past the header's Tab stops.
+      } else if (behavior === 'instant' || !view) {
+        if (view) stopScroll(scroller, view);
         scroller.scrollBy({ top: up ? -80 : 80, behavior });
+      } else {
+        scrollBySmoothly(scroller, view, up ? -80 : 80);
       }
     }
     event.preventDefault();

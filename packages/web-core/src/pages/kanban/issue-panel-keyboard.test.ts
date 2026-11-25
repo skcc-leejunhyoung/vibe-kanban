@@ -3,12 +3,21 @@ import { handleIssuePanelKeyDown } from '@vibe/ui/lib/issue-panel-keyboard';
 
 function setup({ active = true, reducedMotion = false } = {}) {
   const control = { hasAttribute: () => false, closest: () => null };
+  let frame: FrameRequestCallback | undefined;
+  let now = 0;
   const doc = {
     body: { ...control },
     documentElement: { ...control },
     activeElement: {} as object,
     defaultView: {
       matchMedia: () => ({ matches: reducedMotion }),
+      requestAnimationFrame: (callback: FrameRequestCallback) => {
+        frame = callback;
+        return 1;
+      },
+      cancelAnimationFrame: () => {
+        frame = undefined;
+      },
     },
   };
   const button = { ...control };
@@ -17,6 +26,8 @@ function setup({ active = true, reducedMotion = false } = {}) {
   const outside = { ...control };
   const scroller = {
     scrollHeight: 1200,
+    clientHeight: 200,
+    scrollTop: 0,
     scrollBy: vi.fn(),
     scrollTo: vi.fn(),
     focus: vi.fn(),
@@ -53,6 +64,13 @@ function setup({ active = true, reducedMotion = false } = {}) {
     };
   }
 
+  function tick(elapsed = 16) {
+    const callback = frame;
+    frame = undefined;
+    now += elapsed;
+    callback?.(now);
+  }
+
   return {
     doc,
     pane,
@@ -63,26 +81,73 @@ function setup({ active = true, reducedMotion = false } = {}) {
     editor,
     outside,
     keyDown,
+    tick,
   };
 }
 
 describe('issue panel scrolling keys', () => {
   it('scrolls on the first arrow and repeats without moving focus or the board', () => {
-    const { doc, pane, scroller, keyDown } = setup();
+    const { doc, pane, scroller, keyDown, tick } = setup();
     doc.activeElement = pane;
     expect(keyDown('ArrowDown')).toEqual({ prevented: true, owned: true });
     expect(keyDown('ArrowDown', { repeat: true })).toEqual({
       prevented: true,
       owned: true,
     });
+    for (let i = 0; i < 40; i++) tick();
+    expect(scroller.scrollTop).toBe(160);
     keyDown('ArrowUp');
-    expect(scroller.scrollBy.mock.calls).toEqual([
-      [{ top: 80, behavior: 'smooth' }],
-      [{ top: 80, behavior: 'smooth' }],
-      [{ top: -80, behavior: 'smooth' }],
-    ]);
+    for (let i = 0; i < 40; i++) tick();
+    expect(scroller.scrollTop).toBe(80);
     expect(scroller.focus).not.toHaveBeenCalled();
-    expect(scroller.scrollTo).not.toHaveBeenCalled();
+    expect(scroller.scrollBy).not.toHaveBeenCalled();
+  });
+
+  it('clamps repeated targets and starts a new press from the actual position', () => {
+    const { scroller, keyDown, tick } = setup();
+    scroller.scrollTop = 950;
+    keyDown('ArrowDown');
+    keyDown('ArrowDown', { repeat: true });
+    for (let i = 0; i < 40; i++) tick();
+    expect(scroller.scrollTop).toBe(1000);
+    scroller.scrollTop = 300;
+    keyDown('ArrowDown');
+    for (let i = 0; i < 40; i++) tick();
+    expect(scroller.scrollTop).toBe(380);
+  });
+
+  it('responds immediately to direction changes and respects manual scrolling', () => {
+    const { scroller, keyDown, tick } = setup();
+    scroller.scrollTop = 400;
+    keyDown('ArrowDown');
+    keyDown('ArrowDown', { repeat: true });
+    tick();
+    const before = scroller.scrollTop;
+    keyDown('ArrowUp');
+    tick();
+    expect(scroller.scrollTop).toBeLessThan(before);
+    scroller.scrollTop = 50;
+    tick();
+    expect(scroller.scrollTop).toBe(50);
+  });
+
+  it('finishes with rounded positions and when content shrinks', () => {
+    const { scroller, keyDown, tick } = setup();
+    let position = 0;
+    Object.defineProperty(scroller, 'scrollTop', {
+      get: () => position,
+      set: (value: number) => {
+        position = Math.round(value);
+      },
+    });
+    keyDown('ArrowDown');
+    for (let i = 0; i < 100; i++) tick(7);
+    expect(position).toBe(80);
+    keyDown('ArrowDown');
+    scroller.scrollHeight = 240;
+    scroller.scrollTop = 40;
+    tick();
+    expect(position).toBe(40);
   });
 
   it('scrolls to the end or start and does not restart on key repeat', () => {
