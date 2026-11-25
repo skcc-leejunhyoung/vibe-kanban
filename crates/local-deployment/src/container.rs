@@ -8248,6 +8248,41 @@ done
     }
 
     #[tokio::test]
+    async fn pausing_autopilot_during_policy_keeps_the_prompt_runnable() {
+        let (container, session, workspace, running) = autopilot_queue_fixture().await;
+        let _logs = SessionLogDir(session.id);
+        let pool = &container.db.pool;
+        ExecutionProcess::update_completion(
+            pool,
+            running.id,
+            ExecutionProcessStatus::Completed,
+            Some(0),
+        )
+        .await
+        .unwrap();
+        let queue = &container.queued_message_service;
+        let queued = queue.enqueue(session.id, automatic("pause during selection"));
+        let (probe, mut probes) = tokio::sync::mpsc::unbounded_channel();
+        AUTOPILOT_PROBES.lock().unwrap().insert(session.id, probe);
+        let pause = async {
+            let (live, select) = probes.recv().await.unwrap();
+            Workspace::set_archived(pool, workspace.id, true)
+                .await
+                .unwrap();
+            select.send(Ok(live)).unwrap();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(container.drain_queue_if_idle(&session, &workspace), pause)
+        })
+        .await
+        .unwrap();
+        AUTOPILOT_PROBES.lock().unwrap().remove(&session.id);
+        assert!(result.is_err());
+        assert_eq!(queue.ready_front(session.id).unwrap().id, queued.id);
+        assert_eq!(coding_requests(&container, session.id).await.len(), 1);
+    }
+
+    #[tokio::test]
     async fn cancelling_an_autopilot_prompt_during_policy_does_not_start_it() {
         for stop_session in [false, true] {
             let (container, session, workspace, running) = autopilot_queue_fixture().await;

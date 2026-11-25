@@ -670,8 +670,14 @@ test("full poll separates app/search #42, assigned seed, source activity and hea
   h.github.config.cursorTs = "";
   h.github.config.seenIds = [];
   h.github.config.limit = 1;
-  h.github.config.prCommentCursorTs = "2026-10-27T00:00:00Z";
-  const stamp = new Date().toISOString();
+  const now = Date.now();
+  h.github.config.prCommentCursors = Object.fromEntries(
+    repos.map((repo) => [
+      repo,
+      { cursorTs: new Date(now - 60_000).toISOString(), seenIds: [] },
+    ]),
+  );
+  const stamp = new Date(now).toISOString();
   const heads = { "example/app": "c".repeat(40), [repository]: headA };
   Object.assign(h.context, {
     isNotifiableReview,
