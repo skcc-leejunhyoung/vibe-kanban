@@ -74,6 +74,8 @@ describe('interactive artifact layout', () => {
       },
     };
     const postMessage = vi.fn();
+    let rootBackground = 'rgba(0, 0, 0, 0)';
+    let bodyBackground = 'rgb(14, 22, 37)';
     runInNewContext(preview().resize!, {
       document: { documentElement: root, body },
       addEventListener: (name: string, callback: () => void) =>
@@ -81,7 +83,10 @@ describe('interactive artifact layout', () => {
       requestAnimationFrame: (callback: () => void) => {
         frame = callback;
       },
-      getComputedStyle: () => ({ marginBottom: '20px' }),
+      getComputedStyle: (element: unknown) => ({
+        marginBottom: '20px',
+        backgroundColor: element === root ? rootBackground : bodyBackground,
+      }),
       ResizeObserver: class {
         constructor(callback: () => void) {
           measure = callback;
@@ -101,15 +106,35 @@ describe('interactive artifact layout', () => {
     callbacks.get('DOMContentLoaded')!();
     flush();
     expect(postMessage).toHaveBeenLastCalledWith(
-      { type: 'vibe:artifact:resize', height: 180 },
+      {
+        type: 'vibe:artifact:resize',
+        height: 180,
+        background: 'rgb(14, 22, 37)',
+      },
       '*'
     );
+    rootBackground = 'rgb(255, 255, 255)';
+    measure!();
+    flush();
+    expect(postMessage.mock.lastCall?.[0].background).toBe(
+      'rgb(255, 255, 255)'
+    );
+    rootBackground = 'rgba(0, 0, 0, 0)';
+    bodyBackground = 'rgba(0, 0, 0, 0)';
+    measure!();
+    flush();
+    expect(postMessage.mock.lastCall?.[0].background).toBe('rgba(0, 0, 0, 0)');
+    bodyBackground = 'rgb(14, 22, 37)';
+    measure!();
+    flush();
+    expect(postMessage).toHaveBeenCalledTimes(4);
+    postMessage.mockClear();
     height = 820;
     overflow = 780;
     measure!();
     measure!();
     flush();
-    expect(postMessage).toHaveBeenCalledTimes(2);
+    expect(postMessage).toHaveBeenCalledOnce();
     expect(postMessage.mock.lastCall?.[0].height).toBe(820);
     height = 100;
     overflow = 60;
@@ -122,7 +147,7 @@ describe('interactive artifact layout', () => {
     expect(postMessage.mock.lastCall?.[0].height).toBe(220);
     callbacks.get('resize')!();
     flush();
-    expect(postMessage).toHaveBeenCalledTimes(4);
+    expect(postMessage).toHaveBeenCalledTimes(3);
     height = 11200;
     overflow = 11160;
     measure!();
@@ -149,11 +174,15 @@ describe('interactive artifact layout', () => {
     let listener: (event: unknown) => void;
     const inner = {};
     const postMessage = vi.fn();
+    const style = { setProperty: vi.fn(), removeProperty: vi.fn() };
     runInNewContext(relay, {
       addEventListener: (_: string, callback: typeof listener) => {
         listener = callback;
       },
-      document: { querySelector: () => ({ contentWindow: inner }) },
+      document: {
+        querySelector: () => ({ contentWindow: inner }),
+        documentElement: { style },
+      },
       parent: { postMessage },
     });
     for (const value of [NaN, Infinity, '100']) {
@@ -181,6 +210,52 @@ describe('interactive artifact layout', () => {
         '*'
       );
     }
+  });
+
+  it('paints the wrapper with the opaque inner canvas so a short inner frame leaves no white edge', () => {
+    const relay = preview().html.match(
+      /<script nonce="[^"]+">([\s\S]*?)<\/script>/
+    )![1];
+    let listener: (event: unknown) => void;
+    const inner = {};
+    const postMessage = vi.fn();
+    const style = { setProperty: vi.fn(), removeProperty: vi.fn() };
+    runInNewContext(relay, {
+      addEventListener: (_: string, callback: typeof listener) => {
+        listener = callback;
+      },
+      document: {
+        querySelector: () => ({ contentWindow: inner }),
+        documentElement: { style },
+      },
+      parent: { postMessage },
+    });
+    const resize = (background: unknown) =>
+      listener!({
+        source: inner,
+        data: { type: 'vibe:artifact:resize', height: 120, background },
+      });
+    resize('rgb(14, 22, 37)');
+    expect(style.setProperty).toHaveBeenLastCalledWith(
+      '--canvas',
+      'rgb(14, 22, 37)'
+    );
+    expect(postMessage).toHaveBeenLastCalledWith(
+      { type: 'vibe:artifact:resize', height: 120 },
+      '*'
+    );
+    for (const background of [
+      'rgba(0, 0, 0, 0)',
+      'rgba(14, 22, 37, 0.5)',
+      'red; color: blue',
+      undefined,
+    ]) {
+      style.removeProperty.mockClear();
+      resize(background);
+      expect(style.removeProperty).toHaveBeenCalledExactlyOnceWith('--canvas');
+    }
+    expect(style.setProperty).toHaveBeenCalledOnce();
+    expect(preview().html).toContain('background:var(--canvas,white)');
   });
 
   it('relays only bounded focus positions from the interactive inner frame', () => {
