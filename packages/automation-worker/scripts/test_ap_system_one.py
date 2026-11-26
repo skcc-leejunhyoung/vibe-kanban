@@ -212,7 +212,7 @@ console.log(JSON.stringify(flags));
         self.assertTrue(os.path.isfile(result['evidence']))
 
     def test_partial_or_unproven_scope_cannot_checkpoint(self):
-        for change in ('missing', 'projects', 'repository', 'host', 'remote_subset', 'partial_tracked', 'registry', 'different_checkpoint'):
+        for change in ('missing', 'projects', 'short_project_list', 'invalid_project_list', 'repository', 'host', 'remote_subset', 'partial_tracked', 'registry', 'different_checkpoint'):
             with self.subTest(change=change):
                 gate, calls, values = self.fixture()
                 evidence = values[values['schedule']['a']['evidence']]
@@ -221,6 +221,10 @@ console.log(JSON.stringify(flags));
                     evidence.pop('coverage')
                 elif change == 'projects':
                     evidence['counts'] = {'projects': 2}
+                elif change == 'short_project_list':
+                    evidence['counts'] = {'projects': []}
+                elif change == 'invalid_project_list':
+                    evidence['counts'] = {'projects': [True]}
                 elif change == 'repository':
                     values['schedule']['pending_admissions'].append({'pr': 7, 'repo': 'synthetic/sibling'})
                 elif change == 'host':
@@ -264,7 +268,7 @@ console.log(JSON.stringify(flags));
         evidence = values[values['schedule']['a']['evidence']]
         evidence['coverage']['projects'].append({'projectId': 'synthetic-other-project', 'reviewTagId': 'synthetic-other-tag'})
         self.config['projects'] = [dict(project, connectorId='synthetic-other-connector') for project in evidence['coverage']['projects']]
-        evidence['counts'] = {'projects': 2}
+        evidence['counts'] = {'projects': [4, 0]}
         _, handled = gate(['periodic due'])
         self.assertEqual(handled['status'], 'handled')
         derived = json.loads(Path(handled['evidence']).read_text())
@@ -366,6 +370,27 @@ console.log(JSON.stringify(flags));
             _, result = gate(['periodic due'])
             self.assertEqual(result['status'], 'legacy')
             self.assertEqual(calls[-1], ('gate', False))
+
+    def test_github_budget_defers_until_worker_reset_without_another_request(self):
+        gate, calls, values = self.fixture()
+        self.ap['GATE_STATE'] = 'gate state'
+        self.ap['save'] = lambda key, value: values.update({key: value})
+        initial = self.ap['now']()
+        retry_at = int((initial + dt.timedelta(minutes=20)).timestamp())
+        request = self.ap['api']
+        self.ap['api'] = lambda *args, **kwargs: {
+            'status': 'deferred', 'reason': 'github_budget_low',
+            'remaining': 7, 'retryAt': retry_at,
+        }
+        self.assertEqual(gate(['periodic due'])[1]['retryAt'], retry_at)
+        self.ap['api'] = request
+        self.ap['now'] = lambda: initial + dt.timedelta(minutes=5)
+        calls.clear()
+        self.assertEqual(gate(['periodic due'])[1]['status'], 'deferred')
+        self.assertNotIn('request', [name for name, _ in calls])
+        self.ap['now'] = lambda: initial + dt.timedelta(minutes=20)
+        self.assertEqual(gate(['periodic due'])[1]['status'], 'handled')
+        self.assertIn('request', [name for name, _ in calls])
 
     def test_low_github_budget_defers_without_delegating(self):
         gate, calls, _ = self.fixture(report={'status': 'deferred', 'reason': 'github_budget_low', 'remaining': 10})

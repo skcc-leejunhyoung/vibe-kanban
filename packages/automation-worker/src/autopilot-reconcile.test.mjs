@@ -708,6 +708,14 @@ test('a same-head re-request (Awaiting review from you) changes facts and makes 
 
 test('reconciliation never spends the last reserved GitHub calls', () => {
   assert.throws(() => checkGithubBudget(1499, 1500), GithubBudgetLow);
+  assert.throws(
+    () => checkGithubBudget(1499, 1500, 101),
+    (error) => error instanceof GithubBudgetLow && error.retryAt === 101
+  );
+  assert.throws(
+    () => checkGithubBudget(1499, 1500, 0),
+    (error) => error instanceof GithubBudgetLow && error.retryAt === undefined
+  );
   assert.doesNotThrow(() => checkGithubBudget(1500, 1500));
   // An unknown budget leaves the decision to the next response header.
   assert.doesNotThrow(() => checkGithubBudget(undefined, 1500));

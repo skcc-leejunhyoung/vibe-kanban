@@ -669,6 +669,7 @@ async function route(req, res) {
           reason: 'github_budget_low',
           remaining: error.remaining,
           reserve: error.reserve,
+          retryAt: error.retryAt,
         });
       }
       log('warn', 'autopilot reconciliation failed', {
@@ -1896,7 +1897,8 @@ async function reconcileRoutineAutopilot(input) {
       .catch(() => null);
     checkGithubBudget(
       budget?.resources?.core?.remaining,
-      AUTOPILOT_GITHUB_RESERVE
+      AUTOPILOT_GITHUB_RESERVE,
+      budget?.resources?.core?.reset
     );
     const login = await githubLogin(
       github,
@@ -1918,7 +1920,11 @@ async function reconcileRoutineAutopilot(input) {
           );
           const remaining = response.headers.get('x-ratelimit-remaining');
           if (remaining !== null)
-            checkGithubBudget(Number(remaining), AUTOPILOT_GITHUB_RESERVE);
+            checkGithubBudget(
+              Number(remaining),
+              AUTOPILOT_GITHUB_RESERVE,
+              Number(response.headers.get('x-ratelimit-reset'))
+            );
           if (!response.ok) throw new Error('GitHub reconciliation failed');
           return response.json();
         },

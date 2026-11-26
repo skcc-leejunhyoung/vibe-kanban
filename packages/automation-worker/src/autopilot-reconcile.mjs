@@ -20,16 +20,17 @@ const BOARD_DECISION_STATES = new Set([
 // The account's REST budget is shared with `gh` and every other automation;
 // reconciliation never spends the last `reserve` calls.
 export class GithubBudgetLow extends Error {
-  constructor(remaining, reserve) {
+  constructor(remaining, reserve, reset) {
     super('GitHub rate budget below reserve');
     this.remaining = remaining;
     this.reserve = reserve;
+    if (Number.isSafeInteger(reset) && reset > 0) this.retryAt = reset;
   }
 }
 
-export function checkGithubBudget(remaining, reserve) {
+export function checkGithubBudget(remaining, reserve, reset) {
   if (Number.isFinite(remaining) && remaining < reserve)
-    throw new GithubBudgetLow(remaining, reserve);
+    throw new GithubBudgetLow(remaining, reserve, reset);
 }
 
 export const reconciliationProjects = (scope) =>

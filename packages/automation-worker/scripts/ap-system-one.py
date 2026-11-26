@@ -144,6 +144,24 @@ def matches_coverage(scope, coverage):
                 for ref in scope['tracked']))
 
 
+def checkpoint_counts_match(evidence, coverage):
+    project_count = len(coverage['projects'])
+    for field in ('counts', 'discovery_scope'):
+        section = evidence.get(field, {})
+        if not isinstance(section, dict):
+            return False
+        projects = section.get('projects', project_count)
+        if isinstance(projects, list):
+            # Some agent evidence reports an issue count per project.
+            if any(type(count) is not int or count < 0 for count in projects):
+                return False
+            projects = len(projects)
+        if type(projects) is not int or projects != project_count:
+            return False
+    workspaces = evidence.get('counts', {}).get('workspaces', coverage['hosts'])
+    return isinstance(workspaces, (list, dict)) and len(workspaces) == len(coverage['hosts'])
+
+
 def identity_recheck_due(ap, reviewed_at):
     schedule = ap['load'](ap['SCHED'], {})
     now = ap['now']()
@@ -175,20 +193,31 @@ def install(ap, config):
                           registry(ap, config) == scope and not identity_recheck_due(ap, reviewed_at) and
                           ap['now']() - reviewed_at < AGENT_AUDIT_INTERVAL)
 
+    budget_key = 'reconciliation_github_budget'
+
+    def budget_deferred(report):
+        return {'status': 'deferred', 'source': 'code', 'reason': report.get('reason'),
+                'remaining': report.get('remaining'),
+                **({'retryAt': report['retryAt']} if report.get('retryAt') else {})}
+
     def quiet_checkpoint(due):
         nonlocal board_only_evidence
         if manual_delegation_open():
             return None, 'existing_delegation'
+        state_path = ap.get('GATE_STATE')
+        cached = ap['load'](state_path, {}).get(budget_key) if state_path else None
+        current = ap['now']().timestamp()
+        if (isinstance(cached, dict) and cached.get('connector') == config['githubConnectorId']
+                and type(cached.get('retryAt')) is int and current < cached['retryAt'] <= current + 3600):
+            rest, _ = original(due, dry=True)
+            return (rest, budget_deferred(cached)), None
         scope = registry(ap, config)
         proof = checkpoint_proof(ap)
         if proof is None:
             return None, 'missing_scope_proof'
         evidence, acknowledged = proof
         coverage = evidence.get('coverage')
-        if (not matches_coverage(scope, coverage) or
-            any(section.get('projects', len(coverage['projects'])) != len(coverage['projects'])
-                for section in (evidence.get('counts', {}), evidence.get('discovery_scope', {}))) or
-            len(evidence.get('counts', {}).get('workspaces', coverage['hosts'])) != len(coverage['hosts'])):
+        if not matches_coverage(scope, coverage) or not checkpoint_counts_match(evidence, coverage):
             return None, 'scope_mismatch'
         reviewed_at = ap['parse'](evidence['agentReviewedAt']) if 'agentReviewedAt' in evidence else acknowledged
         if not reviewed_at or not reviewed_at <= acknowledged <= ap['now']():
@@ -204,8 +233,17 @@ def install(ap, config):
             # The GitHub budget is below the reserve; a delegated agent would spend
             # the same account's budget, so this cycle neither checks nor delegates.
             rest, _ = original(due, dry=True)
-            return (rest, {'status': 'deferred', 'source': 'code', 'reason': report.get('reason'),
-                           'remaining': report.get('remaining')}), None
+            retry_at = report.get('retryAt')
+            current = ap['now']().timestamp()
+            if (state_path and report.get('reason') == 'github_budget_low'
+                    and type(retry_at) is int and current < retry_at <= current + 3600):
+                state = ap['load'](state_path, {})
+                state[budget_key] = {**budget_deferred(report), 'connector': config['githubConnectorId']}
+                try:
+                    ap['save'](state_path, state)
+                except OSError:
+                    pass  # A local cache failure must not trigger an agent on the same budget.
+            return (rest, budget_deferred(report)), None
         if not isinstance(report, dict) or report.get('status') != 'ok':
             return None, 'source_unavailable'
         counts = report.get('counts', {})
