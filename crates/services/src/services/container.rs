@@ -30,6 +30,8 @@ use db::{
 };
 #[cfg(feature = "qa-mode")]
 use executors::executors::qa_mock::QaMockExecutor;
+#[cfg(not(feature = "qa-mode"))]
+use executors::profile::ExecutorConfigs;
 use executors::{
     actions::{
         AutomationOrigin, ExecutorAction, ExecutorActionType,
@@ -45,7 +47,7 @@ use executors::{
             patch::{extract_normalized_entry_from_patch, fix_patch_ops},
         },
     },
-    profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
+    profile::{ExecutorConfig, ExecutorProfileId},
 };
 use futures::{StreamExt, future, stream::BoxStream};
 use git::{GitService, GitServiceError};
@@ -73,6 +75,21 @@ use crate::services::{
 pub type ContainerRef = String;
 
 static HISTORICAL_LOG_REPLAY_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
+
+fn opencode_rewind_boundary(
+    target: Option<(String, String)>,
+    latest: Option<&str>,
+    dropped: bool,
+) -> anyhow::Result<()> {
+    if latest.is_some()
+        && !target.is_some_and(|(native, _)| !dropped && latest == Some(native.as_str()))
+    {
+        anyhow::bail!(
+            "Cannot safely rewind OpenCode v2 without a matching native message. Start a new session instead."
+        );
+    }
+    Ok(())
+}
 
 fn historical_log_replay_semaphore() -> &'static Semaphore {
     HISTORICAL_LOG_REPLAY_SEMAPHORE.get_or_init(|| Semaphore::new(1))
@@ -999,6 +1016,15 @@ pub trait ContainerService {
                     "Stop the running turn before rewinding OpenCode v2."
                 )));
             }
+            let turn =
+                CodingAgentTurn::find_by_execution_process_id(pool, target_process_id).await?;
+            let latest = CodingAgentTurn::find_latest_session_info(pool, session_id).await?;
+            opencode_rewind_boundary(
+                turn.and_then(|turn| turn.agent_session_id.zip(turn.agent_message_id)),
+                latest.as_ref().map(|info| info.session_id.as_str()),
+                process.dropped,
+            )
+            .map_err(ContainerError::Other)?;
         }
         let cleanliness = self.is_container_clean(&workspace).await;
         let is_dirty = if is_opencode_v2 && perform_git_reset {
@@ -2990,7 +3016,17 @@ pub trait ContainerService {
 mod tests {
     use utils::log_msg::LogMsg;
 
-    use super::normalized_stream_is_open;
+    use super::{normalized_stream_is_open, opencode_rewind_boundary};
+
+    #[test]
+    fn opencode_reset_requires_a_known_boundary_when_a_session_exists() {
+        let target = || Some(("ses_current".to_string(), "msg_target".to_string()));
+        assert!(opencode_rewind_boundary(target(), Some("ses_current"), false).is_ok());
+        assert!(opencode_rewind_boundary(None, Some("ses_current"), false).is_err());
+        assert!(opencode_rewind_boundary(target(), Some("ses_other"), false).is_err());
+        assert!(opencode_rewind_boundary(target(), Some("ses_current"), true).is_err());
+        assert!(opencode_rewind_boundary(None, None, false).is_ok());
+    }
 
     #[test]
     fn normalized_stream_stays_open_until_storage_finishes() {

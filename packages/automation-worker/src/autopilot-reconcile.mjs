@@ -120,6 +120,14 @@ async function readPrMetadata(refs, graphql, reads, signal) {
         !/^\d+$/.test(node.fullDatabaseId || '')
       )
         throw new Error('invalid PR database ID');
+      if (
+        !Number.isSafeInteger(Number(node.fullDatabaseId)) ||
+        Number(node.fullDatabaseId) < 1 ||
+        !sha1.test(node.headRefOid || '') ||
+        typeof node.updatedAt !== 'string' ||
+        !Number.isFinite(Date.parse(node.updatedAt))
+      )
+        throw new Error('incomplete PR metadata batch');
       const before = {
         id: Number(node.fullDatabaseId),
         head: { sha: node.headRefOid },

@@ -61,9 +61,10 @@ Vibe Kanban offers the same prompt edit and rewind targets as for Claude Code
 and Codex. Reset updates Vibe Kanban history and optionally restores files
 without calling OpenCode. On the next prompt, OpenCode forks before the first
 dropped message when a native boundary is available; if the fork fails, the
-prompt is not sent on the old session. Without a recorded boundary, exact
-native context rewind is not guaranteed; start a new session if the old context
-must not carry over. Stop a running turn before resetting.
+prompt is not sent on the old session. When a native session exists but its
+matching message boundary is unavailable, reset is refused to prevent hidden
+messages returning in the agent context. Start a new session instead. Stop a
+running turn before resetting.
 
 ### Sync repository memory
 

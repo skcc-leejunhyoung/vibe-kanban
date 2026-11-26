@@ -76,6 +76,8 @@ function fixture() {
               updatedAt: h.prUpdatedAt || '2002-03-04T00:00:00Z',
             },
           };
+          if (h.invalidMetadata)
+            Object.assign(result[key].pullRequest, h.invalidMetadata);
         }
         return result;
       },
@@ -131,6 +133,18 @@ test('discovery covers all issue pages, including sessionless issues, and reques
       '/repos/synthetic/widgets/pulls/8/reviews?per_page=100&page=1'
     )
   );
+});
+
+test('incomplete PR metadata cannot produce a reconciliation checkpoint', async () => {
+  for (const invalidMetadata of [
+    { headRefOid: null },
+    { updatedAt: null },
+    { fullDatabaseId: '9007199254740993' },
+  ]) {
+    const h = fixture();
+    h.invalidMetadata = invalidMetadata;
+    await assert.rejects(h.collect(), /incomplete PR metadata batch/);
+  }
 });
 
 test('same-head review changes, dismissed reviews and timestamp conflicts remain visible', async () => {
