@@ -1,4 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
+import { ErrorDialog } from '@vibe/ui/components/ErrorDialog';
+import { useTranslation } from 'react-i18next';
 import { sessionsApi } from '@/shared/lib/api';
 import {
   RestoreLogsDialog,
@@ -26,6 +28,7 @@ export function useResetProcessMutation(
   onError?: (err: unknown) => void
 ) {
   const hostId = useHostId();
+  const { t } = useTranslation('common');
   return useMutation({
     mutationKey: ['reset-process', sessionId],
     mutationFn: async ({
@@ -67,6 +70,10 @@ export function useResetProcessMutation(
         return;
       }
       console.error('Failed to reset process:', err);
+      void ErrorDialog.show({
+        title: t('error'),
+        message: err instanceof Error ? err.message : String(err),
+      });
       onError?.(err);
     },
   });
