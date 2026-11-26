@@ -167,6 +167,7 @@ impl From<ContainerError> for ApiError {
             ContainerError::ExecutionProcess(e) => ApiError::ExecutionProcess(e),
             ContainerError::ExecutorError(e) => ApiError::Executor(e),
             ContainerError::Worktree(e) => e.into(),
+            ContainerError::ResetConflict(message) => ApiError::Conflict(message),
             other => ApiError::Container(other),
         }
     }
@@ -652,6 +653,19 @@ mod tests {
     use axum::{http::StatusCode, response::IntoResponse};
 
     use super::*;
+
+    #[tokio::test]
+    async fn reset_conflict_exposes_recovery_message() {
+        let message = "Start a new session in this workspace.";
+        let response =
+            ApiError::from(ContainerError::ResetConflict(message.into())).into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["message"], message);
+    }
 
     #[test]
     fn account_change_returns_a_conflict_for_explicit_recovery() {

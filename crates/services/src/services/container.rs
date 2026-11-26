@@ -80,13 +80,13 @@ fn opencode_rewind_boundary(
     target: Option<(String, String)>,
     latest: Option<&str>,
     dropped: bool,
-) -> anyhow::Result<()> {
+) -> Result<(), ContainerError> {
     if latest.is_some()
         && !target.is_some_and(|(native, _)| !dropped && latest == Some(native.as_str()))
     {
-        anyhow::bail!(
-            "Cannot safely rewind OpenCode v2 without a matching native message. Start a new session instead."
-        );
+        return Err(ContainerError::ResetConflict(
+            "OpenCode v2 has no matching message to rewind to. Start a new session in this workspace to send the prompt again.".into(),
+        ));
     }
     Ok(())
 }
@@ -144,6 +144,8 @@ pub enum ContainerError {
     KillFailed(std::io::Error),
     #[error("Artifact response has already been dispatched or cancelled")]
     ArtifactAlreadyDispatched,
+    #[error("{0}")]
+    ResetConflict(String),
     #[error(transparent)]
     Other(#[from] AnyhowError), // Catches any unclassified errors
 }
@@ -1012,9 +1014,9 @@ pub trait ContainerService {
             if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session_id)
                 .await?
             {
-                return Err(ContainerError::Other(anyhow!(
-                    "Stop the running turn before rewinding OpenCode v2."
-                )));
+                return Err(ContainerError::ResetConflict(
+                    "Stop the running turn before rewinding OpenCode v2.".into(),
+                ));
             }
             let turn =
                 CodingAgentTurn::find_by_execution_process_id(pool, target_process_id).await?;
@@ -1023,8 +1025,7 @@ pub trait ContainerService {
                 turn.and_then(|turn| turn.agent_session_id.zip(turn.agent_message_id)),
                 latest.as_ref().map(|info| info.session_id.as_str()),
                 process.dropped,
-            )
-            .map_err(ContainerError::Other)?;
+            )?;
         }
         let cleanliness = self.is_container_clean(&workspace).await;
         let is_dirty = if is_opencode_v2 && perform_git_reset {
