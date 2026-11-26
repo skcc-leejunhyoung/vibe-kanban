@@ -442,6 +442,7 @@ impl OpencodeV2 {
         cwd: &Path,
         session: &str,
         message: &str,
+        update_local: impl Future<Output = Result<(), ExecutorError>> + Send,
     ) -> Result<(), ExecutorError> {
         let path = session_path(session)?;
         if !valid_id(message) {
@@ -458,6 +459,20 @@ impl OpencodeV2 {
                 "stage message rewind",
             )
             .await?;
+            if let Err(error) = update_local.await {
+                let cleared = Api::checked(
+                    api.request(Method::DELETE, &format!("{path}/revert"))
+                        .timeout(REQUEST_TIMEOUT),
+                    "cancel message rewind",
+                )
+                .await;
+                if let Err(clear_error) = cleared {
+                    return Err(utils::agent_error(format!(
+                        "{error} OpenCode could not cancel the staged rewind: {clear_error}"
+                    )));
+                }
+                return Err(error);
+            }
             if let Err(error) = Api::checked(
                 api.request(Method::POST, &format!("{path}/revert/commit"))
                     .timeout(REQUEST_TIMEOUT),
@@ -465,12 +480,11 @@ impl OpencodeV2 {
             )
             .await
             {
-                let _ = api
-                    .request(Method::DELETE, &format!("{path}/revert"))
-                    .timeout(REQUEST_TIMEOUT)
-                    .send()
-                    .await;
-                return Err(error);
+                // Local history already reflects the staged boundary. Clearing
+                // it here would bring back turns that Vibe Kanban hid.
+                return Err(utils::agent_error(format!(
+                    "Local history was updated, but OpenCode could not finalize the rewind: {error}"
+                )));
             }
             Ok(())
         }
@@ -2746,7 +2760,9 @@ mod turn_tests {
         let executor = executor(PermissionPolicy::Auto, None);
         assert!(
             executor
-                .rewind_history(Path::new("/fixture"), "ses_fixture", "../bad")
+                .rewind_history(Path::new("/fixture"), "ses_fixture", "../bad", async {
+                    Ok(())
+                })
                 .await
                 .unwrap_err()
                 .to_string()

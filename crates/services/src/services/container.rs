@@ -993,7 +993,7 @@ pub trait ContainerService {
         } else {
             None
         };
-        if let Some((action, config)) = native_rewind {
+        let native_target = if let Some((action, config)) = native_rewind {
             let turn =
                 CodingAgentTurn::find_by_execution_process_id(pool, target_process_id).await?;
             let latest = CodingAgentTurn::find_latest_session_info(pool, session_id).await?;
@@ -1020,53 +1020,83 @@ pub trait ContainerService {
                     "OpenCode v2 profile is unavailable."
                 )));
             };
-            agent
-                .rewind_history(&action.effective_dir(&workspace_dir), &native, &message)
-                .await
-                .map_err(|error| ContainerError::Other(anyhow!(error)))?;
-        }
-        let is_dirty = self
-            .is_container_clean(&workspace)
-            .await
-            .map(|is_clean| !is_clean)
-            .unwrap_or(false);
-
-        for repo in &repos {
-            let repo_state = repo_states.iter().find(|s| s.repo_id == repo.id);
-            let target_oid = match repo_state.and_then(|s| s.before_head_commit.clone()) {
-                Some(oid) => Some(oid),
-                None => {
-                    ExecutionProcess::find_prev_after_head_commit(
-                        pool,
-                        session_id,
-                        target_process_id,
-                        repo.id,
-                    )
-                    .await?
-                }
+            Some((agent, action.effective_dir(&workspace_dir), native, message))
+        } else {
+            None
+        };
+        let update_local = async {
+            let cleanliness = self.is_container_clean(&workspace).await;
+            let is_dirty = if native_target.is_some() && perform_git_reset {
+                !cleanliness?
+            } else {
+                cleanliness.map(|clean| !clean).unwrap_or(false)
             };
 
-            let worktree_path = workspace_dir.join(&repo.name);
-            if let Some(oid) = target_oid {
-                self.git().reconcile_worktree_to_commit(
-                    &worktree_path,
-                    &oid,
-                    git::WorktreeResetOptions::new(
-                        perform_git_reset,
-                        force_when_dirty,
-                        is_dirty,
-                        perform_git_reset,
-                    ),
-                );
+            for repo in &repos {
+                let repo_state = repo_states.iter().find(|s| s.repo_id == repo.id);
+                let target_oid = match repo_state.and_then(|s| s.before_head_commit.clone()) {
+                    Some(oid) => Some(oid),
+                    None => {
+                        ExecutionProcess::find_prev_after_head_commit(
+                            pool,
+                            session_id,
+                            target_process_id,
+                            repo.id,
+                        )
+                        .await?
+                    }
+                };
+
+                if native_target.is_some() && perform_git_reset && target_oid.is_none() {
+                    return Err(ContainerError::Other(anyhow!(
+                        "No restore point for repository {}. Retry without restoring files.",
+                        repo.name
+                    )));
+                }
+                let worktree_path = workspace_dir.join(&repo.name);
+                if let Some(oid) = target_oid {
+                    let outcome = self.git().reconcile_worktree_to_commit(
+                        &worktree_path,
+                        &oid,
+                        git::WorktreeResetOptions::new(
+                            perform_git_reset,
+                            force_when_dirty,
+                            is_dirty,
+                            perform_git_reset,
+                        ),
+                    );
+                    if native_target.is_some()
+                        && perform_git_reset
+                        && outcome.needed
+                        && !outcome.applied
+                    {
+                        return Err(ContainerError::Other(anyhow!(
+                            "Could not restore repository {}. Check the worktree before retrying; earlier repositories may already have been restored.",
+                            repo.name
+                        )));
+                    }
+                }
             }
+
+            // Only this session's processes: a restore/retry must not kill a sibling
+            // session running concurrently in the same workspace.
+            self.try_stop(&workspace, false, Some(session_id)).await?;
+            ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
+
+            Ok::<(), ContainerError>(())
+        };
+        if let Some((agent, cwd, native, message)) = &native_target {
+            agent
+                .rewind_history(cwd, native, message, async {
+                    update_local
+                        .await
+                        .map_err(|error| ExecutorError::FollowUpNotSupported(error.to_string()))
+                })
+                .await
+                .map_err(|error| ContainerError::Other(anyhow!(error)))
+        } else {
+            update_local.await
         }
-
-        // Only this session's processes: a restore/retry must not kill a sibling
-        // session running concurrently in the same workspace.
-        self.try_stop(&workspace, false, Some(session_id)).await?;
-        ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
-
-        Ok(())
     }
 
     /// Finish only a still-deferred execution, without touching a newer turn.
