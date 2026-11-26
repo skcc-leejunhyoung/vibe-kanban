@@ -38,7 +38,7 @@ vi.mock('@/shared/hooks/useExecutionProcessesContext', () => ({
   }),
 }));
 
-it('does not allow editing or resetting a v2 turn after switching executors', () => {
+it('allows reset actions for active OpenCode v2 and Codex coding turns', () => {
   function Probe() {
     const { canResetProcess } = useResetProcess('workspace', 'session');
     return (
@@ -51,6 +51,6 @@ it('does not allow editing or resetting a v2 turn after switching executors', ()
   }
 
   expect(renderToStaticMarkup(<Probe />)).toContain(
-    'data-allowed="codex-turn"'
+    'data-allowed="v2-turn,codex-turn"'
   );
 });

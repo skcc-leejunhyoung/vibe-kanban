@@ -963,17 +963,6 @@ pub trait ContainerService {
             )));
         }
 
-        if process
-            .executor_action()
-            .ok()
-            .and_then(ExecutorAction::base_executor)
-            == Some(executors::executors::BaseCodingAgent::OpencodeV2)
-        {
-            return Err(ContainerError::Other(anyhow!(
-                "OpenCode v2 turns cannot be edited or rewound safely yet."
-            )));
-        }
-
         let session = Session::find_by_id(pool, session_id)
             .await?
             .ok_or_else(|| ContainerError::Other(anyhow!("Session not found")))?;
@@ -994,6 +983,48 @@ pub trait ContainerService {
 
         let container_ref = self.ensure_container_exists(&workspace).await?;
         let workspace_dir = std::path::PathBuf::from(container_ref);
+        let native_rewind = process.executor_action().ok().and_then(|action| {
+            let config = action.executor_config()?;
+            (config.executor == executors::executors::BaseCodingAgent::OpencodeV2)
+                .then_some((action, config))
+        });
+        let _starting = if native_rewind.is_some() {
+            Some(self.lock_session_start(session_id).await)
+        } else {
+            None
+        };
+        if let Some((action, config)) = native_rewind {
+            let turn =
+                CodingAgentTurn::find_by_execution_process_id(pool, target_process_id).await?;
+            let latest = CodingAgentTurn::find_latest_session_info(pool, session_id).await?;
+            let (native, message) = turn
+                .and_then(|turn| turn.agent_session_id.zip(turn.agent_message_id))
+                .filter(|(native, _)| {
+                    !process.dropped && latest.is_some_and(|info| info.session_id == *native)
+                })
+                .ok_or_else(|| {
+                    ContainerError::Other(anyhow!(
+                        "This turn has no rewindable message in the current OpenCode v2 session."
+                    ))
+                })?;
+            if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session_id)
+                .await?
+            {
+                return Err(ContainerError::Other(anyhow!(
+                    "Stop the running turn before rewinding OpenCode v2."
+                )));
+            }
+            let agent = ExecutorConfigs::get_cached().get_coding_agent(&config.profile_id());
+            let Some(executors::executors::CodingAgent::OpencodeV2(agent)) = agent else {
+                return Err(ContainerError::Other(anyhow!(
+                    "OpenCode v2 profile is unavailable."
+                )));
+            };
+            agent
+                .rewind_history(&action.effective_dir(&workspace_dir), &native, &message)
+                .await
+                .map_err(|error| ContainerError::Other(anyhow!(error)))?;
+        }
         let is_dirty = self
             .is_container_clean(&workspace)
             .await

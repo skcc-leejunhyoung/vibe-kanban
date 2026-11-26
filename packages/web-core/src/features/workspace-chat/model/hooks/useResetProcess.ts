@@ -2,7 +2,6 @@ import { useCallback, useMemo } from 'react';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { isCodingAgent } from '@/shared/constants/processes';
-import { BaseCodingAgent } from 'shared/types';
 import { useResetProcessMutation } from './useResetProcessMutation';
 
 export interface UseResetProcessResult {
@@ -43,7 +42,7 @@ export function useResetProcess(
               return false;
             }
             const executor = action.executor_config?.executor;
-            return executor != null && executor !== BaseCodingAgent.OPENCODE_V2;
+            return executor != null;
           })
           .map((process) => process.id)
       ),

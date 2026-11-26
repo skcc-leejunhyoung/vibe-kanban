@@ -161,9 +161,6 @@ pub struct OpencodeV2 {
     #[ts(skip)]
     #[derivative(PartialEq = "ignore")]
     pub unsupported_policy: Option<PermissionPolicy>,
-    #[serde(skip)]
-    #[ts(skip)]
-    pub discard_from: Option<String>,
 }
 
 #[derive(Clone)]
@@ -438,6 +435,49 @@ impl OpencodeV2 {
             command.group_spawn_no_window().map_err(ExecutorError::Io)?,
             password,
         ))
+    }
+
+    pub async fn rewind_history(
+        &self,
+        cwd: &Path,
+        session: &str,
+        message: &str,
+    ) -> Result<(), ExecutorError> {
+        let path = session_path(session)?;
+        if !valid_id(message) {
+            return Err(utils::agent_error("Invalid OpenCode v2 message ID."));
+        }
+        let env = ExecutionEnv::new(Default::default(), false, String::new());
+        let (mut child, password) = self.start_server(cwd, &env).await?;
+        let stdout = child.inner().stdout.take().expect("piped stdout");
+        let result = async {
+            let api = Self::api(stdout, password).await?;
+            api.post(
+                &format!("{path}/revert/stage"),
+                json!({"messageID": message, "files": false}),
+                "stage message rewind",
+            )
+            .await?;
+            if let Err(error) = Api::checked(
+                api.request(Method::POST, &format!("{path}/revert/commit"))
+                    .timeout(REQUEST_TIMEOUT),
+                "commit message rewind",
+            )
+            .await
+            {
+                let _ = api
+                    .request(Method::DELETE, &format!("{path}/revert"))
+                    .timeout(REQUEST_TIMEOUT)
+                    .send()
+                    .await;
+                return Err(error);
+            }
+            Ok(())
+        }
+        .await;
+        drop(child.inner().stdin.take());
+        let _ = child.kill().await;
+        result
     }
 
     async fn api(
@@ -1631,7 +1671,6 @@ mod tests {
             },
             approvals: None,
             unsupported_policy: None,
-            discard_from: None,
         };
         let mut env = ExecutionEnv::new(Default::default(), false, String::new());
         for key in [
@@ -1899,7 +1938,6 @@ mod attachment_tests {
             cmd: CmdOverrides::default(),
             approvals: None,
             unsupported_policy: None,
-            discard_from: None,
         }
     }
 
@@ -2350,19 +2388,10 @@ impl StandardCodingAgentExecutor for OpencodeV2 {
         cwd: &Path,
         prompt: &str,
         id: &str,
-        reset: Option<&str>,
+        _reset: Option<&str>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        if reset.is_some() || self.discard_from.is_some() {
-            return Err(ExecutorError::FollowUpNotSupported(
-                "OpenCode v2 message rewind is not supported yet.".into(),
-            ));
-        }
         self.run(cwd, prompt, Some(id), env).await
-    }
-
-    fn discard_from_message(&mut self, message_id: &str) {
-        self.discard_from = Some(message_id.to_owned());
     }
 
     /// `generate` answers from the session's context without changing its
@@ -2671,7 +2700,6 @@ mod turn_tests {
             cmd: CmdOverrides::default(),
             approvals: approvals.map(|a| Arc::new(a) as Arc<dyn ExecutorApprovalService>),
             unsupported_policy: None,
-            discard_from: None,
         };
         let mut config = ExecutorConfig::new(BaseCodingAgent::OpencodeV2);
         config.permission_policy = Some(policy);
@@ -2714,26 +2742,16 @@ mod turn_tests {
     }
 
     #[tokio::test]
-    async fn rewind_is_rejected_before_launching_the_agent() {
-        let mut executor = executor(PermissionPolicy::Auto, None);
-        let env = ExecutionEnv::new(Default::default(), false, String::new());
-        for reset in [Some("msg_old"), None] {
-            if reset.is_none() {
-                executor.discard_from_message("msg_old");
-            }
-            assert!(matches!(
-                executor
-                    .spawn_follow_up(
-                        Path::new("/fixture"),
-                        "Revised prompt",
-                        "ses_fixture",
-                        reset,
-                        &env,
-                    )
-                    .await,
-                Err(ExecutorError::FollowUpNotSupported(_))
-            ));
-        }
+    async fn rewind_rejects_invalid_message_ids_before_launching_the_agent() {
+        let executor = executor(PermissionPolicy::Auto, None);
+        assert!(
+            executor
+                .rewind_history(Path::new("/fixture"), "ses_fixture", "../bad")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid OpenCode v2 message ID")
+        );
     }
 
     #[tokio::test]
