@@ -275,6 +275,91 @@ test('a board hold requires reason, owner and future time and becomes due again'
   assert.equal((await poll()).changed, true);
 });
 
+test('same-head closure preserves a board hold without reading terminal reviews', async (t) => {
+  for (const terminal of ['closed', 'merged']) {
+    await t.test(terminal, async () => {
+      const h = fixture();
+      const pr = scope.tracked[0];
+      const key = `${pr.repository}#${pr.number}`;
+      h.scope = { ...scope, boardPrs: [key] };
+      h.issueCount = 0;
+      h.discovered = terminal === 'closed' ? [pr] : [];
+      h.now = Date.parse('2002-03-06T00:00:00Z');
+      h.reviews = [
+        {
+          id: 21,
+          state: 'APPROVED',
+          commit_id: head,
+          submitted_at: '2002-03-05T00:00:00Z',
+          user: { login: 'synthetic-reviewer' },
+        },
+      ];
+      const record = {};
+      const poll = (acknowledgedAt) =>
+        reconcileAutopilot({
+          scope: h.scope,
+          record,
+          collect: (terminalReviews) => {
+            h.terminalReviews = terminalReviews;
+            return h.collect();
+          },
+          persist: async () => {},
+          now: () => h.now,
+          acknowledgedAt,
+        });
+
+      const [pending] = (await poll()).boardPending;
+      h.now += 1000;
+      const recheckAt = h.now + 2 * 60 * 60 * 1000;
+      h.scope.boardResolutions = [
+        {
+          key,
+          fingerprint: pending.fingerprint,
+          disposition: 'hold',
+          reason: 'Waiting for authoritative decision',
+          owner: 'synthetic-operator',
+          recheckAt: new Date(recheckAt).toISOString(),
+        },
+      ];
+      assert.deepEqual(
+        (await poll(new Date(h.now).toISOString())).boardPending,
+        []
+      );
+      const held = record.boardPending[key];
+
+      delete h.scope.boardResolutions;
+      h.state = terminal;
+      h.discovered = [];
+      h.now += 1000;
+      const closed = await poll();
+      assert.equal(closed.changed, true);
+      assert.equal(closed.githubReads.reviewPages, 0);
+      assert.deepEqual(closed.boardPending, []);
+      assert.deepEqual(record.boardPending[key], held);
+      assert.equal(record.boardReviews[key].fingerprint, held.fingerprint);
+
+      h.now += 1000;
+      const cached = await poll();
+      assert.equal(cached.githubReads.metadataBatches, 0);
+      assert.equal(cached.githubReads.reviewPages, 0);
+      assert.deepEqual(cached.boardPending, []);
+
+      if (terminal === 'closed') {
+        h.state = 'open';
+        h.discovered = [pr];
+        h.now += 1000;
+        const reopened = await poll();
+        assert.equal(reopened.githubReads.reviewPages, 1);
+        assert.equal(reopened.boardPending[0].fingerprint, held.fingerprint);
+        assert.equal(reopened.boardPending[0].hold, undefined);
+      } else {
+        h.now = recheckAt;
+        assert.deepEqual((await poll()).boardPending, [held]);
+      }
+    });
+  }
+});
+
 test('missing initial baseline and changed queues require an agent; only official acknowledgement permits quiet routing', async () => {
   const h = fixture();
   const record = {};

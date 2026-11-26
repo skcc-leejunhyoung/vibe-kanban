@@ -743,9 +743,22 @@ function reconcileBoardReviews(scope, record, snapshot, acknowledged, now) {
     );
     for (const key of keys) {
       const previous = record.boardReviews?.[key];
-      reviews[key] = { head, fingerprint };
+      const item = pending[key];
+      const lastKnown = item ?? previous;
+      // An empty terminal snapshot may have skipped the review lookup. Keep
+      // the last review evidence and its hold until there is a new head or review.
       if (
-        (pending[key] && pending[key].fingerprint !== fingerprint) ||
+        state === 'closed' &&
+        reviewEvents.length === 0 &&
+        lastKnown?.head === head
+      ) {
+        reviews[key] = { head, fingerprint: lastKnown.fingerprint, state };
+        continue;
+      }
+      reviews[key] = { head, fingerprint, state };
+      if (
+        (item && item.fingerprint !== fingerprint) ||
+        (previous?.state === 'closed' && state === 'open' && awaitingReview) ||
         (!previous && state === 'open' && decisions.length > 0) ||
         (previous &&
           previous.fingerprint !== fingerprint &&
