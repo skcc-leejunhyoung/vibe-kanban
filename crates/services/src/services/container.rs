@@ -997,16 +997,6 @@ pub trait ContainerService {
             let turn =
                 CodingAgentTurn::find_by_execution_process_id(pool, target_process_id).await?;
             let latest = CodingAgentTurn::find_latest_session_info(pool, session_id).await?;
-            let (native, message) = turn
-                .and_then(|turn| turn.agent_session_id.zip(turn.agent_message_id))
-                .filter(|(native, _)| {
-                    !process.dropped && latest.is_some_and(|info| info.session_id == *native)
-                })
-                .ok_or_else(|| {
-                    ContainerError::Other(anyhow!(
-                        "This turn has no rewindable message in the current OpenCode v2 session."
-                    ))
-                })?;
             if ExecutionProcess::has_running_non_dev_server_processes_for_session(pool, session_id)
                 .await?
             {
@@ -1014,13 +1004,24 @@ pub trait ContainerService {
                     "Stop the running turn before rewinding OpenCode v2."
                 )));
             }
-            let agent = ExecutorConfigs::get_cached().get_coding_agent(&config.profile_id());
-            let Some(executors::executors::CodingAgent::OpencodeV2(agent)) = agent else {
-                return Err(ContainerError::Other(anyhow!(
-                    "OpenCode v2 profile is unavailable."
-                )));
-            };
-            Some((agent, action.effective_dir(&workspace_dir), native, message))
+            let boundary = turn
+                .and_then(|turn| turn.agent_session_id.zip(turn.agent_message_id))
+                .filter(|(native, _)| {
+                    !process.dropped && latest.is_some_and(|info| info.session_id == *native)
+                });
+            if let Some((native, message)) = boundary {
+                let agent = ExecutorConfigs::get_cached().get_coding_agent(&config.profile_id());
+                let Some(executors::executors::CodingAgent::OpencodeV2(agent)) = agent else {
+                    return Err(ContainerError::Other(anyhow!(
+                        "OpenCode v2 profile is unavailable."
+                    )));
+                };
+                Some((agent, action.effective_dir(&workspace_dir), native, message))
+            } else {
+                // Like other executors without a usable native boundary, keep
+                // the shared restore path available without guessing an ID.
+                None
+            }
         } else {
             None
         };
