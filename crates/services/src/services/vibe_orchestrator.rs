@@ -59,11 +59,12 @@ pub const SENTINEL: &str = "VIBE_RESULT:";
 pub const PREAMBLE_CODING: &str = "\n\n---\n[자동 워크플로우 지침]\n\
 - 진행 중 사용자에게 선택지를 묻지 말고, 항상 가장 합리적인 추천 방향으로 스스로 결정해 진행해라.\n\
 - 사용자가 결정해야 할 사항이 생겨도 멈추지 말고 추천 방향으로 진행해라. 결정 내용, 이유, 다른 선택지, 바꾸려면 할 일을 Drawer에 남겨라. `vk drawer list --all`로 같은 이슈(이슈가 없으면 같은 PR)의 Drawer 문서를 먼저 찾아라. 이전 제목으로 만든 문서도 같은 이슈·PR로 확인되면 재사용해라. 있으면 `vk drawer get <ID> --json`으로 본문을 읽고 새 내용을 끝에 덧붙인 전체 본문을 `vk drawer update <ID> --file -`의 표준 입력으로 넘겨라. 없을 때만 `vk drawer create --title \"<이슈 ID 또는 PR URL>: <제목>\" --label \"확인 필요\" --notify --file -`로 생성해라.\n\
-- 추천대로 진행해도 할 수 없는 부분(권한, 외부 시스템 등)이 있으면 할 수 있는 데까지 끝내고, 못 한 부분과 이유를 같은 방법으로 Drawer 문서로 남겨라.\n\
+- 이 워크스페이스 안에서 끝낼 수 없는 일은 남은 작업으로 세지 마라. 배포와 배포 후 테스트·실측, 원격 push와 PR 생성, 담당자 승인·합의, 권한이나 자료가 없어 접근할 수 없는 시스템이 필요한 확인이 여기에 든다. 이슈의 완료 조건에 적혀 있어도 마찬가지다. 할 수 있는 데까지(구현, 로컬 테스트, 검증 절차 준비) 끝내고, 남은 일·이유·재개 조건을 같은 방법으로 Drawer에 남긴 뒤 `done`으로 마쳐라.\n\
+- 사용자가 이 턴에서 직접 요청하지 않았다면 push·PR 생성·배포는 하지도, 승인을 기다리지도 마라. 리뷰 뒤 자동화가 하거나 사람이 한다.\n\
 - 이 턴의 마지막 메시지는 그대로 git 커밋 메시지로 사용된다. 그러니 마지막 메시지는 `type(scope): 요약` 한 줄 제목 + (필요하면) 빈 줄 뒤 짧은 본문 형태의 커밋 메시지로 작성해라. 마크다운 헤더(##)·체크리스트·이모지·파일 나열·장문 보고는 넣지 마라. 사용자에게 길게 설명할 내용이 있으면 이 마지막 턴이 아니라 그 전 턴에 남겨라.\n\
 - 이 턴을 마칠 때 반드시 위 커밋 메시지 다음, 메시지의 마지막 줄에 다음 중 하나만 정확히 출력해라:\n\
-  - 이 이슈의 모든 작업을 완결적으로 끝냈으면(할 수 없는 부분은 Drawer 문서로 남긴 뒤): `VIBE_RESULT: done`\n\
-  - 아직 끝나지 않은 작업이 남았으면: `VIBE_RESULT: continue`";
+  - 이 워크스페이스에서 할 수 있는 이 이슈의 작업을 모두 끝냈으면(밖에서만 할 수 있는 일은 Drawer에 남긴 뒤): `VIBE_RESULT: done`\n\
+  - 다음 턴에 이 워크스페이스에서 실제로 할 일(구현·수정·로컬 검증)이 남았으면: `VIBE_RESULT: continue`. 기다리거나 상태만 다시 확인할 일은 여기에 들지 않는다.";
 
 /// Instruction appended to every **review** turn (review A/B + conflict + a
 /// cleanup fix that happens during review).
@@ -71,12 +72,15 @@ pub const PREAMBLE_REVIEW: &str = "\n\n---\n[자동 리뷰 지침]\n\
 - 리뷰·수정은 현재 작업 워크트리 안에서 수행해라. base 체크아웃의 미커밋 파일은 열람·stage·commit·stash·restore·삭제하지 마. 해당 변경으로 머지가 막히면 백엔드가 기다렸다가 다시 시도한다.\n\
 - 진행 중 사용자에게 선택지를 묻지 말고, 항상 가장 합리적인 추천 방향으로 스스로 결정해 진행해라.\n\
 - 사용자가 결정해야 할 문제나 자동으로 해결할 수 없는 문제가 있으면 멈추지 말고 추천 방향으로 처리해라. 문제, 결정과 이유, 다른 선택지, 바꾸려면 할 일을 Drawer에 남겨라. `vk drawer list --all`로 같은 이슈(이슈가 없으면 같은 PR)의 Drawer 문서를 먼저 찾아라. 이전 제목으로 만든 문서도 같은 이슈·PR로 확인되면 재사용해라. 있으면 `vk drawer get <ID> --json`으로 본문을 읽고 새 내용을 끝에 덧붙인 전체 본문을 `vk drawer update <ID> --file -`의 표준 입력으로 넘겨라. 없을 때만 `vk drawer create --title \"<이슈 ID 또는 PR URL>: <제목>\" --label \"확인 필요\" --notify --file -`로 생성해라.\n\
+- 리뷰는 이 워크트리의 변경을 머지해도 되는지만 판단한다. 코드 결함, 기획 대비 누락, 로컬에서 확인할 수 있는 동작 문제만 머지를 막는 사유다. 배포 후 테스트·실측, push·PR, 승인·합의처럼 머지 뒤나 이 워크트리 밖에서만 할 수 있는 이슈 완료 조건은 머지를 막는 사유가 아니다. 그런 항목은 같은 방법으로 Drawer에 남기고 승인 판단에서 빼라.\n\
 - 이 턴을 마칠 때 반드시 메시지의 마지막 줄에 다음 중 하나만 정확히 출력해라:\n\
   - 머지 전 반드시 고쳐야 할 이슈가 없으면(승인): `VIBE_RESULT: approve`\n\
-  - 아직 리뷰하거나 수정할 것이 남았으면: `VIBE_RESULT: continue`";
+  - 머지 전에 이 워크트리에서 고쳐야 할 것이 남았으면: `VIBE_RESULT: continue`";
 
 /// `send-prompt continue`: nudge the coding agent to keep going.
-pub const PROMPT_CONTINUE: &str = "아직 끝나지 않은 작업이 남아 있어. 남은 작업을 계속 진행해줘.";
+pub const PROMPT_CONTINUE: &str = "아직 끝나지 않은 작업이 남아 있어. 남은 작업을 계속 진행해줘. \
+남은 일이 이 워크스페이스 밖에서만 할 수 있는 것(배포·배포 후 확인, push·PR, 승인·합의 등)뿐이면 \
+더 기다리지 말고 Drawer에 남긴 뒤 `VIBE_RESULT: done`으로 마쳐라.";
 
 /// The host's prompt template (`@plan-review`, Settings → Tags) whose text
 /// asks for the plan check; [`PLAN_REVIEW_REQUEST`] when it is missing or empty.
@@ -99,7 +103,7 @@ pub fn plan_review_prompt(template: Option<&str>, task_id: uuid::Uuid) -> String
          이 턴은 아래 지침의 done/continue 기준 대신 다음 기준으로 마쳐라:\n\
          - 이번 점검에서 빠졌거나 기획과 다른 부분을 하나라도 찾았으면, 이번 턴에 모두 고쳤더라도 `VIBE_RESULT: continue`. 고친 부분까지 처음부터 다시 점검한다.\n\
          - 고칠 것을 하나도 찾지 못했을 때만 `VIBE_RESULT: done`.\n\
-         - 할 수 없어서 Drawer 문서로 남긴 부분은 빠진 것으로 치지 않는다."
+         - 이 워크스페이스 밖에서만 충족되는 완료 조건(배포·배포 후 확인, push·PR, 승인·합의 등)과 할 수 없어서 Drawer 문서로 남긴 부분은 빠진 것으로 치지 않는다."
     )
 }
 
@@ -109,7 +113,7 @@ pub const PROMPT_REVIEW_A: &str =
 
 /// `send-prompt review_followup`: after a review turn that did not approve.
 pub const PROMPT_REVIEW_B: &str = "머지 전 반드시 해결해야 하는 이슈가 있으면 해결 후 다시 \
-전체 리뷰 해줘. 이슈가 없으면 승인해줘.";
+전체 리뷰 해줘. 이슈가 없으면 승인해줘. 배포 후 확인처럼 머지 뒤에만 할 수 있는 일은 머지를 막는 이슈가 아니다.";
 
 /// `send-prompt resolve_conflict`: ask the review session to resolve a merge
 /// conflict; the worker merges again after its turn.
@@ -925,6 +929,27 @@ mod tests {
         }
         assert!(PREAMBLE_REVIEW.contains("VIBE_RESULT: approve"));
         assert!(PREAMBLE_REVIEW.contains("VIBE_RESULT: continue"));
+    }
+
+    // Work only possible outside the workspace (a deployment, a push or PR, a
+    // person's approval) is not "work left": every prompt that ends a turn
+    // says so, so a run does not keep answering `continue` while it waits.
+    #[test]
+    fn outside_work_is_left_to_the_drawer_not_continued() {
+        for prompt in [
+            PREAMBLE_CODING,
+            PROMPT_CONTINUE,
+            &plan_review_prompt(None, uuid::Uuid::nil()),
+        ] {
+            assert!(prompt.contains("배포"), "{prompt}");
+            assert!(prompt.contains("push·PR"), "{prompt}");
+            assert!(prompt.contains("Drawer"), "{prompt}");
+        }
+        assert!(PREAMBLE_CODING.contains("승인을 기다리지도 마라"));
+        assert!(PREAMBLE_CODING.contains("기다리거나 상태만 다시 확인할 일은 여기에 들지 않는다"));
+        assert!(PROMPT_CONTINUE.contains("`VIBE_RESULT: done`"));
+        assert!(PREAMBLE_REVIEW.contains("머지를 막는 사유가 아니다"));
+        assert!(PROMPT_REVIEW_B.contains("머지를 막는 이슈가 아니다"));
     }
 
     #[test]
