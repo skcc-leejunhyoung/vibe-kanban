@@ -154,7 +154,7 @@ const RULE_TIMEOUT_MS = Number(process.env.RULE_TIMEOUT_MS || 10000);
 const AUTOPILOT_PERIODIC_RECONCILE =
   process.env.AUTOPILOT_PERIODIC_RECONCILE === 'true' &&
   !process.argv.includes('--self-test');
-// GitHub REST calls a periodic reconciliation leaves for everything else (~550 per run).
+// Keep a shared GitHub API reserve for interactive review sessions.
 const AUTOPILOT_GITHUB_RESERVE = Number(process.env.AUTOPILOT_GITHUB_RESERVE || 1500);
 // off | shadow (record decisions, deliver as before) | active (apply them).
 const AUTOPILOT_TRIAGE = process.argv.includes('--self-test')
@@ -1928,6 +1928,11 @@ async function reconcileRoutineAutopilot(input) {
           if (!response.ok) throw new Error('GitHub reconciliation failed');
           return response.json();
         },
+        graphql: (query) =>
+          githubGraphql(github, query, {}, {
+            signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
+            budgetReserve: AUTOPILOT_GITHUB_RESERVE,
+          }),
         discover: async (repository) =>
           githubSearchPrs(
             github,
@@ -1957,13 +1962,18 @@ async function reconcileRoutineAutopilot(input) {
             signal
           ),
       });
-    return await reconcileAutopilot({
+    const report = await reconcileAutopilot({
       scope: input,
       collect,
       acknowledgedAt: input.acknowledgedAt,
       record,
       persist: () => persistState(true),
     });
+    log('info', 'autopilot reconciliation GitHub reads', {
+      prs: report.counts.prs,
+      ...report.githubReads,
+    });
+    return report;
   } finally {
     reconciliationInFlight.delete(key);
   }
@@ -3817,7 +3827,7 @@ async function githubGraphql(
   connector,
   query,
   variables = {},
-  { fullResponse = false } = {}
+  { fullResponse = false, signal, budgetReserve } = {}
 ) {
   const config = connector.config || {};
   const apiBase = String(config.apiBase || 'https://api.github.com').replace(
@@ -3829,9 +3839,20 @@ async function githubGraphql(
     : 'https://api.github.com/graphql';
   const response = await fetch(endpoint, {
     method: 'POST',
-    headers: githubHeaders(config.token),
+    headers: {
+      ...githubHeaders(config.token),
+      'content-type': 'application/json',
+    },
     body: JSON.stringify({ query, variables }),
+    signal,
   });
+  const remaining = response.headers.get('x-ratelimit-remaining');
+  if (budgetReserve !== undefined && remaining !== null)
+    checkGithubBudget(
+      Number(remaining),
+      budgetReserve,
+      Number(response.headers.get('x-ratelimit-reset'))
+    );
   const text = await response.text();
   if (!response.ok) {
     throw new Error(

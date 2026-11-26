@@ -332,6 +332,7 @@ test(
       checkGithubBudget,
       AUTOPILOT_GITHUB_RESERVE: 1500,
       persistState: async () => {},
+      log: () => {},
       fetch: async (url) => {
         const path = new URL(url).pathname;
         if (path === '/rate_limit')

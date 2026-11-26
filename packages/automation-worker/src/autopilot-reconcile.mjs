@@ -7,10 +7,8 @@ const sorted = (rows) =>
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const sha1 = /^[0-9a-f]{40}$/i;
 const SOURCE_READ_CONCURRENCY = 8;
-const TERMINAL_REVIEW_AUDIT_MS = 2 * 60 * 60 * 1000;
-// Expired terminal audits re-read per run, oldest first; the rest wait for a
-// later run so a burst of expiries cannot push a run past its deadline.
-const TERMINAL_REFRESH_LIMIT = 60;
+const PR_BATCH_SIZE = 40;
+const PR_METADATA = 'number fullDatabaseId headRefOid state isDraft updatedAt';
 const BOARD_DECISION_STATES = new Set([
   'APPROVED',
   'CHANGES_REQUESTED',
@@ -89,6 +87,99 @@ function prVersion(pr) {
   )
     throw new Error('invalid PR identity or head');
   return sha([pr.id, pr.head.sha, pr.state, pr.draft, pr.updated_at]);
+}
+
+function repositoryQuery(repository) {
+  const [owner, name] = repository.split('/');
+  return `repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)})`;
+}
+
+async function readPrMetadata(refs, graphql, reads, signal) {
+  const result = new Map();
+  for (let start = 0; start < refs.length; start += PR_BATCH_SIZE) {
+    signal?.throwIfAborted();
+    const batch = refs.slice(start, start + PR_BATCH_SIZE);
+    const query = batch
+      .map(
+        ({ repository, number }, i) =>
+          `p${i}: ${repositoryQuery(repository)} { pullRequest(number: ${number}) { ${PR_METADATA} } }`
+      )
+      .join(' ');
+    reads.metadataBatches++;
+    const data = await graphql(`query ReconciliationPullRequests { ${query} }`);
+    for (const [i, ref] of batch.entries()) {
+      const node = data?.[`p${i}`]?.pullRequest;
+      if (
+        node?.number !== ref.number ||
+        !['OPEN', 'CLOSED', 'MERGED'].includes(node?.state) ||
+        typeof node.isDraft !== 'boolean'
+      )
+        throw new Error('incomplete PR metadata batch');
+      if (
+        typeof node.fullDatabaseId !== 'number' &&
+        !/^\d+$/.test(node.fullDatabaseId || '')
+      )
+        throw new Error('invalid PR database ID');
+      const before = {
+        id: Number(node.fullDatabaseId),
+        head: { sha: node.headRefOid },
+        state: node.state === 'OPEN' ? 'open' : 'closed',
+        merged: node.state === 'MERGED',
+        draft: node.isDraft,
+        updated_at: node.updatedAt,
+      };
+      result.set(`${ref.repository}#${ref.number}`, {
+        before,
+        version: prVersion(before),
+      });
+    }
+  }
+  return result;
+}
+
+async function openPrNumbers(repository, graphql, reads, signal) {
+  const numbers = new Set();
+  let after = null;
+  let total;
+  const cursors = new Set();
+  for (;;) {
+    signal?.throwIfAborted();
+    reads.openListPages++;
+    const data = await graphql(`query ReconciliationOpenPullRequests {
+      ${repositoryQuery(repository)} {
+        pullRequests(states: OPEN, first: 100, after: ${JSON.stringify(after)}, orderBy: {field: CREATED_AT, direction: ASC}) {
+          totalCount nodes { number } pageInfo { hasNextPage endCursor }
+        }
+      }
+    }`);
+    const page = data?.repository?.pullRequests;
+    if (
+      !Array.isArray(page?.nodes) ||
+      !Number.isSafeInteger(page.totalCount) ||
+      page.totalCount < 0 ||
+      (total !== undefined && total !== page.totalCount) ||
+      page.nodes.length !== Math.min(100, page.totalCount - numbers.size) ||
+      typeof page.pageInfo?.hasNextPage !== 'boolean' ||
+      page.pageInfo.hasNextPage !==
+        numbers.size + page.nodes.length < page.totalCount
+    )
+      throw new Error('incomplete open PR inventory');
+    total = page.totalCount;
+    for (const node of page.nodes) {
+      if (
+        !Number.isSafeInteger(node?.number) ||
+        node.number < 1 ||
+        numbers.has(node.number)
+      )
+        throw new Error('invalid open PR inventory');
+      numbers.add(node.number);
+    }
+    if (!page.pageInfo.hasNextPage) return numbers;
+    after = page.pageInfo.endCursor;
+    if (typeof after !== 'string' || !after || cursors.has(after))
+      throw new Error('invalid open PR cursor');
+    cursors.add(after);
+  }
 }
 
 export function validateReconciliationScope(scope, repositories) {
@@ -204,6 +295,7 @@ export async function collectReconciliation({
   scope,
   repositories,
   github,
+  graphql,
   discover,
   vibe,
   host,
@@ -326,70 +418,123 @@ export async function collectReconciliation({
         throw new Error('issue discovery exceeds reconciliation limit');
     }
   }
-  const references = await readBatches(
-    [...prs].sort(([a], [b]) => a.localeCompare(b)),
-    async ([key, pr]) => {
-      const path = `/repos/${pr.repository}/pulls/${pr.number}`;
-      const before = await github(path);
-      return { key, path, before, version: prVersion(before) };
-    },
+  const githubReads = {
+    metadataBatches: 0,
+    openListPages: 0,
+    reviewPages: 0,
+    reusedTerminal: 0,
+  };
+  const refs = [...prs].sort(([a], [b]) => a.localeCompare(b));
+  const terminalByRef = new Map();
+  for (const entry of Object.values(terminalReviews)) {
+    const facts = entry?.facts;
+    if (
+      facts?.state !== 'closed' ||
+      !Number.isSafeInteger(facts.id) ||
+      !sha1.test(facts.head) ||
+      !entry.version ||
+      !Array.isArray(facts.reviewEvents) ||
+      !Array.isArray(facts.reviews)
+    )
+      continue;
+    for (const key of [facts.key, ...(facts.aliases || [])])
+      terminalByRef.set(key, entry);
+  }
+  // Merged PRs cannot reopen. Closed PRs can, so check the open list once per
+  // repository instead of polling each closed PR and its reviews.
+  const reopenRepositories = new Set(
+    refs
+      .filter(([key]) => {
+        const cached = terminalByRef.get(key);
+        return cached && !cached.merged && !awaiting.has(key);
+      })
+      .map(([, ref]) => ref.repository)
+  );
+  const openByRepo = new Map(
+    await readBatches(
+      [...reopenRepositories],
+      async (repo) => [
+        repo,
+        await openPrNumbers(repo, graphql, githubReads, signal),
+      ],
+      signal
+    )
+  );
+  const needsMetadata = ([key, ref]) => {
+    const cached = terminalByRef.get(key);
+    return (
+      !cached ||
+      (!cached.merged &&
+        (awaiting.has(key) || openByRepo.get(ref.repository)?.has(ref.number)))
+    );
+  };
+  const metadata = await readPrMetadata(
+    refs.filter(needsMetadata).map(([, ref]) => ref),
+    graphql,
+    githubReads,
     signal
   );
+
   const identities = new Map();
-  for (const reference of references) {
-    const id = reference.before.id;
+  for (const [key, ref] of refs) {
+    const observed = metadata.get(key);
+    const cached = terminalByRef.get(key);
+    const id = observed?.before.id ?? cached.facts.id;
     const existing = identities.get(id);
-    if (existing && existing.version !== reference.version)
+    if (!existing) {
+      identities.set(id, { key, aliases: [], observed, cached, ref });
+      continue;
+    }
+    if (
+      observed &&
+      existing.observed &&
+      (observed.version !== existing.observed.version ||
+        observed.before.merged !== existing.observed.before.merged)
+    )
       throw new Error('PR changed during alias resolution');
-    if (existing) existing.aliases.push(reference.key);
-    else identities.set(id, { ...reference, aliases: [] });
+    existing.aliases.push(key);
+    if (observed && !existing.observed)
+      Object.assign(existing, { observed, ref });
+    if (cached && !existing.cached) existing.cached = cached;
   }
-  const audited = {};
-  const fresh = (entry) =>
-    now() - entry.auditedAt >= 0 &&
-    now() - entry.auditedAt < TERMINAL_REVIEW_AUDIT_MS;
-  const refresh = new Set(
-    [...identities.values()]
-      .map(({ before, version }) => [before, terminalReviews[before.id], version])
-      .filter(
-        ([before, previous, version]) =>
-          before.state === 'closed' &&
-          previous?.version === version &&
-          !fresh(previous)
-      )
-      .sort(([, a], [, b]) => (a.auditedAt || 0) - (b.auditedAt || 0))
-      .slice(0, TERMINAL_REFRESH_LIMIT)
-      .map(([before]) => before.id)
-  );
+
+  const terminal = {};
+  const verifyOpen = [];
   const heads = await readBatches(
     [...identities.values()],
-    async ({ key, aliases, path, before, version }) => {
-      // A re-request changes this even when the head and reviews do not.
-      const awaitingReview = [key, ...aliases].some((ref) => awaiting.has(ref));
-      const previous = terminalReviews[before.id];
-      // Always refresh identity, head and state; reopening must invalidate the audit immediately.
+    async ({ key, aliases, observed, cached, ref }) => {
+      const { before, version } = observed || {};
       if (
-        before.state === 'closed' &&
-        previous?.version === version &&
-        !refresh.has(before.id)
+        !observed ||
+        (before.state === 'closed' && cached?.version === version)
       ) {
-        audited[before.id] = previous;
-        // Facts cached before `updated_at` left the comparison drop it here.
-        const { updated_at: _, ...facts } = previous.facts;
-        return { ...facts, key, aliases, awaitingReview };
+        githubReads.reusedTerminal++;
+        // Strip updated_at from compatibility snapshots before comparing facts.
+        const { updated_at: _, ...saved } = cached.facts;
+        const facts = { ...saved, key, aliases, awaitingReview: false };
+        terminal[facts.id] = {
+          version: cached.version,
+          merged: before?.merged ?? cached.merged,
+          facts,
+        };
+        return facts;
       }
+
+      const awaitingReview =
+        before.state === 'open' &&
+        [key, ...aliases].some((ref) => awaiting.has(ref));
       const reviews = [];
-      for (let page = 1; ; page++) {
+      for (let page = 1; before.state === 'open'; page++) {
         signal?.throwIfAborted();
-        const rows = await github(`${path}/reviews?per_page=100&page=${page}`);
+        githubReads.reviewPages++;
+        const rows = await github(
+          `/repos/${ref.repository}/pulls/${ref.number}/reviews?per_page=100&page=${page}`
+        );
         if (!Array.isArray(rows)) throw new Error('incomplete reviews');
         reviews.push(...rows);
         if (rows.length < 100) break;
         if (page >= 1000) throw new Error('review pagination limit');
       }
-      const after = await github(path);
-      if (version !== prVersion(after))
-        throw new Error('PR changed during reconciliation');
       const facts = {
         key,
         aliases,
@@ -416,11 +561,22 @@ export async function collectReconciliation({
         reviews: decisionReviews(reviews, before.head.sha),
       };
       if (before.state === 'closed')
-        audited[before.id] = { version, auditedAt: now(), facts };
+        terminal[before.id] = { version, merged: before.merged, facts };
+      else verifyOpen.push({ ref, version });
       return facts;
     },
     signal
   );
+  const after = await readPrMetadata(
+    verifyOpen.map(({ ref }) => ref),
+    graphql,
+    githubReads,
+    signal
+  );
+  for (const { ref, version } of verifyOpen) {
+    if (after.get(`${ref.repository}#${ref.number}`)?.version !== version)
+      throw new Error('PR changed during reconciliation');
+  }
   const hosts = [];
   let requiresAgent = false;
   // Registered review sessions; other workspaces still count for due resumes.
@@ -537,7 +693,8 @@ export async function collectReconciliation({
     requiresAgent,
     counts: { issues: issues.length, prs: heads.length, hosts: hosts.length },
     checkedTracked: scope.tracked,
-    terminalReviews: audited,
+    terminalReviews: terminal,
+    githubReads,
   };
 }
 
@@ -708,5 +865,6 @@ export async function reconcileAutopilot({
     coverage: snapshot.facts?.coverage,
     registryHash: snapshot.facts?.registryHash,
     checkedTracked: snapshot.checkedTracked,
+    githubReads: snapshot.githubReads,
   };
 }

@@ -34,15 +34,50 @@ function fixture() {
       },
       github: async (path) => {
         h.reads.push(path);
-        return path.includes('/reviews?')
-          ? h.reviews
-          : {
-              id: h.identity?.(path) ?? Number(path.split('/').at(-1)),
-              head: { sha: h.heads?.shift() || h.head || head },
-              state: h.state || 'open',
-              draft: false,
-              updated_at: h.prUpdatedAt || '2002-03-04T00:00:00Z',
-            };
+        assert.match(path, /\/reviews\?/);
+        return h.reviews;
+      },
+      graphql: async (query) => {
+        if (query.includes('ReconciliationOpenPullRequests')) {
+          h.reads.push('open inventory');
+          const open = h.openNumbers ?? (h.state === 'open' ? [7] : []);
+          const cursor = query.match(/after: (null|"[^"]*")/)?.[1];
+          const offset = Number(JSON.parse(cursor ?? 'null')) || 0;
+          const end = Math.min(offset + 100, open.length);
+          return {
+            repository: {
+              pullRequests: {
+                totalCount: open.length,
+                nodes: open.slice(offset, end).map((number) => ({ number })),
+                pageInfo: {
+                  hasNextPage: end < open.length,
+                  endCursor: String(end),
+                },
+              },
+            },
+          };
+        }
+        const result = {};
+        for (const [, key, owner, repository, rawNumber] of query.matchAll(
+          /(p\d+): repository\(owner: "([^"]+)", name: "([^"]+)"\) { pullRequest\(number: (\d+)\)/g
+        )) {
+          const number = Number(rawNumber);
+          const path = `/repos/${owner}/${repository}/pulls/${number}`;
+          h.reads.push(path);
+          if (h.missingNumber === number) continue;
+          const state = h.prStates?.get(number) || h.state || 'open';
+          result[key] = {
+            pullRequest: {
+              number,
+              fullDatabaseId: String(h.identity?.(path) ?? number),
+              headRefOid: h.heads?.shift() || h.head || head,
+              state: state.toUpperCase(),
+              isDraft: false,
+              updatedAt: h.prUpdatedAt || '2002-03-04T00:00:00Z',
+            },
+          };
+        }
+        return result;
       },
       vibe: async (method, path, body, project) => {
         if (path.startsWith('/v1/tags/')) {
@@ -581,76 +616,98 @@ test('each project tag must be verified before reporting complete scope', async 
   assert.deepEqual(record, {});
 });
 
-test('terminal review cache skips repeated audit, refreshes on expiry and detects a reopened PR', async () => {
+test('terminal snapshots do not reread closed PRs and detect a reopened PR beyond the first open page', async () => {
   const h = fixture();
   h.issueCount = 0;
   h.discovered = [];
   h.state = 'closed';
-  h.now = Date.parse('2002-03-04T00:00:00Z');
   const first = await h.collect();
   h.terminalReviews = first.terminalReviews;
   h.reads.length = 0;
-  h.now += 60_000;
   const cached = await h.collect();
   assert.equal(cached.fingerprint, first.fingerprint);
-  assert.equal(h.reads.filter((path) => typeof path === 'string').length, 1);
-  // Facts cached by an older worker keep their audit without `updated_at`.
+  assert.deepEqual(cached.githubReads, {
+    metadataBatches: 0,
+    openListPages: 1,
+    reviewPages: 0,
+    reusedTerminal: 1,
+  });
+  // Old snapshots include updated_at and do not record merged status.
+  const { merged, ...legacy } = first.terminalReviews[7];
+  assert.equal(merged, false);
   h.terminalReviews = {
-    7: {
-      ...first.terminalReviews[7],
-      facts: { ...first.terminalReviews[7].facts, updated_at: 'old' },
-    },
+    7: { ...legacy, facts: { ...legacy.facts, updated_at: 'old' } },
   };
   assert.equal((await h.collect()).fingerprint, first.fingerprint);
-  h.terminalReviews = first.terminalReviews;
-  h.now += 2 * 60 * 60 * 1000;
-  const refreshed = await h.collect();
-  assert.ok(
-    refreshed.terminalReviews[7].auditedAt > first.terminalReviews[7].auditedAt
-  );
-  h.terminalReviews = refreshed.terminalReviews;
   h.state = 'open';
-  h.reads.length = 0;
+  h.openNumbers = [...Array.from({ length: 100 }, (_, i) => 100 + i), 7];
   const reopened = await h.collect();
   assert.notEqual(reopened.fingerprint, first.fingerprint);
-  assert.ok(
-    h.reads.includes(
-      '/repos/synthetic/widgets/pulls/7/reviews?per_page=100&page=1'
-    )
-  );
+  assert.equal(reopened.githubReads.openListPages, 2);
+  assert.equal(reopened.githubReads.reviewPages, 1);
   assert.deepEqual(reopened.terminalReviews, {});
 });
 
-test('expired terminal audits refresh at most 60 per run, oldest first', async () => {
+test('418 tracked PRs use bounded metadata batches and skip merged and closed history on the next run', async () => {
   const h = fixture();
   h.issueCount = 0;
   h.discovered = [];
-  h.state = 'closed';
+  h.state = 'merged';
+  h.prStates = new Map([
+    [6, 'closed'],
+    [7, 'open'],
+  ]);
   h.scope = {
     ...scope,
-    tracked: Array.from({ length: 65 }, (_, i) => ({
+    tracked: Array.from({ length: 418 }, (_, i) => ({
       repository: 'synthetic/widgets',
       number: i + 1,
     })),
   };
-  h.now = Date.parse('2002-03-04T00:00:00Z');
-  const reviewReads = () =>
-    h.reads.filter((path) => String(path).includes('/reviews?')).length;
   const first = await h.collect();
-  assert.equal(reviewReads(), 65);
-  // PR 65 was audited earliest, so it is among the first refreshed.
-  first.terminalReviews[65].auditedAt -= 1000;
+  assert.deepEqual(first.githubReads, {
+    metadataBatches: 12,
+    openListPages: 0,
+    reviewPages: 1,
+    reusedTerminal: 0,
+  });
   h.terminalReviews = first.terminalReviews;
-  h.now += 3 * 60 * 60 * 1000;
   h.reads.length = 0;
   const second = await h.collect();
-  assert.equal(reviewReads(), 60);
-  assert.equal(second.terminalReviews[65].auditedAt, h.now);
   assert.equal(second.fingerprint, first.fingerprint);
-  h.terminalReviews = second.terminalReviews;
-  h.reads.length = 0;
-  await h.collect();
-  assert.equal(reviewReads(), 5);
+  assert.deepEqual(second.githubReads, {
+    metadataBatches: 2,
+    openListPages: 1,
+    reviewPages: 1,
+    reusedTerminal: 417,
+  });
+  assert.ok(
+    h.reads
+      .filter((path) => typeof path === 'string' && path.startsWith('/repos/'))
+      .every((path) => path.includes('/pulls/7'))
+  );
+  h.prStates.set(7, 'merged');
+  const merged = await h.collect();
+  assert.notEqual(merged.fingerprint, second.fingerprint);
+  assert.equal(merged.githubReads.metadataBatches, 1);
+  assert.equal(merged.githubReads.reviewPages, 0);
+  h.terminalReviews = merged.terminalReviews;
+  assert.equal((await h.collect()).githubReads.metadataBatches, 0);
+});
+
+test('an incomplete metadata batch cannot commit a reconciliation result', async () => {
+  const h = fixture();
+  h.missingNumber = 7;
+  const record = {};
+  await assert.rejects(
+    reconcileAutopilot({
+      record,
+      collect: h.collect,
+      persist: async () => assert.fail('partial metadata persisted'),
+    }),
+    /incomplete PR metadata batch/
+  );
+  assert.deepEqual(record, {});
 });
 
 test('an aborted collection cannot persist reconciliation state', async () => {
