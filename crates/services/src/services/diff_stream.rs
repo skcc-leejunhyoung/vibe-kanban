@@ -1259,6 +1259,21 @@ mod tests {
         runs: &AtomicUsize,
     ) {
         cached_stats(cache, repo_path, worktree_path, runs).await;
+        // Watcher setup runs asynchronously and may take longer than a fixed
+        // sleep when the full suite is busy. Do not test cache hits until it
+        // has actually installed the watcher.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let entry = cache.entries.lock().unwrap()[worktree_path].clone();
+            if entry.state.lock().await.watcher.is_some() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "watcher did not start"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         tokio::time::sleep(Duration::from_millis(600)).await;
         cached_stats(cache, repo_path, worktree_path, runs).await;
     }
