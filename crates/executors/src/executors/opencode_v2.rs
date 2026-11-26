@@ -161,6 +161,9 @@ pub struct OpencodeV2 {
     #[ts(skip)]
     #[derivative(PartialEq = "ignore")]
     pub unsupported_policy: Option<PermissionPolicy>,
+    #[serde(skip)]
+    #[ts(skip)]
+    pub discard_from: Option<String>,
 }
 
 #[derive(Clone)]
@@ -435,63 +438,6 @@ impl OpencodeV2 {
             command.group_spawn_no_window().map_err(ExecutorError::Io)?,
             password,
         ))
-    }
-
-    pub async fn rewind_history(
-        &self,
-        cwd: &Path,
-        session: &str,
-        message: &str,
-        update_local: impl Future<Output = Result<(), ExecutorError>> + Send,
-    ) -> Result<(), ExecutorError> {
-        let path = session_path(session)?;
-        if !valid_id(message) {
-            return Err(utils::agent_error("Invalid OpenCode v2 message ID."));
-        }
-        let env = ExecutionEnv::new(Default::default(), false, String::new());
-        let (mut child, password) = self.start_server(cwd, &env).await?;
-        let stdout = child.inner().stdout.take().expect("piped stdout");
-        let result = async {
-            let api = Self::api(stdout, password).await?;
-            api.post(
-                &format!("{path}/revert/stage"),
-                json!({"messageID": message, "files": false}),
-                "stage message rewind",
-            )
-            .await?;
-            if let Err(error) = update_local.await {
-                let cleared = Api::checked(
-                    api.request(Method::DELETE, &format!("{path}/revert"))
-                        .timeout(REQUEST_TIMEOUT),
-                    "cancel message rewind",
-                )
-                .await;
-                if let Err(clear_error) = cleared {
-                    return Err(utils::agent_error(format!(
-                        "{error} OpenCode could not cancel the staged rewind: {clear_error}"
-                    )));
-                }
-                return Err(error);
-            }
-            if let Err(error) = Api::checked(
-                api.request(Method::POST, &format!("{path}/revert/commit"))
-                    .timeout(REQUEST_TIMEOUT),
-                "commit message rewind",
-            )
-            .await
-            {
-                // Local history already reflects the staged boundary. Clearing
-                // it here would bring back turns that Vibe Kanban hid.
-                return Err(utils::agent_error(format!(
-                    "Local history was updated, but OpenCode could not finalize the rewind: {error}"
-                )));
-            }
-            Ok(())
-        }
-        .await;
-        drop(child.inner().stdin.take());
-        let _ = child.kill().await;
-        result
     }
 
     async fn api(
@@ -772,7 +718,7 @@ impl OpencodeV2 {
                     .then(|| format!("_Command not found: `/{name}`_"))
             };
             if let Some(message) = unavailable {
-                if let Some(id) = &id {
+                if let Some(id) = id.as_ref().filter(|_| self.discard_from.is_none()) {
                     AcpEvent::SessionStart(id.clone()).write_to(writer).await?;
                 }
                 AcpEvent::User(input.text().to_owned())
@@ -793,7 +739,14 @@ impl OpencodeV2 {
             session = async {
                 if let Some(id) = id {
                     let path = session_path(&id)?;
-                    let session: Data<Session> = Api::read(api.request(Method::GET, &path), "session resume").await?;
+                    let session: Data<Session> = if let Some(before) = &self.discard_from {
+                        let request = api.request(Method::POST, &format!("{path}/fork"))
+                            .json(&json!({"before": before}));
+                        Api::read(request, "fork before the reset message").await?
+                    } else {
+                        Api::read(api.request(Method::GET, &path), "session resume").await?
+                    };
+                    let path = session_path(&session.data.id)?;
                     let model = resolve_turn_model(api, cwd, explicit_model, session.data.model.clone(), self.variant.as_deref()).await?;
                     if let Some(model) = &model {
                         api.post(&format!("{path}/model"), json!({"model":model}), "model selection").await?;
@@ -1685,6 +1638,7 @@ mod tests {
             },
             approvals: None,
             unsupported_policy: None,
+            discard_from: None,
         };
         let mut env = ExecutionEnv::new(Default::default(), false, String::new());
         for key in [
@@ -1952,6 +1906,7 @@ mod attachment_tests {
             cmd: CmdOverrides::default(),
             approvals: None,
             unsupported_policy: None,
+            discard_from: None,
         }
     }
 
@@ -2388,6 +2343,10 @@ impl StandardCodingAgentExecutor for OpencodeV2 {
         self.approvals = Some(approvals);
     }
 
+    fn discard_from_message(&mut self, message_id: &str) {
+        self.discard_from = Some(message_id.to_owned());
+    }
+
     async fn spawn(
         &self,
         cwd: &Path,
@@ -2714,6 +2673,7 @@ mod turn_tests {
             cmd: CmdOverrides::default(),
             approvals: approvals.map(|a| Arc::new(a) as Arc<dyn ExecutorApprovalService>),
             unsupported_policy: None,
+            discard_from: None,
         };
         let mut config = ExecutorConfig::new(BaseCodingAgent::OpencodeV2);
         config.permission_policy = Some(policy);
@@ -2756,18 +2716,29 @@ mod turn_tests {
     }
 
     #[tokio::test]
-    async fn rewind_rejects_invalid_message_ids_before_launching_the_agent() {
-        let executor = executor(PermissionPolicy::Auto, None);
-        assert!(
-            executor
-                .rewind_history(Path::new("/fixture"), "ses_fixture", "../bad", async {
-                    Ok(())
-                })
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("Invalid OpenCode v2 message ID")
-        );
+    async fn followup_does_not_resume_if_fork_fails() {
+        let server = MockServer::start(Box::new(|request, _| {
+            assert_eq!(request.method, "POST");
+            assert_eq!(request.path, "/api/session/ses_fixture/fork");
+            assert_eq!(request.body, json!({"before": "msg_old"}));
+            (404, json!({}))
+        }))
+        .await;
+        let mut executor = executor(PermissionPolicy::Auto, None);
+        executor.discard_from_message("msg_old");
+        let error = executor
+            .run_turn(
+                &server.api,
+                Path::new("/fixture"),
+                TurnInput::Prompt("Revised prompt".into()),
+                Some("ses_fixture".into()),
+                None,
+                &CancellationToken::new(),
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("fork before the reset message"));
     }
 
     #[tokio::test]
