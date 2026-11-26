@@ -30,8 +30,6 @@ use db::{
 };
 #[cfg(feature = "qa-mode")]
 use executors::executors::qa_mock::QaMockExecutor;
-#[cfg(not(feature = "qa-mode"))]
-use executors::profile::ExecutorConfigs;
 use executors::{
     actions::{
         AutomationOrigin, ExecutorAction, ExecutorActionType,
@@ -47,7 +45,7 @@ use executors::{
             patch::{extract_normalized_entry_from_patch, fix_patch_ops},
         },
     },
-    profile::{ExecutorConfig, ExecutorProfileId},
+    profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
 use futures::{StreamExt, future, stream::BoxStream};
 use git::{GitService, GitServiceError};
@@ -75,6 +73,20 @@ use crate::services::{
 pub type ContainerRef = String;
 
 static HISTORICAL_LOG_REPLAY_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
+
+fn opencode_rewind_boundary(
+    target: Option<(String, String)>,
+    latest: Option<&str>,
+    dropped: bool,
+) -> anyhow::Result<Option<(String, String)>> {
+    let boundary = target.filter(|(native, _)| !dropped && latest == Some(native.as_str()));
+    if boundary.is_none() && latest.is_some() {
+        anyhow::bail!(
+            "Cannot safely rewind OpenCode v2 without a matching native message. Start a new session instead."
+        );
+    }
+    Ok(boundary)
+}
 
 fn historical_log_replay_semaphore() -> &'static Semaphore {
     HISTORICAL_LOG_REPLAY_SEMAPHORE.get_or_init(|| Semaphore::new(1))
@@ -1004,11 +1016,12 @@ pub trait ContainerService {
                     "Stop the running turn before rewinding OpenCode v2."
                 )));
             }
-            let boundary = turn
-                .and_then(|turn| turn.agent_session_id.zip(turn.agent_message_id))
-                .filter(|(native, _)| {
-                    !process.dropped && latest.is_some_and(|info| info.session_id == *native)
-                });
+            let boundary = opencode_rewind_boundary(
+                turn.and_then(|turn| turn.agent_session_id.zip(turn.agent_message_id)),
+                latest.as_ref().map(|info| info.session_id.as_str()),
+                process.dropped,
+            )
+            .map_err(ContainerError::Other)?;
             if let Some((native, message)) = boundary {
                 let agent = ExecutorConfigs::get_cached().get_coding_agent(&config.profile_id());
                 let Some(executors::executors::CodingAgent::OpencodeV2(agent)) = agent else {
@@ -1018,8 +1031,6 @@ pub trait ContainerService {
                 };
                 Some((agent, action.effective_dir(&workspace_dir), native, message))
             } else {
-                // Like other executors without a usable native boundary, keep
-                // the shared restore path available without guessing an ID.
                 None
             }
         } else {
@@ -3033,7 +3044,20 @@ pub trait ContainerService {
 mod tests {
     use utils::log_msg::LogMsg;
 
-    use super::normalized_stream_is_open;
+    use super::{normalized_stream_is_open, opencode_rewind_boundary};
+
+    #[test]
+    fn opencode_rewind_refuses_to_hide_history_without_a_native_boundary() {
+        let boundary = || Some(("ses_current".to_string(), "msg_target".to_string()));
+        assert_eq!(
+            opencode_rewind_boundary(boundary(), Some("ses_current"), false).unwrap(),
+            boundary()
+        );
+        assert!(opencode_rewind_boundary(None, Some("ses_current"), false).is_err());
+        assert!(opencode_rewind_boundary(boundary(), Some("ses_other"), false).is_err());
+        assert!(opencode_rewind_boundary(boundary(), Some("ses_current"), true).is_err());
+        assert_eq!(opencode_rewind_boundary(None, None, false).unwrap(), None);
+    }
 
     #[test]
     fn normalized_stream_stays_open_until_storage_finishes() {

@@ -59,10 +59,10 @@ OpenCode v2 supports native session resume, interruption, the context usage gaug
 
 Vibe Kanban offers the same prompt edit and rewind targets as for Claude Code
 and Codex. When a target has a message ID in the current OpenCode v2 session,
-OpenCode also rewinds its native conversation without changing files. Otherwise,
-Vibe Kanban restores its own history and optional worktree state without
-truncating OpenCode's native context. Stop a running OpenCode v2 turn before
-rewinding.
+OpenCode also rewinds its native conversation without changing files. If a
+native session exists but the matching message is unavailable, Vibe Kanban
+refuses the rewind to avoid retaining hidden messages in the agent's context.
+Start a new session instead. Stop a running OpenCode v2 turn before rewinding.
 
 ### Sync repository memory
 
