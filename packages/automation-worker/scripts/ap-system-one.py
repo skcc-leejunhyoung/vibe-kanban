@@ -334,32 +334,40 @@ def execution_prompt(row):
     return prompt.strip() if isinstance(prompt, str) else ''
 
 
+class ReconciliationLogUnavailable(ValueError):
+    pass
+
+
+def verify_completed_log_page(page, execution, offset, limit):
+    total = page.get('total') if isinstance(page, dict) else None
+    if (type(total) is not int or total < offset or page.get('error') or page.get('success') is False or
+            page.get('execution_id') != execution or page.get('status') != 'completed' or page.get('offset') != offset or
+            page.get('has_more') is not (offset + limit < total)):
+        raise ReconciliationLogUnavailable('정기 대조 실행 로그 재조회 필요')
+    entries = page.get('entries')
+    if not isinstance(entries, list) or len(entries) != min(limit, total - offset) or any(
+            not isinstance(entry, dict) or not isinstance(entry.get('entry_type'), dict) or
+            (entry['entry_type'].get('type') == 'assistant_message' and not isinstance(entry.get('content'), str))
+            for entry in entries):
+        raise ReconciliationLogUnavailable('정기 대조 실행 로그 재조회 필요')
+
+
 def completed_without_reconciliation(ap, execution, host_args):
     log_args = ('session', 'log', execution, '--limit', '60', *host_args)
     page = ap['vk'](*log_args)
-    total = page.get('total') if isinstance(page, dict) else None
-    if type(total) is not int or total <= 0:
-        return False
+    verify_completed_log_page(page, execution, 0, 60)
+    total = page['total']
     offset = max(0, total - 60)
     if offset:
         page = ap['vk'](*log_args, '--offset', str(offset))
-    if (not isinstance(page, dict) or page.get('execution_id') != execution or
-            page.get('status') != 'completed' or page.get('has_more') is not False or
-            page.get('offset') != offset or page.get('total') != total):
-        return False
-    entries = page.get('entries')
-    if not isinstance(entries, list) or len(entries) != total - offset:
-        return False
+        verify_completed_log_page(page, execution, offset, 60)
+        if page['total'] != total:
+            raise ReconciliationLogUnavailable('정기 대조 실행 로그 재조회 필요')
     has_reply = False
-    for entry in entries:
-        if not isinstance(entry, dict) or not isinstance(entry.get('entry_type'), dict):
-            return False
+    for entry in page['entries']:
         if entry['entry_type'].get('type') != 'assistant_message':
             continue
-        content = entry.get('content')
-        if not isinstance(content, str):
-            return False
-        content = content.strip()
+        content = entry['content'].strip()
         has_reply = has_reply or bool(content)
         for marker in re.finditer(r'(?m)^RECONCILE(?=[ \n])', content):
             try:
@@ -448,24 +456,32 @@ def install_periodic_collection(ap):
             return task
 
         def checked_vk(*args, **kwargs):
-            history = vk(*args, **kwargs)
-            if not task or not task.get('exec') or not isinstance(history, list):
-                return history
+            response = vk(*args, **kwargs)
+            if args[:2] == ('session', 'log') and '--limit' in args:
+                # The installed result parser treats a failed read as if it found no result.
+                limit = int(args[args.index('--limit') + 1])
+                offset = int(args[args.index('--offset') + 1]) if '--offset' in args else 0
+                verify_completed_log_page(response, args[2], offset, limit)
+                if '--offset' in args and response['has_more']:
+                    raise ReconciliationLogUnavailable('정기 대조 실행 로그 재조회 필요')
+                return response
+            if not task or not task.get('exec') or not isinstance(response, list):
+                return response
             host_args = ap.get('HOSTS', {}).get(task.get('host'))
             if host_args is None or args != ('session', 'executions', task.get('session'), *host_args):
-                return history
+                return response
             original = next(iter(recovered_executions(task)), task['exec'])
             if any(isinstance(row, dict) and row.get('status') == 'running' and row.get('id') and
-                   row['id'] != task['exec'] and is_checkpoint_recovery(ap, task, row['id'], original, history=history)
-                   for row in history):
+                   row['id'] != task['exec'] and is_checkpoint_recovery(ap, task, row['id'], original, history=response)
+                   for row in response):
                 raise RecoveryInFlight
-            return history
+            return response
 
         # Check the collector's own execution snapshot before it can settle the earlier turn.
         ap.update(periodic_active=current_periodic, vk=checked_vk)
         try:
             return collect()
-        except RecoveryInFlight:
+        except (RecoveryInFlight, ReconciliationLogUnavailable):
             return None
         finally:
             ap.update(periodic_active=active, vk=vk)

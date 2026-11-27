@@ -520,7 +520,7 @@ class PeriodicTests(unittest.TestCase):
             self.assertEqual(calls, [('session', 'log', 'conversation', '--limit', '60', '--host', 'synthetic')])
             for unavailable in ({'error': 'unavailable'}, {**log, 'has_more': True}, {**log, 'entries': []}):
                 log_response = unavailable
-                with self.assertRaisesRegex(ValueError, '실행이 일치하지 않음'):
+                with self.assertRaises(adapter.ReconciliationLogUnavailable):
                     adapter.verify_checkpoint_execution(self.ap, plan)
             log_response = log
             message['content'] = 'RECONCILE ' + json.dumps({'status': 'ok', 'changed': False,
@@ -546,11 +546,14 @@ class PeriodicTests(unittest.TestCase):
         history = [run('initial', 1, 'failed'), run('conversation', 2, 'completed'), recovery]
         execution_args = ('session', 'executions', session, '--host', 'synthetic')
         calls, collected = [], []
+        log_available = False
         def vk(*args):
             calls.append(args)
             if args == execution_args:
                 return history
             self.assertEqual(args, ('session', 'log', 'conversation', '--limit', '60', '--host', 'synthetic'))
+            if not log_available:
+                return {'error': 'synthetic timeout'}
             return {'execution_id': 'conversation', 'status': 'completed', 'offset': 0, 'total': 1,
                     'has_more': False, 'entries': [{'entry_type': {'type': 'assistant_message'}, 'content': 'Ordinary reply.'}]}
 
@@ -572,12 +575,39 @@ class PeriodicTests(unittest.TestCase):
         self.assertIs(self.ap['vk'], vk)
         self.assertIs(self.ap['periodic_active'], periodic_active)
 
+        log_available = True
+        self.assertIsNone(self.ap['collect_periodic']())
+        self.assertEqual(collected, [])
+        self.assertEqual(calls.count(execution_args), 2)
         recovery['executor_action']['typ']['prompt'] = 'Unrelated running turn.'
         self.assertEqual(self.ap['collect_periodic'](), 'collected')
         recovery['executor_action']['typ']['prompt'] = '정기 대조 재개 synthetic-task'
         recovery['status'] = 'completed'
         self.assertEqual(self.ap['collect_periodic'](), 'collected')
         self.assertEqual(collected, [('failed', 'completed', 'running'), ('failed', 'completed', 'completed')])
+
+    def test_collector_retries_incomplete_result_log_before_settling(self):
+        self.fixture()
+        page = {'execution_id': 'synthetic-completed', 'status': 'completed', 'offset': 0, 'total': 1,
+                'has_more': False, 'entries': [{'entry_type': {'type': 'assistant_message'}, 'content': 'Synthetic reply.'}]}
+        tail = {**page, 'entries': []}
+        collected = []
+        def vk(*args):
+            return tail if '--offset' in args else page
+
+        def legacy_collect():
+            self.ap['vk']('session', 'log', 'synthetic-completed', '--limit', '1')
+            result = self.ap['vk']('session', 'log', 'synthetic-completed', '--offset', '0', '--limit', '60')
+            collected.append(result)
+            return 'settled'
+
+        self.ap.update(periodic_active=lambda: None, collect_periodic=legacy_collect, vk=vk)
+        adapter.install_periodic_collection(self.ap)
+        self.assertIsNone(self.ap['collect_periodic']())
+        self.assertEqual(collected, [])
+        tail = page
+        self.assertEqual(self.ap['collect_periodic'](), 'settled')
+        self.assertEqual(collected, [page])
 
     def test_board_add_edit_remove_delegates_rows_but_context_change_requires_full_review(self):
         gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])
