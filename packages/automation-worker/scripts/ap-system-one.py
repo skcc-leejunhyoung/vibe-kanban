@@ -9,6 +9,7 @@ import json
 import os
 import re
 import runpy
+import shlex
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -17,6 +18,7 @@ from types import SimpleNamespace
 PR_URL = re.compile(r'https://github\.com/([^/]+/[^/]+)/pull/(\d+)')
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', re.I)
 AGENT_AUDIT_INTERVAL = dt.timedelta(hours=2)
+PARTIAL_MAX_AGE = dt.timedelta(minutes=30)
 READ_REPOSITORY_LIMIT = 16   # the worker's cap on read-only repositories
 
 
@@ -31,6 +33,30 @@ def semantic_registry(value):
     if isinstance(value, list):
         return [semantic_registry(item) for item in value]
     return value
+
+
+def registry_index(stable, config):
+    by_pr, unscoped = {}, []
+    for group, entries in stable.items():
+        if isinstance(entries, dict):
+            items = entries.items()
+        elif isinstance(entries, list):
+            items = enumerate(entries)
+        else:
+            unscoped.append((group, entries))
+            continue
+        for key, row in items:
+            default_pr = key if group == 'board_rows' else None
+            pr = row.get('pr', default_pr) if isinstance(row, dict) else None
+            repo = (row.get('repo') or row.get('repository') or config.get('defaultRepository')) if pr else None
+            if not repo or not re.fullmatch(r'#[1-9]\d*|[1-9]\d*', str(pr)):
+                unscoped.append((group, key, row))
+                continue
+            ref = f'{repo.lower()}#{str(pr).lstrip("#")}'
+            by_pr.setdefault(ref, []).append((group, key, row))
+    def digest(value):
+        return hashlib.sha256(json.dumps(semantic_registry(value), sort_keys=True).encode()).hexdigest()
+    return {'byPr': {key: digest(items) for key, items in by_pr.items()}, 'unscoped': digest(unscoped)}
 
 
 def registry(ap, config):
@@ -65,7 +91,10 @@ def registry(ap, config):
     # Scheduling, cancellation and hold records are inputs, never rewritten here.
     stable = {key: schedule.get(key) for key in ap['PENDING_KEYS']}
     # Rendering and this periodic job's own dispatch cannot trigger the next job.
-    stable.update(board={'rows': board.get('rows', {}), 'needs': board.get('needs', [])}, dispatch=requests)
+    stable.update(board={'rows': board.get('rows', {}), 'needs': board.get('needs', [])},
+                  dispatch={key: {k: v for k, v in row.items()
+                                  if k != 'reconcile_checks' or row.get('status') not in ('sending', 'uncertain')}
+                            for key, row in requests.items()})
     digest = hashlib.sha256(json.dumps(semantic_registry(stable), sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     tracked = sorted({(ref['repository'].lower(), ref['number']) for ref in refs})
     scope = {key: config[key] for key in ('connectorId', 'githubConnectorId', 'hosts')}
@@ -85,6 +114,9 @@ def registry(ap, config):
     else:
         scope.update(projectId=config['projectId'], reviewTagId=config['reviewTagId'])
     scope.update(tracked=[{'repository': repo, 'number': number} for repo, number in tracked], registryHash=digest)
+    scope['registryIndex'] = registry_index({**{key: value for key, value in stable.items() if key != 'board'},
+                                            'board_rows': stable['board']['rows'],
+                                            'board_needs': stable['board']['needs']}, config)
     scope['boardPrs'] = sorted({
         '%s#%d' % ((entry.get('repo') or entry.get('repository') or config['defaultRepository']).lower(),
                     int(str(entry['pr']).lstrip('#')))
@@ -175,9 +207,127 @@ def identity_recheck_due(ap, reviewed_at):
     return False
 
 
-def install(ap, config):
+def write_evidence(folder, prefix, evidence):
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    handle, path = tempfile.mkstemp(prefix=prefix, suffix='.json', dir=folder)
+    with os.fdopen(handle, 'w') as stream:
+        json.dump(evidence, stream)
+    return path
+
+
+def evidence_folder(ap, config):
+    return config.get('evidenceDirectory') or os.path.join(ap['AP'], 'system-one-evidence')
+
+
+def proof_version(proof):
+    evidence, at = proof
+    return hashlib.sha256(json.dumps([evidence, at.isoformat()], sort_keys=True).encode()).hexdigest()
+
+
+def pr_key(url):
+    match = PR_URL.fullmatch(str(url or ''))
+    return f'{match[1].lower()}#{int(match[2])}' if match else None
+
+
+def partial_input(ap, scope, proof, reviewed_at, report):
+    changes = report.get('changes')
+    if not isinstance(changes, dict) or any(changes.get(key) is not False for key in
+                                           ('scopeChanged', 'registryChanged')):
+        return None
+    checks = changes.get('checks')
+    if not isinstance(checks, list) or not 0 < len(checks) <= 50 or len(report['boardPending']) > 50:
+        return None
+    if 'board_snapshot' not in ap or 'periodic_active' not in ap:
+        return None
+    previous = proof[0]
+    if (previous.get('fingerprint') != changes['baseFingerprint'] and
+            (previous.get('fingerprint') or ap['parse'](changes.get('baseAcknowledgedAt')) != reviewed_at)):
+        return None
+    board = ap['board_snapshot']()
+    if board['sha'] != previous.get('board_snapshot_sha'):
+        return None
+    pr_facts = changes['prFacts']
+    targets = {row['key'] for row in report['boardPending']}
+    for check in checks:
+        if check['kind'] == 'registry':
+            targets.add(check['key'])
+        for value in (check.get('before'), check.get('after')):
+            if value and check['kind'] == 'pr':
+                targets.update([value['key'], *value['aliases']])
+            if value and check['kind'] == 'issue':
+                targets.update(pr_key(url) for url in value['prs'])
+    # Untouched published rows inherit their verified head only on the same board version.
+    old_heads = {pr_key(row['pr_url']): row['head'] for row in previous.get('board_findings', [])
+                 if row.get('checked') is True}
+    findings = []
+    for url in board['pr_urls']:
+        key = pr_key(url)
+        head = changes['boardHeads'].get(key)
+        if not head or (key not in targets and old_heads.get(key) != head):
+            return None
+        findings.append({'pr_url': url, 'head': head, 'checked': True})
+    versions = [row['version'] for row in checks]
+    if len(set(versions)) != len(versions) or any(not re.fullmatch(r'[0-9a-f]{64}', value) for value in versions):
+        return None
+    return {'proof': proof_version(proof), 'scope': scope, 'fingerprint': report['fingerprint'],
+            'baseFingerprint': changes['baseFingerprint'], 'checkedAt': report['checkedAt'],
+            'agentReviewedAt': reviewed_at.isoformat(), 'coverage': report['coverage'], 'counts': report['counts'],
+            'checks': checks, 'prFacts': {key: row for key, row in pr_facts.items() if key in targets},
+            'boardPending': report['boardPending'], 'board_snapshot_sha': board['sha'], 'board_findings': findings,
+            'board_mismatches': [row for row in previous.get('board_mismatches', []) if pr_key(row['pr_url']) not in targets],
+            'boardResolutions': [row for row in previous.get('boardResolutions', []) if row['key'] not in targets]}
+
+
+def checkpoint_partial(ap, config, input_path, result_path):
+    with open(input_path) as stream:
+        plan = json.load(stream)
+    with open(result_path) as stream:
+        result = json.load(stream)
+    now = ap['now']()
+    checked = ap['parse'](plan['checkedAt'])
+    task = ap['periodic_active']() or {}
+    binding = plan['task']
+    if (task.get('id') != binding['id'] or task.get('session') != binding['session'] or
+            os.environ.get('VK_SESSION_ID') != binding['session'] or
+            not task.get('exec') or task['exec'] != os.environ.get('VK_EXECUTION_ID') or
+            (binding.get('exec') and binding['exec'] != task['exec'])):
+        raise ValueError('부분 대조 위임 실행이 일치하지 않음')
+    if checked is None or not dt.timedelta() <= now - checked < PARTIAL_MAX_AGE:
+        raise ValueError('부분 대조 스냅샷 기한 만료')
+    proof = checkpoint_proof(ap)
+    current_scope = registry(ap, config)
+    if proof is None or proof_version(proof) != plan['proof'] or any(
+            current_scope.get(key) != value for key, value in plan['scope'].items() if key != 'ignoreWorkspaces'):
+        raise ValueError('부분 대조 중 공식 체크포인트 또는 장부 변경')
+    if (ap['evidence_problems'](result) or type(result.get('changed')) is not bool or
+            result.get('fingerprint') != plan['fingerprint'] or
+            sorted(result.get('checked', [])) != sorted(row['version'] for row in plan['checks'])):
+        raise ValueError('부분 대조 증거의 버전 또는 범위 불일치')
+    targets = {key: row['head'] for key, row in plan['prFacts'].items()}
+    for name in ('board_mismatches', 'autopilot_actions'):
+        if not isinstance(result.get(name), list) or any(
+                targets.get(pr_key(row['pr_url'])) != row['head'] or not row['head'] for row in result[name]):
+            raise ValueError('부분 대조 결과에 범위 밖 PR 또는 다른 head가 포함됨')
+    if not isinstance(result.get('boardResolutions'), list):
+        raise ValueError('보드 대조 증거 누락')
+    pending = {row['key']: row['fingerprint'] for row in plan['boardPending']}
+    if any(pending.get(row['key']) != row['fingerprint'] or not row['fingerprint']
+           for row in result['boardResolutions']):
+        raise ValueError('부분 대조 보드 버전 불일치')
+    evidence = {**result, 'coverage': plan['coverage'], 'counts': plan['counts'],
+                'agentReviewedAt': plan['agentReviewedAt'], 'acknowledgedFingerprint': plan['fingerprint'],
+                'board_snapshot_sha': plan['board_snapshot_sha'], 'board_findings': plan['board_findings'],
+                'board_mismatches': plan['board_mismatches'] + result['board_mismatches'],
+                'boardResolutions': plan['boardResolutions'] + result['boardResolutions']}
+    ap['verify_board_coverage'](evidence, {})
+    path = write_evidence(evidence_folder(ap, config), 'reconcile-partial-', evidence)
+    return ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
+
+
+def install(ap, config, entrypoint=None):
     original = ap['periodic_gate']
     board_only_evidence = None
+    partial_evidence = None
 
     def manual_delegation_open():
         tasks = rows(ap['load'](ap['DELEG'], {}).get('tasks', {}))
@@ -201,7 +351,7 @@ def install(ap, config):
                 **({'retryAt': report['retryAt']} if report.get('retryAt') else {})}
 
     def quiet_checkpoint(due):
-        nonlocal board_only_evidence
+        nonlocal board_only_evidence, partial_evidence
         if manual_delegation_open():
             return None, 'existing_delegation'
         state_path = ap.get('GATE_STATE')
@@ -228,6 +378,9 @@ def install(ap, config):
             return None, 'identity_recheck_due'
         request = {**scope, 'acknowledgedAt': reviewed_at.isoformat(),
                    'boardResolutions': [row for row in rows(evidence.get('boardResolutions')) if isinstance(row, dict)]}
+        if evidence.get('acknowledgedFingerprint'):
+            request.update(acknowledgedAt=acknowledged.isoformat(),
+                           acknowledgedFingerprint=evidence['acknowledgedFingerprint'])
         report = ap['api']('/api/automation/autopilot/reconcile', request, timeout=110)
         if isinstance(report, dict) and report.get('status') == 'deferred':
             # The GitHub budget is below the reserve; a delegated agent would spend
@@ -255,7 +408,7 @@ def install(ap, config):
             set(report['coverage']['repositories']) != set(coverage['repositories']) or
             report.get('registryHash') != scope['registryHash'] or report.get('checkedTracked') != scope['tracked']):
             return None, 'incomplete_coverage'
-        folder = config.get('evidenceDirectory') or os.path.join(ap['AP'], 'system-one-evidence')
+        folder = evidence_folder(ap, config)
         board_report = os.path.join(folder, 'board-reconciliation.json')
         pending = report.get('boardPending')
         if not isinstance(pending, list):
@@ -276,7 +429,21 @@ def install(ap, config):
             board_only_evidence = path
             return None, 'board_only'
         if pending or report.get('changed') is not False:
-            return None, 'facts_changed'
+            changes = report.get('changes') or {}
+            kinds = sorted({row['kind'] for row in changes.get('checks', [])})
+            if changes.get('registryChanged'):
+                return None, 'registry_changed'
+            if changes.get('scopeChanged'):
+                return None, 'scope_changed'
+            if entrypoint and 'periodic_prompt' in ap:
+                latest = next((row for row in reversed(rows(ap['load'](ap['DELEG'], {}).get('tasks')))
+                               if row.get('kind') == 'periodic' and row.get('result')), {})
+                if latest.get('result', {}).get('status') != 'error':
+                    plan = partial_input(ap, scope, proof, reviewed_at, report)
+                    if plan and admission_current(due, proof, scope, reviewed_at)[1]:
+                        partial_evidence = write_evidence(folder, 'partial-', plan)
+                        return None, 'partial:' + ','.join(kinds)
+            return None, 'resume_due' if kinds == ['resume'] else 'facts_changed'
         findings = evidence.get('board_findings')
         if not isinstance(findings, list) or evidence.get('board_mismatches', []) not in ([], 0):
             return None, 'unverified_board'
@@ -309,7 +476,7 @@ def install(ap, config):
         return (rest, {'status': 'handled', 'source': 'code', 'evidence': path, 'counts': counts}), None
 
     def periodic(due, dry=False):
-        nonlocal board_only_evidence
+        nonlocal board_only_evidence, partial_evidence
         rest, decision = original(due, dry=True)
         if dry:
             return rest, decision
@@ -322,8 +489,17 @@ def install(ap, config):
                 return handled
             try:
                 rest, result = original(due, dry=False)
+                if partial_evidence and isinstance(result, dict) and not result.get('duplicate') and result.get('status') in ('started', 'queued', 'uncertain'):
+                    try:
+                        with open(partial_evidence) as stream:
+                            plan = json.load(stream)
+                        plan['task'] = {key: result.get(key) for key in ('id', 'session', 'exec')}
+                        os.replace(write_evidence(os.path.dirname(partial_evidence), 'partial-bind-', plan), partial_evidence)
+                    except OSError:
+                        reason = 'partial_binding_unavailable'
             finally:
                 board_only_evidence = None
+                partial_evidence = None
             if isinstance(result, dict):
                 result = {**result, 'system_one_fallback': reason}
             return rest, result
@@ -339,6 +515,27 @@ def install(ap, config):
                                'hosts': config['hosts']}, ensure_ascii=False, separators=(',', ':'))
 
         def periodic_prompt():
+            if partial_evidence:
+                command = shlex.join([sys.executable, *entrypoint, 'checkpoint-partial', '--input', partial_evidence])
+                return (
+                    f'정기 대조 부분 위임이다. 전체 범위의 코드 검증 증거는 {partial_evidence}이다. '
+                    'checks의 PR·이슈·워크스페이스·세션·기한 도래 재개와 boardPending 행만 확인한다. '
+                    'registry 항목은 그 PR의 장부 상태·전송 기록을 읽어 바뀐 근거를 확인한다. '
+                    'PR은 prFacts의 head와 최근 결정 리뷰를 사용하고, 실행 중이거나 큐에 있는 동일 회차를 확인한다. '
+                    '신규 리뷰 요청은 대상 PR의 읽기 전용 후보 검사로 기존 실행을 확인한다. '
+                    '필요한 대상의 최신 head·리뷰·실행·queue만 다시 읽는다. 전체 목록을 재조회하지 않는다. '
+                    '보드에서 바뀐 PR은 현재 게시 상태·설명·대기 사유와 대조한다. '
+                    '기존 보류·사용자 결정을 보존하고 승인·머지·전송·후보 등록·보드/장부 수정을 하지 않는다. '
+                    '새 후보 등록이나 범위 밖 증거가 필요하거나 현재 head·리뷰·큐가 입력과 달라졌으면 '
+                    'status=error로 끝내 다음 정기 대조에서 전체 절차를 수행하게 한다. '
+                    '결과 JSON에는 status=ok, errors=[], changed, 입력 fingerprint, '
+                    '검증한 checks의 version 목록 checked, board_mismatches, boardResolutions, autopilot_actions를 넣는다. '
+                    '보드와 조치 항목은 기존 정기 대조의 형식을 사용한다. '
+                    f'`{command} --evidence <결과 JSON의 절대경로>`로 공식 체크포인트를 작성한다. '
+                    '결과의 evidence에는 이 명령이 반환한 확정 증거 파일 경로를 사용한다. '
+                    '오류 또는 체크포인트 거부는 status=error, changed=true로 보고한다. '
+                    '최종 응답 첫 줄은 RECONCILE 다음에 status, changed, summary, evidence의 JSON 한 줄이다.'
+                )
             if board_only_evidence:
                 return (
                     f'정기 대조 중 게시 보드만 확인한다. 코드가 현재 회차의 등록 PR·리뷰 발견·양 호스트 실행과 '
@@ -499,7 +696,22 @@ def main():
             '--config', os.path.abspath(args.config),
         ])
     if config.get('enabled') is True:
-        install(ap, config)
+        if command == 'checkpoint-partial':
+            partial = argparse.ArgumentParser(prog='checkpoint-partial')
+            partial.add_argument('--input', required=True)
+            partial.add_argument('--evidence', required=True)
+            result = partial.parse_args(args.arguments[1:])
+            try:
+                location = os.path.realpath(result.input)
+                if (os.path.dirname(location) != os.path.realpath(evidence_folder(ap, config)) or
+                        not re.fullmatch(r'partial-[a-z0-9_]+\.json', os.path.basename(location))):
+                    raise ValueError('부분 대조 입력 경로가 일치하지 않음')
+                return checkpoint_partial(ap, config, location, result.evidence)
+            except (KeyError, TypeError, ValueError, OSError) as error:
+                print(json.dumps({'ok': False, 'error': str(error)}, ensure_ascii=False))
+                return 1
+        install(ap, config, [os.path.abspath(__file__), '--ap', os.path.abspath(args.ap),
+                             '--config', os.path.abspath(args.config)])
     sys.argv = [args.ap, *args.arguments]
     return ap['main']()
 
