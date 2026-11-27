@@ -375,6 +375,9 @@ impl IntoResponse for ApiError {
             ApiError::ScratchError(ScratchError::Database(_)) => {
                 ErrorInfo::internal("ScratchError")
             }
+            ApiError::ScratchError(ScratchError::NotFound) => {
+                ErrorInfo::not_found("ScratchError", "Scratch not found.")
+            }
             ApiError::ScratchError(ScratchError::Serde(_)) => {
                 ErrorInfo::bad_request("ScratchError", "Invalid scratch data format.")
             }
@@ -665,6 +668,17 @@ mod tests {
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["message"], message);
+    }
+
+    #[test]
+    fn missing_scratch_is_not_found() {
+        // Clients read 404 as "nothing saved yet" (e.g. project repo defaults).
+        assert_eq!(
+            ApiError::from(ScratchError::NotFound)
+                .into_response()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[test]

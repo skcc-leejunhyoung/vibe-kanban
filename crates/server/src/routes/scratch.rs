@@ -11,7 +11,7 @@ use axum::{
     },
     routing::get,
 };
-use db::models::scratch::{CreateScratch, Scratch, ScratchType, UpdateScratch};
+use db::models::scratch::{CreateScratch, Scratch, ScratchError, ScratchType, UpdateScratch};
 use deployment::Deployment;
 use futures_util::{StreamExt, TryStreamExt};
 use serde::Deserialize;
@@ -44,7 +44,7 @@ pub async fn get_scratch(
 ) -> Result<ResponseJson<ApiResponse<Scratch>>, ApiError> {
     let scratch = Scratch::find_by_id(&deployment.db().pool, id, &scratch_type)
         .await?
-        .ok_or_else(|| ApiError::BadRequest("Scratch not found".to_string()))?;
+        .ok_or(ScratchError::NotFound)?;
     Ok(ResponseJson(ApiResponse::success(scratch)))
 }
 
@@ -85,7 +85,7 @@ pub async fn delete_scratch(
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
     let rows = Scratch::delete(&deployment.db().pool, id, &scratch_type).await?;
     if rows == 0 {
-        return Err(ApiError::BadRequest("Scratch not found".to_string()));
+        return Err(ScratchError::NotFound.into());
     }
     Ok(ResponseJson(ApiResponse::success(())))
 }

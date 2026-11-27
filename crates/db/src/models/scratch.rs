@@ -17,6 +17,8 @@ pub enum ScratchError {
     Database(#[from] sqlx::Error),
     #[error("Scratch type mismatch: expected '{expected}' but got '{actual}'")]
     TypeMismatch { expected: String, actual: String },
+    #[error("Scratch not found")]
+    NotFound,
 }
 
 /// Data for a draft follow-up scratch
