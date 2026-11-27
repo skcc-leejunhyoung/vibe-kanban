@@ -65,7 +65,7 @@ pub async fn read_execution_log_file(path: &Path) -> std::io::Result<String> {
     tokio::fs::read_to_string(path).await
 }
 
-pub fn parse_log_jsonl_lossy(execution_id: Uuid, jsonl: &str) -> Vec<LogMsg> {
+pub fn parse_log_jsonl(execution_id: Uuid, jsonl: &str) -> (Vec<LogMsg>, usize) {
     let mut messages = Vec::new();
     let mut bad_lines = 0usize;
 
@@ -97,7 +97,7 @@ pub fn parse_log_jsonl_lossy(execution_id: Uuid, jsonl: &str) -> Vec<LogMsg> {
         );
     }
 
-    messages
+    (messages, bad_lines)
 }
 
 fn uuid_prefix2(id: Uuid) -> String {

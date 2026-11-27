@@ -449,6 +449,7 @@ def install_periodic_collection(ap):
     def collect_with_recovery():
         active, vk = ap['periodic_active'], ap['vk']
         task = None
+        log_totals = {}
 
         def current_periodic():
             nonlocal task
@@ -462,8 +463,14 @@ def install_periodic_collection(ap):
                 limit = int(args[args.index('--limit') + 1])
                 offset = int(args[args.index('--offset') + 1]) if '--offset' in args else 0
                 verify_completed_log_page(response, args[2], offset, limit)
-                if '--offset' in args and response['has_more']:
-                    raise ReconciliationLogUnavailable('정기 대조 실행 로그 재조회 필요')
+                execution = args[2]
+                if '--offset' in args:
+                    total = log_totals.pop(execution, None)
+                    if (total != response['total'] or
+                            offset != max(0, total - limit) or response['has_more']):
+                        raise ReconciliationLogUnavailable('정기 대조 실행 로그 재조회 필요')
+                else:
+                    log_totals[execution] = response['total']
                 return response
             if not task or not task.get('exec') or not isinstance(response, list):
                 return response

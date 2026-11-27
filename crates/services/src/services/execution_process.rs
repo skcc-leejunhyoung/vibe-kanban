@@ -199,19 +199,32 @@ pub async fn remove_session_process_logs(session_id: Uuid) -> Result<()> {
 }
 
 pub async fn load_raw_log_messages(pool: &SqlitePool, execution_id: Uuid) -> Option<Vec<LogMsg>> {
-    try_load_raw_log_messages(pool, execution_id)
+    load_replay_log_messages(pool, execution_id, true)
         .await
         .inspect_err(|error| tracing::warn!(%execution_id, %error, "Failed to read execution logs"))
         .ok()
         .flatten()
+        .map(|(messages, _)| messages)
 }
 
-pub async fn try_load_raw_log_messages(
+/// The boolean in the result indicates whether the source parsed without omissions.
+pub(super) async fn load_replay_log_messages(
     pool: &SqlitePool,
     execution_id: Uuid,
-) -> Result<Option<Vec<LogMsg>>> {
-    let file_result: Result<Option<Vec<LogMsg>>> = async {
-        let Some(jsonl) = read_execution_logs_for_execution(pool, execution_id).await? else {
+    allow_partial: bool,
+) -> Result<Option<(Vec<LogMsg>, bool)>> {
+    let file = read_execution_logs_for_execution(pool, execution_id).await;
+    parse_replay_log_messages(pool, execution_id, file, allow_partial).await
+}
+
+async fn parse_replay_log_messages(
+    pool: &SqlitePool,
+    execution_id: Uuid,
+    file: Result<Option<String>>,
+    allow_partial: bool,
+) -> Result<Option<(Vec<LogMsg>, bool)>> {
+    let file_result = async {
+        let Some(jsonl) = file? else {
             return Ok(None);
         };
         // Parsing a large JSONL log (tens of MB, tens of thousands of lines)
@@ -220,12 +233,12 @@ pub async fn try_load_raw_log_messages(
         // supervisor's `/api/health` probe, which then trips a restart. Offload
         // to the blocking pool so the async workers stay responsive.
         tokio::task::spawn_blocking(move || {
-            let messages = utils::execution_logs::parse_log_jsonl_lossy(execution_id, &jsonl);
+            let (messages, bad_lines) = utils::execution_logs::parse_log_jsonl(execution_id, &jsonl);
             anyhow::ensure!(
-                !messages.is_empty() || jsonl.trim().is_empty(),
-                "Execution log file contains no readable messages for execution {execution_id}"
+                bad_lines == 0 || (allow_partial && !messages.is_empty()),
+                "Execution log file contains {bad_lines} unreadable records for execution {execution_id}"
             );
-            Ok((!messages.is_empty()).then_some(messages))
+            Ok((!messages.is_empty()).then_some((messages, bad_lines == 0)))
         })
         .await
         .with_context(|| format!("parse execution log file for execution {execution_id}"))?
@@ -244,7 +257,7 @@ pub async fn try_load_raw_log_messages(
         // A missing fallback cannot turn a failed file read into an empty transcript.
         return file_result;
     }
-    Ok(Some(messages))
+    Ok(Some((messages, true)))
 }
 
 pub async fn append_log_message(session_id: Uuid, execution_id: Uuid, msg: &LogMsg) -> Result<()> {
@@ -656,17 +669,30 @@ mod tests {
             .unwrap();
 
         assert!(
-            try_load_raw_log_messages(&pool, execution)
+            load_replay_log_messages(&pool, execution, false)
                 .await
                 .unwrap()
                 .is_none()
         );
 
+        let partial = r#"{"Stdout":"first record"}"#.to_owned() + "\n{";
+        let error = parse_replay_log_messages(&pool, execution, Ok(Some(partial.clone())), false)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("1 unreadable records"));
+        let (messages, complete) =
+            parse_replay_log_messages(&pool, execution, Ok(Some(partial.clone())), true)
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(!complete);
+        assert!(matches!(messages.as_slice(), [LogMsg::Stdout(text)] if text == "first record"));
+
         sqlx::query("ALTER TABLE execution_process_logs RENAME TO unavailable_logs")
             .execute(&pool)
             .await
             .unwrap();
-        let error = try_load_raw_log_messages(&pool, execution)
+        let error = load_replay_log_messages(&pool, execution, false)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("read database logs"));
@@ -680,7 +706,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let error = try_load_raw_log_messages(&pool, execution)
+        let error = load_replay_log_messages(&pool, execution, false)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("parse database logs"));
@@ -695,10 +721,11 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let messages = try_load_raw_log_messages(&pool, execution)
+        let messages = parse_replay_log_messages(&pool, execution, Ok(Some(partial)), false)
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(messages.as_slice(), [LogMsg::Stdout(text)] if text == "synthetic log"));
+        assert!(messages.1);
+        assert!(matches!(messages.0.as_slice(), [LogMsg::Stdout(text)] if text == "synthetic log"));
     }
 }

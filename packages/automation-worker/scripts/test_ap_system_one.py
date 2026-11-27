@@ -597,7 +597,7 @@ class PeriodicTests(unittest.TestCase):
 
         def legacy_collect():
             self.ap['vk']('session', 'log', 'synthetic-completed', '--limit', '1')
-            result = self.ap['vk']('session', 'log', 'synthetic-completed', '--offset', '0', '--limit', '60')
+            result = self.ap['vk']('session', 'log', 'synthetic-completed', '--offset', str(max(0, page['total'] - 60)), '--limit', '60')
             collected.append(result)
             return 'settled'
 
@@ -605,9 +605,15 @@ class PeriodicTests(unittest.TestCase):
         adapter.install_periodic_collection(self.ap)
         self.assertIsNone(self.ap['collect_periodic']())
         self.assertEqual(collected, [])
-        tail = page
+        entry = page['entries'][0]
+        page = {**page, 'total': 61, 'has_more': True}
+        tail = {**tail, 'total': 2, 'offset': 1, 'entries': [entry]}
+        self.assertIsNone(self.ap['collect_periodic']())
+        self.assertEqual(collected, [])
+
+        tail = {**tail, 'total': 61, 'offset': 1, 'entries': [entry] * 60}
         self.assertEqual(self.ap['collect_periodic'](), 'settled')
-        self.assertEqual(collected, [page])
+        self.assertEqual(collected, [tail])
 
     def test_board_add_edit_remove_delegates_rows_but_context_change_requires_full_review(self):
         gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])

@@ -1404,7 +1404,7 @@ pub trait ContainerService {
         &self,
         id: &Uuid,
     ) -> Option<futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>> {
-        self.try_stream_normalized_logs(id)
+        self.replay_normalized_logs(id, true)
             .await
             .inspect_err(|error| tracing::warn!(execution_id = %id, %error, "Failed to read normalized logs"))
             .ok()
@@ -1414,6 +1414,14 @@ pub trait ContainerService {
     async fn try_stream_normalized_logs(
         &self,
         id: &Uuid,
+    ) -> anyhow::Result<Option<BoxStream<'static, Result<LogMsg, std::io::Error>>>> {
+        self.replay_normalized_logs(id, false).await
+    }
+
+    async fn replay_normalized_logs(
+        &self,
+        id: &Uuid,
+        allow_partial: bool,
     ) -> anyhow::Result<Option<BoxStream<'static, Result<LogMsg, std::io::Error>>>> {
         if let Some(store) = self.get_msg_store_by_id(id).await {
             Ok(Some(
@@ -1442,8 +1450,9 @@ pub trait ContainerService {
                 .await
                 .context("acquire historical log replay permit")?;
             let replay_started_at = Instant::now();
-            let Some(raw_messages) =
-                execution_process::try_load_raw_log_messages(&self.db().pool, *id).await?
+            let Some((raw_messages, complete)) =
+                execution_process::load_replay_log_messages(&self.db().pool, *id, allow_partial)
+                    .await?
             else {
                 return Ok(None);
             };
@@ -1599,7 +1608,8 @@ pub trait ContainerService {
             // store is an orphan whose log may still grow (server restart),
             // and a just-finished process may still be draining its JSONL
             // writer (see NORMALIZED_REPLAY_CACHE_MIN_AGE_SECS).
-            let cacheable = !matches!(process.status, ExecutionProcessStatus::Running)
+            let cacheable = complete
+                && !matches!(process.status, ExecutionProcessStatus::Running)
                 && process.completed_at.is_some_and(|at| {
                     (chrono::Utc::now() - at).num_seconds() > NORMALIZED_REPLAY_CACHE_MIN_AGE_SECS
                 });
