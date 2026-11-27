@@ -199,65 +199,52 @@ pub async fn remove_session_process_logs(session_id: Uuid) -> Result<()> {
 }
 
 pub async fn load_raw_log_messages(pool: &SqlitePool, execution_id: Uuid) -> Option<Vec<LogMsg>> {
-    if let Some(jsonl) = read_execution_logs_for_execution(pool, execution_id)
+    try_load_raw_log_messages(pool, execution_id)
         .await
-        .inspect_err(|e| {
-            tracing::warn!(
-                "Failed to read execution log file for execution {}: {:#}",
-                execution_id,
-                e
-            );
-        })
+        .inspect_err(|error| tracing::warn!(%execution_id, %error, "Failed to read execution logs"))
         .ok()
         .flatten()
-    {
+}
+
+pub async fn try_load_raw_log_messages(
+    pool: &SqlitePool,
+    execution_id: Uuid,
+) -> Result<Option<Vec<LogMsg>>> {
+    let file_result: Result<Option<Vec<LogMsg>>> = async {
+        let Some(jsonl) = read_execution_logs_for_execution(pool, execution_id).await? else {
+            return Ok(None);
+        };
         // Parsing a large JSONL log (tens of MB, tens of thousands of lines)
         // is CPU-bound and yields nothing to the async scheduler. Running it
         // inline on a tokio worker starves other tasks — including the
         // supervisor's `/api/health` probe, which then trips a restart. Offload
         // to the blocking pool so the async workers stay responsive.
-        let messages = tokio::task::spawn_blocking(move || {
-            utils::execution_logs::parse_log_jsonl_lossy(execution_id, &jsonl)
+        tokio::task::spawn_blocking(move || {
+            let messages = utils::execution_logs::parse_log_jsonl_lossy(execution_id, &jsonl);
+            anyhow::ensure!(
+                !messages.is_empty() || jsonl.trim().is_empty(),
+                "Execution log file contains no readable messages for execution {execution_id}"
+            );
+            Ok((!messages.is_empty()).then_some(messages))
         })
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!(
-                "Log-parse task panicked/cancelled for execution {}: {}",
-                execution_id,
-                e
-            );
-            Vec::new()
-        });
-        if !messages.is_empty() {
-            return Some(messages);
-        }
+        .with_context(|| format!("parse execution log file for execution {execution_id}"))?
+    }
+    .await;
+    if let Ok(Some(messages)) = file_result {
+        return Ok(Some(messages));
     }
 
-    let db_log_records = match ExecutionProcessLogs::find_by_execution_id(pool, execution_id).await
-    {
-        Ok(records) if !records.is_empty() => records,
-        Ok(_) => return None,
-        Err(e) => {
-            tracing::error!(
-                "Failed to fetch DB logs for execution {}: {}",
-                execution_id,
-                e
-            );
-            return None;
-        }
-    };
-
-    match ExecutionProcessLogs::parse_logs(&db_log_records) {
-        Ok(msgs) => Some(msgs),
-        Err(e) => {
-            tracing::error!(
-                "Failed to parse DB logs for execution {}: {}",
-                execution_id,
-                e
-            );
-            None
-        }
+    let db_log_records = ExecutionProcessLogs::find_by_execution_id(pool, execution_id)
+        .await
+        .with_context(|| format!("read database logs for execution {execution_id}"))?;
+    let messages = ExecutionProcessLogs::parse_logs(&db_log_records)
+        .with_context(|| format!("parse database logs for execution {execution_id}"))?;
+    if messages.is_empty() {
+        // A missing fallback cannot turn a failed file read into an empty transcript.
+        return file_result;
     }
+    Ok(Some(messages))
 }
 
 pub async fn append_log_message(session_id: Uuid, execution_id: Uuid, msg: &LogMsg) -> Result<()> {
@@ -631,4 +618,87 @@ fn new_spinner(message: &'static str) -> ProgressBar {
     pb.set_message(message);
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
     pb
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn raw_log_reads_distinguish_empty_failed_and_recovered_storage() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("../db/migrations").run(&pool).await.unwrap();
+        let workspace = Uuid::new_v4();
+        let session = Uuid::new_v4();
+        let execution = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces(id, branch) VALUES (?, 'synthetic-branch')")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions(id, workspace_id) VALUES (?, ?)")
+            .bind(session)
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO execution_processes(id, session_id, run_reason, executor_action, status) VALUES (?, ?, 'codingagent', '{}', 'completed')")
+            .bind(execution)
+            .bind(session)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(
+            try_load_raw_log_messages(&pool, execution)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        sqlx::query("ALTER TABLE execution_process_logs RENAME TO unavailable_logs")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let error = try_load_raw_log_messages(&pool, execution)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("read database logs"));
+
+        sqlx::query("ALTER TABLE unavailable_logs RENAME TO execution_process_logs")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO execution_process_logs(execution_id, logs, byte_size) VALUES (?, 'broken JSONL', 12)")
+            .bind(execution)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let error = try_load_raw_log_messages(&pool, execution)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("parse database logs"));
+
+        let restored = serde_json::to_string(&LogMsg::Stdout("synthetic log".to_string())).unwrap();
+        sqlx::query(
+            "UPDATE execution_process_logs SET logs = ?, byte_size = ? WHERE execution_id = ?",
+        )
+        .bind(&restored)
+        .bind(restored.len() as i64)
+        .bind(execution)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let messages = try_load_raw_log_messages(&pool, execution)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(messages.as_slice(), [LogMsg::Stdout(text)] if text == "synthetic log"));
+    }
 }

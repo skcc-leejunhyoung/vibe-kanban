@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Error as AnyhowError, anyhow};
+use anyhow::{Context, Error as AnyhowError, anyhow};
 use async_trait::async_trait;
 use db::{
     DBService,
@@ -1404,8 +1404,19 @@ pub trait ContainerService {
         &self,
         id: &Uuid,
     ) -> Option<futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>> {
+        self.try_stream_normalized_logs(id)
+            .await
+            .inspect_err(|error| tracing::warn!(execution_id = %id, %error, "Failed to read normalized logs"))
+            .ok()
+            .flatten()
+    }
+
+    async fn try_stream_normalized_logs(
+        &self,
+        id: &Uuid,
+    ) -> anyhow::Result<Option<BoxStream<'static, Result<LogMsg, std::io::Error>>>> {
         if let Some(store) = self.get_msg_store_by_id(id).await {
-            Some(
+            Ok(Some(
                 store
                     .history_plus_stream()
                     .take_while(|msg| future::ready(normalized_stream_is_open(msg)))
@@ -1414,22 +1425,28 @@ pub trait ContainerService {
                         Ok::<_, std::io::Error>(LogMsg::Finished)
                     }))
                     .boxed(),
-            )
+            ))
         } else {
             // Finished-process logs are immutable, so a previous replay's
             // normalization result can be served straight from memory — no
             // disk read, no re-normalization, no semaphore.
             if let Some(patches) = normalized_replay_cache::get(id) {
-                return Some(replay_patch_stream(patches));
+                return Ok(Some(replay_patch_stream(patches)));
             }
 
             // A workspace can request many completed execution logs at once.
             // Serialize their normalization so per-replay buffers cannot
             // multiply into another process-wide memory spike.
-            let _replay_permit = historical_log_replay_semaphore().acquire().await.ok()?;
+            let _replay_permit = historical_log_replay_semaphore()
+                .acquire()
+                .await
+                .context("acquire historical log replay permit")?;
             let replay_started_at = Instant::now();
-            let raw_messages =
-                execution_process::load_raw_log_messages(&self.db().pool, *id).await?;
+            let Some(raw_messages) =
+                execution_process::try_load_raw_log_messages(&self.db().pool, *id).await?
+            else {
+                return Ok(None);
+            };
             let raw_text_bytes: usize = raw_messages
                 .iter()
                 .map(|message| match message {
@@ -1457,38 +1474,17 @@ pub trait ContainerService {
             }
             temp_store.push_finished();
 
-            let process = match ExecutionProcess::find_by_id(&self.db().pool, *id).await {
-                Ok(Some(process)) => process,
-                Ok(None) => {
-                    tracing::error!("No execution process found for ID: {}", id);
-                    return None;
-                }
-                Err(e) => {
-                    tracing::error!("Failed to fetch execution process {}: {}", id, e);
-                    return None;
-                }
-            };
+            let process = ExecutionProcess::find_by_id(&self.db().pool, *id)
+                .await
+                .context("read execution for log replay")?
+                .context("execution missing during log replay")?;
 
             // Get the workspace to determine correct directory
-            let (workspace, _session) =
-                match process.parent_workspace_and_session(&self.db().pool).await {
-                    Ok(Some((workspace, session))) => (workspace, session),
-                    Ok(None) => {
-                        tracing::error!(
-                            "No workspace/session found for session ID: {}",
-                            process.session_id
-                        );
-                        return None;
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to fetch workspace for session {}: {}",
-                            process.session_id,
-                            e
-                        );
-                        return None;
-                    }
-                };
+            let (workspace, _session) = process
+                .parent_workspace_and_session(&self.db().pool)
+                .await
+                .context("read workspace for log replay")?
+                .context("workspace or session missing during log replay")?;
 
             let current_dir = self.workspace_to_current_dir(&workspace);
 
@@ -1514,15 +1510,9 @@ pub trait ContainerService {
                 );
             }
 
-            let executor_action = if let Ok(executor_action) = process.executor_action() {
-                executor_action
-            } else {
-                tracing::error!(
-                    "Failed to parse executor action: {:?}",
-                    process.executor_action()
-                );
-                return None;
-            };
+            let executor_action = process
+                .executor_action()
+                .context("read executor action for log replay")?;
 
             // Spawn normalizer on populated store and collect JoinHandles
             let handles = match executor_action.typ() {
@@ -1580,12 +1570,12 @@ pub trait ContainerService {
                         "Executor action doesn't support log normalization: {:?}",
                         process.executor_action()
                     );
-                    return None;
+                    return Ok(None);
                 }
             };
 
-            for handle in handles {
-                let _ = handle.await;
+            for result in future::join_all(handles).await {
+                result.context("normalize historical execution logs")?;
             }
             tracing::info!(
                 execution_id = %id,
@@ -1623,7 +1613,7 @@ pub trait ContainerService {
                 });
             }
 
-            Some(replay_patch_stream(deduped))
+            Ok(Some(replay_patch_stream(deduped)))
         }
     }
 

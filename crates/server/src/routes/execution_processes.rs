@@ -126,7 +126,14 @@ async fn get_normalized_logs(
         fold_normalized_entries(cached.iter())
     } else {
         let mut collected = Vec::new();
-        if let Some(mut stream) = container.stream_normalized_logs(&id).await {
+        let replay = container
+            .try_stream_normalized_logs(&id)
+            .await
+            .map_err(|error| {
+                tracing::warn!(execution_id = %id, %error, "Failed to read conversation log");
+                ApiError::BadGateway("Failed to read the conversation log".to_string())
+            })?;
+        if let Some(mut stream) = replay {
             while let Some(message) = stream.next().await {
                 match message {
                     Ok(LogMsg::JsonPatch(patch)) => collected.push(patch),
