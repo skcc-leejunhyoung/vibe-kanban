@@ -61,8 +61,9 @@ def registry_index(stable, config):
     return {'byPr': {key: digest(items) for key, items in by_pr.items()}, 'unscoped': digest(unscoped)}
 
 
-def registry(ap, config):
-    schedule = ap['load'](ap['SCHED'], None)
+def registry(ap, config, *, schedule=None):
+    if schedule is None:
+        schedule = ap['load'](ap['SCHED'], None)
     board = ap['load'](ap['BOARD'], None)
     dispatch = ap['load'](ap['DISPATCH'], None)
     if not all(isinstance(value, dict) for value in (schedule, board, dispatch)):
@@ -334,7 +335,7 @@ def verify_checkpoint_execution(ap, plan):
         raise ValueError('대조 위임 실행이 일치하지 않음')
 
 
-def checkpoint_full(ap, config, result_path, plan=None):
+def checkpoint_full(ap, config, result_path, plan=None, *, board_only=False):
     task = ap['periodic_active']() or {}
     since = ap['parse'](task.get('at')) or ap['now']() - AGENT_AUDIT_INTERVAL
     with open(result_path) as stream:
@@ -352,21 +353,33 @@ def checkpoint_full(ap, config, result_path, plan=None):
     evidence = {key: value for key, value in result.items()
                 if key not in ('fingerprint', 'acknowledgedFingerprint', 'boardVersions')}
     evidence['boardVersions'] = board_versions(board)
-    if plan is not None:
+    if board_only:
+        if plan is None or plan.get('factsUnchanged') is not True:
+            raise ValueError('보드 전용 대조의 작업기 증거가 없음')
+        evidence.update(fingerprint=plan['fingerprint'], coverage=plan['coverage'], counts=plan['counts'],
+                        agentReviewedAt=plan['agentReviewedAt'])
+    elif plan is not None:
         checked = ap['parse'](plan['checkedAt'])
         audit = plan['auditSnapshot']
         heads = {key: pr['head'] for pr in audit['prs']['facts'] for key in [pr['key'], *pr['aliases']]}
-        scope = registry(ap, config)
+        schedule = ap['load'](ap['SCHED'], {})
+        scope = registry(ap, config, schedule=schedule)
+        recorded_heads = schedule.get('tracked_reconcile_checkpoint', {}).get('heads', {})
+        recorded_heads_match = isinstance(recorded_heads, dict) and all(
+            isinstance(record, dict) and isinstance(record.get('headRefOid'), str) and
+            heads.get(pr_key(url)) == record['headRefOid'].lower()
+            for url, record in recorded_heads.items())
         same_inputs = all(scope.get(key) == value for key, value in plan['scope'].items()
                           if key not in ('ignoreWorkspaces', 'tracked'))
         observed_tracked = all(f"{pr['repository']}#{pr['number']}" in heads for pr in scope['tracked'])
         coverage = result.get('coverage')
-        if (same_inputs and observed_tracked and checked and dt.timedelta() <= ap['now']() - checked < PARTIAL_MAX_AGE and
+        if (same_inputs and observed_tracked and recorded_heads_match and checked and
+                dt.timedelta() <= ap['now']() - checked < PARTIAL_MAX_AGE and
                 matches_coverage(scope, coverage) and set(coverage['repositories']) == set(plan['coverage']['repositories']) and
                 result.get('auditReviewed') == {key: group['version'] for key, group in audit.items()} and
                 all(heads.get(pr_key(row['pr_url'])) == row['head'] for row in result['board_findings'])):
             evidence.update(fingerprint=plan['fingerprint'], acknowledgedFingerprint=plan['fingerprint'])
-    path = write_evidence(evidence_folder(ap, config), 'reconcile-full-', evidence)
+    path = write_evidence(evidence_folder(ap, config), 'reconcile-board-' if board_only else 'reconcile-full-', evidence)
     return ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
 
 
@@ -416,6 +429,9 @@ def install(ap, config, entrypoint=None):
     board_only_evidence = None
     partial_evidence = None
     full_plan = full_evidence = None
+
+    def can_bind_checkpoint():
+        return entrypoint and 'board_snapshot' in ap and 'periodic_active' in ap
 
     def manual_delegation_open():
         tasks = rows(ap['load'](ap['DELEG'], {}).get('tasks', {}))
@@ -476,14 +492,17 @@ def install(ap, config, entrypoint=None):
         reviewed_at = ap['parse'](evidence['agentReviewedAt']) if 'agentReviewedAt' in evidence else acknowledged
         if not reviewed_at or not reviewed_at <= acknowledged <= ap['now']():
             return None, 'invalid_agent_review_time'
-        if ap['now']() - reviewed_at >= AGENT_AUDIT_INTERVAL:
+        audit_due = ap['now']() - reviewed_at >= AGENT_AUDIT_INTERVAL
+        if audit_due and not can_bind_checkpoint():
             return None, 'scope_audit_due'
-        if identity_recheck_due(ap, reviewed_at):
+        if not audit_due and identity_recheck_due(ap, reviewed_at):
             return None, 'identity_recheck_due'
         request = {**scope, 'acknowledgedAt': reviewed_at.isoformat(),
                    'boardResolutions': [row for row in rows(evidence.get('boardResolutions')) if isinstance(row, dict)]}
         if entrypoint:
             request['includeAuditSnapshot'] = True
+        if audit_due:
+            request['auditDue'] = True
         if evidence.get('acknowledgedFingerprint'):
             request.update(acknowledgedAt=acknowledged.isoformat(),
                            acknowledgedFingerprint=evidence['acknowledgedFingerprint'])
@@ -529,6 +548,8 @@ def install(ap, config, entrypoint=None):
             with os.fdopen(handle, 'w') as stream:
                 json.dump({'checkedAt': report['checkedAt'], 'boardPending': pending}, stream)
             os.replace(path, board_report)
+        if audit_due:
+            return None, 'scope_audit_due'
         if 'board_followups_due' in ap and ap['board_followups_due'](ap['load'](ap['BOARD'], {}), ap['now']()):
             return None, 'board_followup_due'
         if pending and report.get('factsUnchanged') is True and 'periodic_prompt' in ap:
@@ -597,13 +618,15 @@ def install(ap, config, entrypoint=None):
                 full_plan = None
                 return handled
             try:
-                if full_plan and not partial_evidence and not board_only_evidence and 'board_snapshot' in ap and 'periodic_active' in ap:
+                if full_plan and not partial_evidence and not board_only_evidence and can_bind_checkpoint():
                     try:
                         full_evidence = write_evidence(evidence_folder(ap, config), 'full-', full_plan)
                     except OSError:
                         full_evidence = None
                 rest, result = original(due, dry=False)
                 handoff = partial_evidence or full_evidence
+                if board_only_evidence and can_bind_checkpoint():
+                    handoff = board_only_evidence
                 if handoff and isinstance(result, dict) and not result.get('duplicate') and result.get('status') in ('started', 'queued', 'uncertain'):
                     try:
                         with open(handoff) as stream:
@@ -653,6 +676,11 @@ def install(ap, config, entrypoint=None):
                     '최종 응답 첫 줄은 RECONCILE 다음에 status, changed, summary, evidence의 JSON 한 줄이다.'
                 )
             if board_only_evidence:
+                executable = f'{ap["AP"]}/bin/ap checkpoint'
+                receipt = ''
+                if can_bind_checkpoint():
+                    executable = shlex.join([sys.executable, *entrypoint, 'checkpoint-board', '--input', board_only_evidence])
+                    receipt = '최종 결과의 evidence에는 이 명령이 반환한 확정 증거 경로를 넣는다. '
                 return (
                     f'정기 대조 중 게시 보드만 확인한다. 코드가 현재 회차의 등록 PR·리뷰 발견·양 호스트 실행과 '
                     f'대기열을 검증했다. 원본 증거는 {board_only_evidence}이다. 전체 PR·이슈·세션 목록을 다시 조회하지 않는다. '
@@ -666,13 +694,14 @@ def install(ap, config, entrypoint=None):
                     'boardResolutions(대기 항목 key와 fingerprint, 게시가 맞으면 disposition=published와 rowSha256, '
                     '보류면 disposition=hold와 reason, owner, 2시간 이후 recheckAt)를 기록한다. '
                     '원본, 보드, 장부를 직접 변경하거나 후보 등록·전송·승인·알림을 하지 않는다. '
-                    f'새 증거 파일로 `{ap["AP"]}/bin/ap checkpoint --evidence <절대경로>`를 실행한다. '
+                    f'새 증거 파일로 `{executable} --evidence <절대경로>`를 실행한다. '
+                    f'{receipt}'
                     '보드 SHA가 달라져 거부되면 새 스냅샷으로 다시 대조하거나 미완료로 보고한다. '
                     '성공 시 changed=false로 보드 불일치 후속 처리를 기존 회수 경로에 맡긴다. '
                     '최종 응답 첫 줄은 RECONCILE에 이어 status, changed, summary, evidence(새 파일 절대경로)를 담은 JSON 한 줄이다.'
                 )
             prompt = original_prompt()
-            if entrypoint and 'board_snapshot' in ap and 'periodic_active' in ap:
+            if can_bind_checkpoint():
                 command = [sys.executable, *entrypoint, 'checkpoint-full']
                 if full_evidence:
                     command.extend(['--input', full_evidence])
@@ -826,15 +855,16 @@ def main():
             '--config', os.path.abspath(args.config),
         ])
     if config.get('enabled') is True:
-        if command in ('checkpoint-partial', 'checkpoint-full'):
+        if command in ('checkpoint-partial', 'checkpoint-full', 'checkpoint-board'):
             partial = command == 'checkpoint-partial'
+            board_only = command == 'checkpoint-board'
             checkpoint = argparse.ArgumentParser(prog=command)
-            checkpoint.add_argument('--input', required=partial)
+            checkpoint.add_argument('--input', required=partial or board_only)
             checkpoint.add_argument('--evidence', required=True)
             result = checkpoint.parse_args(args.arguments[1:])
             try:
                 location = os.path.realpath(result.input) if result.input else None
-                prefix = 'partial' if partial else 'full'
+                prefix = {'checkpoint-partial': 'partial', 'checkpoint-full': 'full', 'checkpoint-board': 'board-only'}[command]
                 if location and (os.path.dirname(location) != os.path.realpath(evidence_folder(ap, config)) or
                                  not re.fullmatch(rf'{prefix}-[a-z0-9_]+\.json', os.path.basename(location))):
                     raise ValueError('대조 입력 경로가 일치하지 않음')
@@ -844,7 +874,7 @@ def main():
                 if location:
                     with open(location) as stream:
                         plan = json.load(stream)
-                return checkpoint_full(ap, config, result.evidence, plan)
+                return checkpoint_full(ap, config, result.evidence, plan, board_only=board_only)
             except (KeyError, TypeError, ValueError, OSError) as error:
                 print(json.dumps({'ok': False, 'error': str(error)}, ensure_ascii=False))
                 return 1

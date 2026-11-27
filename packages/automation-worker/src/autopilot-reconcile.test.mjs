@@ -464,7 +464,13 @@ test('board membership changes retain proven source coverage and only genuine so
   assert.deepEqual(Object.keys(initial.auditSnapshot), ['prs', 'issues', 'hosts']);
   assert.ok(initial.auditSnapshot.prs.facts.some(({ key, head: value }) => key === 'synthetic/widgets#7' && value === head));
   h.now += 1000;
-  await poll(original, new Date(h.now).toISOString());
+  const quiet = await poll(original, new Date(h.now).toISOString());
+  assert.equal(quiet.changed, false);
+  assert.equal(quiet.auditSnapshot, undefined);
+  const audit = await poll({ ...original, auditDue: true });
+  assert.equal(audit.changed, false);
+  assert.equal(audit.fingerprint, quiet.fingerprint);
+  assert.deepEqual(audit.auditSnapshot, initial.auditSnapshot);
   h.now += 1000;
   const input = { ...original, boardPrs: ['synthetic/widgets#8'] };
   const report = await poll(input);

@@ -262,21 +262,119 @@ class PeriodicTests(unittest.TestCase):
             result_path.write_text(json.dumps({**result, 'auditReviewed': checks}))
             # Reporting a newly tracked PR can bind only if the worker saw it already.
             values['schedule']['tracked_reconcile_checkpoint'] = {
-                'heads': {'https://github.com/synthetic/widgets/pull/18': 'd' * 40}}
+                'heads': {'https://github.com/synthetic/widgets/pull/18': {'headRefOid': 'd' * 40}}}
             self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan), 0)
+            recorded = {'headRefOid': 'e' * 40}
             values['schedule']['tracked_reconcile_checkpoint']['heads'] = {
-                'https://github.com/synthetic/widgets/pull/17': 'd' * 40}
+                'https://github.com/synthetic/widgets/pull/17': recorded}
+            # The PR isn't on the board, and all reported group versions still match.
+            self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan), 0)
+            recorded['headRefOid'] = 'd' * 40
             self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan), 0)
             stale = (self.ap['now']() - dt.timedelta(minutes=2)).timestamp()
             os.utime(result_path, (stale, stale))
             with self.assertRaisesRegex(ValueError, '이전의 전체 대조 증거'):
                 adapter.checkpoint_full(self.ap, self.config, result_path, plan)
 
-        unbound, unknown_pr, bound = [json.loads(Path(v).read_text()) for k, v in calls if k == 'checkpoint']
+        unbound, unknown_pr, stale_head, bound = [json.loads(Path(v).read_text()) for k, v in calls if k == 'checkpoint']
         self.assertNotIn('acknowledgedFingerprint', unbound)
         self.assertNotIn('acknowledgedFingerprint', unknown_pr)
+        self.assertNotIn('acknowledgedFingerprint', stale_head)
         self.assertEqual(bound['acknowledgedFingerprint'], plan['fingerprint'])
         self.assertEqual(bound['boardVersions']['sha'], board['sha'])
+
+    def test_due_full_audit_gets_worker_evidence_and_never_takes_the_quiet_route(self):
+        gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])
+        old_now = self.ap['now']
+        self.ap['now'] = lambda: old_now() + dt.timedelta(hours=1, minutes=1)
+        task = {'id': 'synthetic-task', 'session': 'synthetic-session', 'exec': 'synthetic-execution', 'status': 'started'}
+        board = {'sha': 'b' * 64, 'pr_urls': [], 'body': ''}
+        self.ap.update(delegation=task, periodic_active=lambda: task, board_snapshot=lambda: board)
+        api = self.ap['api']
+        audit = {key: {'version': letter * 64, 'facts': []}
+                 for key, letter in (('prs', 'b'), ('issues', 'c'), ('hosts', 'd'))}
+        self.ap['api'] = lambda *a, **kw: {**api(*a, **kw), 'auditSnapshot': audit,
+                                          'checkedAt': self.ap['now']().isoformat()}
+
+        self.assertEqual(gate(['periodic due'])[1]['system_one_fallback'], 'scope_audit_due')
+        request = next(body for name, body in calls if name == 'request')
+        self.assertTrue(request['auditDue'])
+        self.assertTrue(request['includeAuditSnapshot'])
+        self.assertIn('checkpoint-full --input', next(v for k, v in calls if k == 'prompt'))
+        self.assertNotIn('checkpoint', [name for name, _ in calls])
+        path, = Path(self.folder, 'system-one-evidence').glob('full-*.json')
+        plan = json.loads(path.read_text())
+        self.assertEqual(plan['auditSnapshot'], audit)
+        self.assertEqual(plan['task']['exec'], task['exec'])
+
+        result_path = Path(self.folder, 'audit-result.json')
+        result_path.write_text(json.dumps({'status': 'ok', 'errors': [], 'coverage': plan['coverage'],
+                                           'board_snapshot_sha': board['sha'], 'board_findings': [],
+                                           'auditReviewed': {key: group['version'] for key, group in audit.items()}}))
+        with patch.dict(os.environ, VK_SESSION_ID=task['session'], VK_EXECUTION_ID=task['exec']):
+            self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan), 0)
+        evidence_path = next(v for name, v in calls if name == 'checkpoint')
+        evidence = json.loads(Path(evidence_path).read_text())
+        self.assertEqual(evidence['acknowledgedFingerprint'], plan['fingerprint'])
+        audited_at = self.ap['now']()
+        os.utime(evidence_path, (audited_at.timestamp(), audited_at.timestamp()))
+        values[evidence_path] = evidence
+        for key in ('a', 'b'):
+            values['schedule'][key].update(evidence=evidence_path, at=audited_at.isoformat())
+
+        self.ap.update(now=lambda: audited_at + dt.timedelta(minutes=30), periodic_active=lambda: None)
+        changes = {'baseFingerprint': plan['fingerprint'], 'scopeChanged': False, 'registryChanged': False,
+                   'checks': [{'kind': 'session', 'key': 'synthetic-session', 'version': 'e' * 64}],
+                   'prFacts': {}, 'boardHeads': {}}
+        self.ap['api'] = lambda *a, **kw: {**api(*a, **kw), 'changed': True, 'fingerprint': 'c' * 64,
+                                          'checkedAt': self.ap['now']().isoformat(), 'changes': changes}
+        calls.clear()
+        self.assertEqual(gate(['periodic due'])[1]['system_one_fallback'], 'partial:session')
+        request = next(body for name, body in calls if name == 'request')
+        self.assertEqual(request['acknowledgedFingerprint'], plan['fingerprint'])
+
+    def test_board_only_checkpoint_recaptures_row_versions_without_renewing_full_audit(self):
+        gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])
+        url = 'https://github.com/synthetic/widgets/pull/17'
+        key, head, version = 'synthetic/widgets#17', 'c' * 40, 'd' * 64
+        body = f'## Board\n| [PR]({url}) | Initial | Waiting |'
+        board = {'sha': hashlib.sha256(body.encode()).hexdigest(), 'pr_urls': [url], 'body': body}
+        task = {'id': 'synthetic-task', 'session': 'synthetic-session', 'exec': 'synthetic-execution', 'status': 'started'}
+        self.ap.update(delegation=task, periodic_active=lambda: task, board_snapshot=lambda: board)
+        self.config['tracked'] = [{'repository': 'synthetic/widgets', 'number': 17}]
+        prior = values[values['schedule']['a']['evidence']]
+        findings = [{'pr_url': url, 'head': head, 'checked': True}]
+        prior.update(fingerprint='a' * 64, board_snapshot_sha=board['sha'], board_findings=findings,
+                     boardVersions=adapter.board_versions(board))
+        api = self.ap['api']
+        changes = {'scopeChanged': False, 'registryChanged': False, 'checks': [],
+                   'baseFingerprint': prior['fingerprint'], 'prFacts': {key: {'head': head}}, 'boardHeads': {key: head}}
+        self.ap['api'] = lambda *a, **kw: {**api(*a, **kw), 'changed': True, 'factsUnchanged': True,
+                                          'checkedAt': self.ap['now']().isoformat(), 'changes': changes,
+                                          'boardPending': [{'key': key, 'head': head, 'fingerprint': version}]}
+
+        self.assertEqual(gate(['periodic due'])[1]['system_one_fallback'], 'board_only')
+        self.assertIn('checkpoint-board --input', next(v for k, v in calls if k == 'prompt'))
+        path, = Path(self.folder, 'system-one-evidence').glob('board-only-*.json')
+        plan = json.loads(path.read_text())
+        result_path = Path(self.folder, 'board-result.json')
+        result_path.write_text(json.dumps({'status': 'ok', 'errors': [], 'board_snapshot_sha': board['sha'],
+                                           'board_findings': findings, 'agentReviewedAt': self.ap['now']().isoformat(),
+                                           'acknowledgedFingerprint': 'f' * 64}))
+        with patch.dict(os.environ, VK_SESSION_ID=task['session'], VK_EXECUTION_ID=task['exec']):
+            self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan, board_only=True), 0)
+        receipt = json.loads(Path(next(v for k, v in calls if k == 'checkpoint')).read_text())
+        self.assertEqual(receipt['boardVersions'], adapter.board_versions(board))
+        self.assertEqual(receipt['agentReviewedAt'], values['schedule']['a']['at'])
+        self.assertEqual(receipt['fingerprint'], plan['fingerprint'])
+        self.assertNotIn('acknowledgedFingerprint', receipt)
+
+        body = body.replace('Initial', 'Edited')
+        board.update(sha=hashlib.sha256(body.encode()).hexdigest(), body=body)
+        next_report = {**plan, 'changes': changes, 'boardPending': []}
+        partial, reason = adapter.partial_input(self.ap, {}, (receipt, self.ap['now']()), self.ap['now'](), next_report)
+        self.assertIsNone(reason)
+        self.assertEqual([(item['kind'], item['key']) for item in partial['checks']], [('board', key)])
 
     def test_board_add_edit_remove_delegates_rows_but_context_change_requires_full_review(self):
         gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])

@@ -1022,7 +1022,7 @@ export async function reconcileAutopilot({
     githubReads: snapshot.githubReads,
     changes: changed || scope?.includeAuditSnapshot === true
       ? reconciliationChanges(record.baseline, index, snapshot) : undefined,
-    auditSnapshot: changed && index && scope?.includeAuditSnapshot === true
+    auditSnapshot: (changed || scope?.auditDue === true) && index && scope?.includeAuditSnapshot === true
       ? Object.fromEntries(Object.entries({
         prs: snapshot.facts.heads,
         issues: snapshot.facts.issues,
