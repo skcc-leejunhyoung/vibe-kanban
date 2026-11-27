@@ -153,8 +153,9 @@ board rows. The reviewer submits evidence for the exact assigned versions using
 the adapter's `checkpoint-partial` command. It binds the result to the active
 execution and board snapshot before invoking the official checkpoint writer.
 Full reconciliation, including the scheduled audit, can bind the worker version
-with `checkpoint-full` when its verified observations and recorded PR heads
-agree with the worker input.
+with `checkpoint-full` when its verified observations and recorded PR heads and
+GitHub states agree with the worker input. A recovered run can reuse the same
+checkpoint input after the session history confirms the recovery chain.
 The worker advances to that stored version and still reports differences from
 any newer collection. It tracks board membership separately from source
 coverage. Published row edits can reuse evidence for unchanged rows when the

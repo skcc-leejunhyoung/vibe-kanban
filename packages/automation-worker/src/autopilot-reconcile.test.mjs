@@ -452,6 +452,7 @@ test('a bound checkpoint advances only its stored observation when newer PR and 
 test('board membership changes retain proven source coverage and only genuine source expansion is full scope', async () => {
   const h = fixture();
   h.now = Date.parse('2002-03-06T00:00:00Z');
+  h.prStates = new Map([[8, 'closed'], [9, 'merged']]);
   const record = {};
   const poll = (input, acknowledgedAt) => {
     h.scope = input;
@@ -459,10 +460,12 @@ test('board membership changes retain proven source coverage and only genuine so
       acknowledgedAt, persist: async () => {}, now: () => h.now });
   };
   const original = { ...scope, includeAuditSnapshot: true, boardPrs: ['synthetic/widgets#7'],
-    tracked: [...scope.tracked, { repository: 'synthetic/widgets', number: 8 }] };
+    tracked: [7, 8, 9].map((number) => ({ repository: 'synthetic/widgets', number })) };
   const initial = await poll(original);
   assert.deepEqual(Object.keys(initial.auditSnapshot), ['prs', 'issues', 'hosts']);
   assert.ok(initial.auditSnapshot.prs.facts.some(({ key, head: value }) => key === 'synthetic/widgets#7' && value === head));
+  assert.deepEqual(Object.fromEntries(initial.auditSnapshot.prs.facts.map(({ id, githubState }) => [id, githubState])),
+    { 7: 'OPEN', 8: 'CLOSED', 9: 'MERGED' });
   h.now += 1000;
   const quiet = await poll(original, new Date(h.now).toISOString());
   assert.equal(quiet.changed, false);

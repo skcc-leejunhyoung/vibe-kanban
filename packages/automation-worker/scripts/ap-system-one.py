@@ -325,13 +325,48 @@ def partial_input(ap, scope, proof, reviewed_at, report):
             'boardResolutions': [row for row in previous.get('boardResolutions', []) if row['key'] not in targets]}, None
 
 
+def is_checkpoint_recovery(ap, task, execution):
+    host_args = ap.get('HOSTS', {}).get(task.get('host'))
+    if host_args is None or 'vk' not in ap or 'autopilot_stop' not in ap:
+        return False
+    history = ap['vk']('session', 'executions', task['session'], *host_args)
+    if not isinstance(history, list) or any(not isinstance(row, dict) for row in history):
+        return False
+    chain = [(ap['parse'](row.get('created_at') or row.get('started_at')), row) for row in history
+             if row.get('session_id') == task['session'] and row.get('run_reason') == 'codingagent' and not row.get('dropped')]
+    if any(stamp is None for stamp, _ in chain):
+        return False
+    chain.sort(key=lambda item: item[0])
+    previous = None
+    for stamp, row in chain:
+        if previous is None:
+            if row.get('id') == task['exec']:
+                previous = (stamp, row)
+            continue
+        prior_stamp, prior = previous
+        ended = ap['parse'](prior.get('completed_at'))
+        # Follow the collector's recovery order, stopping at a successful turn
+        # or a cancellation without an Autopilot stop record.
+        interrupted = prior.get('status') == 'failed' or (
+            prior.get('status') == 'killed' and ap['autopilot_stop'](prior['id']))
+        if not interrupted or stamp <= prior_stamp or (ended and stamp < ended):
+            return False
+        if row.get('id') == execution:
+            return row.get('status') == 'running'
+        previous = (stamp, row)
+    return False
+
+
 def verify_checkpoint_execution(ap, plan):
     task = ap['periodic_active']() or {}
     binding = plan['task']
+    execution = os.environ.get('VK_EXECUTION_ID')
     if (task.get('id') != binding['id'] or task.get('session') != binding['session'] or
             os.environ.get('VK_SESSION_ID') != binding['session'] or
-            not task.get('exec') or task['exec'] != os.environ.get('VK_EXECUTION_ID') or
+            not task.get('exec') or not execution or
             (binding.get('exec') and binding['exec'] != task['exec'])):
+        raise ValueError('대조 위임 실행이 일치하지 않음')
+    if task['exec'] != execution and not is_checkpoint_recovery(ap, task, execution):
         raise ValueError('대조 위임 실행이 일치하지 않음')
 
 
@@ -361,23 +396,30 @@ def checkpoint_full(ap, config, result_path, plan=None, *, board_only=False):
     elif plan is not None:
         checked = ap['parse'](plan['checkedAt'])
         audit = plan['auditSnapshot']
-        heads = {key: pr['head'] for pr in audit['prs']['facts'] for key in [pr['key'], *pr['aliases']]}
+        observed = {key: pr for pr in audit['prs']['facts'] for key in [pr['key'], *pr['aliases']]}
         schedule = ap['load'](ap['SCHED'], {})
         scope = registry(ap, config, schedule=schedule)
         recorded_heads = schedule.get('tracked_reconcile_checkpoint', {}).get('heads', {})
-        recorded_heads_match = isinstance(recorded_heads, dict) and all(
-            isinstance(record, dict) and isinstance(record.get('headRefOid'), str) and
-            heads.get(pr_key(url)) == record['headRefOid'].lower()
-            for url, record in recorded_heads.items())
+        recorded_prs_match = isinstance(recorded_heads, dict)
+        if recorded_prs_match:
+            for url, record in recorded_heads.items():
+                pr = observed.get(pr_key(url), {})
+                # An older worker can prove OPEN but didn't distinguish CLOSED from MERGED.
+                state = pr.get('githubState', 'OPEN' if pr.get('state') == 'open' else None)
+                if (not isinstance(record, dict) or not isinstance(record.get('headRefOid'), str) or
+                        pr.get('head') != record['headRefOid'].lower() or
+                        state not in ('OPEN', 'CLOSED', 'MERGED') or record.get('state') != state):
+                    recorded_prs_match = False
+                    break
         same_inputs = all(scope.get(key) == value for key, value in plan['scope'].items()
                           if key not in ('ignoreWorkspaces', 'tracked'))
-        observed_tracked = all(f"{pr['repository']}#{pr['number']}" in heads for pr in scope['tracked'])
+        observed_tracked = all(f"{pr['repository']}#{pr['number']}" in observed for pr in scope['tracked'])
         coverage = result.get('coverage')
-        if (same_inputs and observed_tracked and recorded_heads_match and checked and
+        if (same_inputs and observed_tracked and recorded_prs_match and checked and
                 dt.timedelta() <= ap['now']() - checked < PARTIAL_MAX_AGE and
                 matches_coverage(scope, coverage) and set(coverage['repositories']) == set(plan['coverage']['repositories']) and
                 result.get('auditReviewed') == {key: group['version'] for key, group in audit.items()} and
-                all(heads.get(pr_key(row['pr_url'])) == row['head'] for row in result['board_findings'])):
+                all(observed.get(pr_key(row['pr_url']), {}).get('head') == row['head'] for row in result['board_findings'])):
             evidence.update(fingerprint=plan['fingerprint'], acknowledgedFingerprint=plan['fingerprint'])
     path = write_evidence(evidence_folder(ap, config), 'reconcile-board-' if board_only else 'reconcile-full-', evidence)
     return ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
@@ -707,7 +749,7 @@ def install(ap, config, entrypoint=None):
                     command.extend(['--input', full_evidence])
                     prompt += (f' 코드의 읽기 전용 대조 증거는 {full_evidence}이다. '
                                '새로 전체 조회한 결과를 auditSnapshot의 prs·issues·hosts 자료와 대조한다. '
-                               '각 그룹의 전체 항목과 버전(리뷰 ID·결정·head, 이슈 연결, 실행·큐·재개)을 확인한 경우에만 '
+                               '각 그룹의 전체 항목과 버전(PR 상태·head·리뷰 ID·결정, 이슈 연결, 실행·큐·재개)을 확인한 경우에만 '
                                '그 그룹의 version을 결과 JSON auditReviewed의 같은 키에 넣는다. '
                                '차이가 있거나 비교할 수 없는 그룹은 생략한다. 전체 대조 결과 자체는 현재 확인한 상태를 사용한다.')
                 executable = shlex.join(command)

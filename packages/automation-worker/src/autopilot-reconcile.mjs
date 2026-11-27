@@ -1024,7 +1024,12 @@ export async function reconcileAutopilot({
       ? reconciliationChanges(record.baseline, index, snapshot) : undefined,
     auditSnapshot: (changed || scope?.auditDue === true) && index && scope?.includeAuditSnapshot === true
       ? Object.fromEntries(Object.entries({
-        prs: snapshot.facts.heads,
+        prs: snapshot.facts.heads.map((pr) => {
+          const merged = snapshot.terminalReviews?.[pr.id]?.merged;
+          const githubState = pr.state === 'open' ? 'OPEN'
+            : merged === true ? 'MERGED' : merged === false ? 'CLOSED' : null;
+          return { ...pr, githubState };
+        }),
         issues: snapshot.facts.issues,
         hosts: { hosts: snapshot.facts.hosts, dueResumes: snapshot.dueResumes },
       }).map(([name, facts]) => [name, { version: sha(facts), facts }]))

@@ -243,7 +243,7 @@ class PeriodicTests(unittest.TestCase):
         self.ap.update(delegation=task, periodic_active=lambda: task, board_snapshot=lambda: board)
         audit = {key: {'version': letter * 64, 'facts': []}
                  for key, letter in (('prs', 'a'), ('issues', 'b'), ('hosts', 'c'))}
-        audit['prs']['facts'] = [{'key': 'synthetic/widgets#17', 'aliases': [], 'head': 'd' * 40}]
+        audit['prs']['facts'] = [{'key': 'synthetic/widgets#17', 'aliases': [], 'head': 'd' * 40, 'githubState': 'OPEN'}]
         original_api = self.ap['api']
         self.ap['api'] = lambda *a, **kw: {**original_api(*a, **kw), 'changed': True, 'auditSnapshot': audit,
                                           'checkedAt': self.ap['now']().isoformat()}
@@ -262,24 +262,28 @@ class PeriodicTests(unittest.TestCase):
             result_path.write_text(json.dumps({**result, 'auditReviewed': checks}))
             # Reporting a newly tracked PR can bind only if the worker saw it already.
             values['schedule']['tracked_reconcile_checkpoint'] = {
-                'heads': {'https://github.com/synthetic/widgets/pull/18': {'headRefOid': 'd' * 40}}}
+                'heads': {'https://github.com/synthetic/widgets/pull/18': {'headRefOid': 'd' * 40, 'state': 'OPEN'}}}
             self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan), 0)
-            recorded = {'headRefOid': 'e' * 40}
+            recorded = {'headRefOid': 'e' * 40, 'state': 'OPEN'}
             values['schedule']['tracked_reconcile_checkpoint']['heads'] = {
                 'https://github.com/synthetic/widgets/pull/17': recorded}
             # The PR isn't on the board, and all reported group versions still match.
             self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan), 0)
             recorded['headRefOid'] = 'd' * 40
+            recorded['state'] = 'CLOSED'
+            self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan), 0)
+            recorded['state'] = 'OPEN'
             self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan), 0)
             stale = (self.ap['now']() - dt.timedelta(minutes=2)).timestamp()
             os.utime(result_path, (stale, stale))
             with self.assertRaisesRegex(ValueError, '이전의 전체 대조 증거'):
                 adapter.checkpoint_full(self.ap, self.config, result_path, plan)
 
-        unbound, unknown_pr, stale_head, bound = [json.loads(Path(v).read_text()) for k, v in calls if k == 'checkpoint']
+        unbound, unknown_pr, stale_head, stale_state, bound = [json.loads(Path(v).read_text()) for k, v in calls if k == 'checkpoint']
         self.assertNotIn('acknowledgedFingerprint', unbound)
         self.assertNotIn('acknowledgedFingerprint', unknown_pr)
         self.assertNotIn('acknowledgedFingerprint', stale_head)
+        self.assertNotIn('acknowledgedFingerprint', stale_state)
         self.assertEqual(bound['acknowledgedFingerprint'], plan['fingerprint'])
         self.assertEqual(bound['boardVersions']['sha'], board['sha'])
 
@@ -375,6 +379,46 @@ class PeriodicTests(unittest.TestCase):
         partial, reason = adapter.partial_input(self.ap, {}, (receipt, self.ap['now']()), self.ap['now'](), next_report)
         self.assertIsNone(reason)
         self.assertEqual([(item['kind'], item['key']) for item in partial['checks']], [('board', key)])
+
+    def test_board_checkpoint_accepts_verified_recovery_chain_only(self):
+        _, calls, _ = self.fixture()
+        session, initial, retry, recovery = 'synthetic-session', 'initial', 'retry', 'recovery'
+        start = self.ap['now']() - dt.timedelta(minutes=5)
+        task = {'id': 'synthetic-task', 'session': session, 'exec': initial, 'host': 'synthetic-host', 'at': start.isoformat()}
+        board = {'sha': 'b' * 64, 'pr_urls': [], 'body': ''}
+        def run(execution, minute, status):
+            return {'id': execution, 'session_id': session, 'run_reason': 'codingagent', 'status': status,
+                    'created_at': (start + dt.timedelta(minutes=minute)).isoformat()}
+        history = [run(recovery, 3, 'running'), run(initial, 1, 'failed'), run(retry, 2, 'killed')]
+        api_calls = []
+        def executions(*args):
+            api_calls.append(args)
+            return history
+        def stop(execution):
+            return {'by': 'autopilot'} if confirmed and execution == retry else None
+        confirmed = False
+        self.ap.update(periodic_active=lambda: task, board_snapshot=lambda: board, HOSTS={'synthetic-host': ['--host', 'synthetic']},
+                       vk=executions, autopilot_stop=stop)
+        plan = {'task': task.copy(), 'factsUnchanged': True, 'fingerprint': 'a' * 64, 'coverage': {}, 'counts': {},
+                'agentReviewedAt': start.isoformat()}
+        result_path = Path(self.folder, 'recovery-result.json')
+        result_path.write_text(json.dumps({'status': 'ok', 'errors': [], 'board_snapshot_sha': board['sha'],
+                                           'board_findings': [], 'board_mismatches': []}))
+        with patch.dict(os.environ, VK_SESSION_ID=session, VK_EXECUTION_ID=recovery):
+            with self.assertRaisesRegex(ValueError, '실행이 일치하지 않음'):
+                adapter.checkpoint_full(self.ap, self.config, result_path, plan, board_only=True)
+            confirmed = True
+            history[-1]['status'] = 'completed'
+            with self.assertRaisesRegex(ValueError, '실행이 일치하지 않음'):
+                adapter.checkpoint_full(self.ap, self.config, result_path, plan, board_only=True)
+            history[-1]['status'] = 'killed'
+            history[0]['session_id'] = 'other-session'
+            with self.assertRaisesRegex(ValueError, '실행이 일치하지 않음'):
+                adapter.checkpoint_full(self.ap, self.config, result_path, plan, board_only=True)
+            history[0]['session_id'] = session
+            self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan, board_only=True), 0)
+        self.assertEqual(api_calls, [('session', 'executions', session, '--host', 'synthetic')] * 4)
+        self.assertEqual(sum(name == 'checkpoint' for name, _ in calls), 1)
 
     def test_board_add_edit_remove_delegates_rows_but_context_change_requires_full_review(self):
         gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])
