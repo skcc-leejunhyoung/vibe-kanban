@@ -419,6 +419,8 @@ def install(ap, config, entrypoint=None):
             with os.fdopen(handle, 'w') as stream:
                 json.dump({'checkedAt': report['checkedAt'], 'boardPending': pending}, stream)
             os.replace(path, board_report)
+        if 'board_followups_due' in ap and ap['board_followups_due'](ap['load'](ap['BOARD'], {}), ap['now']()):
+            return None, 'board_followup_due'
         if pending and report.get('factsUnchanged') is True and 'periodic_prompt' in ap:
             if not admission_current(due, proof, scope, reviewed_at)[1]:
                 return None, 'admission_changed'
@@ -447,8 +449,6 @@ def install(ap, config, entrypoint=None):
         findings = evidence.get('board_findings')
         if not isinstance(findings, list) or evidence.get('board_mismatches', []) not in ([], 0):
             return None, 'unverified_board'
-        if 'board_followups_due' in ap and ap['board_followups_due'](ap['load'](ap['BOARD'], {}), ap['now']()):
-            return None, 'board_followup_due'
         aliases = {old.lower(): new.lower() for old, new in (config.get('repositoryAliases') or {}).items()}
         canonical = lambda repo: aliases.get(repo.lower(), repo.lower())
         tracked = {(canonical(pr['repository']), pr['number']) for pr in scope['tracked']}

@@ -158,6 +158,28 @@ class PeriodicTests(unittest.TestCase):
         self.assertNotEqual(after['registryHash'], before['registryHash'])
         self.assertNotEqual(after['registryIndex']['byPr'], before['registryIndex']['byPr'])
 
+    def test_due_board_followup_takes_priority_over_partial_session_review(self):
+        gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])
+        base = 'd' * 64
+        values[str(Path(self.folder, 'official-evidence.json'))]['fingerprint'] = base
+        self.ap.update(board_snapshot=lambda: {'sha': 'b' * 64, 'pr_urls': []},
+                       periodic_active=lambda: None, board_followups_due=lambda *_: True)
+        original_api = self.ap['api']
+        changes = {'baseFingerprint': base, 'scopeChanged': False, 'registryChanged': False,
+                   'checks': [{'kind': 'session', 'key': 'synthetic-session', 'version': 'e' * 64}],
+                   'prFacts': {}, 'boardHeads': {}}
+        self.ap['api'] = lambda *args, **kwargs: {
+            **original_api(*args, **kwargs), 'changed': True, 'fingerprint': 'c' * 64,
+            'changes': changes, 'checkedAt': self.ap['now']().isoformat(),
+        }
+
+        _, result = gate(['periodic due'])
+
+        self.assertEqual(result['system_one_fallback'], 'board_followup_due')
+        prompt = next(value for key, value in calls if key == 'prompt')
+        self.assertTrue(prompt.startswith('전체 대조'))
+        self.assertEqual(list(Path(self.folder, 'system-one-evidence').glob('partial-*.json')), [])
+
     def test_partial_gate_binds_official_checkpoint_to_audit_and_execution(self):
         gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])
         session, execution = 'synthetic-session', 'synthetic-execution'
