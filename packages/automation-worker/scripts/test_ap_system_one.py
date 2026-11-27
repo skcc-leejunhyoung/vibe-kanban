@@ -533,6 +533,52 @@ class PeriodicTests(unittest.TestCase):
                 adapter.verify_checkpoint_execution(self.ap, plan)
             self.assertEqual(calls, [])
 
+    def test_collector_waits_for_explicit_recovery_without_rereading_history(self):
+        self.fixture()
+        session = 'synthetic-session'
+        task = {'id': 'synthetic-task', 'session': session, 'exec': 'initial', 'host': 'synthetic-host'}
+        start = self.ap['now']() - dt.timedelta(minutes=5)
+        def run(execution, minute, status, prompt=''):
+            return {'id': execution, 'session_id': session, 'run_reason': 'codingagent', 'status': status,
+                    'created_at': (start + dt.timedelta(minutes=minute)).isoformat(),
+                    'executor_action': {'typ': {'prompt': prompt}}}
+        recovery = run('recovery', 3, 'running', '정기 대조 재개 synthetic-task')
+        history = [run('initial', 1, 'failed'), run('conversation', 2, 'completed'), recovery]
+        execution_args = ('session', 'executions', session, '--host', 'synthetic')
+        calls, collected = [], []
+        def vk(*args):
+            calls.append(args)
+            if args == execution_args:
+                return history
+            self.assertEqual(args, ('session', 'log', 'conversation', '--limit', '60', '--host', 'synthetic'))
+            return {'execution_id': 'conversation', 'status': 'completed', 'offset': 0, 'total': 1,
+                    'has_more': False, 'entries': [{'entry_type': {'type': 'assistant_message'}, 'content': 'Ordinary reply.'}]}
+
+        def periodic_active():
+            return task
+
+        def legacy_collect():
+            active = self.ap['periodic_active']()
+            executions = self.ap['vk']('session', 'executions', active['session'], '--host', 'synthetic')
+            collected.append(tuple(row['status'] for row in executions))
+            return 'collected'
+
+        self.ap.update(periodic_active=periodic_active, collect_periodic=legacy_collect,
+                       HOSTS={'synthetic-host': ['--host', 'synthetic']}, vk=vk, autopilot_stop=lambda _: None)
+        adapter.install_periodic_collection(self.ap)
+        self.assertIsNone(self.ap['collect_periodic']())
+        self.assertEqual(collected, [])
+        self.assertEqual(calls.count(execution_args), 1)
+        self.assertIs(self.ap['vk'], vk)
+        self.assertIs(self.ap['periodic_active'], periodic_active)
+
+        recovery['executor_action']['typ']['prompt'] = 'Unrelated running turn.'
+        self.assertEqual(self.ap['collect_periodic'](), 'collected')
+        recovery['executor_action']['typ']['prompt'] = '정기 대조 재개 synthetic-task'
+        recovery['status'] = 'completed'
+        self.assertEqual(self.ap['collect_periodic'](), 'collected')
+        self.assertEqual(collected, [('failed', 'completed', 'running'), ('failed', 'completed', 'completed')])
+
     def test_board_add_edit_remove_delegates_rows_but_context_change_requires_full_review(self):
         gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])
         url = lambda pr: f'https://github.com/synthetic/widgets/pull/{pr}'

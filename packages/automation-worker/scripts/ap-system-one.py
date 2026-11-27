@@ -372,11 +372,17 @@ def completed_without_reconciliation(ap, execution, host_args):
     return has_reply
 
 
-def is_checkpoint_recovery(ap, task, execution, original_execution):
+def recovered_executions(task):
+    return [row['exec'] for row in rows(task.get('recovered_from')) if isinstance(row, dict) and
+            row.get('exec') and row.get('status') in ('failed', 'killed')]
+
+
+def is_checkpoint_recovery(ap, task, execution, original_execution, *, history=None):
     host_args = ap.get('HOSTS', {}).get(task.get('host'))
     if host_args is None or 'vk' not in ap or 'autopilot_stop' not in ap:
         return False
-    history = ap['vk']('session', 'executions', task['session'], *host_args)
+    if history is None:
+        history = ap['vk']('session', 'executions', task['session'], *host_args)
     if not isinstance(history, list) or any(not isinstance(row, dict) for row in history):
         return False
     chain = [(ap['parse'](row.get('created_at') or row.get('started_at')), row) for row in history
@@ -424,6 +430,49 @@ def is_checkpoint_recovery(ap, task, execution, original_execution):
     return False
 
 
+def install_periodic_collection(ap):
+    collect = ap.get('collect_periodic')
+    if collect is None or 'periodic_active' not in ap or 'vk' not in ap:
+        return
+
+    class RecoveryInFlight(Exception):
+        pass
+
+    def collect_with_recovery():
+        active, vk = ap['periodic_active'], ap['vk']
+        task = None
+
+        def current_periodic():
+            nonlocal task
+            task = active()
+            return task
+
+        def checked_vk(*args, **kwargs):
+            history = vk(*args, **kwargs)
+            if not task or not task.get('exec') or not isinstance(history, list):
+                return history
+            host_args = ap.get('HOSTS', {}).get(task.get('host'))
+            if host_args is None or args != ('session', 'executions', task.get('session'), *host_args):
+                return history
+            original = next(iter(recovered_executions(task)), task['exec'])
+            if any(isinstance(row, dict) and row.get('status') == 'running' and row.get('id') and
+                   row['id'] != task['exec'] and is_checkpoint_recovery(ap, task, row['id'], original, history=history)
+                   for row in history):
+                raise RecoveryInFlight
+            return history
+
+        # Check the collector's own execution snapshot before it can settle the earlier turn.
+        ap.update(periodic_active=current_periodic, vk=checked_vk)
+        try:
+            return collect()
+        except RecoveryInFlight:
+            return None
+        finally:
+            ap.update(periodic_active=active, vk=vk)
+
+    ap['collect_periodic'] = collect_with_recovery
+
+
 def verify_checkpoint_execution(ap, plan):
     binding = plan['task']
     execution = os.environ.get('VK_EXECUTION_ID')
@@ -434,8 +483,7 @@ def verify_checkpoint_execution(ap, plan):
     task = active or (resume() if resume else None) or {}
     if task.get('id') != binding['id'] or task.get('session') != binding['session'] or not task.get('exec'):
         raise ValueError('대조 위임 실행이 일치하지 않음')
-    recovered = [row['exec'] for row in rows(task.get('recovered_from')) if isinstance(row, dict) and
-                 row.get('exec') and row.get('status') in ('failed', 'killed')]
+    recovered = recovered_executions(task)
     original_execution = binding.get('exec') or (recovered[0] if recovered else task['exec'])
     if original_execution != task['exec'] and original_execution not in recovered:
         raise ValueError('대조 위임 실행이 일치하지 않음')
@@ -561,6 +609,7 @@ def checkpoint_partial(ap, config, input_path, result_path):
 
 def install(ap, config, entrypoint=None):
     original = ap['periodic_gate']
+    install_periodic_collection(ap)
     board_only_evidence = None
     partial_evidence = None
     full_plan = full_evidence = None
