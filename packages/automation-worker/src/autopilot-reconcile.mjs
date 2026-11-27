@@ -671,6 +671,7 @@ export async function collectReconciliation({
     registryHash: scope.registryHash,
     boardNoteId: scope.boardNoteId,
     boardPrs: scope.boardPrs?.toSorted(),
+    readRepositories: scope.readRepositories?.length ? [...new Set(scope.readRepositories)].sort() : undefined,
     issues: sorted(issues),
     heads,
     hosts,
@@ -738,6 +739,8 @@ function indexFacts(facts) {
   }
   return {
     scope: sha([facts.coverage, facts.boardNoteId, facts.boardPrs]),
+    sourceScope: sha([facts.coverage, facts.boardNoteId, facts.readRepositories ?? []]),
+    boardPrs: Object.fromEntries((facts.boardPrs ?? []).map((key) => [key, true])),
     registryHash: facts.registryHash,
     workspaces: Object.fromEntries(workspaces),
     prs: Object.fromEntries(facts.heads.map((pr) => [pr.id, {
@@ -778,6 +781,7 @@ function reconciliationChanges(baseline, index, snapshot) {
     ...changedRows('issue', previous.issues, index.issues),
     ...changedRows('workspace', previous.workspaces, index.workspaces),
     ...changedRows('session', previous.sessions, index.sessions),
+    ...(previous.boardPrs ? changedRows('board', previous.boardPrs, index.boardPrs) : []),
     ...registryChecks,
   ];
   for (const resume of snapshot.dueResumes || []) {
@@ -794,6 +798,7 @@ function reconciliationChanges(baseline, index, snapshot) {
         refs.add(url.toLowerCase().replace('https://github.com/', '').replace('/pull/', '#'));
     }
   }
+  for (const { kind, key } of checks) if (kind === 'board') refs.add(key);
   for (const { key } of registryChecks) refs.add(key);
   const board = new Set(snapshot.facts.boardPrs);
   const boardHeads = {};
@@ -810,7 +815,11 @@ function reconciliationChanges(baseline, index, snapshot) {
   return {
     baseFingerprint: baseline.fingerprint,
     baseAcknowledgedAt: baseline.at,
-    scopeChanged: previous.scope !== index.scope,
+    // A legacy digest also covered board membership. Use it until a new
+    // complete observation is acknowledged, without guessing its coverage.
+    scopeChanged: previous.sourceScope === undefined
+      ? previous.scope !== index.scope
+      : previous.sourceScope !== index.sourceScope,
     registryChanged: registryChanged && registryChecks.length === 0,
     checks,
     prFacts,
@@ -950,28 +959,31 @@ export async function reconcileAutopilot({
   const checked = now();
   const at = new Date(checked).toISOString();
   const bound = scope?.acknowledgedFingerprint;
-  const acknowledged = bound && (
-    bound !== snapshot.fingerprint || bound !== record.pending?.fingerprint
-  ) ? NaN : Date.parse(acknowledgedAt);
-  const pendingAt = Date.parse(record.pending?.at);
+  const pending = record.pending;
+  const acknowledged = Date.parse(acknowledgedAt);
+  const baselineAt = Date.parse(record.baseline?.at);
+  const validAck = Number.isFinite(acknowledged) &&
+    acknowledged >= Date.parse(pending?.at) && acknowledged <= checked &&
+    checked - acknowledged < 2 * 60 * 60 * 1000 &&
+    (!Number.isFinite(baselineAt) || acknowledged >= baselineAt);
   const index = indexFacts(snapshot.facts);
   if (index && scope?.registryIndex) index.registry = scope.registryIndex;
   const boardPending = reconcileBoardReviews(
     scope,
     record,
     snapshot,
-    acknowledged,
+    // Board resolutions already bind their own PR version and published row.
+    bound && bound !== pending?.fingerprint && bound !== record.baseline?.fingerprint ? NaN : acknowledged,
     checked
   );
-  if (
-    boardPending.length === 0 &&
-    record.pending?.fingerprint === snapshot.fingerprint &&
-    Number.isFinite(acknowledged) &&
-    acknowledged >= pendingAt &&
-    acknowledged <= checked &&
-    checked - acknowledged < 2 * 60 * 60 * 1000
-  )
+  if (validAck && bound && bound === pending?.fingerprint && pending.index) {
+    // Advance to the version actually checked. A newer collection is still
+    // compared against that version, and outstanding board work stays pending.
+    record.baseline = { fingerprint: bound, at: acknowledgedAt, index: pending.index };
+  } else if (validAck && boardPending.length === 0 &&
+      pending?.fingerprint === snapshot.fingerprint && (!bound || bound === snapshot.fingerprint)) {
     record.baseline = { fingerprint: snapshot.fingerprint, at: acknowledgedAt, index };
+  }
   // Older worker state only has a hash. Index it once the exact facts are seen again.
   if (record.baseline?.fingerprint === snapshot.fingerprint)
     record.baseline.index = index;
@@ -986,6 +998,7 @@ export async function reconcileAutopilot({
         : at,
     fingerprint: snapshot.fingerprint,
     counts: snapshot.counts,
+    index,
   };
   if (snapshot.terminalReviews)
     record.terminalReviews = snapshot.terminalReviews;
@@ -1007,6 +1020,14 @@ export async function reconcileAutopilot({
     registryHash: snapshot.facts?.registryHash,
     checkedTracked: snapshot.checkedTracked,
     githubReads: snapshot.githubReads,
-    changes: changed ? reconciliationChanges(record.baseline, index, snapshot) : undefined,
+    changes: changed || scope?.includeAuditSnapshot === true
+      ? reconciliationChanges(record.baseline, index, snapshot) : undefined,
+    auditSnapshot: changed && index && scope?.includeAuditSnapshot === true
+      ? Object.fromEntries(Object.entries({
+        prs: snapshot.facts.heads,
+        issues: snapshot.facts.issues,
+        hosts: { hosts: snapshot.facts.hosts, dueResumes: snapshot.dueResumes },
+      }).map(([name, facts]) => [name, { version: sha(facts), facts }]))
+      : undefined,
   };
 }

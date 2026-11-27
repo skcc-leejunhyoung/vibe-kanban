@@ -16,6 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 PR_URL = re.compile(r'https://github\.com/([^/]+/[^/]+)/pull/(\d+)')
+BOARD_ROW = re.compile(r'^\|\s*\[[^\]]+\]\((' + PR_URL.pattern + r')\)\s*\|')
+SHA256 = re.compile(r'[0-9a-f]{64}')
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', re.I)
 AGENT_AUDIT_INTERVAL = dt.timedelta(hours=2)
 PARTIAL_MAX_AGE = dt.timedelta(minutes=30)
@@ -229,34 +231,77 @@ def pr_key(url):
     return f'{match[1].lower()}#{int(match[2])}' if match else None
 
 
+def board_versions(board):
+    if not isinstance(board.get('body'), str):
+        return None
+    section = ''
+    versions, context = {}, []
+    for line in board['body'].strip().splitlines():
+        if line.startswith('## '):
+            section = line
+        match = BOARD_ROW.match(line)
+        if match:
+            key = pr_key(match[1])
+            if key in versions:
+                raise ValueError('게시 보드의 PR 행이 중복됨')
+            versions[key] = hashlib.sha256((section + '\n' + line).encode()).hexdigest()
+        elif line != '| — | 없음 | — |':
+            context.append(line)
+    if set(versions) != {pr_key(url) for url in board['pr_urls']}:
+        raise ValueError('게시 보드의 PR 행 범위가 일치하지 않음')
+    return {'sha': board['sha'], 'context': hashlib.sha256('\n'.join(context).encode()).hexdigest(), 'rows': versions}
+
+
 def partial_input(ap, scope, proof, reviewed_at, report):
     changes = report.get('changes')
-    if not isinstance(changes, dict) or any(changes.get(key) is not False for key in
-                                           ('scopeChanged', 'registryChanged')):
-        return None
+    if not isinstance(changes, dict):
+        return None, 'missing_change_baseline'
+    if any(changes.get(key) is not False for key in ('scopeChanged', 'registryChanged')):
+        return None, 'unverified_change_scope'
     checks = changes.get('checks')
-    if not isinstance(checks, list) or not 0 < len(checks) <= 50 or len(report['boardPending']) > 50:
-        return None
+    if not isinstance(checks, list) or len(checks) > 50 or len(report['boardPending']) > 50:
+        return None, 'unverified_change_size'
     if 'board_snapshot' not in ap or 'periodic_active' not in ap:
-        return None
+        return None, 'missing_checkpoint_tools'
     previous = proof[0]
     if (previous.get('fingerprint') != changes['baseFingerprint'] and
             (previous.get('fingerprint') or ap['parse'](changes.get('baseAcknowledgedAt')) != reviewed_at)):
-        return None
-    board = ap['board_snapshot']()
+        return None, 'unbound_checkpoint'
+    try:
+        board = ap['board_snapshot']()
+        current_board = board_versions(board)
+    except (KeyError, ValueError):
+        return None, 'unverified_board'
+    checks = list(checks)
     if board['sha'] != previous.get('board_snapshot_sha'):
-        return None
+        old_board = previous.get('boardVersions')
+        if not current_board or not isinstance(old_board, dict) or old_board.get('sha') != previous.get('board_snapshot_sha'):
+            return None, 'missing_board_versions'
+        if old_board.get('context') != current_board['context']:
+            return None, 'board_context_changed'
+        old_rows, new_rows = old_board.get('rows'), current_board['rows']
+        if not isinstance(old_rows, dict) or set(old_rows) != {
+                pr_key(row['pr_url']) for row in previous.get('board_findings', []) if row.get('checked') is True}:
+            return None, 'unverified_board'
+        for key in sorted(old_rows.keys() | new_rows.keys()):
+            before, after = old_rows.get(key), new_rows.get(key)
+            if before == after:
+                continue
+            version = hashlib.sha256(json.dumps(['board-row', key, before, after]).encode()).hexdigest()
+            checks.append({'kind': 'board', 'key': key, 'before': before, 'after': after, 'version': version})
+    if not 0 < len(checks) <= 50:
+        return None, 'unverified_change_size'
     pr_facts = changes['prFacts']
     targets = {row['key'] for row in report['boardPending']}
     for check in checks:
-        if check['kind'] == 'registry':
+        if check['kind'] in ('registry', 'board'):
             targets.add(check['key'])
         for value in (check.get('before'), check.get('after')):
             if value and check['kind'] == 'pr':
                 targets.update([value['key'], *value['aliases']])
             if value and check['kind'] == 'issue':
                 targets.update(pr_key(url) for url in value['prs'])
-    # Untouched published rows inherit their verified head only on the same board version.
+    # Unchanged rows inherit their verified head; changed rows are in the plan.
     old_heads = {pr_key(row['pr_url']): row['head'] for row in previous.get('board_findings', [])
                  if row.get('checked') is True}
     findings = []
@@ -264,18 +309,65 @@ def partial_input(ap, scope, proof, reviewed_at, report):
         key = pr_key(url)
         head = changes['boardHeads'].get(key)
         if not head or (key not in targets and old_heads.get(key) != head):
-            return None
+            return None, 'unverified_board_head'
         findings.append({'pr_url': url, 'head': head, 'checked': True})
     versions = [row['version'] for row in checks]
-    if len(set(versions)) != len(versions) or any(not re.fullmatch(r'[0-9a-f]{64}', value) for value in versions):
-        return None
+    if len(set(versions)) != len(versions) or any(not isinstance(value, str) or not SHA256.fullmatch(value) for value in versions):
+        return None, 'invalid_change_versions'
     return {'proof': proof_version(proof), 'scope': scope, 'fingerprint': report['fingerprint'],
             'baseFingerprint': changes['baseFingerprint'], 'checkedAt': report['checkedAt'],
             'agentReviewedAt': reviewed_at.isoformat(), 'coverage': report['coverage'], 'counts': report['counts'],
             'checks': checks, 'prFacts': {key: row for key, row in pr_facts.items() if key in targets},
             'boardPending': report['boardPending'], 'board_snapshot_sha': board['sha'], 'board_findings': findings,
+            'boardVersions': current_board,
             'board_mismatches': [row for row in previous.get('board_mismatches', []) if pr_key(row['pr_url']) not in targets],
-            'boardResolutions': [row for row in previous.get('boardResolutions', []) if row['key'] not in targets]}
+            'boardResolutions': [row for row in previous.get('boardResolutions', []) if row['key'] not in targets]}, None
+
+
+def verify_checkpoint_execution(ap, plan):
+    task = ap['periodic_active']() or {}
+    binding = plan['task']
+    if (task.get('id') != binding['id'] or task.get('session') != binding['session'] or
+            os.environ.get('VK_SESSION_ID') != binding['session'] or
+            not task.get('exec') or task['exec'] != os.environ.get('VK_EXECUTION_ID') or
+            (binding.get('exec') and binding['exec'] != task['exec'])):
+        raise ValueError('대조 위임 실행이 일치하지 않음')
+
+
+def checkpoint_full(ap, config, result_path, plan=None):
+    task = ap['periodic_active']() or {}
+    since = ap['parse'](task.get('at')) or ap['now']() - AGENT_AUDIT_INTERVAL
+    with open(result_path) as stream:
+        written = dt.datetime.fromtimestamp(os.fstat(stream.fileno()).st_mtime, dt.timezone.utc)
+        if written < since:
+            raise ValueError('이번 대조 이전의 전체 대조 증거')
+        result = json.load(stream)
+    if ap['evidence_problems'](result):
+        raise ValueError('전체 대조 증거가 완전하지 않음')
+    if plan is not None:
+        verify_checkpoint_execution(ap, plan)
+    board = ap['board_snapshot']()
+    if board['sha'] != result.get('board_snapshot_sha'):
+        raise ValueError('전체 대조 중 게시 보드 버전이 바뀜')
+    evidence = {key: value for key, value in result.items()
+                if key not in ('fingerprint', 'acknowledgedFingerprint', 'boardVersions')}
+    evidence['boardVersions'] = board_versions(board)
+    if plan is not None:
+        checked = ap['parse'](plan['checkedAt'])
+        audit = plan['auditSnapshot']
+        heads = {key: pr['head'] for pr in audit['prs']['facts'] for key in [pr['key'], *pr['aliases']]}
+        scope = registry(ap, config)
+        same_inputs = all(scope.get(key) == value for key, value in plan['scope'].items()
+                          if key not in ('ignoreWorkspaces', 'tracked'))
+        observed_tracked = all(f"{pr['repository']}#{pr['number']}" in heads for pr in scope['tracked'])
+        coverage = result.get('coverage')
+        if (same_inputs and observed_tracked and checked and dt.timedelta() <= ap['now']() - checked < PARTIAL_MAX_AGE and
+                matches_coverage(scope, coverage) and set(coverage['repositories']) == set(plan['coverage']['repositories']) and
+                result.get('auditReviewed') == {key: group['version'] for key, group in audit.items()} and
+                all(heads.get(pr_key(row['pr_url'])) == row['head'] for row in result['board_findings'])):
+            evidence.update(fingerprint=plan['fingerprint'], acknowledgedFingerprint=plan['fingerprint'])
+    path = write_evidence(evidence_folder(ap, config), 'reconcile-full-', evidence)
+    return ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
 
 
 def checkpoint_partial(ap, config, input_path, result_path):
@@ -285,13 +377,7 @@ def checkpoint_partial(ap, config, input_path, result_path):
         result = json.load(stream)
     now = ap['now']()
     checked = ap['parse'](plan['checkedAt'])
-    task = ap['periodic_active']() or {}
-    binding = plan['task']
-    if (task.get('id') != binding['id'] or task.get('session') != binding['session'] or
-            os.environ.get('VK_SESSION_ID') != binding['session'] or
-            not task.get('exec') or task['exec'] != os.environ.get('VK_EXECUTION_ID') or
-            (binding.get('exec') and binding['exec'] != task['exec'])):
-        raise ValueError('부분 대조 위임 실행이 일치하지 않음')
+    verify_checkpoint_execution(ap, plan)
     if checked is None or not dt.timedelta() <= now - checked < PARTIAL_MAX_AGE:
         raise ValueError('부분 대조 스냅샷 기한 만료')
     proof = checkpoint_proof(ap)
@@ -317,6 +403,7 @@ def checkpoint_partial(ap, config, input_path, result_path):
     evidence = {**result, 'coverage': plan['coverage'], 'counts': plan['counts'],
                 'agentReviewedAt': plan['agentReviewedAt'], 'acknowledgedFingerprint': plan['fingerprint'],
                 'board_snapshot_sha': plan['board_snapshot_sha'], 'board_findings': plan['board_findings'],
+                'boardVersions': plan.get('boardVersions'),
                 'board_mismatches': plan['board_mismatches'] + result['board_mismatches'],
                 'boardResolutions': plan['boardResolutions'] + result['boardResolutions']}
     ap['verify_board_coverage'](evidence, {})
@@ -328,6 +415,7 @@ def install(ap, config, entrypoint=None):
     original = ap['periodic_gate']
     board_only_evidence = None
     partial_evidence = None
+    full_plan = full_evidence = None
 
     def manual_delegation_open():
         tasks = rows(ap['load'](ap['DELEG'], {}).get('tasks', {}))
@@ -350,8 +438,24 @@ def install(ap, config, entrypoint=None):
                 'remaining': report.get('remaining'),
                 **({'retryAt': report['retryAt']} if report.get('retryAt') else {})}
 
+    def partial_route(due, scope, proof, reviewed_at, report):
+        nonlocal partial_evidence
+        if not entrypoint or 'periodic_prompt' not in ap:
+            return None
+        latest = next((row for row in reversed(rows(ap['load'](ap['DELEG'], {}).get('tasks')))
+                       if row.get('kind') == 'periodic' and row.get('result')), {})
+        if latest.get('result', {}).get('status') == 'error':
+            return 'previous_reconciliation_failed'
+        plan, reason = partial_input(ap, scope, proof, reviewed_at, report)
+        if plan is None:
+            return reason
+        if not admission_current(due, proof, scope, reviewed_at)[1]:
+            return 'admission_changed'
+        partial_evidence = write_evidence(evidence_folder(ap, config), 'partial-', plan)
+        return 'partial:' + ','.join(sorted({row['kind'] for row in plan['checks']}))
+
     def quiet_checkpoint(due):
-        nonlocal board_only_evidence, partial_evidence
+        nonlocal board_only_evidence, full_plan
         if manual_delegation_open():
             return None, 'existing_delegation'
         state_path = ap.get('GATE_STATE')
@@ -378,6 +482,8 @@ def install(ap, config, entrypoint=None):
             return None, 'identity_recheck_due'
         request = {**scope, 'acknowledgedAt': reviewed_at.isoformat(),
                    'boardResolutions': [row for row in rows(evidence.get('boardResolutions')) if isinstance(row, dict)]}
+        if entrypoint:
+            request['includeAuditSnapshot'] = True
         if evidence.get('acknowledgedFingerprint'):
             request.update(acknowledgedAt=acknowledged.isoformat(),
                            acknowledgedFingerprint=evidence['acknowledgedFingerprint'])
@@ -413,6 +519,10 @@ def install(ap, config, entrypoint=None):
         pending = report.get('boardPending')
         if not isinstance(pending, list):
             return None, 'unverified_board'
+        audit_snapshot = report.pop('auditSnapshot', None)
+        if isinstance(audit_snapshot, dict) and set(audit_snapshot) == {'prs', 'issues', 'hosts'}:
+            full_plan = {'scope': scope, 'fingerprint': report['fingerprint'], 'checkedAt': report['checkedAt'],
+                         'coverage': report['coverage'], 'auditSnapshot': audit_snapshot}
         if pending or os.path.exists(board_report):
             os.makedirs(folder, mode=0o700, exist_ok=True)
             handle, path = tempfile.mkstemp(prefix='board-', suffix='.json', dir=folder)
@@ -422,6 +532,9 @@ def install(ap, config, entrypoint=None):
         if 'board_followups_due' in ap and ap['board_followups_due'](ap['load'](ap['BOARD'], {}), ap['now']()):
             return None, 'board_followup_due'
         if pending and report.get('factsUnchanged') is True and 'periodic_prompt' in ap:
+            reason = partial_route(due, scope, proof, reviewed_at, report)
+            if partial_evidence:
+                return None, reason
             if not admission_current(due, proof, scope, reviewed_at)[1]:
                 return None, 'admission_changed'
             report.update(agentReviewedAt=reviewed_at.isoformat())
@@ -437,15 +550,8 @@ def install(ap, config, entrypoint=None):
                 return None, 'registry_changed'
             if changes.get('scopeChanged'):
                 return None, 'scope_changed'
-            if entrypoint and 'periodic_prompt' in ap:
-                latest = next((row for row in reversed(rows(ap['load'](ap['DELEG'], {}).get('tasks')))
-                               if row.get('kind') == 'periodic' and row.get('result')), {})
-                if latest.get('result', {}).get('status') != 'error':
-                    plan = partial_input(ap, scope, proof, reviewed_at, report)
-                    if plan and admission_current(due, proof, scope, reviewed_at)[1]:
-                        partial_evidence = write_evidence(folder, 'partial-', plan)
-                        return None, 'partial:' + ','.join(kinds)
-            return None, 'resume_due' if kinds == ['resume'] else 'facts_changed'
+            return None, partial_route(due, scope, proof, reviewed_at, report) or (
+                'resume_due' if kinds == ['resume'] else 'facts_changed')
         findings = evidence.get('board_findings')
         if not isinstance(findings, list) or evidence.get('board_mismatches', []) not in ([], 0):
             return None, 'unverified_board'
@@ -459,11 +565,13 @@ def install(ap, config, entrypoint=None):
         try:
             ap['verify_board_coverage'](evidence, {})
         except (KeyError, ValueError):
-            return None, 'unverified_board'
+            return None, partial_route(due, scope, proof, reviewed_at, report) or 'unverified_board'
         rest, current = admission_current(due, proof, scope, reviewed_at)
         if not current:
             return None, 'admission_changed'
+        report.pop('changes', None)
         report.update(board_findings=findings, board_mismatches=[], board_snapshot_sha=evidence['board_snapshot_sha'],
+                      boardVersions=evidence.get('boardVersions'),
                       agentReviewedAt=reviewed_at.isoformat())
         os.makedirs(folder, mode=0o700, exist_ok=True)
         handle, path = tempfile.mkstemp(prefix='reconcile-', suffix='.json', dir=folder)
@@ -476,7 +584,7 @@ def install(ap, config, entrypoint=None):
         return (rest, {'status': 'handled', 'source': 'code', 'evidence': path, 'counts': counts}), None
 
     def periodic(due, dry=False):
-        nonlocal board_only_evidence, partial_evidence
+        nonlocal board_only_evidence, partial_evidence, full_plan, full_evidence
         rest, decision = original(due, dry=True)
         if dry:
             return rest, decision
@@ -486,20 +594,28 @@ def install(ap, config, entrypoint=None):
             except Exception:
                 handled, reason = None, 'reconciliation_unavailable'
             if handled is not None:
+                full_plan = None
                 return handled
             try:
-                rest, result = original(due, dry=False)
-                if partial_evidence and isinstance(result, dict) and not result.get('duplicate') and result.get('status') in ('started', 'queued', 'uncertain'):
+                if full_plan and not partial_evidence and not board_only_evidence and 'board_snapshot' in ap and 'periodic_active' in ap:
                     try:
-                        with open(partial_evidence) as stream:
+                        full_evidence = write_evidence(evidence_folder(ap, config), 'full-', full_plan)
+                    except OSError:
+                        full_evidence = None
+                rest, result = original(due, dry=False)
+                handoff = partial_evidence or full_evidence
+                if handoff and isinstance(result, dict) and not result.get('duplicate') and result.get('status') in ('started', 'queued', 'uncertain'):
+                    try:
+                        with open(handoff) as stream:
                             plan = json.load(stream)
                         plan['task'] = {key: result.get(key) for key in ('id', 'session', 'exec')}
-                        os.replace(write_evidence(os.path.dirname(partial_evidence), 'partial-bind-', plan), partial_evidence)
+                        os.replace(write_evidence(os.path.dirname(handoff), 'bound-', plan), handoff)
                     except OSError:
-                        reason = 'partial_binding_unavailable'
+                        reason = 'checkpoint_binding_unavailable'
             finally:
                 board_only_evidence = None
                 partial_evidence = None
+                full_plan = full_evidence = None
             if isinstance(result, dict):
                 result = {**result, 'system_one_fallback': reason}
             return rest, result
@@ -524,7 +640,7 @@ def install(ap, config, entrypoint=None):
                     'PR은 prFacts의 head와 최근 결정 리뷰를 사용하고, 실행 중이거나 큐에 있는 동일 회차를 확인한다. '
                     '신규 리뷰 요청은 대상 PR의 읽기 전용 후보 검사로 기존 실행을 확인한다. '
                     '필요한 대상의 최신 head·리뷰·실행·queue만 다시 읽는다. 전체 목록을 재조회하지 않는다. '
-                    '보드에서 바뀐 PR은 현재 게시 상태·설명·대기 사유와 대조한다. '
+                    'board 항목의 추가·수정 행은 현재 게시 상태·설명·대기 사유와 대조하고 삭제 행은 게시에서 빠졌는지 확인한다. '
                     '기존 보류·사용자 결정을 보존하고 승인·머지·전송·후보 등록·보드/장부 수정을 하지 않는다. '
                     '새 후보 등록이나 범위 밖 증거가 필요하거나 현재 head·리뷰·큐가 입력과 달라졌으면 '
                     'status=error로 끝내 다음 정기 대조에서 전체 절차를 수행하게 한다. '
@@ -555,7 +671,21 @@ def install(ap, config, entrypoint=None):
                     '성공 시 changed=false로 보드 불일치 후속 처리를 기존 회수 경로에 맡긴다. '
                     '최종 응답 첫 줄은 RECONCILE에 이어 status, changed, summary, evidence(새 파일 절대경로)를 담은 JSON 한 줄이다.'
                 )
-            return (original_prompt() +
+            prompt = original_prompt()
+            if entrypoint and 'board_snapshot' in ap and 'periodic_active' in ap:
+                command = [sys.executable, *entrypoint, 'checkpoint-full']
+                if full_evidence:
+                    command.extend(['--input', full_evidence])
+                    prompt += (f' 코드의 읽기 전용 대조 증거는 {full_evidence}이다. '
+                               '새로 전체 조회한 결과를 auditSnapshot의 prs·issues·hosts 자료와 대조한다. '
+                               '각 그룹의 전체 항목과 버전(리뷰 ID·결정·head, 이슈 연결, 실행·큐·재개)을 확인한 경우에만 '
+                               '그 그룹의 version을 결과 JSON auditReviewed의 같은 키에 넣는다. '
+                               '차이가 있거나 비교할 수 없는 그룹은 생략한다. 전체 대조 결과 자체는 현재 확인한 상태를 사용한다.')
+                executable = shlex.join(command)
+                prompt = prompt.replace(f'{ap["AP"]}/bin/ap checkpoint --evidence', f'{executable} --evidence')
+                prompt += (f' 공식 체크포인트는 `{executable} --evidence <결과 JSON의 절대경로>`로 작성한다. '
+                           '최종 결과의 evidence에는 이 명령이 반환한 확정 증거 경로를 넣는다.')
+            return (prompt +
                     ' System One 검증용으로 공식 증거에 coverage를 기록한다. 이번 대조 범위는 ' + expected + '이다. ' +
                     'projects의 각 프로젝트 review 태그 이슈, repositories의 review 요청 발견, hosts의 각 호스트 공간·실행·queue를 ' +
                     '모두 공식 조회로 확인한 경우에만 이 값을 그대로 coverage로 기록한다. 하나라도 못 했으면 coverage를 넣지 않는다. ' +
@@ -696,17 +826,25 @@ def main():
             '--config', os.path.abspath(args.config),
         ])
     if config.get('enabled') is True:
-        if command == 'checkpoint-partial':
-            partial = argparse.ArgumentParser(prog='checkpoint-partial')
-            partial.add_argument('--input', required=True)
-            partial.add_argument('--evidence', required=True)
-            result = partial.parse_args(args.arguments[1:])
+        if command in ('checkpoint-partial', 'checkpoint-full'):
+            partial = command == 'checkpoint-partial'
+            checkpoint = argparse.ArgumentParser(prog=command)
+            checkpoint.add_argument('--input', required=partial)
+            checkpoint.add_argument('--evidence', required=True)
+            result = checkpoint.parse_args(args.arguments[1:])
             try:
-                location = os.path.realpath(result.input)
-                if (os.path.dirname(location) != os.path.realpath(evidence_folder(ap, config)) or
-                        not re.fullmatch(r'partial-[a-z0-9_]+\.json', os.path.basename(location))):
-                    raise ValueError('부분 대조 입력 경로가 일치하지 않음')
-                return checkpoint_partial(ap, config, location, result.evidence)
+                location = os.path.realpath(result.input) if result.input else None
+                prefix = 'partial' if partial else 'full'
+                if location and (os.path.dirname(location) != os.path.realpath(evidence_folder(ap, config)) or
+                                 not re.fullmatch(rf'{prefix}-[a-z0-9_]+\.json', os.path.basename(location))):
+                    raise ValueError('대조 입력 경로가 일치하지 않음')
+                if partial:
+                    return checkpoint_partial(ap, config, location, result.evidence)
+                plan = None
+                if location:
+                    with open(location) as stream:
+                        plan = json.load(stream)
+                return checkpoint_full(ap, config, result.evidence, plan)
             except (KeyError, TypeError, ValueError, OSError) as error:
                 print(json.dumps({'ok': False, 'error': str(error)}, ensure_ascii=False))
                 return 1

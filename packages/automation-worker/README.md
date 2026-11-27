@@ -152,10 +152,15 @@ delegate only changed PRs, issues, workspaces, sessions, due resumes and their
 board rows. The reviewer submits evidence for the exact assigned versions using
 the adapter's `checkpoint-partial` command. It binds the result to the active
 execution and board snapshot before invoking the official checkpoint writer.
-The worker acknowledges that version only if a later complete collection still
-matches it. Partial runs preserve the original two-hour full-audit deadline.
-Missing coverage or baseline, changed scope, stale evidence and unscoped
-registry changes retain full reconciliation. The adapter
+Full reconciliation can likewise bind the worker version with `checkpoint-full`
+when its verified PR, issue and host observations agree with the worker input.
+The worker advances to that stored version and still reports differences from
+any newer collection. It tracks board membership separately from source
+coverage. Published row edits can reuse evidence for unchanged rows when the
+rest of the board is unchanged. Checkpoint confirmation still verifies the
+current board snapshot. Partial runs preserve the original two-hour full-audit
+deadline. Missing coverage or baseline, changed source scope, stale evidence
+and unscoped registry changes retain full reconciliation. The adapter
 preserves all pending/cancelled/held ledger states; it never marks them complete.
 Both official checkpoints must point to the same successful evidence file with
 `coverage: {projects: [{projectId, reviewTagId}], repositories: ["owner/repo"], hosts: ["machine-id"]}`.

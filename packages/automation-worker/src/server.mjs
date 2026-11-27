@@ -1973,7 +1973,7 @@ async function reconcileRoutineAutopilot(input) {
       prs: report.counts.prs,
       ...report.githubReads,
     });
-    if (report.changes) {
+    if (report.changed && report.changes) {
       const counts = {};
       for (const { kind } of report.changes.checks)
         counts[kind] = (counts[kind] ?? 0) + 1;

@@ -408,7 +408,7 @@ test('missing initial baseline and changed queues require an agent; only officia
   assert.equal(writes, 4);
 });
 
-test('partial acknowledgement is bound to the exact PR and session version', async () => {
+test('a bound checkpoint advances only its stored observation when newer PR and queue facts arrive', async () => {
   const h = fixture();
   h.now = Date.parse('2002-03-06T00:00:00Z');
   const record = {};
@@ -432,13 +432,49 @@ test('partial acknowledgement is bound to the exact PR and session version', asy
   h.workspaces[0].sessions[0].queue_hash = 'two';
   h.head = 'c'.repeat(40);
   h.now += 1000;
+  // An acknowledgement for anything other than the last observed version cannot move the baseline.
+  const copy = structuredClone(record);
+  assert.equal((await poll(new Date(h.now).toISOString(), 'f'.repeat(64))).changed, true);
+  assert.equal(record.baseline.fingerprint, first.fingerprint);
+  Object.assign(record, copy);
+
   const changed = await poll(new Date(h.now).toISOString(), queued.fingerprint);
   assert.equal(changed.changed, true);
   assert.ok(changed.changes.checks.some(({ kind, after }) => kind === 'pr' && after.head === h.head));
-  assert.equal(record.baseline.fingerprint, first.fingerprint);
+  assert.equal(record.baseline.fingerprint, queued.fingerprint);
+  assert.equal(changed.changes.baseFingerprint, queued.fingerprint);
+  assert.equal(changed.changes.checks.find(({ kind }) => kind === 'session').before.queue_hash, 'one');
   h.now += 1000;
   assert.equal((await poll(new Date(h.now).toISOString(), changed.fingerprint)).changed, false);
   assert.equal(record.baseline.fingerprint, changed.fingerprint);
+});
+
+test('board membership changes retain proven source coverage and only genuine source expansion is full scope', async () => {
+  const h = fixture();
+  h.now = Date.parse('2002-03-06T00:00:00Z');
+  const record = {};
+  const poll = (input, acknowledgedAt) => {
+    h.scope = input;
+    return reconcileAutopilot({ scope: input, collect: h.collect, record,
+      acknowledgedAt, persist: async () => {}, now: () => h.now });
+  };
+  const original = { ...scope, includeAuditSnapshot: true, boardPrs: ['synthetic/widgets#7'],
+    tracked: [...scope.tracked, { repository: 'synthetic/widgets', number: 8 }] };
+  const initial = await poll(original);
+  assert.deepEqual(Object.keys(initial.auditSnapshot), ['prs', 'issues', 'hosts']);
+  assert.ok(initial.auditSnapshot.prs.facts.some(({ key, head: value }) => key === 'synthetic/widgets#7' && value === head));
+  h.now += 1000;
+  await poll(original, new Date(h.now).toISOString());
+  h.now += 1000;
+  const input = { ...original, boardPrs: ['synthetic/widgets#8'] };
+  const report = await poll(input);
+  assert.equal(report.changes.scopeChanged, false);
+  assert.deepEqual(report.changes.checks.map(({ kind, key, after }) => [kind, key, after]), [
+    ['board', 'synthetic/widgets#7', null], ['board', 'synthetic/widgets#8', true],
+  ]);
+  assert.equal(report.changes.boardHeads['synthetic/widgets#8'], head);
+  const expanded = await poll({ ...input, readRepositories: ['synthetic/other'] });
+  assert.equal(expanded.changes.scopeChanged, true);
 });
 
 test('only registry changes indexed to a PR are eligible for a partial route', async () => {
