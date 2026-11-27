@@ -478,8 +478,60 @@ class PeriodicTests(unittest.TestCase):
             self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan, board_only=True), 0)
             follow_up['prompt'] = original['prompt']
             self.assertEqual(adapter.verify_checkpoint_execution(self.ap, plan), task)
-        self.assertEqual(written, [task])
+
+            # The collector advances its execution pointer when it collects the interrupted retry.
+            history[0]['status'], history[1]['status'] = 'failed', 'killed'
+            task.update(exec=history[1]['id'], recovered_from=[{'exec': initial, 'status': 'failed'}])
+            self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan, board_only=True), 0)
+            unrelated = {**plan, 'task': {**plan['task'], 'exec': 'unrelated'}}
+            with self.assertRaisesRegex(ValueError, '실행이 일치하지 않음'):
+                adapter.checkpoint_full(self.ap, self.config, result_path, unrelated, board_only=True)
+        self.assertEqual([item['exec'] for item in written], [initial, history[1]['id']])
         self.assertIsNone(self.ap['periodic_active']())
+
+    def test_explicit_recovery_skips_only_verified_ordinary_completed_turns(self):
+        self.fixture()
+        session = 'synthetic-session'
+        start = self.ap['now']() - dt.timedelta(minutes=5)
+        task = {'id': 'synthetic-task', 'session': session, 'exec': 'initial', 'host': 'synthetic-host'}
+        def run(execution, minute, status, prompt=''):
+            return {'id': execution, 'session_id': session, 'run_reason': 'codingagent', 'status': status,
+                    'created_at': (start + dt.timedelta(minutes=minute)).isoformat(),
+                    'executor_action': {'typ': {'prompt': prompt}}}
+
+        target = run('recovery', 3, 'running', '정기 대조 재개 synthetic-task')
+        history = [run('initial', 1, 'killed'), run('conversation', 2, 'completed'), target]
+        message = {'entry_type': {'type': 'assistant_message'}, 'content': 'Ordinary follow-up reply.'}
+        log = {'execution_id': 'conversation', 'status': 'completed', 'entries': [message],
+               'offset': 0, 'total': 1, 'has_more': False}
+        log_response = log
+        calls = []
+        def vk(*args):
+            if args[:2] == ('session', 'executions'):
+                return history
+            calls.append(args)
+            return log_response
+
+        self.ap.update(periodic_active=lambda: None, resumed_after_cancel=lambda: dict(task),
+                       HOSTS={'synthetic-host': ['--host', 'synthetic']}, vk=vk, autopilot_stop=lambda _: None)
+        plan = {'task': dict(task)}
+        with patch.dict(os.environ, VK_SESSION_ID=session, VK_EXECUTION_ID='recovery'):
+            self.assertEqual(adapter.verify_checkpoint_execution(self.ap, plan), task)
+            self.assertEqual(calls, [('session', 'log', 'conversation', '--limit', '60', '--host', 'synthetic')])
+            for unavailable in ({'error': 'unavailable'}, {**log, 'has_more': True}, {**log, 'entries': []}):
+                log_response = unavailable
+                with self.assertRaisesRegex(ValueError, '실행이 일치하지 않음'):
+                    adapter.verify_checkpoint_execution(self.ap, plan)
+            log_response = log
+            message['content'] = 'RECONCILE ' + json.dumps({'status': 'ok', 'changed': False,
+                                                          'summary': 'Completed', 'evidence': '/synthetic/evidence.json'})
+            with self.assertRaisesRegex(ValueError, '실행이 일치하지 않음'):
+                adapter.verify_checkpoint_execution(self.ap, plan)
+            calls.clear()
+            target['executor_action']['typ']['prompt'] = 'Continue chatting.'
+            with self.assertRaisesRegex(ValueError, '실행이 일치하지 않음'):
+                adapter.verify_checkpoint_execution(self.ap, plan)
+            self.assertEqual(calls, [])
 
     def test_board_add_edit_remove_delegates_rows_but_context_change_requires_full_review(self):
         gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])

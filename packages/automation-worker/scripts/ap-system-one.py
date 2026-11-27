@@ -334,7 +334,45 @@ def execution_prompt(row):
     return prompt.strip() if isinstance(prompt, str) else ''
 
 
-def is_checkpoint_recovery(ap, task, execution):
+def completed_without_reconciliation(ap, execution, host_args):
+    log_args = ('session', 'log', execution, '--limit', '60', *host_args)
+    page = ap['vk'](*log_args)
+    total = page.get('total') if isinstance(page, dict) else None
+    if type(total) is not int or total <= 0:
+        return False
+    offset = max(0, total - 60)
+    if offset:
+        page = ap['vk'](*log_args, '--offset', str(offset))
+    if (not isinstance(page, dict) or page.get('execution_id') != execution or
+            page.get('status') != 'completed' or page.get('has_more') is not False or
+            page.get('offset') != offset or page.get('total') != total):
+        return False
+    entries = page.get('entries')
+    if not isinstance(entries, list) or len(entries) != total - offset:
+        return False
+    has_reply = False
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get('entry_type'), dict):
+            return False
+        if entry['entry_type'].get('type') != 'assistant_message':
+            continue
+        content = entry.get('content')
+        if not isinstance(content, str):
+            return False
+        content = content.strip()
+        has_reply = has_reply or bool(content)
+        for marker in re.finditer(r'(?m)^RECONCILE(?=[ \n])', content):
+            try:
+                result, _ = json.JSONDecoder().raw_decode(content[marker.end():].lstrip())
+            except ValueError:
+                continue
+            if (isinstance(result, dict) and result.get('status') in ('ok', 'error') and
+                    type(result.get('changed')) is bool and result.get('summary') and result.get('evidence')):
+                return False
+    return has_reply
+
+
+def is_checkpoint_recovery(ap, task, execution, original_execution):
     host_args = ap.get('HOSTS', {}).get(task.get('host'))
     if host_args is None or 'vk' not in ap or 'autopilot_stop' not in ap:
         return False
@@ -346,30 +384,42 @@ def is_checkpoint_recovery(ap, task, execution):
     if any(stamp is None for stamp, _ in chain):
         return False
     chain.sort(key=lambda item: item[0])
-    previous = None
-    original_prompt = ''
-    needs_resume = False
+    original_prompt = execution_prompt(next((row for _, row in chain if row.get('id') == original_execution), {}))
+    target = next((row for _, row in chain if row.get('id') == execution and row.get('status') == 'running'), None)
+    if target is None:
+        return False
     resume_line = f"정기 대조 재개 {task['id']}"
+
+    def explicitly_resumes(row):
+        prompt = execution_prompt(row)
+        return bool(prompt and (prompt == original_prompt or prompt.partition('\n')[0].rstrip() == resume_line))
+
+    explicit_target = explicitly_resumes(target)
+    previous = None
+    needs_resume = False
     for stamp, row in chain:
         if previous is None:
             if row.get('id') == task['exec']:
+                if row.get('status') not in ('failed', 'killed'):
+                    return False
                 previous = (stamp, row)
-                original_prompt = execution_prompt(row)
             continue
         prior_stamp, prior = previous
         ended = ap['parse'](prior.get('completed_at'))
         status = prior.get('status')
-        if status not in ('failed', 'killed') or stamp <= prior_stamp or (ended and stamp < ended):
+        if stamp <= prior_stamp or (ended and stamp < ended):
+            return False
+        if status == 'completed':
+            if not explicit_target or not completed_without_reconciliation(ap, prior['id'], host_args):
+                return False
+        elif status not in ('failed', 'killed'):
             return False
         if status == 'killed' and not ap['autopilot_stop'](prior['id']):
             needs_resume = True
-        if needs_resume:
-            # An explicit replay or resume can follow earlier failed retries.
-            prompt = execution_prompt(row)
-            if prompt and (prompt == original_prompt or prompt.partition('\n')[0].rstrip() == resume_line):
-                needs_resume = False
-        if row.get('id') == execution:
-            return not needs_resume and row.get('status') == 'running'
+        if needs_resume and explicitly_resumes(row):
+            needs_resume = False
+        if row is target:
+            return not needs_resume
         previous = (stamp, row)
     return False
 
@@ -382,11 +432,14 @@ def verify_checkpoint_execution(ap, plan):
     active = ap['periodic_active']()
     resume = ap.get('resumed_after_cancel')
     task = active or (resume() if resume else None) or {}
-    if (task.get('id') != binding['id'] or task.get('session') != binding['session'] or
-            not task.get('exec') or
-            (binding.get('exec') and binding['exec'] != task['exec'])):
+    if task.get('id') != binding['id'] or task.get('session') != binding['session'] or not task.get('exec'):
         raise ValueError('대조 위임 실행이 일치하지 않음')
-    if (not active or task['exec'] != execution) and not is_checkpoint_recovery(ap, task, execution):
+    recovered = [row['exec'] for row in rows(task.get('recovered_from')) if isinstance(row, dict) and
+                 row.get('exec') and row.get('status') in ('failed', 'killed')]
+    original_execution = binding.get('exec') or (recovered[0] if recovered else task['exec'])
+    if original_execution != task['exec'] and original_execution not in recovered:
+        raise ValueError('대조 위임 실행이 일치하지 않음')
+    if (not active or task['exec'] != execution) and not is_checkpoint_recovery(ap, task, execution, original_execution):
         raise ValueError('대조 위임 실행이 일치하지 않음')
     return task
 
