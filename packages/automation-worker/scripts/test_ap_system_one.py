@@ -279,13 +279,29 @@ class PeriodicTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '이전의 전체 대조 증거'):
                 adapter.checkpoint_full(self.ap, self.config, result_path, plan)
 
-        unbound, unknown_pr, stale_head, stale_state, bound = [json.loads(Path(v).read_text()) for k, v in calls if k == 'checkpoint']
+        receipts = [Path(v) for k, v in calls if k == 'checkpoint']
+        unbound, unknown_pr, stale_head, stale_state, bound = [json.loads(path.read_text()) for path in receipts]
         self.assertNotIn('acknowledgedFingerprint', unbound)
         self.assertNotIn('acknowledgedFingerprint', unknown_pr)
         self.assertNotIn('acknowledgedFingerprint', stale_head)
         self.assertNotIn('acknowledgedFingerprint', stale_state)
         self.assertEqual(bound['acknowledgedFingerprint'], plan['fingerprint'])
         self.assertEqual(bound['boardVersions']['sha'], board['sha'])
+
+        # A successful audit with a different PR state must not approve the next worker snapshot.
+        audited_at = self.ap['now']()
+        receipt = str(receipts[3])
+        os.utime(receipt, (audited_at.timestamp(), audited_at.timestamp()))
+        values[receipt] = stale_state
+        for key in ('a', 'b'):
+            values['schedule'][key].update(evidence=receipt, at=audited_at.isoformat())
+        self.ap.update(now=lambda: audited_at + dt.timedelta(minutes=30), periodic_active=lambda: None)
+        calls.clear()
+        gate(['periodic due'])
+        request, = [body for name, body in calls if name == 'request']
+        self.assertNotIn('acknowledgedAt', request)
+        self.assertNotIn('acknowledgedFingerprint', request)
+        self.assertEqual(request['boardAcknowledgedAt'], audited_at.isoformat())
 
     def test_due_full_audit_gets_worker_evidence_and_never_takes_the_quiet_route(self):
         gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])
@@ -419,6 +435,51 @@ class PeriodicTests(unittest.TestCase):
             self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan, board_only=True), 0)
         self.assertEqual(api_calls, [('session', 'executions', session, '--host', 'synthetic')] * 4)
         self.assertEqual(sum(name == 'checkpoint' for name, _ in calls), 1)
+
+    def test_explicit_recovery_can_checkpoint_after_cancel_was_collected(self):
+        _, _, _ = self.fixture()
+        session, initial, recovery = 'synthetic-session', 'initial', 'recovery'
+        start = self.ap['now']() - dt.timedelta(minutes=5)
+        task = {'id': 'synthetic-task', 'session': session, 'exec': initial, 'host': 'synthetic-host',
+                'at': start.isoformat(), 'board_coverage_required': True}
+        board = {'sha': 'b' * 64, 'pr_urls': [], 'body': ''}
+        original = {'type': 'CodingAgentInitialRequest', 'prompt': 'Synthetic assigned reconciliation'}
+        follow_up = {'type': 'CodingAgentFollowUpRequest', 'prompt': 'Unrelated question'}
+        history = [
+            {'id': initial, 'session_id': session, 'run_reason': 'codingagent', 'status': 'killed',
+             'created_at': start.isoformat(), 'completed_at': (start + dt.timedelta(minutes=1)).isoformat(),
+             'executor_action': {'typ': original}},
+            {'id': 'failed-retry', 'session_id': session, 'run_reason': 'codingagent', 'status': 'failed',
+             'created_at': (start + dt.timedelta(minutes=2)).isoformat(),
+             'completed_at': (start + dt.timedelta(minutes=3)).isoformat()},
+            {'id': recovery, 'session_id': session, 'run_reason': 'codingagent', 'status': 'running',
+             'created_at': (start + dt.timedelta(minutes=4)).isoformat(), 'executor_action': {'typ': follow_up}},
+        ]
+        written = []
+        def official_checkpoint(args):
+            active = self.ap['periodic_active']()
+            self.assertTrue(active['board_coverage_required'])
+            written.append(active)
+            return 0
+        self.ap.update(periodic_active=lambda: None, resumed_after_cancel=lambda: dict(task),
+                       board_snapshot=lambda: board, HOSTS={'synthetic-host': []},
+                       vk=lambda *args: history, autopilot_stop=lambda _: None, cmd_checkpoint=official_checkpoint)
+        plan = {'task': dict(task), 'factsUnchanged': True, 'fingerprint': 'a' * 64,
+                'coverage': {}, 'counts': {}, 'agentReviewedAt': start.isoformat()}
+        result_path = Path(self.folder, 'explicit-recovery.json')
+        result_path.write_text(json.dumps({'status': 'ok', 'errors': [], 'board_snapshot_sha': board['sha'],
+                                           'board_findings': [], 'board_mismatches': []}))
+        with patch.dict(os.environ, VK_SESSION_ID=session, VK_EXECUTION_ID=recovery):
+            for text in ('Unrelated question', '정기 대조 재개 other-task'):
+                follow_up['prompt'] = text
+                with self.assertRaisesRegex(ValueError, '실행이 일치하지 않음'):
+                    adapter.checkpoint_full(self.ap, self.config, result_path, plan, board_only=True)
+            follow_up['prompt'] = '정기 대조 재개 synthetic-task\nVerify the assigned rows.'
+            self.assertEqual(adapter.checkpoint_full(self.ap, self.config, result_path, plan, board_only=True), 0)
+            follow_up['prompt'] = original['prompt']
+            self.assertEqual(adapter.verify_checkpoint_execution(self.ap, plan), task)
+        self.assertEqual(written, [task])
+        self.assertIsNone(self.ap['periodic_active']())
 
     def test_board_add_edit_remove_delegates_rows_but_context_change_requires_full_review(self):
         gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])
@@ -589,7 +650,8 @@ console.log(JSON.stringify(flags));
         calls.clear()
         self.assertEqual(gate(['periodic due'])[1]['status'], 'handled')
         request = next(body for name, body in calls if name == 'request')
-        self.assertEqual(request['acknowledgedAt'], derived['agentReviewedAt'])
+        self.assertEqual(request['boardAcknowledgedAt'], original_now().isoformat())
+        self.assertNotIn('acknowledgedAt', request)
         self.ap['now'] = lambda: original_now() + dt.timedelta(hours=1)
         calls.clear()
         _, fallback = gate(['periodic due'])

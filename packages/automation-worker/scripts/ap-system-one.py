@@ -325,6 +325,15 @@ def partial_input(ap, scope, proof, reviewed_at, report):
             'boardResolutions': [row for row in previous.get('boardResolutions', []) if row['key'] not in targets]}, None
 
 
+def execution_prompt(row):
+    action = row.get('executor_action')
+    request = action.get('typ') if isinstance(action, dict) else None
+    if not isinstance(request, dict):
+        return ''
+    prompt = request.get('handoff_user_prompt') or request.get('prompt')
+    return prompt.strip() if isinstance(prompt, str) else ''
+
+
 def is_checkpoint_recovery(ap, task, execution):
     host_args = ap.get('HOSTS', {}).get(task.get('host'))
     if host_args is None or 'vk' not in ap or 'autopilot_stop' not in ap:
@@ -338,41 +347,76 @@ def is_checkpoint_recovery(ap, task, execution):
         return False
     chain.sort(key=lambda item: item[0])
     previous = None
+    original_prompt = ''
+    needs_resume = False
+    resume_line = f"정기 대조 재개 {task['id']}"
     for stamp, row in chain:
         if previous is None:
             if row.get('id') == task['exec']:
                 previous = (stamp, row)
+                original_prompt = execution_prompt(row)
             continue
         prior_stamp, prior = previous
         ended = ap['parse'](prior.get('completed_at'))
-        # Follow the collector's recovery order, stopping at a successful turn
-        # or a cancellation without an Autopilot stop record.
-        interrupted = prior.get('status') == 'failed' or (
-            prior.get('status') == 'killed' and ap['autopilot_stop'](prior['id']))
-        if not interrupted or stamp <= prior_stamp or (ended and stamp < ended):
+        status = prior.get('status')
+        if status not in ('failed', 'killed') or stamp <= prior_stamp or (ended and stamp < ended):
             return False
+        if status == 'killed' and not ap['autopilot_stop'](prior['id']):
+            needs_resume = True
+        if needs_resume:
+            # An explicit replay or resume can follow earlier failed retries.
+            prompt = execution_prompt(row)
+            if prompt and (prompt == original_prompt or prompt.partition('\n')[0].rstrip() == resume_line):
+                needs_resume = False
         if row.get('id') == execution:
-            return row.get('status') == 'running'
+            return not needs_resume and row.get('status') == 'running'
         previous = (stamp, row)
     return False
 
 
 def verify_checkpoint_execution(ap, plan):
-    task = ap['periodic_active']() or {}
     binding = plan['task']
     execution = os.environ.get('VK_EXECUTION_ID')
+    if not execution or os.environ.get('VK_SESSION_ID') != binding['session']:
+        raise ValueError('대조 위임 실행이 일치하지 않음')
+    active = ap['periodic_active']()
+    resume = ap.get('resumed_after_cancel')
+    task = active or (resume() if resume else None) or {}
     if (task.get('id') != binding['id'] or task.get('session') != binding['session'] or
-            os.environ.get('VK_SESSION_ID') != binding['session'] or
-            not task.get('exec') or not execution or
+            not task.get('exec') or
             (binding.get('exec') and binding['exec'] != task['exec'])):
         raise ValueError('대조 위임 실행이 일치하지 않음')
-    if task['exec'] != execution and not is_checkpoint_recovery(ap, task, execution):
+    if (not active or task['exec'] != execution) and not is_checkpoint_recovery(ap, task, execution):
         raise ValueError('대조 위임 실행이 일치하지 않음')
+    return task
+
+
+def write_checkpoint(ap, config, prefix, evidence, task):
+    path = write_evidence(evidence_folder(ap, config), prefix, evidence)
+    if task is None:
+        return ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
+    active = ap['periodic_active']
+
+    def verified_task():
+        current = active()
+        if current is None and ap.get('resumed_after_cancel'):
+            current = ap['resumed_after_cancel']()
+        if current != task:
+            raise ValueError('체크포인트 작성 전 대조 위임이 바뀜')
+        return current
+
+    # The official writer uses the task to enforce board coverage and record its proof.
+    ap['periodic_active'] = verified_task
+    try:
+        return ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
+    finally:
+        ap['periodic_active'] = active
 
 
 def checkpoint_full(ap, config, result_path, plan=None, *, board_only=False):
-    task = ap['periodic_active']() or {}
-    since = ap['parse'](task.get('at')) or ap['now']() - AGENT_AUDIT_INTERVAL
+    task = verify_checkpoint_execution(ap, plan) if plan is not None else None
+    active = task if task is not None else ap['periodic_active']()
+    since = ap['parse']((active or {}).get('at')) or ap['now']() - AGENT_AUDIT_INTERVAL
     with open(result_path) as stream:
         written = dt.datetime.fromtimestamp(os.fstat(stream.fileno()).st_mtime, dt.timezone.utc)
         if written < since:
@@ -380,8 +424,6 @@ def checkpoint_full(ap, config, result_path, plan=None, *, board_only=False):
         result = json.load(stream)
     if ap['evidence_problems'](result):
         raise ValueError('전체 대조 증거가 완전하지 않음')
-    if plan is not None:
-        verify_checkpoint_execution(ap, plan)
     board = ap['board_snapshot']()
     if board['sha'] != result.get('board_snapshot_sha'):
         raise ValueError('전체 대조 중 게시 보드 버전이 바뀜')
@@ -421,8 +463,7 @@ def checkpoint_full(ap, config, result_path, plan=None, *, board_only=False):
                 result.get('auditReviewed') == {key: group['version'] for key, group in audit.items()} and
                 all(observed.get(pr_key(row['pr_url']), {}).get('head') == row['head'] for row in result['board_findings'])):
             evidence.update(fingerprint=plan['fingerprint'], acknowledgedFingerprint=plan['fingerprint'])
-    path = write_evidence(evidence_folder(ap, config), 'reconcile-board-' if board_only else 'reconcile-full-', evidence)
-    return ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
+    return write_checkpoint(ap, config, 'reconcile-board-' if board_only else 'reconcile-full-', evidence, task)
 
 
 def checkpoint_partial(ap, config, input_path, result_path):
@@ -432,7 +473,7 @@ def checkpoint_partial(ap, config, input_path, result_path):
         result = json.load(stream)
     now = ap['now']()
     checked = ap['parse'](plan['checkedAt'])
-    verify_checkpoint_execution(ap, plan)
+    task = verify_checkpoint_execution(ap, plan)
     if checked is None or not dt.timedelta() <= now - checked < PARTIAL_MAX_AGE:
         raise ValueError('부분 대조 스냅샷 기한 만료')
     proof = checkpoint_proof(ap)
@@ -462,8 +503,7 @@ def checkpoint_partial(ap, config, input_path, result_path):
                 'board_mismatches': plan['board_mismatches'] + result['board_mismatches'],
                 'boardResolutions': plan['boardResolutions'] + result['boardResolutions']}
     ap['verify_board_coverage'](evidence, {})
-    path = write_evidence(evidence_folder(ap, config), 'reconcile-partial-', evidence)
-    return ap['cmd_checkpoint'](argparse.Namespace(evidence=path))
+    return write_checkpoint(ap, config, 'reconcile-partial-', evidence, task)
 
 
 def install(ap, config, entrypoint=None):
@@ -539,7 +579,7 @@ def install(ap, config, entrypoint=None):
             return None, 'scope_audit_due'
         if not audit_due and identity_recheck_due(ap, reviewed_at):
             return None, 'identity_recheck_due'
-        request = {**scope, 'acknowledgedAt': reviewed_at.isoformat(),
+        request = {**scope, 'boardAcknowledgedAt': acknowledged.isoformat(),
                    'boardResolutions': [row for row in rows(evidence.get('boardResolutions')) if isinstance(row, dict)]}
         if entrypoint:
             request['includeAuditSnapshot'] = True

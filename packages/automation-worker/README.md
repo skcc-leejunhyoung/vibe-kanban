@@ -154,8 +154,13 @@ the adapter's `checkpoint-partial` command. It binds the result to the active
 execution and board snapshot before invoking the official checkpoint writer.
 Full reconciliation, including the scheduled audit, can bind the worker version
 with `checkpoint-full` when its verified observations and recorded PR heads and
-GitHub states agree with the worker input. A recovered run can reuse the same
-checkpoint input after the session history confirms the recovery chain.
+GitHub states agree with the worker input. The gate sends a baseline
+acknowledgement only for a verified fingerprint. Board resolutions use their own
+checkpoint time and still require a matching row version.
+A recovered run can reuse the same checkpoint input after the session history
+confirms the recovery chain. When there is no Autopilot stop record, replay the
+original delegation prompt or start a message in the same session with
+`정기 대조 재개 <task-id>` on its first line.
 The worker advances to that stored version and still reports differences from
 any newer collection. It tracks board membership separately from source
 coverage. Published row edits can reuse evidence for unchanged rows when the

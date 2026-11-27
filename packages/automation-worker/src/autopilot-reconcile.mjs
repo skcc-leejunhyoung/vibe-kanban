@@ -235,6 +235,12 @@ export function validateReconciliationScope(scope, repositories) {
       !/^[0-9a-f]{64}$/.test(scope.acknowledgedFingerprint))
   )
     throw new Error('invalid acknowledged fingerprint');
+  if (
+    scope.boardAcknowledgedAt !== undefined &&
+    (typeof scope.boardAcknowledgedAt !== 'string' ||
+      !Number.isFinite(Date.parse(scope.boardAcknowledgedAt)))
+  )
+    throw new Error('invalid board acknowledgement time');
   if (scope.registryIndex !== undefined) {
     const { byPr, unscoped } = scope.registryIndex || {};
     const digest = /^[0-9a-f]{64}$/;
@@ -961,8 +967,11 @@ export async function reconcileAutopilot({
   const bound = scope?.acknowledgedFingerprint;
   const pending = record.pending;
   const acknowledged = Date.parse(acknowledgedAt);
+  const boardAcknowledged = Date.parse(scope?.boardAcknowledgedAt ?? acknowledgedAt);
   const baselineAt = Date.parse(record.baseline?.at);
-  const validAck = Number.isFinite(acknowledged) &&
+  // Older callers shared a single timestamp. Separated acknowledgements require a bound version.
+  const validAck = (bound || scope?.boardAcknowledgedAt === undefined) &&
+    Number.isFinite(acknowledged) &&
     acknowledged >= Date.parse(pending?.at) && acknowledged <= checked &&
     checked - acknowledged < 2 * 60 * 60 * 1000 &&
     (!Number.isFinite(baselineAt) || acknowledged >= baselineAt);
@@ -973,7 +982,7 @@ export async function reconcileAutopilot({
     record,
     snapshot,
     // Board resolutions already bind their own PR version and published row.
-    bound && bound !== pending?.fingerprint && bound !== record.baseline?.fingerprint ? NaN : acknowledged,
+    bound && bound !== pending?.fingerprint && bound !== record.baseline?.fingerprint ? NaN : boardAcknowledged,
     checked
   );
   if (validAck && bound && bound === pending?.fingerprint && pending.index) {

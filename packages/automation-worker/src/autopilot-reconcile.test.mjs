@@ -240,9 +240,17 @@ test('same-head discrepancies survive stale and failed publication until the boa
   h.board = `${published}\n${published}`;
   assert.equal((await poll(acknowledgedAt)).changed, true);
   h.board = published;
+  h.scope.boardAcknowledgedAt = acknowledgedAt;
+  const boardOnly = await poll(acknowledgedAt);
+  assert.deepEqual(boardOnly.boardPending, []);
+  assert.equal(boardOnly.changed, true);
+  assert.equal(boardOnly.factsUnchanged, false);
+  assert.notEqual(record.baseline.fingerprint, boardOnly.fingerprint);
+  h.scope.acknowledgedFingerprint = boardOnly.fingerprint;
   const result = await poll(acknowledgedAt);
   assert.deepEqual(result.boardPending, []);
   assert.equal(result.changed, false);
+  assert.equal(record.baseline.fingerprint, boardOnly.fingerprint);
 });
 
 test('a board hold requires reason, owner and future time and becomes due again', async () => {
