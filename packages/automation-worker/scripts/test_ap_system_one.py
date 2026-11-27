@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -90,7 +91,7 @@ class AutopilotExecutorTests(unittest.TestCase):
 
 
 class PeriodicTests(unittest.TestCase):
-    def fixture(self, decision='would_delegate', report=None, checkpoint=0, prompt=False):
+    def fixture(self, decision='would_delegate', report=None, checkpoint=0, prompt=False, entrypoint=None):
         values = {'schedule': {key: [] for key in ('pending_admissions',)}, 'board': {'rows': {}}, 'dispatch': {'requests': {}}, 'deleg': {'tasks': {}}, 'inbox': {'items': {}}}
         evidence_path = os.path.join(self.folder, 'official-evidence.json')
         coverage = {'projects': [{'projectId': 'synthetic-project', 'reviewTagId': 'synthetic-tag'}], 'hosts': ['synthetic-machine'], 'repositories': ['synthetic/widgets']}
@@ -102,7 +103,7 @@ class PeriodicTests(unittest.TestCase):
             values['schedule'][key] = {'status': 'success', 'by': 'ap checkpoint', 'evidence': evidence_path, 'at': stamp.isoformat()}
         calls = []
         namespace = {'calls': calls, 'decision': decision}
-        exec("def periodic_gate(due, dry=False):\n calls.append(('gate',dry))\n if not dry and 'periodic_prompt' in globals(): calls.append(('prompt', periodic_prompt()))\n return ['other'], {'status':decision if dry else 'legacy'}", namespace)
+        exec("def periodic_gate(due, dry=False):\n calls.append(('gate',dry))\n if not dry and 'periodic_prompt' in globals(): calls.append(('prompt', periodic_prompt()))\n return ['other'], {'status':decision} if dry else globals().get('delegation', {'status':'legacy'})", namespace)
         def api(path, body, **kwargs):
             calls.append(('request', dict(body)))
             return report if report is not None else {'status': 'ok', 'changed': False, 'errors': [], 'fingerprint': 'a' * 64,
@@ -120,7 +121,7 @@ class PeriodicTests(unittest.TestCase):
         if prompt:
             namespace['periodic_prompt'] = lambda: '전체 대조'
         self.ap, self.config = namespace, config
-        adapter.install(namespace, config)
+        adapter.install(namespace, config, entrypoint)
         return namespace['periodic_gate'], calls, values
 
     def setUp(self):
@@ -144,6 +145,71 @@ class PeriodicTests(unittest.TestCase):
         self.assertNotEqual(adapter.registry(self.ap, self.config)['registryHash'], before)
         values['dispatch']['requests']['synthetic-review'] = {'pr': 18, 'repo': 'synthetic/widgets', 'status': 'queued'}
         self.assertIn({'repository': 'synthetic/widgets', 'number': 18}, adapter.registry(self.ap, self.config)['tracked'])
+
+    def test_dispatch_check_counter_alone_keeps_the_registry_version(self):
+        _, _, values = self.fixture()
+        row = {'pr': 17, 'status': 'uncertain', 'reconcile_checks': 1}
+        values['dispatch']['requests']['synthetic-review'] = row
+        before = adapter.registry(self.ap, self.config)
+        row['reconcile_checks'] += 1
+        self.assertEqual(adapter.registry(self.ap, self.config), before)
+        row['status'] = 'started'
+        after = adapter.registry(self.ap, self.config)
+        self.assertNotEqual(after['registryHash'], before['registryHash'])
+        self.assertNotEqual(after['registryIndex']['byPr'], before['registryIndex']['byPr'])
+
+    def test_partial_gate_binds_official_checkpoint_to_audit_and_execution(self):
+        gate, calls, values = self.fixture(prompt=True, entrypoint=['/synthetic/adapter.py'])
+        session, execution = 'synthetic-session', 'synthetic-execution'
+        task = {'id': 'synthetic-task', 'session': session, 'exec': execution, 'status': 'started'}
+        board = {'sha': 'b' * 64, 'pr_urls': []}
+        def verify_board(evidence, mismatches):
+            if evidence['board_snapshot_sha'] != board['sha']:
+                raise ValueError('보드 변경')
+        fingerprint, base, version = 'c' * 64, 'd' * 64, 'e' * 64
+        values[str(Path(self.folder, 'official-evidence.json'))]['fingerprint'] = base
+        self.ap.update(delegation=task, periodic_active=lambda: task, board_snapshot=lambda: board,
+                       verify_board_coverage=verify_board)
+        original_api = self.ap['api']
+        changes = {'baseFingerprint': base, 'scopeChanged': False, 'registryChanged': False,
+                   'checks': [{'kind': 'session', 'key': session, 'version': version}],
+                   'prFacts': {}, 'boardHeads': {}}
+        self.ap['api'] = lambda *a, **kw: {**original_api(*a, **kw), 'changed': True,
+                                          'fingerprint': fingerprint, 'changes': changes,
+                                          'checkedAt': self.ap['now']().isoformat()}
+        _, result = gate(['periodic due'])
+        self.assertEqual(result['system_one_fallback'], 'partial:session')
+        prompt = next(v for k, v in calls if k == 'prompt')
+        self.assertIn('checkpoint-partial', prompt)
+        self.assertNotIn('전체 대조', prompt)
+        path, = Path(self.folder, 'system-one-evidence').glob('partial-*.json')
+        result_path = Path(self.folder, 'synthetic-result.json')
+        evidence = {'status': 'ok', 'errors': [], 'changed': False, 'fingerprint': fingerprint,
+                    'checked': [version], 'board_mismatches': [], 'boardResolutions': [], 'autopilot_actions': []}
+        result_path.write_text(json.dumps(evidence))
+        with patch.dict(os.environ, VK_SESSION_ID=session, VK_EXECUTION_ID='other'):
+            with self.assertRaisesRegex(ValueError, '위임 실행'):
+                adapter.checkpoint_partial(self.ap, self.config, path, result_path)
+        with patch.dict(os.environ, VK_SESSION_ID=session, VK_EXECUTION_ID=execution):
+            result_path.write_text(json.dumps({**evidence, 'checked': []}))
+            with self.assertRaisesRegex(ValueError, '증거의 버전'):
+                adapter.checkpoint_partial(self.ap, self.config, path, result_path)
+            result_path.write_text(json.dumps(evidence))
+            row = {'pr': 18, 'status': 'queued'}
+            values['dispatch']['requests']['synthetic-review'] = row
+            with self.assertRaisesRegex(ValueError, '장부 변경'):
+                adapter.checkpoint_partial(self.ap, self.config, path, result_path)
+            values['dispatch']['requests'].clear()
+            board['sha'] = 'f' * 64
+            with self.assertRaisesRegex(ValueError, '보드 변경'):
+                adapter.checkpoint_partial(self.ap, self.config, path, result_path)
+            board['sha'] = 'b' * 64
+            self.assertEqual(adapter.checkpoint_partial(self.ap, self.config, path, result_path), 0)
+        checkpoints = [v for k, v in calls if k == 'checkpoint']
+        self.assertEqual(len(checkpoints), 1)
+        merged = json.loads(Path(checkpoints[0]).read_text())
+        self.assertEqual(merged['agentReviewedAt'], '2020-01-01T00:00:00+00:00')
+        self.assertEqual(merged['acknowledgedFingerprint'], fingerprint)
 
     def test_host_facts_watch_only_registered_review_sessions(self):
         _, _, values = self.fixture()

@@ -1973,6 +1973,17 @@ async function reconcileRoutineAutopilot(input) {
       prs: report.counts.prs,
       ...report.githubReads,
     });
+    if (report.changes) {
+      const counts = {};
+      for (const { kind } of report.changes.checks)
+        counts[kind] = (counts[kind] ?? 0) + 1;
+      log('info', 'autopilot reconciliation changes', {
+        counts,
+        scopeChanged: report.changes.scopeChanged,
+        unscopedRegistryChange: report.changes.registryChanged,
+        boardPending: report.boardPending.length,
+      });
+    }
     return report;
   } finally {
     reconciliationInFlight.delete(key);

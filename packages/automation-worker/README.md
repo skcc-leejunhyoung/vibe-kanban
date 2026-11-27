@@ -146,10 +146,16 @@ the worker also reads the free `/rate_limit` first and every response's
 `x-ratelimit-remaining`; below `AUTOPILOT_GITHUB_RESERVE` it stops and answers
 `status: deferred`, and the adapter neither checkpoints nor delegates that cycle.
 
-Unchanged facts are handled by code, with no agent admission. A new
-baseline, changed head, same-head new/dismissed review, a PR entering or leaving
-"Awaiting review from you", changed queue or registry, or incomplete source read
-retains the original agent delegation. The adapter
+Unchanged facts are handled by code, with no agent admission. When the worker
+can compare a complete snapshot to an acknowledged baseline, the gate can
+delegate only changed PRs, issues, workspaces, sessions, due resumes and their
+board rows. The reviewer submits evidence for the exact assigned versions using
+the adapter's `checkpoint-partial` command. It binds the result to the active
+execution and board snapshot before invoking the official checkpoint writer.
+The worker acknowledges that version only if a later complete collection still
+matches it. Partial runs preserve the original two-hour full-audit deadline.
+Missing coverage or baseline, changed scope, stale evidence and unscoped
+registry changes retain full reconciliation. The adapter
 preserves all pending/cancelled/held ledger states; it never marks them complete.
 Both official checkpoints must point to the same successful evidence file with
 `coverage: {projects: [{projectId, reviewTagId}], repositories: ["owner/repo"], hosts: ["machine-id"]}`.

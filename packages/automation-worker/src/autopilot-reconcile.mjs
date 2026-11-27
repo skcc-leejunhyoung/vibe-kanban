@@ -229,6 +229,21 @@ export function validateReconciliationScope(scope, repositories) {
       scope.watchSessions.some((id) => !uuid.test(id)))
   )
     throw new Error('invalid watched session scope');
+  if (
+    scope.acknowledgedFingerprint !== undefined &&
+    (typeof scope.acknowledgedFingerprint !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(scope.acknowledgedFingerprint))
+  )
+    throw new Error('invalid acknowledged fingerprint');
+  if (scope.registryIndex !== undefined) {
+    const { byPr, unscoped } = scope.registryIndex || {};
+    const digest = /^[0-9a-f]{64}$/;
+    if (typeof unscoped !== 'string' || !digest.test(unscoped) || !byPr || typeof byPr !== 'object' ||
+        Array.isArray(byPr) || Object.keys(byPr).length > 2000 ||
+        Object.entries(byPr).some(([key, value]) =>
+          !/^[\w.-]+\/[\w.-]+#[1-9]\d*$/.test(key) || typeof value !== 'string' || !digest.test(value)))
+      throw new Error('invalid registry index');
+  }
   const readable = readableRepositories(scope, repositories);
   const trackedKeys = new Set();
   for (const pr of scope.tracked) {
@@ -586,7 +601,7 @@ export async function collectReconciliation({
       throw new Error('PR changed during reconciliation');
   }
   const hosts = [];
-  let requiresAgent = false;
+  const dueResumes = [];
   // Registered review sessions; other workspaces still count for due resumes.
   const watched =
     scope.watchSessions &&
@@ -621,7 +636,8 @@ export async function collectReconciliation({
             !Number.isFinite(due)
           )
             throw new Error('invalid resume snapshot');
-          if (due <= now()) requiresAgent = true;
+          if (due <= now())
+            dueResumes.push({ ...resume, machineId, workspaceId: workspace.id, sessionId: session.id });
         }
       }
     }
@@ -698,11 +714,107 @@ export async function collectReconciliation({
     facts,
     boardRows,
     fingerprint: sha(facts),
-    requiresAgent,
+    requiresAgent: dueResumes.length > 0,
+    dueResumes,
     counts: { issues: issues.length, prs: heads.length, hosts: hosts.length },
     checkedTracked: scope.tracked,
     terminalReviews: terminal,
     githubReads,
+  };
+}
+
+function indexFacts(facts) {
+  if (!facts?.heads || !facts.issues || !facts.hosts) return;
+  const sessions = [];
+  const workspaces = [];
+  for (const { machineId, workspaces: rows } of facts.hosts) {
+    for (const { id: workspaceId, sessions: local, ...workspace } of rows) {
+      workspaces.push([JSON.stringify([machineId, workspaceId]), { machineId, workspaceId, ...workspace }]);
+      for (const session of local) {
+        const key = JSON.stringify([machineId, workspaceId, session.id]);
+        sessions.push([key, { machineId, workspaceId, ...session }]);
+      }
+    }
+  }
+  return {
+    scope: sha([facts.coverage, facts.boardNoteId, facts.boardPrs]),
+    registryHash: facts.registryHash,
+    workspaces: Object.fromEntries(workspaces),
+    prs: Object.fromEntries(facts.heads.map((pr) => [pr.id, {
+      key: pr.key,
+      aliases: pr.aliases,
+      head: pr.head,
+      state: pr.state,
+      draft: pr.draft,
+      awaitingReview: pr.awaitingReview,
+      version: sha(pr),
+    }])),
+    issues: Object.fromEntries(facts.issues.map((issue) => [issue.id, issue])),
+    sessions: Object.fromEntries(sessions),
+  };
+}
+
+function changedRows(kind, previous, current) {
+  return [...new Set([...Object.keys(previous), ...Object.keys(current)])]
+    .sort()
+    .flatMap((key) => {
+      const before = previous[key] ?? null;
+      const after = current[key] ?? null;
+      if (sha(before) === sha(after)) return [];
+      return [{ kind, key, before, after, version: sha([kind, key, before, after]) }];
+    });
+}
+
+function reconciliationChanges(baseline, index, snapshot) {
+  const previous = baseline?.index;
+  if (!previous?.workspaces || typeof previous.workspaces !== 'object' || !index) return;
+  const registryChanged = previous.registryHash !== index.registryHash;
+  const registryScoped = previous.registry && index.registry &&
+    previous.registry.unscoped === index.registry.unscoped;
+  const registryChecks = registryChanged && registryScoped
+    ? changedRows('registry', previous.registry.byPr, index.registry.byPr) : [];
+  const checks = [
+    ...changedRows('pr', previous.prs, index.prs),
+    ...changedRows('issue', previous.issues, index.issues),
+    ...changedRows('workspace', previous.workspaces, index.workspaces),
+    ...changedRows('session', previous.sessions, index.sessions),
+    ...registryChecks,
+  ];
+  for (const resume of snapshot.dueResumes || []) {
+    checks.push({ kind: 'resume', key: resume.id, after: resume, version: sha(['resume', resume]) });
+  }
+  const refs = new Set();
+  for (const { kind, before, after } of checks) {
+    if (kind === 'pr') {
+      for (const row of [before, after]) {
+        if (row) for (const ref of [row.key, ...row.aliases]) refs.add(ref);
+      }
+    } else if (kind === 'issue') {
+      for (const url of [...(before?.prs || []), ...(after?.prs || [])])
+        refs.add(url.toLowerCase().replace('https://github.com/', '').replace('/pull/', '#'));
+    }
+  }
+  for (const { key } of registryChecks) refs.add(key);
+  const board = new Set(snapshot.facts.boardPrs);
+  const boardHeads = {};
+  const prFacts = {};
+  for (const pr of snapshot.facts.heads) {
+    for (const key of [pr.key, ...pr.aliases]) {
+      if (board.has(key)) boardHeads[key] = pr.head;
+      if (refs.has(key) || board.has(key)) {
+        const { reviewEvents, ...decisions } = pr;
+        prFacts[key] = decisions;
+      }
+    }
+  }
+  return {
+    baseFingerprint: baseline.fingerprint,
+    baseAcknowledgedAt: baseline.at,
+    scopeChanged: previous.scope !== index.scope,
+    registryChanged: registryChanged && registryChecks.length === 0,
+    checks,
+    prFacts,
+    boardHeads,
   };
 }
 
@@ -837,8 +949,13 @@ export async function reconcileAutopilot({
   const snapshot = await collect(record.terminalReviews);
   const checked = now();
   const at = new Date(checked).toISOString();
-  const acknowledged = Date.parse(acknowledgedAt);
+  const bound = scope?.acknowledgedFingerprint;
+  const acknowledged = bound && (
+    bound !== snapshot.fingerprint || bound !== record.pending?.fingerprint
+  ) ? NaN : Date.parse(acknowledgedAt);
   const pendingAt = Date.parse(record.pending?.at);
+  const index = indexFacts(snapshot.facts);
+  if (index && scope?.registryIndex) index.registry = scope.registryIndex;
   const boardPending = reconcileBoardReviews(
     scope,
     record,
@@ -854,7 +971,10 @@ export async function reconcileAutopilot({
     acknowledged <= checked &&
     checked - acknowledged < 2 * 60 * 60 * 1000
   )
-    record.baseline = { fingerprint: snapshot.fingerprint, at: acknowledgedAt };
+    record.baseline = { fingerprint: snapshot.fingerprint, at: acknowledgedAt, index };
+  // Older worker state only has a hash. Index it once the exact facts are seen again.
+  if (record.baseline?.fingerprint === snapshot.fingerprint)
+    record.baseline.index = index;
   const factsUnchanged =
     snapshot.requiresAgent !== true &&
     record.baseline?.fingerprint === snapshot.fingerprint;
@@ -887,5 +1007,6 @@ export async function reconcileAutopilot({
     registryHash: snapshot.facts?.registryHash,
     checkedTracked: snapshot.checkedTracked,
     githubReads: snapshot.githubReads,
+    changes: changed ? reconciliationChanges(record.baseline, index, snapshot) : undefined,
   };
 }

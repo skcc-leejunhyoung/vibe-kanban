@@ -408,6 +408,64 @@ test('missing initial baseline and changed queues require an agent; only officia
   assert.equal(writes, 4);
 });
 
+test('partial acknowledgement is bound to the exact PR and session version', async () => {
+  const h = fixture();
+  h.now = Date.parse('2002-03-06T00:00:00Z');
+  const record = {};
+  const session = '40000000-0000-4000-8000-000000000002';
+  h.workspaces = [{ id: issueId, sessions: [{ id: session, queue_hash: 'empty' }] }];
+  const poll = (acknowledgedAt, acknowledgedFingerprint) => reconcileAutopilot({
+    scope: { ...scope, acknowledgedFingerprint }, collect: h.collect, record,
+    acknowledgedAt, persist: async () => {}, now: () => h.now,
+  });
+  const first = await poll();
+  h.now += 1000;
+  assert.equal((await poll(new Date(h.now).toISOString())).changed, false);
+
+  h.workspaces[0].sessions[0].queue_hash = 'one';
+  h.now += 1000;
+  const queued = await poll();
+  assert.equal(queued.changes.baseFingerprint, first.fingerprint);
+  assert.deepEqual(queued.changes.checks.map(({ kind }) => kind), ['session']);
+  assert.equal(queued.changes.checks[0].after.queue_hash, 'one');
+
+  h.workspaces[0].sessions[0].queue_hash = 'two';
+  h.head = 'c'.repeat(40);
+  h.now += 1000;
+  const changed = await poll(new Date(h.now).toISOString(), queued.fingerprint);
+  assert.equal(changed.changed, true);
+  assert.ok(changed.changes.checks.some(({ kind, after }) => kind === 'pr' && after.head === h.head));
+  assert.equal(record.baseline.fingerprint, first.fingerprint);
+  h.now += 1000;
+  assert.equal((await poll(new Date(h.now).toISOString(), changed.fingerprint)).changed, false);
+  assert.equal(record.baseline.fingerprint, changed.fingerprint);
+});
+
+test('only registry changes indexed to a PR are eligible for a partial route', async () => {
+  const h = fixture();
+  h.now = Date.parse('2002-03-06T00:00:00Z');
+  const record = {};
+  const registryIndex = { unscoped: 'a'.repeat(64), byPr: { 'synthetic/widgets#7': 'b'.repeat(64) } };
+  const poll = (input, acknowledgedAt) => {
+    h.scope = input;
+    return reconcileAutopilot({ scope: input, collect: h.collect, record,
+      acknowledgedAt, persist: async () => {}, now: () => h.now });
+  };
+  const original = { ...scope, registryIndex };
+  await poll(original);
+  h.now += 1000;
+  await poll(original, new Date(h.now).toISOString());
+  const updated = { ...original, registryHash: 'd'.repeat(64), registryIndex: {
+    ...registryIndex, byPr: { 'synthetic/widgets#7': 'e'.repeat(64) },
+  } };
+  const scoped = await poll(updated);
+  assert.equal(scoped.changes.registryChanged, false);
+  assert.deepEqual(scoped.changes.checks.map(({ kind, key }) => [kind, key]), [['registry', 'synthetic/widgets#7']]);
+  assert.equal(scoped.changes.prFacts['synthetic/widgets#7'].head, head);
+  const unscoped = await poll({ ...updated, registryIndex: { ...updated.registryIndex, unscoped: 'f'.repeat(64) } });
+  assert.equal(unscoped.changes.registryChanged, true);
+});
+
 test('incomplete reads and out-of-scope PRs cannot advance the baseline', async () => {
   const record = { baseline: { fingerprint: 'original' } };
   await assert.rejects(
