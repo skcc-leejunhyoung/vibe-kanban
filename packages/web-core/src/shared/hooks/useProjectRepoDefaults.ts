@@ -1,4 +1,4 @@
-import { scratchApi, ApiError } from '@/shared/lib/api';
+import { scratchApi } from '@/shared/lib/api';
 import {
   ScratchType,
   type DraftWorkspaceRepo,
@@ -19,16 +19,12 @@ export async function getProjectRepoDefaults(
 ): Promise<DraftWorkspaceRepo[] | null> {
   try {
     const scratch = await scratchApi.get(SCRATCH_TYPE, projectId, hostId);
-    const payload = scratch.payload as ScratchPayload;
+    const payload = scratch?.payload as ScratchPayload | undefined;
     if (payload?.type === 'PROJECT_REPO_DEFAULTS') {
       return payload.data.repos;
     }
     return null;
   } catch (error) {
-    // 404 means no defaults saved yet — not an error
-    if (error instanceof ApiError && error.status === 404) {
-      return null;
-    }
     console.error('[useProjectRepoDefaults] Failed to read defaults:', error);
     throw error;
   }

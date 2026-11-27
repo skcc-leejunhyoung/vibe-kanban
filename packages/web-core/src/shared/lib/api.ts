@@ -429,6 +429,22 @@ const handleApiResponseAsResult = async <T, E>(
   return { success: true, data: result.data as T };
 };
 
+/**
+ * A 404 the host answered itself, in its own error envelope: the thing is
+ * absent. A relay or proxy answers 404 too when the host cannot be reached
+ * ("No active relay"); that is a failed lookup, not "none".
+ */
+const isHostNotFound = async (response: Response): Promise<boolean> => {
+  if (response.status !== 404) {
+    return false;
+  }
+  const body: unknown = await response
+    .clone()
+    .json()
+    .catch(() => null);
+  return (body as { success?: unknown } | null)?.success === false;
+};
+
 export const handleApiResponse = async <T, E = T>(
   response: Response
 ): Promise<T> => {
@@ -857,18 +873,9 @@ export const workspacesApi = {
       `/api/workspaces/autopilot`,
       hostId
     );
-    if (response.status === 404) {
-      // "None" only when the host said so itself, in its own error envelope.
-      // A relay or proxy answers 404 too when the host cannot be reached
-      // ("No active relay"): that is a failed lookup, and the host may well
-      // have its Autopilot.
-      const body: unknown = await response
-        .clone()
-        .json()
-        .catch(() => null);
-      if ((body as { success?: unknown } | null)?.success === false) {
-        return null;
-      }
+    // The host may well have its Autopilot when a relay could not reach it.
+    if (await isHostNotFound(response)) {
+      return null;
     }
     return handleApiResponse<AutopilotWorkspaceResponse>(response);
   },
@@ -2942,11 +2949,15 @@ export const scratchApi = {
     scratchType: ScratchType,
     id: string,
     hostId?: string | null
-  ): Promise<Scratch> => {
+  ): Promise<Scratch | null> => {
     const response = await makeHostAwareRequest(
       `/api/scratch/${scratchType}/${id}`,
       hostId
     );
+    // null = nothing saved yet; an unreachable host throws instead.
+    if (await isHostNotFound(response)) {
+      return null;
+    }
     return handleApiResponse<Scratch>(response);
   },
 
